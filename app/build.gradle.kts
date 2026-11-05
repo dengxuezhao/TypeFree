@@ -50,6 +50,17 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    val usePrivateDict = project.findProperty("usePrivateDict") == "true"
+    val privateDictDir = rootProject.file("local_private")
+
+    sourceSets {
+        getByName("main") {
+            if (usePrivateDict && privateDictDir.exists()) {
+                assets.setSrcDirs(listOf(privateDictDir))
+            }
+        }
+    }
 }
 
 dependencies {
