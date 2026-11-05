@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#202126" />
+      <stop offset="100%" stop-color="#121316" />
+    </linearGradient>
+  </defs>
+  <!-- Modern Rounded Icon Canvas -->
+  <rect width="108" height="108" rx="24" fill="url(#bgGrad)" />
+  <rect width="106" height="106" x="1" y="1" rx="23" fill="none" stroke="#2D3039" stroke-width="1.2" />
+
+  <!-- Acoustic Voice Wavemark -->
+  <path d="M38,37 C61,37 73,49 73,72" fill="none" stroke="#FFFFFF" stroke-width="6.8" stroke-linecap="round" />
+  <path d="M36,53 C51,53 59,61 59,76" fill="none" stroke="#FFFFFF" stroke-width="6.2" stroke-linecap="round" />
+  <circle cx="42" cy="71" r="4.8" fill="#FFFFFF" />
+</svg>

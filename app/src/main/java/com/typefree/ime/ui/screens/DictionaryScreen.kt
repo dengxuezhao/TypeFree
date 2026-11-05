@@ -1,6 +1,11 @@
 package com.typefree.ime.ui.screens
 
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -38,6 +43,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -55,6 +61,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -74,9 +81,10 @@ import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import com.typefree.ime.TypeFreeApp
 import com.typefree.ime.ime.flypy.FlypyDictionary
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
-import java.io.File
-import java.io.FileInputStream
 
 private val AI_DEV_PRESET_PACK = listOf(
     DictionaryEntry(
@@ -121,6 +129,7 @@ private val AI_DEV_PRESET_PACK = listOf(
 @Composable
 fun DictionaryScreen(repository: AppRepository) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val settings by repository.settings.collectAsState()
     val dictionary = settings.dictionary
 
@@ -748,41 +757,7 @@ fun DictionaryScreen(repository: AppRepository) {
     // Custom Rime / Yinxing Table Import Dialog
     if (showRimeImportDialog) {
         RimeDictionaryImportDialog(
-            onDismiss = { showRimeImportDialog = false },
-            onImport = { dictContent, dzContent, filePath ->
-                try {
-                    val dictStream = if (filePath.isNotBlank()) {
-                        val file = File(filePath.trim())
-                        if (!file.exists()) {
-                            Toast.makeText(context, "指定文件不存在: $filePath", Toast.LENGTH_SHORT).show()
-                            return@RimeDictionaryImportDialog
-                        }
-                        FileInputStream(file)
-                    } else if (dictContent.isNotBlank()) {
-                        ByteArrayInputStream(dictContent.toByteArray(Charsets.UTF_8))
-                    } else {
-                        Toast.makeText(context, "请输入码表内容或文件路径", Toast.LENGTH_SHORT).show()
-                        return@RimeDictionaryImportDialog
-                    }
-
-                    val dzStream = if (dzContent.isNotBlank()) {
-                        ByteArrayInputStream(dzContent.toByteArray(Charsets.UTF_8))
-                    } else {
-                        null
-                    }
-
-                    dictStream.use { dIn ->
-                        dzStream?.use { zIn ->
-                            FlypyDictionary.importCustomDictionary(context, dIn, zIn)
-                        } ?: FlypyDictionary.importCustomDictionary(context, dIn, null)
-                    }
-                    TypeFreeApp.instance.reloadFlypyDictionary()
-                    Toast.makeText(context, "自定义码表导入成功！输入法已热挂载", Toast.LENGTH_SHORT).show()
-                    showRimeImportDialog = false
-                } catch (e: Exception) {
-                    Toast.makeText(context, "导入失败: ${e.message}", Toast.LENGTH_LONG).show()
-                }
-            }
+            onDismiss = { showRimeImportDialog = false }
         )
     }
 
@@ -797,14 +772,18 @@ fun DictionaryScreen(repository: AppRepository) {
             confirmButton = {
                 Button(
                     onClick = {
-                        try {
-                            FlypyDictionary.restoreDefaultDictionary(context)
-                            TypeFreeApp.instance.reloadFlypyDictionary()
-                            Toast.makeText(context, "已恢复内置默认开源词库", Toast.LENGTH_SHORT).show()
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "恢复失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        coroutineScope.launch {
+                            try {
+                                withContext(Dispatchers.IO) {
+                                    FlypyDictionary.restoreDefaultDictionary(context)
+                                    TypeFreeApp.instance.reloadFlypyDictionary()
+                                }
+                                Toast.makeText(context, "已恢复内置默认开源词库", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "恢复失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                            showRestoreConfirmDialog = false
                         }
-                        showRestoreConfirmDialog = false
                     }
                 ) {
                     Text("确认恢复")
@@ -1271,15 +1250,50 @@ private fun parseBatchDictionaryLines(
 
 @Composable
 fun RimeDictionaryImportDialog(
-    onDismiss: () -> Unit,
-    onImport: (dictContent: String, dzContent: String, filePath: String) -> Unit
+    onDismiss: () -> Unit
 ) {
-    var filePath by rememberSaveable { mutableStateOf("") }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    var mainDictUri by remember { mutableStateOf<Uri?>(null) }
+    var mainDictFileName by remember { mutableStateOf("") }
+    var dzDictUri by remember { mutableStateOf<Uri?>(null) }
+    var dzDictFileName by remember { mutableStateOf("") }
+
+    var isPasteExpanded by remember { mutableStateOf(false) }
     var rawTsvText by rememberSaveable { mutableStateOf("") }
     var rawDzText by rememberSaveable { mutableStateOf("") }
 
+    var isImporting by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    val fileMimeTypes = remember {
+        arrayOf("text/*", "application/octet-stream", "*/*")
+    }
+
+    val mainDictLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            mainDictUri = uri
+            mainDictFileName = queryFileName(context, uri) ?: uri.lastPathSegment ?: "主词库文件.tsv"
+            errorMessage = null
+        }
+    }
+
+    val dzDictLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            dzDictUri = uri
+            dzDictFileName = queryFileName(context, uri) ?: uri.lastPathSegment ?: "反查表文件.tsv"
+        }
+    }
+
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            if (!isImporting) onDismiss()
+        },
         title = {
             Text(
                 text = "导入自定义音形 / Rime 码表",
@@ -1292,68 +1306,305 @@ fun RimeDictionaryImportDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "支持输入本地 TSV 文件路径，或直接粘贴码表内容。覆盖写入应用私有空间，零隐私上传，热挂载优先生效。",
+                    text = "通过系统安全文件选择器选取手机中的 TSV/TXT 码表文件。覆盖写入应用私有存储空间，纯本地生效，保护隐私。",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 18.sp
                 )
 
-                OutlinedTextField(
-                    value = filePath,
-                    onValueChange = { filePath = it },
-                    label = { Text("本地 TSV 文件路径 (选填)") },
-                    placeholder = { Text("/sdcard/Download/flypy_dict.tsv") },
+                // 1. Main Dictionary File Card
+                Card(
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "主词库文件 (必需)",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "格式: 编码\\t候选词1\\t候选词2...（如小鹤音形、五笔、虎码等）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
 
-                Text(
-                    text = "或直接粘贴主词库 TSV (code\\tword1\\tword2):",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
+                        if (mainDictUri != null) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(TypeFreeEmerald.copy(alpha = 0.12f))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = mainDictFileName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = TypeFreeEmerald,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = {
+                                        mainDictUri = null
+                                        mainDictFileName = ""
+                                    },
+                                    enabled = !isImporting,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "清除",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { mainDictLauncher.launch(fileMimeTypes) },
+                                enabled = !isImporting,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(vertical = 8.dp)
+                            ) {
+                                Text("选择主词库文件 (.tsv/.txt)")
+                            }
+                        }
+                    }
+                }
 
-                OutlinedTextField(
-                    value = rawTsvText,
-                    onValueChange = { rawTsvText = it },
-                    placeholder = { Text("uijm\\t时间\\t实践\\nxhyx\\t小鹤音形") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(110.dp),
-                    maxLines = 6
-                )
+                // 2. Reverse Lookup Single-Char Table (Optional)
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "单字四码反查表 (可选)",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "格式: 4码编码\\t单字（用于 ` 通配符查音查形）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
 
-                Text(
-                    text = "单字四码反查表 TSV (选填):",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
+                        if (dzDictUri != null) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(TypeFreeEmerald.copy(alpha = 0.12f))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = dzDictFileName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = TypeFreeEmerald,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = {
+                                        dzDictUri = null
+                                        dzDictFileName = ""
+                                    },
+                                    enabled = !isImporting,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "清除",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { dzDictLauncher.launch(fileMimeTypes) },
+                                enabled = !isImporting,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(vertical = 8.dp)
+                            ) {
+                                Text("选择反查表文件 (可选)")
+                            }
+                        }
+                    }
+                }
 
-                OutlinedTextField(
-                    value = rawDzText,
-                    onValueChange = { rawDzText = it },
-                    placeholder = { Text("jibo\\t瘠\\ndkal\\t丁") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(80.dp),
-                    maxLines = 4
-                )
+                // 3. Fallback Small Text Paste for Debugging (Collapsible)
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { isPasteExpanded = !isPasteExpanded }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = if (isPasteExpanded) "▼ 收起文本直接粘贴调试区" else "▶ 展开文本直接粘贴调试区 (限小片段)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    if (isPasteExpanded) {
+                        OutlinedTextField(
+                            value = rawTsvText,
+                            onValueChange = {
+                                rawTsvText = it
+                                if (it.isNotBlank()) mainDictUri = null
+                            },
+                            label = { Text("粘贴主词库小片段 (TSV)") },
+                            placeholder = { Text("uijm\\t时间\\t实践\\nxhyx\\t小鹤音形") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(90.dp),
+                            maxLines = 4,
+                            enabled = !isImporting
+                        )
+                    }
+                }
+
+                // Error message
+                if (errorMessage != null) {
+                    Text(
+                        text = errorMessage ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
+                // Loading progress indicator
+                if (isImporting) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Text(
+                            text = "正在导入并构建内存索引，请稍候...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
+            val canSubmit = (mainDictUri != null || rawTsvText.isNotBlank()) && !isImporting
             Button(
-                onClick = { onImport(rawTsvText, rawDzText, filePath) },
-                enabled = filePath.isNotBlank() || rawTsvText.isNotBlank()
+                onClick = {
+                    isImporting = true
+                    errorMessage = null
+                    coroutineScope.launch {
+                        try {
+                            withContext(Dispatchers.IO) {
+                                val dictIn = when {
+                                    mainDictUri != null -> {
+                                        context.contentResolver.openInputStream(mainDictUri!!)
+                                            ?: throw IllegalStateException("无法读取选中的主词库文件")
+                                    }
+                                    rawTsvText.isNotBlank() -> {
+                                        ByteArrayInputStream(rawTsvText.toByteArray(Charsets.UTF_8))
+                                    }
+                                    else -> throw IllegalStateException("请选择主词库文件或输入文本")
+                                }
+
+                                val dzIn = when {
+                                    dzDictUri != null -> {
+                                        context.contentResolver.openInputStream(dzDictUri!!)
+                                    }
+                                    rawDzText.isNotBlank() -> {
+                                        ByteArrayInputStream(rawDzText.toByteArray(Charsets.UTF_8))
+                                    }
+                                    else -> null
+                                }
+
+                                dictIn.use { dStream ->
+                                    if (dzIn != null) {
+                                        dzIn.use { zStream ->
+                                            FlypyDictionary.importCustomDictionary(context, dStream, zStream)
+                                        }
+                                    } else {
+                                        FlypyDictionary.importCustomDictionary(context, dStream, null)
+                                    }
+                                }
+
+                                TypeFreeApp.instance.reloadFlypyDictionary()
+                            }
+                            Toast.makeText(context, "自定义码表导入成功！输入法已热挂载", Toast.LENGTH_SHORT).show()
+                            onDismiss()
+                        } catch (e: Exception) {
+                            errorMessage = "导入失败: ${e.message}"
+                        } finally {
+                            isImporting = false
+                        }
+                    }
+                },
+                enabled = canSubmit
             ) {
-                Text("导入挂载")
+                Text(if (isImporting) "导入中..." else "确认导入挂载")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isImporting
+            ) {
+                Text("关闭")
             }
         }
     )
+}
+
+private fun queryFileName(context: Context, uri: Uri): String? {
+    return try {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (nameIndex != -1 && cursor.moveToFirst()) {
+                cursor.getString(nameIndex)
+            } else null
+        }
+    } catch (e: Exception) {
+        null
+    }
 }

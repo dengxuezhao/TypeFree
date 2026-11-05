@@ -1,7 +1,7 @@
 # TypeFree — Android 原生 AI 语音输入法与全局悬浮胶囊
 
 <p align="center">
-  <img src="app/src/main/res/drawable/ic_launcher_foreground.xml" width="108" height="108" alt="TypeFree Logo" />
+  <img src="docs/logo.svg" width="108" height="108" alt="TypeFree Logo" />
 </p>
 
 <p align="center">
@@ -154,8 +154,8 @@ TypeFree 支持用户将个人常用的码表（如小鹤音形、五笔、自�
 2. **手机端直接导入**：
    - 打开 TypeFree 主应用，切换到底部 **「词典」** 选项卡；
    - 在顶部的 **「四码音形 / Rime 码表」** 卡片中点击 **「导入自定义码表 (TSV)」**；
-   - 可直接粘贴 TSV 文本，或输入手机本地文件路径（如 `/sdcard/Download/my_flypy_dict.tsv`）；
-   - 点击 **「导入挂载」** 即可完成热挂载。若需恢复默认双拼，随时点击 **「恢复默认」**。
+   - 点击 **「选择主词库文件 (.tsv/.txt)」**（通过 Android SAF 系统安全文件选择器直接选取手机存储或网盘中的码表文件），可选导入单字四码反查表；
+   - 确认后后台协程流式写入私有存储并即刻完成热挂载。若需恢复默认双拼，随时点击 **「恢复默认」**。
 
 ---
 
@@ -180,7 +180,7 @@ cd TypeFree
 
 # 编译 Release APK
 ./gradlew assembleRelease
-# 产物输出路径: app/build/outputs/apk/release/app-release-unsigned.apk
+# 产物输出路径: app/build/outputs/apk/release/app-release.apk
 ```
 
 ---

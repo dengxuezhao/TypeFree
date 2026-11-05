@@ -38,8 +38,8 @@ class FlypyEngineTest {
                 }
             }
             assertTrue(sharedDict.isLoaded)
-            assertTrue("Expected >500 codes", sharedDict.codeCount > 500)
-            assertTrue("Expected >2k reverse-lookup chars", sharedDict.reverseCharCount > 2_000)
+            assertTrue("Expected >30k codes in expanded open dict", sharedDict.codeCount > 30_000)
+            assertTrue("Expected >7k reverse-lookup chars", sharedDict.reverseCharCount > 7_000)
         }
     }
 
@@ -233,5 +233,32 @@ class FlypyEngineTest {
         "tfre".forEach { engine.onCharInput(it) }
         val commit = engine.onSpace()
         assertEquals(FlypyAction.CommitText("TypeFree", false), commit)
+    }
+
+    @Test
+    fun fourCodeCommonWordsContinuousTyping_worksFluently() {
+        val engine = FlypyEngine(sharedDict)
+
+        // 1. Unique 4-code `vsgo` auto-commits `中国` immediately on 4th key!
+        engine.onCharInput('v')
+        engine.onCharInput('s')
+        engine.onCharInput('g')
+        val fourthVsgo = engine.onCharInput('o')
+        assertEquals(FlypyAction.CommitText("中国", false), fourthVsgo)
+        assertFalse(engine.isComposing)
+
+        // 2. Unique 4-code `nihc` auto-commits `你好` immediately on 4th key!
+        engine.onCharInput('n')
+        engine.onCharInput('i')
+        engine.onCharInput('h')
+        val fourthNihc = engine.onCharInput('c')
+        assertEquals(FlypyAction.CommitText("你好", false), fourthNihc)
+        assertFalse(engine.isComposing)
+
+        // 3. Multi-candidate 4-code `ceui` stays composing and commits `测试` on space
+        "ceui".forEach { engine.onCharInput(it) }
+        assertTrue(engine.candidates.isNotEmpty())
+        assertEquals("测试", engine.candidates.first().text)
+        assertEquals(FlypyAction.CommitText("测试", false), engine.onSpace())
     }
 }
