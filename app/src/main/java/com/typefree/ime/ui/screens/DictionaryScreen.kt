@@ -1,0 +1,1359 @@
+package com.typefree.ime.ui.screens
+
+import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.typefree.ime.data.AppRepository
+import com.typefree.ime.data.DictionaryEntry
+import com.typefree.ime.data.DictionarySource
+import com.typefree.ime.ui.components.TypeFreeIcons
+import com.typefree.ime.ui.theme.TypeFreeEmerald
+import com.typefree.ime.TypeFreeApp
+import com.typefree.ime.ime.flypy.FlypyDictionary
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.io.FileInputStream
+
+private val AI_DEV_PRESET_PACK = listOf(
+    DictionaryEntry(
+        term = "Cursor",
+        wrongVariants = "科瑟, cursor",
+        note = "AI 代码编辑器",
+        source = DictionarySource.MANUAL
+    ),
+    DictionaryEntry(
+        term = "Antigravity",
+        wrongVariants = "安提格拉维蒂, anti gravity",
+        note = "Agentic AI 编程环境",
+        source = DictionarySource.MANUAL
+    ),
+    DictionaryEntry(
+        term = "Supabase",
+        wrongVariants = "苏帕贝斯, super base",
+        note = "开源后端云服务",
+        source = DictionarySource.MANUAL
+    ),
+    DictionaryEntry(
+        term = "Kubernetes",
+        wrongVariants = "库伯内蒂斯, k8s",
+        note = "容器编排系统",
+        source = DictionarySource.MANUAL
+    ),
+    DictionaryEntry(
+        term = "RAG",
+        wrongVariants = "瑞格, R A G",
+        note = "检索增强生成",
+        source = DictionarySource.MANUAL
+    ),
+    DictionaryEntry(
+        term = "Agent",
+        wrongVariants = "艾真特, agent智能体",
+        note = "AI 自主智能体",
+        source = DictionarySource.MANUAL
+    )
+)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun DictionaryScreen(repository: AppRepository) {
+    val context = LocalContext.current
+    val settings by repository.settings.collectAsState()
+    val dictionary = settings.dictionary
+
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    // 0 = 全部, 1 = 自动学习 Auto-added, 2 = 手动添加 Manual
+    var selectedSourceTab by rememberSaveable { mutableIntStateOf(0) }
+
+    var isBatchMode by rememberSaveable { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf(setOf<String>()) }
+
+    var showEditorDialog by remember { mutableStateOf(false) }
+    var editingEntry by remember { mutableStateOf<DictionaryEntry?>(null) }
+    var showBatchImportDialog by remember { mutableStateOf(false) }
+    var showBatchDeleteConfirm by remember { mutableStateOf(false) }
+
+    val flypyDict by TypeFreeApp.instance.flypyDictionary.collectAsState()
+    val isCustomActive = remember(flypyDict) {
+        FlypyDictionary.isCustomDictionaryActive(context)
+    }
+    var showRimeImportDialog by remember { mutableStateOf(false) }
+    var showRestoreConfirmDialog by remember { mutableStateOf(false) }
+
+    val enabledCount = remember(dictionary) { dictionary.count { it.enabled } }
+    val autoCount = remember(dictionary) {
+        dictionary.count { it.source == DictionarySource.AUTO_LEARNED }
+    }
+    val manualCount = remember(dictionary) {
+        dictionary.count { it.source == DictionarySource.MANUAL }
+    }
+
+    val filteredEntries = remember(dictionary, searchQuery, selectedSourceTab) {
+        val q = searchQuery.trim()
+        dictionary.filter { entry ->
+            val sourceMatch = when (selectedSourceTab) {
+                1 -> entry.source == DictionarySource.AUTO_LEARNED
+                2 -> entry.source == DictionarySource.MANUAL
+                else -> true
+            }
+            val queryMatch = if (q.isEmpty()) {
+                true
+            } else {
+                entry.term.contains(q, ignoreCase = true) ||
+                    entry.wrongVariants.contains(q, ignoreCase = true) ||
+                    entry.note.contains(q, ignoreCase = true)
+            }
+            sourceMatch && queryMatch
+        }
+    }
+
+    // Keep selectedIds valid against current dictionary
+    val validSelectedIds = remember(selectedIds, dictionary) {
+        val allIds = dictionary.map { it.id }.toSet()
+        selectedIds.intersect(allIds)
+    }
+
+    val allFilteredSelected = filteredEntries.isNotEmpty() &&
+        filteredEntries.all { it.id in validSelectedIds }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // 1. Top Header + Batch Mode Toggle
+        item(key = "dict_header") {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "个人词典",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Text(
+                                text = "已启用 $enabledCount",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = "人名、品牌、技术术语双阶段声学偏置与强制纠错",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                if (dictionary.isNotEmpty()) {
+                    OutlinedButton(
+                        onClick = {
+                            isBatchMode = !isBatchMode
+                            if (!isBatchMode) {
+                                selectedIds = emptySet()
+                            }
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = if (isBatchMode) "完成" else "批量选择",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+        }
+
+        // 1.5 Custom Rime / Yinxing IME Engine Table Card
+        item(key = "dict_rime_custom_card") {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.52f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = TypeFreeIcons.KeyboardGrid,
+                                contentDescription = null,
+                                tint = if (isCustomActive) TypeFreeEmerald else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "四码音形 / Rime 码表",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = if (isCustomActive) TypeFreeEmerald.copy(alpha = 0.15f)
+                            else MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Text(
+                                text = if (isCustomActive) "自定义码表 (${flypyDict.codeCount} 编码)"
+                                else "内置双拼 (${flypyDict.codeCount} 编码)",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (isCustomActive) TypeFreeEmerald
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = if (isCustomActive)
+                            "当前已挂载私有音形码表，单字与词组在键盘中优先生效。可随时导入新码表或一键恢复内置词库。"
+                        else
+                            "当前使用开箱即用的纯开源双拼词库。支持导入您个人的 Rime/TSV 码表（如小鹤音形、五笔、虎码等）实现四码定长顶功输入。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 18.sp
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = { showRimeImportDialog = true },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = "导入自定义码表 (TSV)",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        if (isCustomActive) {
+                            OutlinedButton(
+                                onClick = { showRestoreConfirmDialog = true },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = "恢复默认",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. V2.9 Flagship Feature: Auto-Learn Corrections Switch Card
+        item(key = "dict_auto_learn_card") {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.52f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = TypeFreeIcons.Sparkles,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(17.dp)
+                            )
+                            Text(
+                                text = "自动学习打字改错 (Auto-learn)",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text(
+                            text = "当使用内置键盘修正刚口述的专有名词、人名或大小写（如将 deep seek 改为 DeepSeek）时，自动提取差异并加入个人词典。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 18.sp
+                        )
+                    }
+
+                    Switch(
+                        checked = settings.autoLearnDictionary,
+                        onCheckedChange = { enabled ->
+                            repository.updateSettings { it.copy(autoLearnDictionary = enabled) }
+                        }
+                    )
+                }
+            }
+        }
+
+        // 3. Action Buttons + Search Box + 3-Segment Source Filter Capsules
+        item(key = "dict_controls") {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Button(
+                        onClick = {
+                            editingEntry = null
+                            showEditorDialog = true
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("新建词条", fontWeight = FontWeight.Bold)
+                    }
+
+                    FilledTonalButton(
+                        onClick = { showBatchImportDialog = true },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(
+                            text = "批量文本 / 预设词包导入",
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    placeholder = { Text("搜索标准词、同音误识别词或备注...") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null
+                        )
+                    },
+                    trailingIcon = if (searchQuery.isNotEmpty()) {
+                        {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "清除搜索"
+                                )
+                            }
+                        }
+                    } else null
+                )
+
+                // 3-Segment Source Filter Capsules
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .horizontalScroll(rememberScrollState())
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        DictSourceFilterPill(
+                            label = "全部 (${dictionary.size})",
+                            selected = selectedSourceTab == 0,
+                            onClick = { selectedSourceTab = 0 }
+                        )
+                        DictSourceFilterPill(
+                            label = "自动学习 Auto-added ($autoCount)",
+                            selected = selectedSourceTab == 1,
+                            onClick = { selectedSourceTab = 1 }
+                        )
+                        DictSourceFilterPill(
+                            label = "手动添加 Manual ($manualCount)",
+                            selected = selectedSourceTab == 2,
+                            onClick = { selectedSourceTab = 2 }
+                        )
+                    }
+                }
+
+                // Batch Selection Action Toolbar
+                AnimatedVisibility(visible = isBatchMode && dictionary.isNotEmpty()) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.clickable(enabled = filteredEntries.isNotEmpty()) {
+                                    selectedIds = if (allFilteredSelected) {
+                                        validSelectedIds - filteredEntries.map { it.id }.toSet()
+                                    } else {
+                                        validSelectedIds + filteredEntries.map { it.id }
+                                    }
+                                }
+                            ) {
+                                Checkbox(
+                                    checked = allFilteredSelected,
+                                    onCheckedChange = { checked ->
+                                        selectedIds = if (checked) {
+                                            validSelectedIds + filteredEntries.map { it.id }
+                                        } else {
+                                            validSelectedIds - filteredEntries.map { it.id }.toSet()
+                                        }
+                                    }
+                                )
+                                Text(
+                                    text = if (allFilteredSelected) "取消全选" else "全选 (${filteredEntries.size})",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+
+                            Button(
+                                onClick = { showBatchDeleteConfirm = true },
+                                enabled = validSelectedIds.isNotEmpty(),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = Color.White
+                                ),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "删除已选 (${validSelectedIds.size})",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Dictionary Entries List or Empty State
+        if (filteredEntries.isEmpty()) {
+            item(key = "dict_empty_state") {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = TypeFreeIcons.Book,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(34.dp)
+                        )
+                        Text(
+                            text = when {
+                                dictionary.isEmpty() -> "个人词典为空"
+                                selectedSourceTab == 1 && searchQuery.isEmpty() -> "尚无自动学习的改错词条"
+                                else -> "未找到匹配的词条"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = when {
+                                selectedSourceTab == 1 && searchQuery.isEmpty() ->
+                                    "当你在口述完成后使用内置键盘修正专有名词时，系统会自动学习并在此展示。"
+                                dictionary.isEmpty() ->
+                                    "添加同事姓名、产品代号或技术词汇，让语音识别与润色永不写错字。"
+                                else ->
+                                    "尝试调整搜索词或切换上方来源筛选胶囊。"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+        } else {
+            items(filteredEntries, key = { it.id }) { entry ->
+                val isSelected = entry.id in validSelectedIds
+                DictionaryEntryCard(
+                    entry = entry,
+                    isBatchMode = isBatchMode,
+                    isSelected = isSelected,
+                    onToggleSelect = {
+                        selectedIds = if (isSelected) {
+                            validSelectedIds - entry.id
+                        } else {
+                            validSelectedIds + entry.id
+                        }
+                    },
+                    onToggleEnabled = { enabled ->
+                        repository.updateSettings { current ->
+                            current.copy(
+                                dictionary = current.dictionary.map {
+                                    if (it.id == entry.id) it.copy(enabled = enabled) else it
+                                }
+                            )
+                        }
+                    },
+                    onEdit = {
+                        editingEntry = entry
+                        showEditorDialog = true
+                    },
+                    onDelete = {
+                        repository.deleteDictionaryEntries(setOf(entry.id))
+                        Toast.makeText(context, "已删除词条「${entry.term}」", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+        }
+
+        item(key = "dict_bottom_spacer") {
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+
+    // Create / Edit Entry Dialog
+    if (showEditorDialog) {
+        DictionaryEntryEditorDialog(
+            initialEntry = editingEntry,
+            onDismiss = { showEditorDialog = false },
+            onSave = { saved ->
+                repository.updateSettings { current ->
+                    val exists = current.dictionary.any { it.id == saved.id }
+                    val updated = if (exists) {
+                        current.dictionary.map { if (it.id == saved.id) saved else it }
+                    } else {
+                        listOf(saved) + current.dictionary
+                    }
+                    current.copy(dictionary = updated)
+                }
+                showEditorDialog = false
+                Toast.makeText(
+                    context,
+                    if (editingEntry == null) "已添加词条「${saved.term}」" else "已更新词条「${saved.term}」",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        )
+    }
+
+    // Batch Import Dialog (Multi-line Text + AI/Dev Preset Pack)
+    if (showBatchImportDialog) {
+        BatchImportDictionaryDialog(
+            existingTerms = remember(dictionary) {
+                dictionary.map { it.term.trim().lowercase() }.toSet()
+            },
+            onDismiss = { showBatchImportDialog = false },
+            onImportEntries = { importedList ->
+                if (importedList.isNotEmpty()) {
+                    repository.updateSettings { current ->
+                        val existingLower = current.dictionary.map { it.term.trim().lowercase() }.toSet()
+                        val deduped = importedList.filter { it.term.trim().lowercase() !in existingLower }
+                        current.copy(dictionary = deduped + current.dictionary)
+                    }
+                    Toast.makeText(
+                        context,
+                        "成功导入 ${importedList.size} 条专属词条",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    Toast.makeText(context, "所选词条均已存在，无需重复导入", Toast.LENGTH_SHORT).show()
+                }
+                showBatchImportDialog = false
+            }
+        )
+    }
+
+    // Batch Delete Confirmation Dialog
+    if (showBatchDeleteConfirm && validSelectedIds.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { showBatchDeleteConfirm = false },
+            title = { Text("批量删除词条") },
+            text = {
+                Text("确定要删除已选中的 ${validSelectedIds.size} 个词条吗？删除后无法恢复。")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val count = validSelectedIds.size
+                        repository.deleteDictionaryEntries(validSelectedIds)
+                        selectedIds = emptySet()
+                        showBatchDeleteConfirm = false
+                        if (dictionary.size <= count) {
+                            isBatchMode = false
+                        }
+                        Toast.makeText(context, "已批量删除 $count 个词条", Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("确认删除 ($countText)".replace("$countText", validSelectedIds.size.toString()))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBatchDeleteConfirm = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    // Custom Rime / Yinxing Table Import Dialog
+    if (showRimeImportDialog) {
+        RimeDictionaryImportDialog(
+            onDismiss = { showRimeImportDialog = false },
+            onImport = { dictContent, dzContent, filePath ->
+                try {
+                    val dictStream = if (filePath.isNotBlank()) {
+                        val file = File(filePath.trim())
+                        if (!file.exists()) {
+                            Toast.makeText(context, "指定文件不存在: $filePath", Toast.LENGTH_SHORT).show()
+                            return@RimeDictionaryImportDialog
+                        }
+                        FileInputStream(file)
+                    } else if (dictContent.isNotBlank()) {
+                        ByteArrayInputStream(dictContent.toByteArray(Charsets.UTF_8))
+                    } else {
+                        Toast.makeText(context, "请输入码表内容或文件路径", Toast.LENGTH_SHORT).show()
+                        return@RimeDictionaryImportDialog
+                    }
+
+                    val dzStream = if (dzContent.isNotBlank()) {
+                        ByteArrayInputStream(dzContent.toByteArray(Charsets.UTF_8))
+                    } else {
+                        null
+                    }
+
+                    dictStream.use { dIn ->
+                        dzStream?.use { zIn ->
+                            FlypyDictionary.importCustomDictionary(context, dIn, zIn)
+                        } ?: FlypyDictionary.importCustomDictionary(context, dIn, null)
+                    }
+                    TypeFreeApp.instance.reloadFlypyDictionary()
+                    Toast.makeText(context, "自定义码表导入成功！输入法已热挂载", Toast.LENGTH_SHORT).show()
+                    showRimeImportDialog = false
+                } catch (e: Exception) {
+                    Toast.makeText(context, "导入失败: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        )
+    }
+
+    // Restore Default Dictionary Dialog
+    if (showRestoreConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showRestoreConfirmDialog = false },
+            title = { Text("恢复内置开源词库") },
+            text = {
+                Text("确定要清除当前自定义私有码表并恢复默认内置开源双拼词库吗？")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        try {
+                            FlypyDictionary.restoreDefaultDictionary(context)
+                            TypeFreeApp.instance.reloadFlypyDictionary()
+                            Toast.makeText(context, "已恢复内置默认开源词库", Toast.LENGTH_SHORT).show()
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "恢复失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                        showRestoreConfirmDialog = false
+                    }
+                ) {
+                    Text("确认恢复")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRestoreConfirmDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+}
+
+private const val countText = "{N}"
+
+@Composable
+private fun DictSourceFilterPill(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .clip(RoundedCornerShape(9.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(9.dp),
+        color = if (selected) MaterialTheme.colorScheme.surface else Color.Transparent,
+        shadowElevation = if (selected) 1.dp else 0.dp
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DictionaryEntryCard(
+    entry: DictionaryEntry,
+    isBatchMode: Boolean,
+    isSelected: Boolean,
+    onToggleSelect: () -> Unit,
+    onToggleEnabled: (Boolean) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val variantTokens = remember(entry.wrongVariants) {
+        entry.wrongVariants
+            .split(',', '，', ';', '；')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+    }
+    val isAutoLearned = entry.source == DictionarySource.AUTO_LEARNED
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (isBatchMode) {
+                    Modifier.clickable { onToggleSelect() }
+                } else {
+                    Modifier
+                }
+            ),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = when {
+                isBatchMode && isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                entry.enabled -> MaterialTheme.colorScheme.surface
+                else -> MaterialTheme.colorScheme.surface.copy(alpha = 0.62f)
+            }
+        ),
+        border = BorderStroke(
+            width = if (isBatchMode && isSelected) 1.5.dp else 1.dp,
+            color = when {
+                isBatchMode && isSelected -> MaterialTheme.colorScheme.primary
+                entry.enabled -> MaterialTheme.colorScheme.outline.copy(alpha = 0.48f)
+                else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp)
+                ) {
+                    if (isBatchMode) {
+                        Checkbox(
+                            checked = isSelected,
+                            onCheckedChange = { onToggleSelect() }
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = entry.term,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                color = if (entry.enabled) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (isAutoLearned) {
+                                    TypeFreeEmerald.copy(alpha = 0.14f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                }
+                            ) {
+                                Text(
+                                    text = if (isAutoLearned) "✨ 自动学习" else "手动添加",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isAutoLearned) {
+                                        TypeFreeEmerald
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        if (entry.note.isNotBlank()) {
+                            Text(
+                                text = entry.note,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                if (!isBatchMode) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Switch(
+                            checked = entry.enabled,
+                            onCheckedChange = onToggleEnabled
+                        )
+                        IconButton(onClick = onEdit, modifier = Modifier.size(34.dp)) {
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "编辑词条",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        IconButton(onClick = onDelete, modifier = Modifier.size(34.dp)) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "删除词条",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (variantTokens.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "同音纠错：",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.align(Alignment.CenterVertically)
+                    )
+                    variantTokens.forEach { wrong ->
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Text(
+                                text = "$wrong → ${entry.term}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DictionaryEntryEditorDialog(
+    initialEntry: DictionaryEntry?,
+    onDismiss: () -> Unit,
+    onSave: (DictionaryEntry) -> Unit
+) {
+    var term by rememberSaveable(initialEntry?.id) { mutableStateOf(initialEntry?.term ?: "") }
+    var wrongVariants by rememberSaveable(initialEntry?.id) { mutableStateOf(initialEntry?.wrongVariants ?: "") }
+    var note by rememberSaveable(initialEntry?.id) { mutableStateOf(initialEntry?.note ?: "") }
+
+    val isValid = term.trim().isNotEmpty()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(if (initialEntry == null) "新建个人词典词条" else "编辑个人词典词条")
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedTextField(
+                    value = term,
+                    onValueChange = { term = it },
+                    label = { Text("标准词 / 专有名词 *") },
+                    placeholder = { Text("如：TypeFree、DeepSeek、张伟明") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = wrongVariants,
+                    onValueChange = { wrongVariants = it },
+                    label = { Text("常见同音误识别词（可选，逗号分隔）") },
+                    placeholder = { Text("如：太普利斯, type less") },
+                    minLines = 2,
+                    maxLines = 3,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("备注说明（可选）") },
+                    placeholder = { Text("如：产品名 / 同事姓名 / 技术术语") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = isValid,
+                onClick = {
+                    val normalizedVariants = wrongVariants
+                        .replace('，', ',')
+                        .split(',')
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .joinToString(", ")
+
+                    val entry = if (initialEntry != null) {
+                        initialEntry.copy(
+                            term = term.trim(),
+                            wrongVariants = normalizedVariants,
+                            note = note.trim()
+                        )
+                    } else {
+                        DictionaryEntry(
+                            term = term.trim(),
+                            wrongVariants = normalizedVariants,
+                            note = note.trim(),
+                            enabled = true,
+                            source = DictionarySource.MANUAL
+                        )
+                    }
+                    onSave(entry)
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            ) {
+                Text("保存词条")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun BatchImportDictionaryDialog(
+    existingTerms: Set<String>,
+    onDismiss: () -> Unit,
+    onImportEntries: (List<DictionaryEntry>) -> Unit
+) {
+    var rawLines by rememberSaveable { mutableStateOf("") }
+
+    val parsedFromText = remember(rawLines, existingTerms) {
+        parseBatchDictionaryLines(rawLines, existingTerms)
+    }
+    val missingPresetEntries = remember(existingTerms) {
+        AI_DEV_PRESET_PACK.filter { it.term.trim().lowercase() !in existingTerms }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("批量导入专属词条") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "每行填写一个词条。支持仅填标准词，或用 `=` / `:` 附带同音误词：\n示例：OpenTypeFree = 欧盆太普, open typefree",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 18.sp
+                )
+
+                OutlinedTextField(
+                    value = rawLines,
+                    onValueChange = { rawLines = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 5,
+                    maxLines = 8,
+                    shape = RoundedCornerShape(12.dp),
+                    placeholder = {
+                        Text("Qwen2.5 = 千问二点五, qwen\nSiliconFlow = 硅基流动\n张伟明 = 张伟民")
+                    }
+                )
+
+                if (rawLines.isNotBlank()) {
+                    Text(
+                        text = "已解析到 ${parsedFromText.size} 个可导入的新词条（已自动去重）",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = TypeFreeEmerald
+                    )
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+
+                FilledTonalButton(
+                    onClick = { onImportEntries(missingPresetEntries) },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (missingPresetEntries.isNotEmpty()) {
+                            "一键导入内置 AI / 开发术语包 (${missingPresetEntries.size} 条)"
+                        } else {
+                            "内置 AI / 开发术语包已全部导入"
+                        }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = parsedFromText.isNotEmpty(),
+                onClick = { onImportEntries(parsedFromText) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            ) {
+                Text("导入文本词条 (${parsedFromText.size})")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        }
+    )
+}
+
+private fun parseBatchDictionaryLines(
+    rawText: String,
+    existingLowerTerms: Set<String>
+): List<DictionaryEntry> {
+    if (rawText.isBlank()) return emptyList()
+    val seen = existingLowerTerms.toMutableSet()
+    val results = mutableListOf<DictionaryEntry>()
+
+    rawText.lineSequence().forEach { line ->
+        val trimmed = line.trim()
+        if (trimmed.isEmpty() || trimmed.startsWith("//")) return@forEach
+
+        val noteSplit = trimmed.split('#', limit = 2)
+        val mainPart = noteSplit[0].trim()
+        val note = if (noteSplit.size > 1) noteSplit[1].trim() else "批量导入"
+
+        val pairSplit = mainPart.split(Regex("\\s*(=|:|：|->)\\s*"), limit = 2)
+        val term = pairSplit[0].trim()
+        if (term.isEmpty()) return@forEach
+
+        val lower = term.lowercase()
+        if (lower in seen) return@forEach
+        seen.add(lower)
+
+        val variants = if (pairSplit.size > 1) {
+            pairSplit[1]
+                .replace('，', ',')
+                .split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .joinToString(", ")
+        } else {
+            ""
+        }
+
+        results += DictionaryEntry(
+            term = term,
+            wrongVariants = variants,
+            note = note,
+            enabled = true,
+            source = DictionarySource.MANUAL
+        )
+    }
+
+    return results
+}
+
+@Composable
+fun RimeDictionaryImportDialog(
+    onDismiss: () -> Unit,
+    onImport: (dictContent: String, dzContent: String, filePath: String) -> Unit
+) {
+    var filePath by rememberSaveable { mutableStateOf("") }
+    var rawTsvText by rememberSaveable { mutableStateOf("") }
+    var rawDzText by rememberSaveable { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "导入自定义音形 / Rime 码表",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "支持输入本地 TSV 文件路径，或直接粘贴码表内容。覆盖写入应用私有空间，零隐私上传，热挂载优先生效。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                    value = filePath,
+                    onValueChange = { filePath = it },
+                    label = { Text("本地 TSV 文件路径 (选填)") },
+                    placeholder = { Text("/sdcard/Download/flypy_dict.tsv") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                Text(
+                    text = "或直接粘贴主词库 TSV (code\\tword1\\tword2):",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                OutlinedTextField(
+                    value = rawTsvText,
+                    onValueChange = { rawTsvText = it },
+                    placeholder = { Text("uijm\\t时间\\t实践\\nxhyx\\t小鹤音形") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(110.dp),
+                    maxLines = 6
+                )
+
+                Text(
+                    text = "单字四码反查表 TSV (选填):",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                OutlinedTextField(
+                    value = rawDzText,
+                    onValueChange = { rawDzText = it },
+                    placeholder = { Text("jibo\\t瘠\\ndkal\\t丁") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(80.dp),
+                    maxLines = 4
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onImport(rawTsvText, rawDzText, filePath) },
+                enabled = filePath.isNotBlank() || rawTsvText.isNotBlank()
+            ) {
+                Text("导入挂载")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}

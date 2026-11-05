@@ -1,0 +1,59 @@
+# Built application files
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Files for the ART/Dalvik VM
+*.class
+
+# Java / JVM cache
+.gradle/
+.kotlin/
+build/
+**/build/
+
+# Local configuration file (sdk path, keys, etc)
+local.properties
+
+# Proguard / Dex files
+proguard/
+
+# Android Studio / IntelliJ IDEA
+*.iml
+.idea/
+.idea/libraries
+.idea/modules.xml
+.idea/workspace.xml
+.idea/caches
+.idea/navEditor.xml
+.idea/assetWizardSettings.xml
+
+# Keystore / Signing keys
+*.jks
+*.keystore
+
+# External native build folder generated in Android Studio 2.2+
+.externalNativeBuild
+.cxx
+
+# Google Services / Crashlytics
+google-services.json
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Release distribution folder (kept out of git tree)
+release/
+
+# Local private dictionaries & Rime backups (contains personal local tables)
+local_private/
+
+# Log files
+*.log

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TypeFree</string>
+    <string name="ime_name">TypeFree (AI Voice Keyboard)</string>
+    <string name="ime_subtype_label">AI 智能语音与全键盘 (Custom API)</string>
+    <string name="accessibility_service_label">TypeFree 悬浮语音胶囊 (Voice Bubble)</string>
+    <string name="accessibility_service_description">用于在任意应用的输入框聚焦时自动显示 TypeFree 悬浮语音胶囊，并将自定义 AI 润色后的文本直接插入光标处或替换选中内容。所有语音与设置仅发往您自己配置的 API 接口。</string>
+</resources>

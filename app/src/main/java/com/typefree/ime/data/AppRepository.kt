@@ -1,0 +1,516 @@
+package com.typefree.ime.data
+
+import android.content.Context
+import android.content.pm.PackageManager
+import android.text.InputType
+import com.google.gson.Gson
+import com.google.gson.GsonBuilder
+import com.google.gson.reflect.TypeToken
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import java.util.UUID
+import kotlin.math.roundToInt
+
+class AppRepository(private val appContext: Context) {
+
+    private val prefs = appContext.getSharedPreferences("typefree_ime_prefs", Context.MODE_PRIVATE)
+    private val gson: Gson = GsonBuilder().setPrettyPrinting().create()
+
+    private val _settings = MutableStateFlow(loadSettingsInternal())
+    val settings: StateFlow<AppSettings> = _settings.asStateFlow()
+
+    private val _history = MutableStateFlow(
+        pruneHistoryByRetention(loadHistoryInternal(), _settings.value.historyRetention)
+    )
+    val history: StateFlow<List<HistoryRecord>> = _history.asStateFlow()
+
+    private val _clipboardItems = MutableStateFlow(loadClipboardInternal())
+    val clipboardItems: StateFlow<List<ClipboardEntry>> = _clipboardItems.asStateFlow()
+
+    private val _isImeWindowVisible = MutableStateFlow(false)
+    val isImeWindowVisible: StateFlow<Boolean> = _isImeWindowVisible.asStateFlow()
+
+    fun setImeWindowVisible(visible: Boolean) {
+        _isImeWindowVisible.value = visible
+    }
+
+    @Suppress("SENSELESS_COMPARISON")
+    private fun loadSettingsInternal(): AppSettings {
+        val raw = prefs.getString(KEY_SETTINGS, null) ?: return AppSettings()
+        return try {
+            val parsed = gson.fromJson(raw, AppSettings::class.java) ?: AppSettings()
+            val safeTargets = (parsed.translationTargets ?: emptyList())
+                .filter { it.isNotBlank() }
+                .ifEmpty { DefaultPresets.defaultTranslationTargets() }
+            val safeActiveTarget = if (parsed.activeTranslateTarget.isNullOrBlank()) {
+                safeTargets.first()
+            } else {
+                parsed.activeTranslateTarget
+            }
+            val safeDict = (parsed.dictionary ?: DefaultPresets.defaultDictionary()).map { item ->
+                item.copy(
+                    id = item.id.ifBlank { UUID.randomUUID().toString() },
+                    wrongVariants = item.wrongVariants ?: "",
+                    note = item.note ?: "",
+                    source = item.source ?: DictionarySource.MANUAL,
+                    createdAt = if (item.createdAt <= 0L) System.currentTimeMillis() else item.createdAt
+                )
+            }
+            val resolvedFlypyEnabled = if (raw.contains("\"flypyEnabled\"")) {
+                parsed.flypyEnabled
+            } else {
+                true
+            }
+            val resolvedCommaPeriodQuickSelect = if (raw.contains("\"flypyCommaPeriodQuickSelect\"")) {
+                parsed.flypyCommaPeriodQuickSelect
+            } else {
+                true
+            }
+            val resolvedClipboardEnabled = if (raw.contains("\"clipboardEnabled\"")) {
+                parsed.clipboardEnabled
+            } else {
+                true
+            }
+            val resolvedClipboardQuickSuggestion = if (raw.contains("\"clipboardQuickPasteSuggestion\"")) {
+                parsed.clipboardQuickPasteSuggestion
+            } else {
+                true
+            }
+            parsed.copy(
+                themePreference = parsed.themePreference ?: ThemePreference.LIGHT,
+                flypyEnabled = resolvedFlypyEnabled,
+                flypyCommaPeriodQuickSelect = resolvedCommaPeriodQuickSelect,
+                clipboardEnabled = resolvedClipboardEnabled,
+                clipboardQuickPasteSuggestion = resolvedClipboardQuickSuggestion,
+                historyRetention = parsed.historyRetention ?: HistoryRetention.FOREVER,
+                translationTargets = safeTargets,
+                activeTranslateTarget = safeActiveTarget,
+                bubbleYRatio = if (parsed.bubbleYRatio in 0.08f..0.90f) parsed.bubbleYRatio else 0.48f,
+                styles = (parsed.styles ?: emptyList()).ifEmpty { DefaultPresets.defaultStyles() },
+                appRules = parsed.appRules ?: DefaultPresets.defaultAppRules(),
+                dictionary = safeDict
+            )
+        } catch (_: Exception) {
+            AppSettings()
+        }
+    }
+
+    @Suppress("SENSELESS_COMPARISON")
+    private fun loadHistoryInternal(): List<HistoryRecord> {
+        val raw = prefs.getString(KEY_HISTORY, null) ?: return emptyList()
+        return try {
+            val type = object : TypeToken<List<HistoryRecord>>() {}.type
+            val list = gson.fromJson<List<HistoryRecord>>(raw, type) ?: emptyList()
+            list.map { item ->
+                val resolvedIntent = item.intentMode ?: if (item.isSpeakToEdit) {
+                    VoiceIntentMode.SPEAK_TO_EDIT
+                } else {
+                    VoiceIntentMode.DICTATE
+                }
+                item.copy(
+                    intentMode = resolvedIntent,
+                    translateTargetLanguage = item.translateTargetLanguage ?: "",
+                    audioFilePath = item.audioFilePath ?: ""
+                )
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    @Suppress("SENSELESS_COMPARISON")
+    private fun loadClipboardInternal(): List<ClipboardEntry> {
+        val raw = prefs.getString(KEY_CLIPBOARD, null) ?: return emptyList()
+        return try {
+            val type = object : TypeToken<List<ClipboardEntry>>() {}.type
+            val list = gson.fromJson<List<ClipboardEntry>>(raw, type) ?: emptyList()
+            sortClipboardEntries(
+                list.mapNotNull { item ->
+                    val clean = (item.text ?: "").trim()
+                    if (clean.isEmpty()) null
+                    else item.copy(
+                        id = item.id.ifBlank { UUID.randomUUID().toString() },
+                        text = clean,
+                        timestamp = if (item.timestamp <= 0L) System.currentTimeMillis() else item.timestamp
+                    )
+                }
+            )
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun saveClipboardList(updated: List<ClipboardEntry>) {
+        val sorted = sortClipboardEntries(updated)
+        _clipboardItems.value = sorted
+        prefs.edit().putString(KEY_CLIPBOARD, gson.toJson(sorted)).apply()
+    }
+
+    fun recordClipboardText(
+        rawText: String,
+        pinned: Boolean = false,
+        nowMs: Long = System.currentTimeMillis()
+    ): ClipboardEntry? {
+        if (!_settings.value.clipboardEnabled && !pinned) return null
+        val (updated, entry) = upsertClipboardList(
+            existing = _clipboardItems.value,
+            rawText = rawText,
+            forcePinned = pinned,
+            nowMs = nowMs,
+            maxUnpinned = MAX_CLIPBOARD_UNPINNED
+        )
+        if (entry != null) {
+            saveClipboardList(updated)
+        }
+        return entry
+    }
+
+    fun togglePinClipboardItem(id: String) {
+        val curr = _clipboardItems.value
+        if (curr.none { it.id == id }) return
+        val updated = curr.map { item ->
+            if (item.id == id) item.copy(isPinned = !item.isPinned) else item
+        }
+        saveClipboardList(updated)
+    }
+
+    fun deleteClipboardItem(id: String) {
+        val curr = _clipboardItems.value
+        val updated = curr.filterNot { it.id == id }
+        if (updated.size != curr.size) {
+            saveClipboardList(updated)
+        }
+    }
+
+    fun clearUnpinnedClipboardItems() {
+        val curr = _clipboardItems.value
+        val pinnedOnly = curr.filter { it.isPinned }
+        if (pinnedOnly.size != curr.size) {
+            saveClipboardList(pinnedOnly)
+        }
+    }
+
+    fun updateSettings(transform: (AppSettings) -> AppSettings) {
+        val prevRetention = _settings.value.historyRetention
+        val updated = transform(_settings.value)
+        _settings.value = updated
+        prefs.edit().putString(KEY_SETTINGS, gson.toJson(updated)).apply()
+
+        if (updated.historyRetention != prevRetention) {
+            val pruned = pruneHistoryByRetention(_history.value, updated.historyRetention)
+            if (pruned.size != _history.value.size) {
+                _history.value = pruned
+                prefs.edit().putString(KEY_HISTORY, gson.toJson(pruned)).apply()
+            }
+        }
+    }
+
+    fun addHistory(record: HistoryRecord) {
+        val retention = _settings.value.historyRetention
+        if (retention == HistoryRetention.NEVER) {
+            return
+        }
+        val prunedExisting = pruneHistoryByRetention(_history.value, retention)
+        val updated = (listOf(record) + prunedExisting).take(MAX_HISTORY_ITEMS)
+        _history.value = updated
+        prefs.edit().putString(KEY_HISTORY, gson.toJson(updated)).apply()
+    }
+
+    fun deleteHistoryItem(id: String) {
+        val updated = _history.value.filterNot { it.id == id }
+        _history.value = updated
+        prefs.edit().putString(KEY_HISTORY, gson.toJson(updated)).apply()
+    }
+
+    fun clearHistory() {
+        _history.value = emptyList()
+        prefs.edit().remove(KEY_HISTORY).apply()
+    }
+
+    fun deleteDictionaryEntries(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        updateSettings { curr ->
+            curr.copy(dictionary = curr.dictionary.filterNot { it.id in ids })
+        }
+    }
+
+    /**
+     * Auto-learns a corrected word/phrase into the user's Personal Dictionary (`AUTO_LEARNED`)
+     * when the user manually edits freshly dictated text on the built-in keyboard.
+     */
+    fun learnCorrectionFromDiff(beforeText: String, afterText: String): DictionaryEntry? {
+        if (!_settings.value.autoLearnDictionary) return null
+        val pair = extractAutoLearnedReplacement(beforeText, afterText) ?: return null
+        val (wrongPart, correctedTerm) = pair
+
+        var learnedEntry: DictionaryEntry? = null
+        updateSettings { curr ->
+            val existingIdx = curr.dictionary.indexOfFirst {
+                it.term.equals(correctedTerm, ignoreCase = true)
+            }
+            val updatedDict = if (existingIdx >= 0) {
+                val existing = curr.dictionary[existingIdx]
+                val existingVariants = existing.wrongVariants
+                    .split(',', '，')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                val mergedVariants = if (
+                    wrongPart.isNotBlank() &&
+                    !wrongPart.equals(correctedTerm, ignoreCase = true) &&
+                    existingVariants.none { it.equals(wrongPart, ignoreCase = true) }
+                ) {
+                    (existingVariants + wrongPart).joinToString(", ")
+                } else {
+                    existing.wrongVariants
+                }
+                val merged = existing.copy(wrongVariants = mergedVariants, enabled = true)
+                learnedEntry = merged
+                curr.dictionary.toMutableList().apply { set(existingIdx, merged) }
+            } else {
+                val created = DictionaryEntry(
+                    term = correctedTerm,
+                    wrongVariants = if (!wrongPart.equals(correctedTerm, ignoreCase = true)) wrongPart else "",
+                    note = "打字改错自动学习",
+                    enabled = true,
+                    source = DictionarySource.AUTO_LEARNED
+                )
+                learnedEntry = created
+                listOf(created) + curr.dictionary
+            }
+            curr.copy(dictionary = updatedDict)
+        }
+        return learnedEntry
+    }
+
+    /**
+     * Resolve human-readable app label from package name.
+     */
+    fun resolveAppName(packageName: String?): String {
+        if (packageName.isNullOrBlank()) return "未知应用"
+        _settings.value.appRules.firstOrNull { it.packageName == packageName }?.let {
+            if (it.appName.isNotBlank()) return it.appName
+        }
+        return try {
+            val pm = appContext.packageManager
+            val info = pm.getApplicationInfo(packageName, 0)
+            pm.getApplicationLabel(info).toString()
+        } catch (_: PackageManager.NameNotFoundException) {
+            packageName.substringAfterLast('.')
+                .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+        } catch (_: Exception) {
+            packageName
+        }
+    }
+
+    /**
+     * Resolve which ToneStyle should be active right now based on user manual override
+     * or App-Aware automatic context detection.
+     */
+    fun resolveActiveStyle(packageName: String?, inputType: Int = 0): Pair<ToneStyle, Boolean> {
+        val current = _settings.value
+        val styles = current.styles.ifEmpty { DefaultPresets.defaultStyles() }
+        val defaultStyle = styles.firstOrNull { it.id == "smart_default" } ?: styles.first()
+
+        if (current.selectedManualStyleId != "auto") {
+            val manual = styles.firstOrNull { it.id == current.selectedManualStyleId } ?: defaultStyle
+            return manual to false
+        }
+
+        if (!current.appAwareToneEnabled || packageName.isNullOrBlank()) {
+            return defaultStyle to true
+        }
+
+        val matchedRule = current.appRules.firstOrNull {
+            it.enabled && it.packageName.equals(packageName, ignoreCase = true)
+        }
+        if (matchedRule != null) {
+            val style = styles.firstOrNull { it.id == matchedRule.styleId }
+            if (style != null) return style to true
+        }
+
+        val pkgLower = packageName.lowercase()
+        val variation = inputType and InputType.TYPE_MASK_VARIATION
+        val heuristicStyleId = when {
+            variation == InputType.TYPE_TEXT_VARIATION_EMAIL_SUBJECT ||
+                pkgLower.contains("mail") || pkgLower.contains("docs") || pkgLower.contains("note") -> "formal_doc"
+            pkgLower.contains("chat") || pkgLower.contains("messenger") || pkgLower.contains("weibo") -> "casual_chat"
+            pkgLower.contains("work") || pkgLower.contains("lark") || pkgLower.contains("ding") || pkgLower.contains("teams") -> "work_collab"
+            pkgLower.contains("code") || pkgLower.contains("term") || pkgLower.contains("git") -> "code_prompt"
+            else -> "smart_default"
+        }
+        val heuristicStyle = styles.firstOrNull { it.id == heuristicStyleId } ?: defaultStyle
+        return heuristicStyle to true
+    }
+
+    companion object {
+        private const val KEY_SETTINGS = "settings_v1"
+        private const val KEY_HISTORY = "history_v1"
+        private const val KEY_CLIPBOARD = "clipboard_v1"
+        private const val MAX_HISTORY_ITEMS = 200
+        private const val MAX_CLIPBOARD_UNPINNED = 40
+        private const val MAX_CLIP_CHARS = 4000
+        private val PUNCT_OR_SPACE_ONLY = Regex("^[\\s\\p{Punct}，。？！、：；“”‘’（）【】《》…—\\-]+$")
+
+        fun sortClipboardEntries(entries: List<ClipboardEntry>): List<ClipboardEntry> {
+            return entries.sortedWith(
+                compareByDescending<ClipboardEntry> { it.isPinned }
+                    .thenByDescending { it.timestamp }
+            )
+        }
+
+        /**
+         * Pure helper inserting or deduplicating a clipboard entry while preserving pinned status
+         * and capping unpinned items at [maxUnpinned].
+         */
+        fun upsertClipboardList(
+            existing: List<ClipboardEntry>,
+            rawText: String,
+            forcePinned: Boolean = false,
+            nowMs: Long = System.currentTimeMillis(),
+            maxUnpinned: Int = MAX_CLIPBOARD_UNPINNED
+        ): Pair<List<ClipboardEntry>, ClipboardEntry?> {
+            val trimmed = rawText.trim()
+            if (trimmed.isEmpty()) return existing to null
+            val capped = if (trimmed.length > MAX_CLIP_CHARS) trimmed.take(MAX_CLIP_CHARS) else trimmed
+
+            val matched = existing.firstOrNull { it.text == capped }
+            val activeEntry = if (matched != null) {
+                matched.copy(
+                    timestamp = nowMs,
+                    isPinned = matched.isPinned || forcePinned
+                )
+            } else {
+                ClipboardEntry(
+                    text = capped,
+                    timestamp = nowMs,
+                    isPinned = forcePinned
+                )
+            }
+
+            val others = existing.filterNot { it.text == capped }
+            val combined = listOf(activeEntry) + others
+            val pinned = combined.filter { it.isPinned }.sortedByDescending { it.timestamp }
+            val unpinned = combined.filterNot { it.isPinned }
+                .sortedByDescending { it.timestamp }
+                .take(maxUnpinned.coerceAtLeast(1))
+            return (pinned + unpinned) to activeEntry
+        }
+
+        fun pruneHistoryByRetention(
+            records: List<HistoryRecord>,
+            retention: HistoryRetention,
+            nowMs: Long = System.currentTimeMillis()
+        ): List<HistoryRecord> {
+            return when (retention) {
+                HistoryRetention.NEVER -> emptyList()
+                HistoryRetention.FOREVER -> records
+                else -> {
+                    val maxAge = retention.maxAgeMs ?: return records
+                    val cutoff = nowMs - maxAge
+                    records.filter { it.timestamp >= cutoff }
+                }
+            }
+        }
+
+        /**
+         * Pure diff extractor for TypeFree Auto-Dictionary Learning:
+         * Given `beforeText` (just dictated) and `afterText` (edited on keyboard),
+         * extracts `(replacedWrongSpan, correctedTerm)` if a concise term/name (`2..24` chars)
+         * was corrected rather than an entire sentence rewrite or pure deletion.
+         */
+        fun extractAutoLearnedReplacement(
+            beforeText: String,
+            afterText: String
+        ): Pair<String, String>? {
+            val before = beforeText.trim()
+            val after = afterText.trim()
+            if (before.isEmpty() || after.isEmpty() || before == after) return null
+
+            var prefixLen = 0
+            val minLen = minOf(before.length, after.length)
+            while (prefixLen < minLen && before[prefixLen] == after[prefixLen]) {
+                prefixLen++
+            }
+
+            var beforeEnd = before.length
+            var afterEnd = after.length
+            while (
+                beforeEnd > prefixLen &&
+                afterEnd > prefixLen &&
+                before[beforeEnd - 1] == after[afterEnd - 1]
+            ) {
+                beforeEnd--
+                afterEnd--
+            }
+
+            // Expand to ASCII word boundaries so changing "deep seek" -> "DeepSeek" captures full token
+            while (
+                prefixLen > 0 &&
+                (before[prefixLen - 1].isLetterOrDigit() && before[prefixLen - 1].code < 128)
+            ) {
+                prefixLen--
+            }
+            while (
+                beforeEnd < before.length &&
+                afterEnd < after.length &&
+                ((before[beforeEnd].isLetterOrDigit() && before[beforeEnd].code < 128) ||
+                    (after[afterEnd].isLetterOrDigit() && after[afterEnd].code < 128))
+            ) {
+                beforeEnd = (beforeEnd + 1).coerceAtMost(before.length)
+                afterEnd = (afterEnd + 1).coerceAtMost(after.length)
+            }
+
+            val wrongSpan = before.substring(prefixLen, beforeEnd).trim()
+            val rightSpan = after.substring(prefixLen, afterEnd).trim()
+
+            if (wrongSpan.isEmpty() || rightSpan.isEmpty() || wrongSpan == rightSpan) return null
+            if (rightSpan.length !in 2..24 || wrongSpan.length > 28) return null
+            if (rightSpan.contains('\n') || wrongSpan.contains('\n')) return null
+            if (PUNCT_OR_SPACE_ONLY.matches(rightSpan) || PUNCT_OR_SPACE_ONLY.matches(wrongSpan)) return null
+
+            return wrongSpan to rightSpan
+        }
+
+        fun computeUsageStats(
+            settings: AppSettings,
+            history: List<HistoryRecord>
+        ): UsageStatsSummary {
+            val totalDictations = history.size
+            val totalChars = history.sumOf { it.polishedText.length }
+            val totalDurationSec = history.sumOf { it.durationMs }.coerceAtLeast(0L) / 1000.0
+            val measuredWpm = if (totalDurationSec >= 3.0 && totalChars > 0) {
+                ((totalChars / 1.8) / (totalDurationSec / 60.0)).roundToInt().coerceIn(135, 280)
+            } else {
+                220
+            }
+            // Manual mobile typing ~42 WPM vs voice dictation
+            val savedMin = ((totalChars / 42.0) * 0.72).roundToInt().coerceAtLeast(if (totalDictations > 0) 1 else 0)
+
+            val dictScore = (settings.dictionary.count { it.enabled } * 8).coerceAtMost(35)
+            val ruleScore = (if (settings.appAwareToneEnabled) 25 else 8)
+            val apiScore = when (settings.pipelineMode) {
+                PipelineMode.DUAL_STAGE -> if (settings.sttConfig.apiKey.isNotBlank()) 25 else 10
+                PipelineMode.MULTIMODAL_DIRECT -> if (settings.multimodalConfig.apiKey.isNotBlank()) 25 else 10
+            }
+            val historyScore = (totalDictations * 3).coerceAtMost(15)
+            val overallPercent = (dictScore + ruleScore + apiScore + historyScore).coerceIn(18, 100)
+
+            val catProgress = linkedMapOf(
+                "即时社交 (微信 / Telegram)" to ((0.55f + history.count { it.styleName.contains("聊天") } * 0.08f).coerceAtMost(1f)),
+                "职场协作 (飞书 / 钉钉 / Slack)" to ((0.50f + history.count { it.styleName.contains("职场") } * 0.08f).coerceAtMost(1f)),
+                "邮件与文档 (Gmail / Notion)" to ((0.48f + history.count { it.styleName.contains("正式") } * 0.08f).coerceAtMost(1f)),
+                "AI 助手与编程 (ChatGPT / Claude)" to ((0.62f + settings.dictionary.size * 0.05f).coerceAtMost(1f))
+            )
+
+            return UsageStatsSummary(
+                totalDictations = totalDictations,
+                totalCharacters = totalChars,
+                averageWpm = measuredWpm,
+                savedMinutes = savedMin,
+                overallPersonalizationPercent = overallPercent,
+                categoryProgress = catProgress
+            )
+        }
+    }
+}
