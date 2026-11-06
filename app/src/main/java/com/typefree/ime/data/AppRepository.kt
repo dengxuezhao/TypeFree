@@ -67,6 +67,27 @@ class AppRepository(private val appContext: Context) {
             } else {
                 true
             }
+            val resolvedRememberLastKeyboard = if (raw.contains("\"rememberLastKeyboardMode\"")) {
+                parsed.rememberLastKeyboardMode
+            } else {
+                true
+            }
+            val resolvedLastKeyboardTab = (parsed.lastKeyboardTab ?: "").trim().ifEmpty { "VOICE" }
+            val resolvedLastQwertyIsChinese = if (raw.contains("\"lastQwertyIsChinese\"")) {
+                parsed.lastQwertyIsChinese
+            } else {
+                resolvedFlypyEnabled
+            }
+            val resolvedQwertyShowNumberRow = if (raw.contains("\"qwertyShowNumberRow\"")) {
+                parsed.qwertyShowNumberRow
+            } else {
+                true
+            }
+            val resolvedQwertyKeyPopupPreview = if (raw.contains("\"qwertyKeyPopupPreview\"")) {
+                parsed.qwertyKeyPopupPreview
+            } else {
+                true
+            }
             val resolvedClipboardEnabled = if (raw.contains("\"clipboardEnabled\"")) {
                 parsed.clipboardEnabled
             } else {
@@ -81,6 +102,11 @@ class AppRepository(private val appContext: Context) {
                 themePreference = parsed.themePreference ?: ThemePreference.LIGHT,
                 flypyEnabled = resolvedFlypyEnabled,
                 flypyCommaPeriodQuickSelect = resolvedCommaPeriodQuickSelect,
+                rememberLastKeyboardMode = resolvedRememberLastKeyboard,
+                lastKeyboardTab = resolvedLastKeyboardTab,
+                lastQwertyIsChinese = resolvedLastQwertyIsChinese,
+                qwertyShowNumberRow = resolvedQwertyShowNumberRow,
+                qwertyKeyPopupPreview = resolvedQwertyKeyPopupPreview,
                 clipboardEnabled = resolvedClipboardEnabled,
                 clipboardQuickPasteSuggestion = resolvedClipboardQuickSuggestion,
                 historyRetention = parsed.historyRetention ?: HistoryRetention.FOREVER,

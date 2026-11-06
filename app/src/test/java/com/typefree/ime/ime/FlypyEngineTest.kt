@@ -261,4 +261,40 @@ class FlypyEngineTest {
         assertEquals("测试", engine.candidates.first().text)
         assertEquals(FlypyAction.CommitText("测试", false), engine.onSpace())
     }
+
+    @Test
+    fun topNumberRowDigits_flushFirstCandidateAndCommitDigitAtomically() {
+        val engine = FlypyEngine(sharedDict)
+
+        // 1. Open-source dict `di` (`1.地`) + top-row `'1'` -> atomically commits `"地1"` and clears composing
+        "di".forEach { engine.onCharInput(it) }
+        assertEquals("地", engine.candidates.first().text)
+        assertEquals(FlypyAction.CommitText("地1", remainComposing = false), engine.onCharInput('1'))
+        assertFalse(engine.isComposing)
+
+        // 2. Custom priority dict `di` (`1.第 2.地`) + top-row `'1'` -> atomically commits `"第1"`
+        val customDiDict = FlypyDictionary.loadFromStreams(
+            "di\t第\t地".byteInputStream(Charsets.UTF_8),
+            "".byteInputStream(Charsets.UTF_8)
+        )
+        val customEngine = FlypyEngine(customDiDict)
+        "di".forEach { customEngine.onCharInput(it) }
+        assertEquals("第", customEngine.candidates.first().text)
+        assertEquals(FlypyAction.CommitText("第1", remainComposing = false), customEngine.onCharInput('1'))
+        assertFalse(customEngine.isComposing)
+
+        // 3. `uijm` (`1.时间 2.实践`) + `'2'` + `'0'` -> `"时间2"` then `"0"`
+        "uijm".forEach { engine.onCharInput(it) }
+        assertEquals("时间", engine.candidates.first().text)
+        assertEquals(FlypyAction.CommitText("时间2", remainComposing = false), engine.onCharInput('2'))
+        assertEquals(FlypyAction.CommitText("0", remainComposing = false), engine.onCharInput('0'))
+        assertFalse(engine.isComposing)
+
+        // 4. Empty 4-code `zzzz` + `'9'` -> discards empty code and commits `"9"` cleanly
+        "zzzz".forEach { engine.onCharInput(it) }
+        if (engine.candidates.isEmpty()) {
+            assertEquals(FlypyAction.CommitText("9", remainComposing = false), engine.onCharInput('9'))
+            assertFalse(engine.isComposing)
+        }
+    }
 }

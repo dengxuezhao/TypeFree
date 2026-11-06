@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -37,6 +38,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -153,17 +156,20 @@ fun KeyboardScreen(
     val palette = LocalTypeFreeKeyboardPalette.current
     val resolvedSubPanel = uiState.resolvedVoiceSubPanel
     val isInSubPanel = uiState.tabMode == KeyboardTabMode.VOICE && resolvedSubPanel != VoiceSubPanel.NONE
+    val isActiveQwertyGrid = !uiState.isClipboardOpen &&
+        !isInSubPanel &&
+        !uiState.isArcTranslateActive &&
+        uiState.tabMode == KeyboardTabMode.QWERTY
 
     val hasExtraTopStrip = !isInSubPanel &&
         !uiState.isClipboardOpen &&
         !uiState.isArcTranslateActive &&
         (uiState.isStylePickerExpanded || uiState.voicePhase is VoicePhase.Error)
 
-    val targetKeyboardHeight by animateDpAsState(
-        targetValue = if (hasExtraTopStrip) 334.dp else 298.dp,
-        animationSpec = tween(durationMillis = 180),
-        label = "keyboardHeight"
-    )
+    // Constant 298.dp frame height across VOICE, QWERTY, TRANSLATE, CLIPBOARD,
+    // HELP_ME_WRITE, SPEAK_TO_EDIT, and ArcTranslate so cross-panel switches cause
+    // strictly 0.0dp / 0px WindowInsets relayout in host apps!
+    val targetKeyboardHeight = if (hasExtraTopStrip) 334.dp else 298.dp
 
     val topDividerColor by animateColorAsState(
         targetValue = when (uiState.voicePhase) {
@@ -192,16 +198,24 @@ fun KeyboardScreen(
 
         // Root layered stage: keeps VoiceMainPanel mounted with alpha(0f) when ArcTranslate overlay
         // activates mid-gesture so active pointer tracking never breaks before finger-up!
+        // When QWERTY is active, outer horizontal squeeze is lifted so the 10-column grid expands
+        // edge-to-edge (`3.dp` side margin) for a balanced ~1.18:1 keycap aspect ratio.
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 18.dp)
+                .then(
+                    if (isActiveQwertyGrid) {
+                        Modifier.padding(top = 8.dp, bottom = 0.dp)
+                    } else {
+                        Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 18.dp)
+                    }
+                )
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .alpha(if (uiState.isArcTranslateActive) 0f else 1f),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(if (isActiveQwertyGrid) 3.dp else 6.dp)
             ) {
                 when {
                     uiState.isClipboardOpen -> {
@@ -230,6 +244,8 @@ fun KeyboardScreen(
                             amplitudes = amplitudes,
                             elapsedMs = elapsedMs,
                             onClose = onCloseSubPanel,
+                            onSwitchToQwerty = { onSelectTabMode(KeyboardTabMode.QWERTY) },
+                            onOpenClipboard = onOpenClipboard,
                             onPresetClick = onHelpWritePresetClick,
                             onStartRecording = { onMicPressDown(VoiceIntentMode.HELP_ME_WRITE) },
                             onReleaseRecording = onMicPressUp,
@@ -251,6 +267,8 @@ fun KeyboardScreen(
                             amplitudes = amplitudes,
                             elapsedMs = elapsedMs,
                             onDismissSelection = onDismissSpeakToEdit,
+                            onSwitchToQwerty = { onSelectTabMode(KeyboardTabMode.QWERTY) },
+                            onOpenClipboard = onOpenClipboard,
                             onQuickChipClick = onQuickEditChipClick,
                             onStartRecording = { onMicPressDown(VoiceIntentMode.SPEAK_TO_EDIT) },
                             onReleaseRecording = onMicPressUp,
@@ -266,31 +284,40 @@ fun KeyboardScreen(
                     }
 
                     else -> {
+                        val headerSidePadModifier = if (isActiveQwertyGrid) {
+                            Modifier.padding(horizontal = 12.dp)
+                        } else {
+                            Modifier
+                        }
+
                         // Fixed 34.dp Top Bar Slot: renders Flypy Candidate Strip when composing
                         // so QWERTY key positions NEVER shift vertically by even 1px!
-                        if (uiState.isFlypyComposing) {
-                            FlypyComposingCandidateBar(
-                                composingCode = uiState.flypyComposingCode,
-                                candidates = uiState.flypyCandidates,
-                                isSheetExpanded = uiState.isFlypyCandidateSheetExpanded,
-                                onSelectCandidate = onSelectFlypyCandidate,
-                                onToggleSheet = onToggleFlypyCandidateSheet,
-                                onClearCode = onClearFlypyComposing
-                            )
-                        } else {
-                            TypeFreeTopBar(
-                                uiState = uiState,
-                                settings = settings,
-                                activeStyle = activeStyle,
-                                isAutoMatched = isAutoMatched,
-                                onSelectTabMode = onSelectTabMode,
-                                onToggleFlypyLanguageMode = onToggleFlypyLanguageMode,
-                                onToggleStylePicker = onToggleStylePicker,
-                                onPerformUndo = onPerformUndo,
-                                onOpenClipboard = onOpenClipboard,
-                                onPasteClipboardText = onPasteClipboardText,
-                                onOpenSettings = { onOpenHostApp(AppDestinations.TAB_HOME) }
-                            )
+                        Box(modifier = Modifier.fillMaxWidth().then(headerSidePadModifier)) {
+                            if (uiState.isFlypyComposing) {
+                                FlypyComposingCandidateBar(
+                                    composingCode = uiState.flypyComposingCode,
+                                    candidates = uiState.flypyCandidates,
+                                    isSheetExpanded = uiState.isFlypyCandidateSheetExpanded,
+                                    onSelectCandidate = onSelectFlypyCandidate,
+                                    onToggleSheet = onToggleFlypyCandidateSheet,
+                                    onClearCode = onClearFlypyComposing
+                                )
+                            } else {
+                                TypeFreeTopBar(
+                                    uiState = uiState,
+                                    settings = settings,
+                                    activeStyle = activeStyle,
+                                    isAutoMatched = isAutoMatched,
+                                    onSelectTabMode = onSelectTabMode,
+                                    onOpenHelpMeWrite = onOpenHelpMeWrite,
+                                    onToggleFlypyLanguageMode = onToggleFlypyLanguageMode,
+                                    onToggleStylePicker = onToggleStylePicker,
+                                    onPerformUndo = onPerformUndo,
+                                    onOpenClipboard = onOpenClipboard,
+                                    onPasteClipboardText = onPasteClipboardText,
+                                    onOpenSettings = { onOpenHostApp(AppDestinations.TAB_HOME) }
+                                )
+                            }
                         }
 
                         // Expandable Inline Scene Tone Selector
@@ -299,24 +326,28 @@ fun KeyboardScreen(
                             enter = fadeIn(tween(130)) + expandVertically(tween(150)),
                             exit = fadeOut(tween(110)) + shrinkVertically(tween(130))
                         ) {
-                            InlineStyleSelectorStrip(
-                                settings = settings,
-                                onSelectAutoStyle = onSelectAutoStyle,
-                                onSelectManualStyle = onSelectManualStyle,
-                                onOpenStyleRules = { onOpenHostApp(AppDestinations.TAB_STYLES) }
-                            )
+                            Box(modifier = Modifier.fillMaxWidth().then(headerSidePadModifier)) {
+                                InlineStyleSelectorStrip(
+                                    settings = settings,
+                                    onSelectAutoStyle = onSelectAutoStyle,
+                                    onSelectManualStyle = onSelectManualStyle,
+                                    onOpenStyleRules = { onOpenHostApp(AppDestinations.TAB_STYLES) }
+                                )
+                            }
                         }
 
                         // Compact Error Banner when needed
                         val errorPhase = uiState.voicePhase as? VoicePhase.Error
                         if (errorPhase != null && !uiState.isFlypyComposing) {
-                            ErrorContextBanner(
-                                error = errorPhase,
-                                onRetry = onRetryLastAudio,
-                                onOpenApiSetup = { onOpenHostApp(AppDestinations.TAB_API) },
-                                onOpenPermissionSetup = { onOpenHostApp(AppDestinations.TAB_HOME) },
-                                onDismiss = onDismissError
-                            )
+                            Box(modifier = Modifier.fillMaxWidth().then(headerSidePadModifier)) {
+                                ErrorContextBanner(
+                                    error = errorPhase,
+                                    onRetry = onRetryLastAudio,
+                                    onOpenApiSetup = { onOpenHostApp(AppDestinations.TAB_API) },
+                                    onOpenPermissionSetup = { onOpenHostApp(AppDestinations.TAB_HOME) },
+                                    onDismiss = onDismissError
+                                )
+                            }
                         }
 
                         // Mode Body: VOICE | QWERTY | TRANSLATE
@@ -324,6 +355,13 @@ fun KeyboardScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
+                                .then(
+                                    if (isActiveQwertyGrid) {
+                                        Modifier.padding(horizontal = 3.dp)
+                                    } else {
+                                        Modifier
+                                    }
+                                )
                         ) {
                             when (uiState.tabMode) {
                                 KeyboardTabMode.VOICE -> {
@@ -370,7 +408,12 @@ fun KeyboardScreen(
                                         onEditorShortcutAction = onEditorShortcutAction,
                                         onEnterOrNewline = onEnterOrNewline,
                                         onSwitchToVoice = { onSelectTabMode(KeyboardTabMode.VOICE) },
-                                        onSwitchSystemIme = onSwitchKeyboard
+                                        onSwitchSystemIme = onSwitchKeyboard,
+                                        onHideKeyboard = onHideKeyboard,
+                                        onShowImePicker = onShowImePicker,
+                                        showNumberRow = settings.qwertyShowNumberRow,
+                                        inputSessionToken = uiState.inputSessionToken,
+                                        showKeyPopupPreview = settings.qwertyKeyPopupPreview
                                     )
 
                                     if (
@@ -378,12 +421,18 @@ fun KeyboardScreen(
                                         uiState.isFlypyCandidateSheetExpanded &&
                                         uiState.flypyCandidates.isNotEmpty()
                                     ) {
-                                        FlypyExpandedCandidateGridOverlay(
-                                            candidates = uiState.flypyCandidates,
-                                            onSelectCandidate = onSelectFlypyCandidate,
-                                            onBackspace = onBackspace,
-                                            onCollapse = onToggleFlypyCandidateSheet
-                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(horizontal = 5.dp, vertical = 3.dp)
+                                        ) {
+                                            FlypyExpandedCandidateGridOverlay(
+                                                candidates = uiState.flypyCandidates,
+                                                onSelectCandidate = onSelectFlypyCandidate,
+                                                onBackspace = onBackspace,
+                                                onCollapse = onToggleFlypyCandidateSheet
+                                            )
+                                        }
                                     }
                                 }
 
@@ -442,6 +491,7 @@ private fun TypeFreeTopBar(
     activeStyle: ToneStyle,
     isAutoMatched: Boolean,
     onSelectTabMode: (KeyboardTabMode) -> Unit,
+    onOpenHelpMeWrite: () -> Unit,
     onToggleFlypyLanguageMode: () -> Unit,
     onToggleStylePicker: () -> Unit,
     onPerformUndo: () -> Unit,
@@ -493,10 +543,11 @@ private fun TypeFreeTopBar(
         Row(
             modifier = Modifier.weight(1f),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Row(
                 modifier = Modifier
+                    .requiredWidth(IntrinsicSize.Max)
                     .clip(RoundedCornerShape(8.dp))
                     .clickable(onClick = onOpenSettings)
                     .padding(vertical = 3.dp, horizontal = 2.dp),
@@ -523,6 +574,7 @@ private fun TypeFreeTopBar(
             if (!learnedTerm.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
+                        .weight(1f, fill = false)
                         .clip(RoundedCornerShape(12.dp))
                         .background(TypeFreeEmerald.copy(alpha = 0.15f))
                         .border(1.dp, TypeFreeEmerald.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
@@ -540,6 +592,7 @@ private fun TypeFreeTopBar(
             } else if (!quickToast.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
+                        .weight(1f, fill = false)
                         .clip(RoundedCornerShape(12.dp))
                         .background(palette.capsuleSelectedBg)
                         .border(1.dp, palette.keyBorder, RoundedCornerShape(12.dp))
@@ -553,6 +606,36 @@ private fun TypeFreeTopBar(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                }
+            } else if (uiState.shouldShowTopBarSpeakToEditPill) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .height(26.dp)
+                        .clip(RoundedCornerShape(13.dp))
+                        .background(palette.primaryMicSolid)
+                        .clickable(onClick = onOpenHelpMeWrite)
+                        .padding(horizontal = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Icon(
+                        imageVector = TypeFreeIcons.VoicePen,
+                        contentDescription = "AI 改写",
+                        tint = palette.onPrimaryMic,
+                        modifier = Modifier.size(11.dp)
+                    )
+                    Text(
+                        text = "AI 改写",
+                        color = palette.onPrimaryMic,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (uiState.undoSnapshot != null) {
+                    TopBarUndoIconButton(onClick = onPerformUndo)
                 }
             } else if (freshClip != null) {
                 val smart = remember(freshClip.text) {
@@ -573,6 +656,7 @@ private fun TypeFreeTopBar(
                 }
                 Box(
                     modifier = Modifier
+                        .weight(1f, fill = false)
                         .height(26.dp)
                         .clip(RoundedCornerShape(13.dp))
                         .background(TypeFreeEmerald.copy(alpha = 0.15f))
@@ -591,11 +675,12 @@ private fun TypeFreeTopBar(
                     )
                 }
             } else {
-                // Compact Clickable Scene Style Badge
+                // Compact Clickable Scene Style Badge (elastic width on 320dp–360dp narrow screens)
                 val badgeLabel = ImeLogic.buildCompactStyleBadgeText(activeStyle, isAutoMatched)
                 val chevron = if (uiState.isStylePickerExpanded) "▴" else "▾"
-                Box(
+                Row(
                     modifier = Modifier
+                        .weight(1f, fill = false)
                         .height(26.dp)
                         .clip(RoundedCornerShape(13.dp))
                         .background(
@@ -603,60 +688,45 @@ private fun TypeFreeTopBar(
                         )
                         .border(1.dp, palette.keyBorder, RoundedCornerShape(13.dp))
                         .clickable(onClick = onToggleStylePicker)
-                        .padding(horizontal = 7.dp),
-                    contentAlignment = Alignment.Center
+                        .padding(horizontal = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
-                        text = "$badgeLabel $chevron",
+                        text = badgeLabel,
                         color = palette.keyTextMuted,
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Text(
+                        text = chevron,
+                        color = palette.keyTextMuted,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1
                     )
                 }
 
-                // Lightweight 1-Tap Undo Capsule (visible when undoSnapshot != null)
+                // Fixed 26.dp Circular 1-Tap Undo Button (never crushed into `||` on 360dp screens)
                 if (uiState.undoSnapshot != null) {
-                    Row(
-                        modifier = Modifier
-                            .height(26.dp)
-                            .clip(RoundedCornerShape(13.dp))
-                            .background(palette.keyCapBg)
-                            .border(1.dp, palette.keyBorder, RoundedCornerShape(13.dp))
-                            .clickable(onClick = onPerformUndo)
-                            .padding(horizontal = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        Icon(
-                            imageVector = TypeFreeIcons.Undo,
-                            contentDescription = "撤销",
-                            tint = palette.keyTextPrimary,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Text(
-                            text = "撤销",
-                            color = palette.keyTextPrimary,
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1
-                        )
-                    }
+                    TopBarUndoIconButton(onClick = onPerformUndo)
                 }
             }
         }
 
-        Spacer(modifier = Modifier.width(5.dp))
+        Spacer(modifier = Modifier.width(4.dp))
 
         // Right Cluster: 1-Tap Clipboard Button + Authentic 3-Segment Capsule Track
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .size(30.dp)
+                    .size(28.dp)
                     .clip(CircleShape)
                     .background(palette.keyCapBg)
                     .border(1.dp, palette.keyBorder, CircleShape)
@@ -667,7 +737,7 @@ private fun TypeFreeTopBar(
                     imageVector = TypeFreeIcons.Clipboard,
                     contentDescription = "剪贴板",
                     tint = palette.keyTextPrimary,
-                    modifier = Modifier.size(14.5.dp)
+                    modifier = Modifier.size(14.dp)
                 )
                 if (uiState.freshClipboardBannerItem != null) {
                     Box(
@@ -738,6 +808,29 @@ private fun TypeFreeTopBar(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun TopBarUndoIconButton(
+    onClick: () -> Unit
+) {
+    val palette = LocalTypeFreeKeyboardPalette.current
+    Box(
+        modifier = Modifier
+            .requiredSize(26.dp)
+            .clip(CircleShape)
+            .background(palette.keyCapBg)
+            .border(1.dp, palette.keyBorder, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = TypeFreeIcons.Undo,
+            contentDescription = "撤销",
+            tint = palette.keyTextPrimary,
+            modifier = Modifier.size(13.dp)
+        )
     }
 }
 
@@ -1021,7 +1114,7 @@ private fun ModeSegmentItem(
 
     Box(
         modifier = Modifier
-            .width(35.dp)
+            .width(33.dp)
             .fillMaxHeight()
             .clip(RoundedCornerShape(13.dp))
             .background(if (selected) palette.capsuleSelectedBg else Color.Transparent)
@@ -1748,6 +1841,8 @@ private fun HelpMeWritePanel(
     amplitudes: List<Float>,
     elapsedMs: Long,
     onClose: () -> Unit,
+    onSwitchToQwerty: () -> Unit,
+    onOpenClipboard: () -> Unit,
     onPresetClick: (HelpWritePromptPreset) -> Unit,
     onStartRecording: () -> Unit,
     onReleaseRecording: () -> Unit,
@@ -1771,13 +1866,16 @@ private fun HelpMeWritePanel(
                 .padding(bottom = 28.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Header: Top-Left `Help me write · 帮我写` + Top-Right Circular `×`
+            // Header: Top-Left `Help me write · 帮我写` + Top-Right Direct QWERTY / Clipboard / `×`
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(34.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(
+                    modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
@@ -1791,21 +1889,20 @@ private fun HelpMeWritePanel(
                         text = "Help me write · 帮我写",
                         color = palette.keyTextPrimary,
                         fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                CircleFloatingKey(
-                    size = 32.dp,
-                    onClick = onClose
-                ) {
-                    Icon(
-                        imageVector = TypeFreeIcons.Close,
-                        contentDescription = "关闭帮我写",
-                        tint = palette.keyTextPrimary,
-                        modifier = Modifier.size(15.dp)
-                    )
-                }
+                SubPanelHeaderBridgeBar(
+                    isFlypyChineseMode = uiState.isFlypyChineseMode,
+                    hasFreshClipboard = uiState.freshClipboardBannerItem != null,
+                    onSwitchToQwerty = onSwitchToQwerty,
+                    onOpenClipboard = onOpenClipboard,
+                    closeDescription = "关闭帮我写",
+                    onClose = onClose
+                )
             }
 
             if (phase is VoicePhase.Error) {
@@ -1885,6 +1982,8 @@ private fun SpeakToEditPanel(
     amplitudes: List<Float>,
     elapsedMs: Long,
     onDismissSelection: () -> Unit,
+    onSwitchToQwerty: () -> Unit,
+    onOpenClipboard: () -> Unit,
     onQuickChipClick: (QuickEditChip) -> Unit,
     onStartRecording: () -> Unit,
     onReleaseRecording: () -> Unit,
@@ -1908,47 +2007,60 @@ private fun SpeakToEditPanel(
                 .padding(bottom = 28.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Header: Brand Logo + `TypeFree · Speak to edit` + Top-Right Circular `×`
+            // Header: Brand Logo + `TypeFree · 语音编辑` + Top-Right Direct QWERTY / Clipboard / `×`
+            // Locked to 34.dp height & identical Brand inner Row geometry so LogoMark + TypeFree
+            // stay at exact (0, 0) px shift relative to TypeFreeTopBar!
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(34.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(
+                    modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Icon(
-                        imageVector = TypeFreeIcons.LogoMark,
-                        contentDescription = null,
-                        tint = palette.keyTextPrimary,
-                        modifier = Modifier.size(17.dp)
-                    )
-                    Text(
-                        text = "TypeFree",
-                        color = palette.keyTextPrimary,
-                        fontSize = 14.5.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(
+                        modifier = Modifier
+                            .requiredWidth(IntrinsicSize.Max)
+                            .padding(vertical = 3.dp, horizontal = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = TypeFreeIcons.LogoMark,
+                            contentDescription = null,
+                            tint = palette.keyTextPrimary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "TypeFree",
+                            color = palette.keyTextPrimary,
+                            fontSize = 14.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
                     Text(
                         text = "· 语音编辑",
                         color = palette.keyTextMuted,
                         fontSize = 12.5.sp,
-                        fontWeight = FontWeight.Medium
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                CircleFloatingKey(
-                    size = 32.dp,
-                    onClick = onDismissSelection
-                ) {
-                    Icon(
-                        imageVector = TypeFreeIcons.Close,
-                        contentDescription = "忽略选区切回普通口述",
-                        tint = palette.keyTextPrimary,
-                        modifier = Modifier.size(15.dp)
-                    )
-                }
+                SubPanelHeaderBridgeBar(
+                    isFlypyChineseMode = uiState.isFlypyChineseMode,
+                    hasFreshClipboard = uiState.freshClipboardBannerItem != null,
+                    onSwitchToQwerty = onSwitchToQwerty,
+                    onOpenClipboard = onOpenClipboard,
+                    closeDescription = "忽略选区切回普通口述",
+                    onClose = onDismissSelection
+                )
             }
 
             if (phase is VoicePhase.Error) {
@@ -2037,6 +2149,83 @@ private fun SpeakToEditPanel(
             onShowImePicker = onShowImePicker,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
+    }
+}
+
+@Composable
+private fun SubPanelHeaderBridgeBar(
+    isFlypyChineseMode: Boolean,
+    hasFreshClipboard: Boolean,
+    onSwitchToQwerty: () -> Unit,
+    onOpenClipboard: () -> Unit,
+    closeDescription: String,
+    onClose: () -> Unit
+) {
+    val palette = LocalTypeFreeKeyboardPalette.current
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        // 1-Tap Jump to Built-in QWERTY (`鹤 打字` / `EN 打字`) to type directly over selection
+        Box(
+            modifier = Modifier
+                .height(30.dp)
+                .clip(RoundedCornerShape(15.dp))
+                .background(palette.keyCapBg)
+                .border(1.dp, palette.keyBorder, RoundedCornerShape(15.dp))
+                .clickable(onClick = onSwitchToQwerty)
+                .padding(horizontal = 10.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = if (isFlypyChineseMode) "鹤 打字" else "EN 打字",
+                color = palette.keyTextPrimary,
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+        }
+
+        // 1-Tap Jump to Built-in Clipboard (`📋`) to paste over selection
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(CircleShape)
+                .background(palette.keyCapBg)
+                .border(1.dp, palette.keyBorder, CircleShape)
+                .clickable(onClick = onOpenClipboard),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = TypeFreeIcons.Clipboard,
+                contentDescription = "剪贴板",
+                tint = palette.keyTextPrimary,
+                modifier = Modifier.size(14.5.dp)
+            )
+            if (hasFreshClipboard) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(3.dp)
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(TypeFreeEmerald)
+                )
+            }
+        }
+
+        // Dismiss Sub-Panel (`×`)
+        CircleFloatingKey(
+            size = 30.dp,
+            onClick = onClose
+        ) {
+            Icon(
+                imageVector = TypeFreeIcons.Close,
+                contentDescription = closeDescription,
+                tint = palette.keyTextPrimary,
+                modifier = Modifier.size(14.5.dp)
+            )
+        }
     }
 }
 

@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v2.4.0"><img src="https://img.shields.io/badge/Release-v2.4.0-10B981?style=flat-square&logo=github" alt="Release v2.4.0" /></a>
   <img src="https://img.shields.io/badge/Language-Kotlin_2.0-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" />
   <img src="https://img.shields.io/badge/UI-Jetpack_Compose_1.7-4285F4?style=flat-square&logo=android&logoColor=white" alt="Jetpack Compose" />
   <img src="https://img.shields.io/badge/Design-Material_3-000000?style=flat-square" alt="Material 3" />
@@ -17,6 +18,19 @@
   <img src="https://img.shields.io/badge/Target_SDK-35_(Android_15)-green?style=flat-square" alt="Android 15" />
   <img src="https://img.shields.io/badge/License-GPL_v3.0-blue.svg?style=flat-square" alt="License: GPL v3.0" />
 </p>
+
+<p align="center">
+  📦 <b>最新预编译安装包</b>：<a href="https://github.com/dengxuezhao/TypeFree/releases/download/v2.4.0/TypeFree-v2.4.0-release.apk">下载 TypeFree-v2.4.0-release.apk</a> · <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v2.4.0">查看 v2.4.0 发行说明</a>
+</p>
+
+---
+
+## 🆕 v2.4.0 核心升级亮点
+
+- **全面板恒定 `298.dp` 帧高与顶栏 `(0, 0) px` 像素级坐标锁死**：统一语音、全键盘、实时直译、`Help me write`、`Speak to edit` 与智能剪贴板六大工作台的面板高度与 `34.dp` 顶栏几何锚点，跨模式切换实现 **0px 位移零抖动**，彻底消除宿主 App 聊天列表与输入框重排跳动。
+- **可选顶部独立数字行 (`1–0`) 与 `~1.14 : 1` 黄金键帽人体工学重构**：新增独立数字行开关（双拼/音形编码中按 `1/2/3` 智能选重上屏，空闲态与英文模式直出数字），升级 3D 实体底棱按压反馈、宽屏边缘铺满网格与底部防误触安全垫（关闭数字行时自动展开底部收起/切输入法工具栏）。
+- **记忆上次输入面板模式 & 密码框安全保护**：支持跨会话自动恢复上次使用的键盘面板与中英状态（语音 / 双拼中文 / 英文 / 直译），关闭开关时每次唤起恒定回归语音主面板；检测到密码/PIN 输入框时自动强制切入纯净英文键盘且不污染历史记忆。
+- **选中文字 `Speak to edit` 双向无感互通 & `360dp` 窄屏防挤压适配**：在打字模式下选中文本（如长按 `A` 全选）不强行打断打字流，顶栏浮现 `AI 改写` 胶囊供按需呼出；改写面板右上角支持一键跳回打字覆盖或调起剪贴板替换；顶栏撤销升级为 `26.dp` 固定圆形图标按钮（`↺`），彻底根治 `360dp` 窄屏多胶囊并排挤压变形。
 
 ---
 
@@ -70,9 +84,9 @@ TypeFree 不绑定任何商业闭源云端，支持完全自主配置的 API 调
 - ✍️ **帮我写 (Help me write)**：
   - 简短口述意图核心，AI 自动扩写为得体详实的正式回复、提案或工作总结。
 - 🪄 **选中文本语音改写 (Speak to edit)**：
-  - 实时捕获宿主应用选中的原文内容；
+  - 实时捕获宿主应用选中的原文内容，并与内置全键盘、智能剪贴板双向一键桥接互通（打字态选词不强跳面板，顶栏按需轻点 `AI 改写` 呼出，或从改写面板右上角一键切回打字覆盖/剪贴板粘贴）；
   - 底部浮现快捷改写指令芯片（“润色文采”、“扩写详述”、“精简摘要”、“更委婉专业”、“转为英文”）；
-  - 配套光标旁一键撤销（Undo），随时还原初始文本。
+  - 配套顶栏固定圆形一键撤销按钮（Undo），窄屏零挤压、随时还原初始文本。
 - 🌐 **长按上滑弧形转盘直译 (Release to translate)**：
   - 悬浮胶囊长按录音过程中，向上滑动触发交互式弧形环轮，自由滑选目标语言（中、英、日、韩、西、德、法等），松手即刻上屏纯正外语译文。
 
@@ -85,8 +99,9 @@ TypeFree 不绑定任何商业闭源云端，支持完全自主配置的 API 调
   - **开发者终端 / 笔记**（Termux / Obsidian / GitHub / VS Code）：保留英文专有名词、代码符号与技术术语原样输出。
 
 ### 5. 硬核中英双模全键盘与音形/Rime 码表热挂载引擎
-- **优雅视觉美学**：
-  - 极简暖白单色（Light Monochrome）/ 曜石暗夜（Dark Obsidian）/ 跟随系统深色模式，左右横滑无感在「声波语音控制面板」与「打字全键盘」间无缝滑移。
+- **零抖动人体工学视觉美学**：
+  - 极简暖白单色（Light Monochrome）/ 曜石暗夜（Dark Obsidian）/ 跟随系统深色模式，全模式恒定 `298.dp` 高度与顶栏 `(0, 0) px` 像素级对齐，左右横滑在「声波语音控制面板」、「打字全键盘」与「实时直译」间零位移丝滑切换；
+  - `~1.14 : 1` 舒适键帽比例、3D 实体底棱按压反馈、可选顶部独立数字行（`1–0`）与底部防误触安全垫；支持记忆上次键盘面板模式及密码框自动切英文保护。
 - **开源双拼开箱即用**：
   - 采用通用标准双拼方案与现代汉语规范常用字词，开箱即可流畅击键输入单字、双字词组与标点快捷符号。
 - **四码定长音形 / Rime 码表热挂载（独家特色）**：

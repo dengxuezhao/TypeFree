@@ -789,20 +789,53 @@ private fun AppearanceAndPreferencesPane(repository: AppRepository) {
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
-                        text = "小鹤音形内置键盘 (Flypy v10.13)",
+                        text = "打字键盘与小鹤音形 (Flypy v10.13)",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "已内置你本机 Rime 小鹤音形全量词库、一二简定制与部件反查表",
+                        text = "恒定 298dp 零跳变视口 · 1.17:1 黄金键帽比例 · 顶部独立数字行 · 记忆键盘模式",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
                 PreferenceSwitchRow(
-                    title = "打字面板默认进入「鹤」小鹤音形模式",
-                    subtitle = "开启后切到打字面板默认为中文小鹤音形；键盘中长按空格或点顶部「鹤/EN」随时切换中英",
+                    title = "记忆上一次使用的键盘模式",
+                    subtitle = "收起键盘、切换输入框或应用后自动恢复上次使用的面板（语音 / 小鹤 / EN / 快译）；密码框临时切英文后自动还原",
+                    checked = settings.rememberLastKeyboardMode,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(rememberLastKeyboardMode = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
+                PreferenceSwitchRow(
+                    title = "顶部独立数字行 (1–0)",
+                    subtitle = "默认开启，无需切 123 符号层一键盲打数字（候选态自动顶字上屏）；关闭后底部呈现人体工学收起/切换托盘，始终保持零高度跳变",
+                    checked = settings.qwertyShowNumberRow,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(qwertyShowNumberRow = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
+                PreferenceSwitchRow(
+                    title = "按键按下气泡放大预览",
+                    subtitle = "按下字母或符号键时在键帽上方浮现清晰预览气泡（对齐 Gboard / iOS 触控反馈）",
+                    checked = settings.qwertyKeyPopupPreview,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(qwertyKeyPopupPreview = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
+                PreferenceSwitchRow(
+                    title = "启用小鹤音形中文模式（「鹤」）",
+                    subtitle = "开启后打字面板支持中文小鹤音形；键盘中长按空格或点顶部「鹤/EN」随时切换中英并自动记忆",
                     checked = settings.flypyEnabled,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(flypyEnabled = enabled) }

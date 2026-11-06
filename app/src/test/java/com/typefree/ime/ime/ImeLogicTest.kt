@@ -2,6 +2,7 @@ package com.typefree.ime.ime
 
 import android.view.inputmethod.EditorInfo
 import com.typefree.ime.audio.WavAudioRecorder
+import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.network.PipelineStage
@@ -382,5 +383,139 @@ class ImeLogicTest {
         assertEquals(12_000, boostedShorts[8_000].toInt())
         assertEquals(-12_000, boostedShorts[8_001].toInt())
         assertEquals(32_767, boostedShorts[15_600].toInt())
+    }
+
+    @Test
+    fun resolveInitialKeyboardMode_remembersLastTabAndLanguageWhileTemporarilyOverridingPasswords() {
+        // 1. Remembering QWERTY + Xiaohe Chinese (`鹤`)
+        val rememberedFlypy = AppSettings(
+            rememberLastKeyboardMode = true,
+            lastKeyboardTab = "QWERTY",
+            lastQwertyIsChinese = true,
+            flypyEnabled = true
+        )
+        val normalFlypyRes = ImeLogic.resolveInitialKeyboardMode(rememberedFlypy, isPasswordField = false)
+        assertEquals(KeyboardTabMode.QWERTY, normalFlypyRes.tabMode)
+        assertTrue(normalFlypyRes.isFlypyChineseMode)
+        assertFalse(normalFlypyRes.isPasswordOverride)
+
+        // Entering a password field temporarily forces QWERTY + EN without mutating remembered settings
+        val pwdRes = ImeLogic.resolveInitialKeyboardMode(rememberedFlypy, isPasswordField = true)
+        assertEquals(KeyboardTabMode.QWERTY, pwdRes.tabMode)
+        assertFalse(pwdRes.isFlypyChineseMode)
+        assertTrue(pwdRes.isPasswordOverride)
+
+        // Returning to a normal field restores QWERTY + 鹤
+        val restoredRes = ImeLogic.resolveInitialKeyboardMode(rememberedFlypy, isPasswordField = false)
+        assertEquals(KeyboardTabMode.QWERTY, restoredRes.tabMode)
+        assertTrue(restoredRes.isFlypyChineseMode)
+
+        // 2. Remembering QWERTY + English (`EN`)
+        val rememberedEnglish = rememberedFlypy.copy(lastQwertyIsChinese = false)
+        val enRes = ImeLogic.resolveInitialKeyboardMode(rememberedEnglish, isPasswordField = false)
+        assertEquals(KeyboardTabMode.QWERTY, enRes.tabMode)
+        assertFalse(enRes.isFlypyChineseMode)
+
+        // 3. Remembering TRANSLATE tab
+        val rememberedTranslate = rememberedFlypy.copy(lastKeyboardTab = "TRANSLATE")
+        val transRes = ImeLogic.resolveInitialKeyboardMode(rememberedTranslate, isPasswordField = false)
+        assertEquals(KeyboardTabMode.TRANSLATE, transRes.tabMode)
+
+        // 4. When rememberLastKeyboardMode is disabled, always starts in VOICE + flypyEnabled
+        val disabledRemember = rememberedFlypy.copy(rememberLastKeyboardMode = false)
+        val defaultRes = ImeLogic.resolveInitialKeyboardMode(disabledRemember, isPasswordField = false)
+        assertEquals(KeyboardTabMode.VOICE, defaultRes.tabMode)
+        assertTrue(defaultRes.isFlypyChineseMode)
+
+        // 5. When flypyEnabled is turned off globally, lastQwertyIsChinese cannot force Chinese
+        val flypyDisabled = rememberedFlypy.copy(flypyEnabled = false, lastQwertyIsChinese = true)
+        val noFlypyRes = ImeLogic.resolveInitialKeyboardMode(flypyDisabled, isPasswordField = false)
+        assertEquals(KeyboardTabMode.QWERTY, noFlypyRes.tabMode)
+        assertFalse(noFlypyRes.isFlypyChineseMode)
+    }
+
+    @Test
+    fun resolveSessionKeyboardMode_resetsSamePageFieldSwitchWhenRememberDisabled() {
+        val rememberOffSettings = AppSettings(
+            rememberLastKeyboardMode = false,
+            lastKeyboardTab = "QWERTY",
+            lastQwertyIsChinese = false,
+            flypyEnabled = true
+        )
+
+        // In-place `restartInput` (`restarting = true`) on the SAME field preserves manual QWERTY + EN
+        val inPlaceRestart = ImeLogic.resolveSessionKeyboardMode(
+            previousTabMode = KeyboardTabMode.QWERTY,
+            previousFlypyChineseMode = false,
+            settings = rememberOffSettings,
+            isPasswordField = false,
+            restarting = true
+        )
+        assertEquals(KeyboardTabMode.QWERTY, inPlaceRestart.tabMode)
+        assertFalse(inPlaceRestart.isFlypyChineseMode)
+
+        // Switching from EditText A to EditText B on the same page (`restarting = false`) while
+        // `rememberLastKeyboardMode == false` MUST reset back to `VOICE` + `flypyEnabled`
+        val nextFieldSamePage = ImeLogic.resolveSessionKeyboardMode(
+            previousTabMode = KeyboardTabMode.QWERTY,
+            previousFlypyChineseMode = false,
+            settings = rememberOffSettings,
+            isPasswordField = false,
+            restarting = false
+        )
+        assertEquals(KeyboardTabMode.VOICE, nextFieldSamePage.tabMode)
+        assertTrue(nextFieldSamePage.isFlypyChineseMode)
+
+        // Tapping a password field temporarily forces `QWERTY + EN`, then tapping a normal field resets to `VOICE`
+        val pwdField = ImeLogic.resolveSessionKeyboardMode(
+            previousTabMode = KeyboardTabMode.VOICE,
+            previousFlypyChineseMode = true,
+            settings = rememberOffSettings,
+            isPasswordField = true,
+            restarting = false
+        )
+        assertEquals(KeyboardTabMode.QWERTY, pwdField.tabMode)
+        assertFalse(pwdField.isFlypyChineseMode)
+        assertTrue(pwdField.isPasswordOverride)
+
+        val afterPwdNormalField = ImeLogic.resolveSessionKeyboardMode(
+            previousTabMode = pwdField.tabMode,
+            previousFlypyChineseMode = pwdField.isFlypyChineseMode,
+            settings = rememberOffSettings,
+            isPasswordField = false,
+            restarting = false
+        )
+        assertEquals(KeyboardTabMode.VOICE, afterPwdNormalField.tabMode)
+        assertTrue(afterPwdNormalField.isFlypyChineseMode)
+    }
+
+    @Test
+    fun topBarSpeakToEditPill_supportsBidirectionalBridgeAcrossQwertyTranslateAndVoice() {
+        // Selecting text while remembered on QWERTY surfaces `AI 改写` pill in TypeFreeTopBar
+        val qwertyWithSelection = ImeUiState(
+            tabMode = KeyboardTabMode.QWERTY,
+            rawSelectedText = "需要润色改写的文本"
+        )
+        assertTrue(qwertyWithSelection.shouldShowTopBarSpeakToEditPill)
+
+        // Selecting text while on TRANSLATE also surfaces `AI 改写` pill
+        val translateWithSelection = qwertyWithSelection.copy(tabMode = KeyboardTabMode.TRANSLATE)
+        assertTrue(translateWithSelection.shouldShowTopBarSpeakToEditPill)
+
+        // In VOICE mode with active selection, SpeakToEditPanel is already open -> top bar pill hidden
+        val voiceSpeakToEditOpen = qwertyWithSelection.copy(
+            tabMode = KeyboardTabMode.VOICE,
+            ignoreSelectionForThisTurn = false
+        )
+        assertEquals(VoiceSubPanel.SPEAK_TO_EDIT, voiceSpeakToEditOpen.resolvedVoiceSubPanel)
+        assertFalse(voiceSpeakToEditOpen.shouldShowTopBarSpeakToEditPill)
+
+        // After dismissing SpeakToEdit (`ignoreSelectionForThisTurn = true`), top bar pill appears for 1-tap re-entry
+        val voiceDismissedSelection = voiceSpeakToEditOpen.copy(ignoreSelectionForThisTurn = true)
+        assertEquals(VoiceSubPanel.NONE, voiceDismissedSelection.resolvedVoiceSubPanel)
+        assertTrue(voiceDismissedSelection.shouldShowTopBarSpeakToEditPill)
+
+        // Blank selection never shows the pill
+        assertFalse(qwertyWithSelection.copy(rawSelectedText = "   ").shouldShowTopBarSpeakToEditPill)
     }
 }

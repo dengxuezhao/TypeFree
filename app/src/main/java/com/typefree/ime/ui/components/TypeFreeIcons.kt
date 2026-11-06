@@ -571,4 +571,62 @@ object TypeFreeIcons {
             }
         }.build()
     }
+
+    val ShiftOff: ImageVector by lazy {
+        ImageVector.Builder("ShiftOff", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2.0f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(12f, 4f)
+                lineTo(20.5f, 12.8f)
+                lineTo(15.6f, 12.8f)
+                lineTo(15.6f, 19.8f)
+                lineTo(8.4f, 19.8f)
+                lineTo(8.4f, 12.8f)
+                lineTo(3.5f, 12.8f)
+                close()
+            }
+        }.build()
+    }
+
+    val ShiftOnce: ImageVector by lazy {
+        ImageVector.Builder("ShiftOnce", 24.dp, 24.dp, 24f, 24f).apply {
+            path(fill = SolidColor(Color.White)) {
+                moveTo(12f, 4f)
+                lineTo(20.5f, 12.8f)
+                lineTo(15.6f, 12.8f)
+                lineTo(15.6f, 19.8f)
+                lineTo(8.4f, 19.8f)
+                lineTo(8.4f, 12.8f)
+                lineTo(3.5f, 12.8f)
+                close()
+            }
+        }.build()
+    }
+
+    val ShiftCapsLock: ImageVector by lazy {
+        ImageVector.Builder("ShiftCapsLock", 24.dp, 24.dp, 24f, 24f).apply {
+            path(fill = SolidColor(Color.White)) {
+                moveTo(12f, 3.2f)
+                lineTo(20.5f, 11.6f)
+                lineTo(15.6f, 11.6f)
+                lineTo(15.6f, 17.2f)
+                lineTo(8.4f, 17.2f)
+                lineTo(8.4f, 11.6f)
+                lineTo(3.5f, 11.6f)
+                close()
+            }
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2.2f,
+                strokeLineCap = StrokeCap.Round
+            ) {
+                moveTo(8.4f, 20.6f)
+                lineTo(15.6f, 20.6f)
+            }
+        }.build()
+    }
 }

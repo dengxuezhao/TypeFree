@@ -86,6 +86,16 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
             clipboardManager?.addPrimaryClipChangedListener(primaryClipListener)
         }
         syncSystemClipboardIfNeeded(allowFreshBanner = false)
+        val initialMode = ImeLogic.resolveInitialKeyboardMode(
+            settings = repository.settings.value,
+            isPasswordField = false
+        )
+        _imeState.update {
+            it.copy(
+                tabMode = initialMode.tabMode,
+                isFlypyChineseMode = initialMode.isFlypyChineseMode
+            )
+        }
         TypeFreeApp.instance.ensureFlypyDictionaryLoaded()
         serviceScope.launch {
             TypeFreeApp.instance.flypyDictionary.collect { dict ->
@@ -103,9 +113,13 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                 if (prevSetting != null && prevSetting != currentSettings.flypyEnabled) {
                     flypyEngine.resetComposing()
                     val isPwd = ImeLogic.isPasswordEditorInputType(_imeState.value.currentInputType)
+                    val nextChinese = currentSettings.flypyEnabled && !isPwd
+                    if (currentSettings.flypyEnabled) {
+                        repository.updateSettings { s -> s.copy(lastQwertyIsChinese = true) }
+                    }
                     _imeState.update {
                         it.copy(
-                            isFlypyChineseMode = currentSettings.flypyEnabled && !isPwd,
+                            isFlypyChineseMode = nextChinese,
                             flypyComposingCode = "",
                             flypyCandidates = emptyList(),
                             isFlypyCandidateSheetExpanded = false
@@ -130,14 +144,15 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        val wasVisible = repository.isImeWindowVisible.value
         repository.setImeWindowVisible(true)
-        if (!restarting && !wasVisible) {
+        if (!restarting) {
             flypyEngine.resetComposing()
             _imeState.update {
                 it.copy(
-                    tabMode = KeyboardTabMode.VOICE,
                     isClipboardOpen = false,
+                    voiceSubPanel = VoiceSubPanel.NONE,
+                    isPunctuationStripOpen = false,
+                    isStylePickerExpanded = false,
                     flypyComposingCode = "",
                     flypyCandidates = emptyList(),
                     isFlypyCandidateSheetExpanded = false
@@ -168,10 +183,21 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         val selected = readSelectedTextSafely()
         val hasMicPerm = ::audioRecorder.isInitialized && audioRecorder.hasRecordPermission()
         val hasCachedWav = hasRetryWavFile()
+        val settingsSnapshot = repository.settings.value
         val isPasswordField = ImeLogic.isPasswordEditorInputType(inputType)
-        val defaultFlypyChinese = repository.settings.value.flypyEnabled && !isPasswordField
 
+        var shouldEnsureFlypyDict = false
         _imeState.update { prev ->
+            val sessionMode = ImeLogic.resolveSessionKeyboardMode(
+                previousTabMode = prev.tabMode,
+                previousFlypyChineseMode = prev.isFlypyChineseMode,
+                settings = settingsSnapshot,
+                isPasswordField = isPasswordField,
+                restarting = restarting
+            )
+            if (sessionMode.tabMode == KeyboardTabMode.QWERTY && !flypyEngine.dictionary.isLoaded) {
+                shouldEnsureFlypyDict = true
+            }
             val currentPhase = prev.voicePhase
             val clearedPhase = if (
                 currentPhase is VoicePhase.Error &&
@@ -187,13 +213,10 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
             } else {
                 prev.ignoreSelectionForThisTurn
             }
-            val nextFlypyMode = when {
-                isPasswordField -> false
-                !restarting -> defaultFlypyChinese
-                else -> prev.isFlypyChineseMode
-            }
             prev.copy(
                 voicePhase = clearedPhase,
+                tabMode = sessionMode.tabMode,
+                inputSessionToken = if (!restarting) prev.inputSessionToken + 1 else prev.inputSessionToken,
                 targetPackage = pkg,
                 targetAppName = appName,
                 currentInputType = inputType,
@@ -201,12 +224,15 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                 rawSelectedText = selected,
                 ignoreSelectionForThisTurn = nextIgnore,
                 hasCachedAudioForRetry = hasCachedWav,
-                isFlypyChineseMode = nextFlypyMode,
+                isFlypyChineseMode = sessionMode.isFlypyChineseMode,
                 flypyComposingCode = if (!restarting) "" else prev.flypyComposingCode,
                 flypyCandidates = if (!restarting) emptyList() else prev.flypyCandidates,
                 isFlypyCandidateSheetExpanded = if (!restarting) false else prev.isFlypyCandidateSheetExpanded,
                 undoSnapshot = if (!restarting) null else prev.undoSnapshot
             )
+        }
+        if (shouldEnsureFlypyDict) {
+            TypeFreeApp.instance.ensureFlypyDictionaryLoaded()
         }
     }
 
@@ -255,10 +281,17 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
             }
         }
         flypyEngine.resetComposing()
+        val hiddenBaseMode = ImeLogic.resolveInitialKeyboardMode(
+            settings = repository.settings.value,
+            isPasswordField = false
+        )
         _imeState.update { prev ->
             prev.copy(
-                tabMode = KeyboardTabMode.VOICE,
+                tabMode = hiddenBaseMode.tabMode,
+                isFlypyChineseMode = hiddenBaseMode.isFlypyChineseMode,
+                inputSessionToken = prev.inputSessionToken + 1,
                 voicePhase = if (prev.voicePhase is VoicePhase.Recording) VoicePhase.Idle else prev.voicePhase,
+                voiceSubPanel = VoiceSubPanel.NONE,
                 isArcTranslateActive = false,
                 arcStartedFromHandsFree = false,
                 isArcCancelHovered = false,
@@ -394,6 +427,10 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
             }
         }
 
+        if (!ImeLogic.isPasswordEditorInputType(_imeState.value.currentInputType)) {
+            repository.updateSettings { it.copy(lastKeyboardTab = mode.name) }
+        }
+
         _imeState.update { prev ->
             prev.copy(
                 tabMode = mode,
@@ -414,21 +451,30 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
 
     private fun openOrRestoreVoicePenPanel() {
         performKeyFeedback(strong = false)
+        flypyEngine.resetComposing()
         _imeState.update { prev ->
             if (prev.rawSelectedText.isNotBlank()) {
                 prev.copy(
                     tabMode = KeyboardTabMode.VOICE,
                     ignoreSelectionForThisTurn = false,
                     voiceSubPanel = VoiceSubPanel.SPEAK_TO_EDIT,
+                    isClipboardOpen = false,
                     isPunctuationStripOpen = false,
-                    isStylePickerExpanded = false
+                    isStylePickerExpanded = false,
+                    flypyComposingCode = "",
+                    flypyCandidates = emptyList(),
+                    isFlypyCandidateSheetExpanded = false
                 )
             } else {
                 prev.copy(
                     tabMode = KeyboardTabMode.VOICE,
                     voiceSubPanel = VoiceSubPanel.HELP_ME_WRITE,
+                    isClipboardOpen = false,
                     isPunctuationStripOpen = false,
-                    isStylePickerExpanded = false
+                    isStylePickerExpanded = false,
+                    flypyComposingCode = "",
+                    flypyCandidates = emptyList(),
+                    isFlypyCandidateSheetExpanded = false
                 )
             }
         }
@@ -1153,6 +1199,14 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
             flypyEngine.resetComposing()
         }
         val nextChinese = !wasChinese
+        if (!ImeLogic.isPasswordEditorInputType(_imeState.value.currentInputType)) {
+            repository.updateSettings {
+                it.copy(
+                    lastKeyboardTab = KeyboardTabMode.QWERTY.name,
+                    lastQwertyIsChinese = nextChinese
+                )
+            }
+        }
         _imeState.update {
             it.copy(
                 isFlypyChineseMode = nextChinese,

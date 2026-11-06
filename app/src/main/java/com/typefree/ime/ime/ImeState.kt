@@ -2,6 +2,7 @@ package com.typefree.ime.ime
 
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
+import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ClipboardEntry
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
@@ -81,9 +82,16 @@ data class ArcWheelSlots(
     val rightLanguage: String?
 )
 
+data class InitialKeyboardResolution(
+    val tabMode: KeyboardTabMode,
+    val isFlypyChineseMode: Boolean,
+    val isPasswordOverride: Boolean
+)
+
 data class ImeUiState(
     val voicePhase: VoicePhase = VoicePhase.Idle,
     val tabMode: KeyboardTabMode = KeyboardTabMode.VOICE,
+    val inputSessionToken: Int = 0,
     val voiceSubPanel: VoiceSubPanel = VoiceSubPanel.NONE,
     val activeIntentMode: VoiceIntentMode = VoiceIntentMode.DICTATE,
     val isArcTranslateActive: Boolean = false,
@@ -122,6 +130,10 @@ data class ImeUiState(
 
     val hasIgnoredSelection: Boolean
         get() = ignoreSelectionForThisTurn && rawSelectedText.isNotBlank()
+
+    val shouldShowTopBarSpeakToEditPill: Boolean
+        get() = rawSelectedText.isNotBlank() &&
+            (tabMode != KeyboardTabMode.VOICE || ignoreSelectionForThisTurn)
 
     val enterActionInfo: EnterActionInfo
         get() = ImeLogic.resolveEnterAction(currentImeOptions, currentInputType)
@@ -236,6 +248,81 @@ object ImeLogic {
                 variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
             }
             else -> false
+        }
+    }
+
+    /**
+     * Resolves which top-level keyboard tab (`VOICE` / `QWERTY` / `TRANSLATE`) and QWERTY
+     * language mode (`鹤` Chinese vs `EN` English) should activate when entering an input session:
+     * - Password fields temporarily force `QWERTY` + `EN` (`isPasswordOverride = true`) without
+     *   overwriting the user's remembered preference.
+     * - When [AppSettings.rememberLastKeyboardMode] is enabled, restores the last used tab and
+     *   `鹤/EN` sub-mode across input boxes, app switches, and IME restarts.
+     */
+    fun resolveInitialKeyboardMode(
+        settings: AppSettings,
+        isPasswordField: Boolean
+    ): InitialKeyboardResolution {
+        if (isPasswordField) {
+            return InitialKeyboardResolution(
+                tabMode = KeyboardTabMode.QWERTY,
+                isFlypyChineseMode = false,
+                isPasswordOverride = true
+            )
+        }
+        if (settings.rememberLastKeyboardMode) {
+            val rememberedTab = when (settings.lastKeyboardTab.trim().uppercase(Locale.US)) {
+                KeyboardTabMode.QWERTY.name -> KeyboardTabMode.QWERTY
+                KeyboardTabMode.TRANSLATE.name -> KeyboardTabMode.TRANSLATE
+                else -> KeyboardTabMode.VOICE
+            }
+            val rememberedChinese = settings.flypyEnabled && settings.lastQwertyIsChinese
+            return InitialKeyboardResolution(
+                tabMode = rememberedTab,
+                isFlypyChineseMode = rememberedChinese,
+                isPasswordOverride = false
+            )
+        }
+        return InitialKeyboardResolution(
+            tabMode = KeyboardTabMode.VOICE,
+            isFlypyChineseMode = settings.flypyEnabled,
+            isPasswordOverride = false
+        )
+    }
+
+    /**
+     * Resolves the keyboard mode for `onStartInput` / `onStartInputView`:
+     * - Whenever `restarting == false` (new input session or switching from EditText A to EditText B
+     *   on the same screen), unconditionally evaluates [resolveInitialKeyboardMode], so turning off
+     *   [AppSettings.rememberLastKeyboardMode] reliably resets back to `VOICE` on every new field.
+     * - Whenever `restarting == true` (in-place `restartInput` on the same field), preserves the
+     *   user's active tab and `鹤/EN` sub-mode unless the field became a password input.
+     */
+    fun resolveSessionKeyboardMode(
+        previousTabMode: KeyboardTabMode,
+        previousFlypyChineseMode: Boolean,
+        settings: AppSettings,
+        isPasswordField: Boolean,
+        restarting: Boolean
+    ): InitialKeyboardResolution {
+        if (!restarting) {
+            return resolveInitialKeyboardMode(
+                settings = settings,
+                isPasswordField = isPasswordField
+            )
+        }
+        return if (isPasswordField) {
+            InitialKeyboardResolution(
+                tabMode = KeyboardTabMode.QWERTY,
+                isFlypyChineseMode = false,
+                isPasswordOverride = true
+            )
+        } else {
+            InitialKeyboardResolution(
+                tabMode = previousTabMode,
+                isFlypyChineseMode = previousFlypyChineseMode,
+                isPasswordOverride = false
+            )
         }
     }
 

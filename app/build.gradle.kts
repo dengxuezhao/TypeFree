@@ -12,8 +12,8 @@ android {
         applicationId = "com.typefree.ime"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "2.3.0"
+        versionCode = 9
+        versionName = "2.4.0"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -53,11 +53,24 @@ android {
 
     val usePrivateDict = project.findProperty("usePrivateDict") == "true"
     val privateDictDir = rootProject.file("local_private")
+    val stagedPrivateAssetsDir = layout.buildDirectory.dir("generated/privateDictAssets")
+
+    if (usePrivateDict && privateDictDir.exists()) {
+        val stagePrivateFlypyAssets = tasks.register<Sync>("stagePrivateFlypyAssets") {
+            from(privateDictDir) {
+                include("flypy_dict.tsv", "flypy_dz.tsv")
+            }
+            into(stagedPrivateAssetsDir)
+        }
+        tasks.named("preBuild") {
+            dependsOn(stagePrivateFlypyAssets)
+        }
+    }
 
     sourceSets {
         getByName("main") {
             if (usePrivateDict && privateDictDir.exists()) {
-                assets.setSrcDirs(listOf(privateDictDir))
+                assets.setSrcDirs(listOf(stagedPrivateAssetsDir))
             }
         }
     }
