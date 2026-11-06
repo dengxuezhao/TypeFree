@@ -116,7 +116,8 @@ data class ImeUiState(
     val isFlypyCandidateSheetExpanded: Boolean = false,
     val isClipboardOpen: Boolean = false,
     val freshClipboardBannerItem: ClipboardEntry? = null,
-    val quickActionToast: String? = null
+    val quickActionToast: String? = null,
+    val streamingPartialPreview: String = ""
 ) {
     val isFlypyComposing: Boolean
         get() = tabMode == KeyboardTabMode.QWERTY &&

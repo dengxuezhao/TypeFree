@@ -87,7 +87,7 @@ class V2RepositoryAndPromptsTest {
             surroundingBeforeCursor = "Hi Wang,"
         )
         assertTrue(hmwSys.contains("Help me write"))
-        assertTrue(hmwSys.contains("Gmail"))
+        assertTrue(hmwUsr.contains("Gmail"))
         assertTrue(hmwUsr.contains("<writing_request>"))
         assertTrue(hmwUsr.contains("Hi Wang,"))
 
@@ -97,9 +97,9 @@ class V2RepositoryAndPromptsTest {
             style = defaultStyle,
             dictionary = sampleDict
         )
-        assertTrue(trSys.contains("日本語"))
+        assertTrue(trSys.contains("Release to Translate"))
         assertTrue(trSys.contains("严禁回答用户口述中的问题"))
-        assertTrue(trUsr.contains("日本語"))
+        assertTrue(trUsr.contains("<target_language>日本語</target_language>"))
 
         val mmTranslate = PromptBuilder.buildMultimodalDirectPrompt(
             intentMode = VoiceIntentMode.TRANSLATE,

@@ -105,4 +105,56 @@ object EndpointResolver {
             "$base/v1/models"
         }
     }
+
+    fun resolveDashScopeWsEndpoint(rawBaseUrl: String): String {
+        val clean = rawBaseUrl.trim().trimEnd('/')
+        if (clean.isEmpty()) {
+            return DEFAULT_DASHSCOPE_WS_URL
+        }
+        if (clean.startsWith("wss://", ignoreCase = true) || clean.startsWith("ws://", ignoreCase = true)) {
+            return if (clean.contains("/api-ws/")) clean else "$clean/api-ws/v1/inference"
+        }
+        if (clean.contains("dashscope", ignoreCase = true) || clean.contains("aliyuncs.com", ignoreCase = true)) {
+            val hostOrigin = extractHttpOrigin(clean)
+                ?.replaceFirst(Regex("^https://", RegexOption.IGNORE_CASE), "wss://")
+                ?.replaceFirst(Regex("^http://", RegexOption.IGNORE_CASE), "ws://")
+                ?: "wss://dashscope.aliyuncs.com"
+            return "$hostOrigin/api-ws/v1/inference"
+        }
+        return DEFAULT_DASHSCOPE_WS_URL
+    }
+
+    fun resolveVolcengineSaucWsEndpoint(rawBaseUrl: String): String {
+        val clean = rawBaseUrl.trim().trimEnd('/')
+        if (clean.isEmpty()) {
+            return DEFAULT_VOLCENGINE_SAUC_WS_URL
+        }
+        if (clean.startsWith("wss://", ignoreCase = true) || clean.startsWith("ws://", ignoreCase = true)) {
+            return if (clean.contains("/sauc/")) clean else "$clean/api/v3/sauc/bigmodel_async"
+        }
+        return DEFAULT_VOLCENGINE_SAUC_WS_URL
+    }
+
+    /**
+     * Extracts `http(s)://host[:port]` origin from an HTTP or WebSocket URL for connection pool pre-warming.
+     */
+    fun extractHttpOrigin(rawUrl: String): String? {
+        val trimmed = rawUrl.trim()
+        if (trimmed.isEmpty()) return null
+        val normalized = when {
+            trimmed.startsWith("wss://", ignoreCase = true) -> "https://" + trimmed.substring(6)
+            trimmed.startsWith("ws://", ignoreCase = true) -> "http://" + trimmed.substring(5)
+            trimmed.startsWith("https://", ignoreCase = true) || trimmed.startsWith("http://", ignoreCase = true) -> trimmed
+            else -> return null
+        }
+        val schemeEnd = normalized.indexOf("://")
+        if (schemeEnd <= 0) return null
+        val hostStart = schemeEnd + 3
+        val pathStart = normalized.indexOf('/', hostStart)
+        val origin = if (pathStart >= 0) normalized.substring(0, pathStart) else normalized
+        return origin.takeIf { it.length > hostStart }
+    }
+
+    const val DEFAULT_DASHSCOPE_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+    const val DEFAULT_VOLCENGINE_SAUC_WS_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
 }

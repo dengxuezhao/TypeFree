@@ -12,6 +12,12 @@ enum class MultimodalProtocol {
     OPENAI_AUDIO_CHAT   // OpenAI /v1/chat/completions (input_audio base64 wav)
 }
 
+enum class SttProtocol(val label: String, val shortBadge: String) {
+    OPENAI_HTTP("OpenAI 兼容 HTTP 整包", "HTTP"),
+    ALIYUN_DASHSCOPE_WS("阿里云百炼 WebSocket 实时流式", "百炼流式"),
+    VOLCENGINE_SAUC_WS("火山豆包 WebSocket 实时流式", "豆包流式")
+}
+
 enum class ThemePreference(val label: String) {
     LIGHT("浅色单色 (TypeFree 经典)"),
     DARK("深色曜石"),
@@ -44,6 +50,12 @@ enum class ModelCapabilitySlot(val label: String) {
     MULTIMODAL("多模态音频直出")
 }
 
+enum class ThinkingMode(val label: String, val description: String) {
+    DISABLED("关闭思考 (极速)", "显式下发非思考指令，砍掉隐藏 CoT 推理空转，语音上屏最快"),
+    AUTO("模型默认", "不额外注入思考开关字段，遵循服务端与模型原生默认行为"),
+    ENABLED("开启思考", "显式启用深度推理，适合长文「帮我写」但首字延迟会增加")
+}
+
 data class DiscoveredModelItem(
     val id: String,
     val displayName: String = "",
@@ -52,10 +64,21 @@ data class DiscoveredModelItem(
     val badge: String = ""
 )
 
+data class ModelProbeResult(
+    val modelId: String,
+    val latencyMs: Long? = null,
+    val errorSummary: String? = null
+) {
+    val isSuccess: Boolean get() = latencyMs != null && errorSummary == null
+}
+
 data class SttConfig(
     val presetId: String = "siliconflow",
+    val protocol: SttProtocol = SttProtocol.OPENAI_HTTP,
     val baseUrl: String = "https://api.siliconflow.cn/v1",
     val apiKey: String = "",
+    val appId: String = "",
+    val resourceId: String = "volc.seedasr.sauc.duration",
     val model: String = "FunAudioLLM/SenseVoiceSmall",
     val language: String = "" // "" = 自动识别, "zh", "en", "ja"
 )
@@ -66,7 +89,8 @@ data class LlmConfig(
     val baseUrl: String = "https://api.deepseek.com/v1",
     val apiKey: String = "",
     val model: String = "deepseek-chat",
-    val temperature: Float = 0.2f
+    val temperature: Float = 0.2f,
+    val thinkingMode: ThinkingMode = ThinkingMode.DISABLED
 )
 
 data class MultimodalConfig(
@@ -75,7 +99,8 @@ data class MultimodalConfig(
     val baseUrl: String = "https://generativelanguage.googleapis.com/v1beta",
     val apiKey: String = "",
     val model: String = "gemini-2.5-flash",
-    val temperature: Float = 0.2f
+    val temperature: Float = 0.2f,
+    val thinkingMode: ThinkingMode = ThinkingMode.DISABLED
 )
 
 data class ApiPreset(
@@ -84,7 +109,9 @@ data class ApiPreset(
     val subtitle: String,
     val baseUrl: String,
     val defaultModel: String,
-    val protocol: MultimodalProtocol? = null
+    val protocol: MultimodalProtocol? = null,
+    val sttProtocol: SttProtocol? = null,
+    val defaultResourceId: String = ""
 )
 
 object ApiPresets {
@@ -92,47 +119,82 @@ object ApiPresets {
         ApiPreset(
             id = "siliconflow",
             name = "硅基流动 SenseVoice",
-            subtitle = "国内直连极速，中英混合识别率高",
+            subtitle = "国内直连免费极速，中英混输与流式兜底首选",
             baseUrl = "https://api.siliconflow.cn/v1",
-            defaultModel = "FunAudioLLM/SenseVoiceSmall"
+            defaultModel = "FunAudioLLM/SenseVoiceSmall",
+            sttProtocol = SttProtocol.OPENAI_HTTP
+        ),
+        ApiPreset(
+            id = "aliyun_asr_ws",
+            name = "阿里云百炼实时流式",
+            subtitle = "单 sk-Key 边说边识别，松手百毫秒直出",
+            baseUrl = "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+            defaultModel = "paraformer-realtime-v2",
+            sttProtocol = SttProtocol.ALIYUN_DASHSCOPE_WS
+        ),
+        ApiPreset(
+            id = "volcengine_sauc_ws",
+            name = "火山豆包流式 SeedASR 2.0",
+            subtitle = "豆包输入法同源，口音/吞音/中英混输旗舰",
+            baseUrl = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+            defaultModel = "bigmodel",
+            sttProtocol = SttProtocol.VOLCENGINE_SAUC_WS,
+            defaultResourceId = "volc.seedasr.sauc.duration"
         ),
         ApiPreset(
             id = "groq",
             name = "Groq Whisper Turbo",
             subtitle = "海外延迟极低 (<0.3s)",
             baseUrl = "https://api.groq.com/openai/v1",
-            defaultModel = "whisper-large-v3-turbo"
+            defaultModel = "whisper-large-v3-turbo",
+            sttProtocol = SttProtocol.OPENAI_HTTP
         ),
         ApiPreset(
             id = "openai",
             name = "OpenAI Whisper",
             subtitle = "官方标准语音转写接口",
             baseUrl = "https://api.openai.com/v1",
-            defaultModel = "gpt-4o-mini-transcribe"
+            defaultModel = "gpt-4o-mini-transcribe",
+            sttProtocol = SttProtocol.OPENAI_HTTP
         ),
         ApiPreset(
             id = "custom_stt",
             name = "自定义 OpenAI 兼容",
             subtitle = "OneAPI / NewAPI / 本地 whisper.cpp 等",
             baseUrl = "https://api.openai.com/v1",
-            defaultModel = "whisper-1"
+            defaultModel = "whisper-1",
+            sttProtocol = SttProtocol.OPENAI_HTTP
         )
     )
 
     val llmPresets = listOf(
+        ApiPreset(
+            id = "doubao",
+            name = "火山方舟豆包",
+            subtitle = "Seed-2.1-Lite / Flash 极速润色，自动关思考超低延迟",
+            baseUrl = "https://ark.cn-beijing.volces.com/api/v3",
+            defaultModel = "doubao-seed-2-1-lite-260915"
+        ),
+        ApiPreset(
+            id = "aliyun_bailian",
+            name = "阿里云百炼 (可与流式 STT 共用 Key)",
+            subtitle = "Qwen-Turbo / Qwen3-8B 国内直连极速",
+            baseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            defaultModel = "qwen-turbo-latest"
+        ),
+        ApiPreset(
+            id = "siliconflow_llm",
+            name = "硅基流动 (可与 STT 共用 Key)",
+            subtitle = "Qwen3-8B / Qwen2.5-7B 免费高速推理",
+            baseUrl = "https://api.siliconflow.cn/v1",
+            defaultModel = "Qwen/Qwen2.5-7B-Instruct"
+        ),
         ApiPreset(
             id = "deepseek",
             name = "DeepSeek",
             subtitle = "中文去口癖与语义重组极佳",
             baseUrl = "https://api.deepseek.com/v1",
             defaultModel = "deepseek-chat"
-        ),
-        ApiPreset(
-            id = "siliconflow_llm",
-            name = "硅基流动 (可与 STT 共用 Key)",
-            subtitle = "Qwen2.5 / DeepSeek-V3 高速推理",
-            baseUrl = "https://api.siliconflow.cn/v1",
-            defaultModel = "Qwen/Qwen2.5-7B-Instruct"
         ),
         ApiPreset(
             id = "groq_llm",
@@ -147,13 +209,6 @@ object ApiPresets {
             subtitle = "GLM-4-Flash 免费/高速润色",
             baseUrl = "https://open.bigmodel.cn/api/paas/v4",
             defaultModel = "glm-4-flash"
-        ),
-        ApiPreset(
-            id = "doubao",
-            name = "火山方舟豆包",
-            subtitle = "字节跳动高并发模型接入点",
-            baseUrl = "https://ark.cn-beijing.volces.com/api/v3",
-            defaultModel = "doubao-1-5-lite-32k-250115"
         ),
         ApiPreset(
             id = "openai_llm",

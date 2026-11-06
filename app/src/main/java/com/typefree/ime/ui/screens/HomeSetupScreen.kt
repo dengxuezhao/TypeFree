@@ -102,10 +102,12 @@ import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.HistoryRecord
 import com.typefree.ime.data.PipelineMode
+import com.typefree.ime.data.SttProtocol
 import com.typefree.ime.data.UsageStatsSummary
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PipelineStage
+import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.TypeFreeAmber
@@ -197,9 +199,13 @@ object SetupStatsHelper {
         return when (settings.pipelineMode) {
             PipelineMode.DUAL_STAGE -> {
                 val stt = settings.sttConfig
-                val sttOk = stt.baseUrl.isNotBlank() &&
-                    stt.model.isNotBlank() &&
-                    (stt.apiKey.isNotBlank() || AiPipelineEngine.isLocalEndpoint(stt.baseUrl))
+                val sttOk = when (stt.protocol) {
+                    SttProtocol.OPENAI_HTTP -> stt.baseUrl.isNotBlank() &&
+                        stt.model.isNotBlank() &&
+                        (stt.apiKey.isNotBlank() || AiPipelineEngine.isLocalEndpoint(stt.baseUrl))
+                    SttProtocol.ALIYUN_DASHSCOPE_WS,
+                    SttProtocol.VOLCENGINE_SAUC_WS -> stt.apiKey.isNotBlank()
+                }
 
                 val llm = settings.llmConfig
                 val llmOk = if (!llm.enabled) {
@@ -224,7 +230,11 @@ object SetupStatsHelper {
     fun formatActivePipelineBadge(settings: AppSettings): String {
         return when (settings.pipelineMode) {
             PipelineMode.DUAL_STAGE -> {
-                val sttShort = settings.sttConfig.model.substringAfterLast('/').ifBlank { "STT" }
+                val sttShort = when (settings.sttConfig.protocol) {
+                    SttProtocol.OPENAI_HTTP -> settings.sttConfig.model.substringAfterLast('/').ifBlank { "STT" }
+                    SttProtocol.ALIYUN_DASHSCOPE_WS -> "百炼流式"
+                    SttProtocol.VOLCENGINE_SAUC_WS -> "豆包流式"
+                }
                 if (settings.llmConfig.enabled) {
                     val llmShort = settings.llmConfig.model.substringAfterLast('/').ifBlank { "LLM" }
                     "双阶段 · $sttShort + $llmShort"
@@ -345,8 +355,11 @@ fun HomeSetupScreen(
 
     // Built-in Playground Audio Recorder & State
     val recorder = remember(context) { WavAudioRecorder(context.applicationContext) }
+    var sandboxStreamSession by remember { mutableStateOf<StreamingAsrSession?>(null) }
     DisposableEffect(recorder) {
         onDispose {
+            sandboxStreamSession?.cancel()
+            sandboxStreamSession = null
             CoroutineScope(Dispatchers.IO).launch {
                 recorder.cancelRecording()
             }
@@ -612,15 +625,31 @@ fun HomeSetupScreen(
                     sandboxError = "尚未填写自定义 API Key，请点击右上角前往「自定义 API」完成配置"
                     return@PlaygroundCard
                 }
-                recorder.startRecording(coroutineScope)
+                sandboxStreamSession?.cancel()
+                val liveSession = aiEngine.openLiveStreamingSession(settings)
+                recorder.startRecording(
+                    scope = coroutineScope,
+                    onStreamChunk = if (liveSession != null) {
+                        { pcm -> liveSession.sendPcmFrame(pcm) }
+                    } else {
+                        null
+                    }
+                )
                     .onSuccess {
+                        sandboxStreamSession = liveSession
                         isRecording = true
+                        coroutineScope.launch {
+                            aiEngine.prewarmEndpoints(settings)
+                        }
                     }
                     .onFailure { err ->
+                        liveSession?.cancel()
                         sandboxError = err.message ?: "无法启动麦克风录音"
                     }
             },
             onCancelRecording = {
+                sandboxStreamSession?.cancel()
+                sandboxStreamSession = null
                 coroutineScope.launch {
                     recorder.cancelRecording()
                     isRecording = false
@@ -644,16 +673,41 @@ fun HomeSetupScreen(
                     sandboxManualIntent
                 }
 
+                val liveSession = sandboxStreamSession
+                sandboxStreamSession = null
+
                 coroutineScope.launch {
                     isRecording = false
                     val recorded = recorder.stopRecording().getOrElse { err ->
+                        liveSession?.cancel()
                         sandboxError = err.message ?: "录音时间过短或未采集到声音"
                         return@launch
                     }
 
-                    processingStage = when (settings.pipelineMode) {
-                        PipelineMode.DUAL_STAGE -> PipelineStage.TRANSCRIBING_STT
-                        PipelineMode.MULTIMODAL_DIRECT -> PipelineStage.MULTIMODAL_PROCESSING
+                    var preTranscribed: String? = null
+                    var tailWaitMs = 0L
+                    if (liveSession != null) {
+                        processingStage = PipelineStage.TRANSCRIBING_STT
+                        val tailStart = System.currentTimeMillis()
+                        val streamRes = liveSession.finishAndAwaitFinal()
+                        tailWaitMs = (System.currentTimeMillis() - tailStart).coerceAtLeast(0L)
+                        val candidate = streamRes.getOrNull()?.trim().orEmpty()
+                        if (candidate.isNotEmpty() && !AiPipelineEngine.isHallucinatedSilence(candidate)) {
+                            preTranscribed = candidate
+                        }
+                    }
+
+                    if (preTranscribed == null && !recorded.hasValidSpeech) {
+                        liveSession?.cancel()
+                        processingStage = null
+                        sandboxError = "未检测到清晰说话声，请靠近麦克风重试"
+                        return@launch
+                    }
+
+                    processingStage = when {
+                        settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT -> PipelineStage.MULTIMODAL_PROCESSING
+                        preTranscribed != null -> PipelineStage.POLISHING_LLM
+                        else -> PipelineStage.TRANSCRIBING_STT
                     }
                     sandboxError = null
 
@@ -667,6 +721,8 @@ fun HomeSetupScreen(
                         surroundingBeforeCursor = capturedBefore,
                         intentMode = capturedIntent,
                         translateTargetLanguage = settings.activeTranslateTarget,
+                        preTranscribedText = preTranscribed,
+                        sttTailWaitMs = tailWaitMs,
                         onStageChanged = { stage ->
                             processingStage = stage
                         }

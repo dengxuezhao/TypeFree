@@ -73,7 +73,9 @@ import com.typefree.ime.data.HistoryRecord
 import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.ImeLogic
+import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PipelineStage
+import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import com.typefree.ime.ui.theme.TypeFreeRose
@@ -122,6 +124,7 @@ class TypeFreeBubbleService :
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var pipelineJob: Job? = null
+    private var activeStreamingSession: StreamingAsrSession? = null
     private var feedbackResetJob: Job? = null
 
     private val _phase = MutableStateFlow<BubblePhase>(BubblePhase.Idle)
@@ -159,6 +162,8 @@ class TypeFreeBubbleService :
 
     override fun onDestroy() {
         TypeFreeBubbleController.setBubbleServiceRunning(false)
+        activeStreamingSession?.cancel()
+        activeStreamingSession = null
         pipelineJob?.cancel()
         feedbackResetJob?.cancel()
         if (::audioRecorder.isInitialized) {
@@ -326,13 +331,30 @@ class TypeFreeBubbleService :
         TypeFreeAccessibilityService.activeInstance?.refreshFocusedInputState()
         promoteToMicrophoneForeground()
 
-        val res = audioRecorder.startRecording(serviceScope)
+        activeStreamingSession?.cancel()
+        activeStreamingSession = null
+        val settingsSnap = repository.settings.value
+        val streamSession = aiEngine.openLiveStreamingSession(settingsSnap)
+
+        val res = audioRecorder.startRecording(
+            scope = serviceScope,
+            onStreamChunk = if (streamSession != null) {
+                { pcmChunk -> streamSession.sendPcmFrame(pcmChunk) }
+            } else {
+                null
+            }
+        )
         res.fold(
             onSuccess = {
+                activeStreamingSession = streamSession
+                serviceScope.launch {
+                    aiEngine.prewarmEndpoints(settingsSnap)
+                }
                 vibrate(strong = true)
                 _phase.value = BubblePhase.Recording
             },
             onFailure = { err ->
+                streamSession?.cancel()
                 demoteFromForeground()
                 vibrate(strong = true)
                 showTemporaryFeedback(err.message ?: "无法开始录音", isError = true)
@@ -342,6 +364,8 @@ class TypeFreeBubbleService :
 
     private fun finishBubbleRecordingAndInject() {
         if (_phase.value !is BubblePhase.Recording) return
+        val liveSession = activeStreamingSession
+        activeStreamingSession = null
         vibrate(strong = true)
         pipelineJob?.cancel()
         pipelineJob = serviceScope.launch {
@@ -350,6 +374,34 @@ class TypeFreeBubbleService :
             stopRes.fold(
                 onSuccess = { recorded ->
                     val settings = repository.settings.value
+                    var preTranscribed: String? = null
+                    var tailWaitMs = 0L
+
+                    if (liveSession != null) {
+                        _phase.value = BubblePhase.Processing("收尾中…")
+                        val tailStart = System.currentTimeMillis()
+                        val streamRes = liveSession.finishAndAwaitFinal()
+                        tailWaitMs = (System.currentTimeMillis() - tailStart).coerceAtLeast(0L)
+
+                        val streamErr = streamRes.exceptionOrNull()
+                        if (streamErr is IllegalStateException) {
+                            vibrate(strong = true)
+                            showTemporaryFeedback((streamErr.message ?: "API 未配置").take(18), isError = true)
+                            return@launch
+                        }
+                        val candidate = streamRes.getOrNull()?.trim().orEmpty()
+                        if (candidate.isNotEmpty() && !AiPipelineEngine.isHallucinatedSilence(candidate)) {
+                            preTranscribed = candidate
+                        }
+                    }
+
+                    if (preTranscribed == null && !recorded.hasValidSpeech) {
+                        liveSession?.cancel()
+                        vibrate(strong = true)
+                        showTemporaryFeedback("未检测到说话声", isError = true)
+                        return@launch
+                    }
+
                     val liveSnap = TypeFreeAccessibilityService.activeInstance?.refreshFocusedInputState()
                         ?: TypeFreeBubbleController.focusedInput.value
                     val pkg = liveSnap.packageName
@@ -363,7 +415,11 @@ class TypeFreeBubbleService :
                     }
 
                     _phase.value = BubblePhase.Processing(
-                        if (settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT) "直出中…" else "识别中…"
+                        when {
+                            settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT -> "直出中…"
+                            preTranscribed != null -> if (selectedText.isNotBlank()) "改写中…" else "润色中…"
+                            else -> "识别中…"
+                        }
                     )
 
                     val result = aiEngine.processVoiceAudio(
@@ -374,6 +430,8 @@ class TypeFreeBubbleService :
                         selectedText = selectedText,
                         surroundingBeforeCursor = liveSnap.surroundingBeforeCursor,
                         intentMode = intentMode,
+                        preTranscribedText = preTranscribed,
+                        sttTailWaitMs = tailWaitMs,
                         onStageChanged = { stage ->
                             _phase.value = BubblePhase.Processing(
                                 when (stage) {
@@ -426,6 +484,7 @@ class TypeFreeBubbleService :
                     )
                 },
                 onFailure = { err ->
+                    liveSession?.cancel()
                     showTemporaryFeedback((err.message ?: "录音太短").take(16), isError = true)
                 }
             )
@@ -434,6 +493,8 @@ class TypeFreeBubbleService :
 
     private fun cancelBubbleAction() {
         vibrate(strong = false)
+        activeStreamingSession?.cancel()
+        activeStreamingSession = null
         pipelineJob?.cancel()
         feedbackResetJob?.cancel()
         serviceScope.launch { audioRecorder.cancelRecording() }

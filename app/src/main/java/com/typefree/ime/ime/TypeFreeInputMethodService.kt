@@ -25,7 +25,9 @@ import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.flypy.FlypyAction
 import com.typefree.ime.ime.flypy.FlypyEngine
+import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PipelineStage
+import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.theme.TypeFreeTheme
 import kotlinx.coroutines.CancellationException
@@ -53,6 +55,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var activePipelineJob: Job? = null
+    private var activeStreamingSession: StreamingAsrSession? = null
+    private var streamingPreviewJob: Job? = null
     private var toastDismissJob: Job? = null
     private var autoLearnToastJob: Job? = null
     private var quickToastJob: Job? = null
@@ -276,6 +280,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         // Never leave microphone recording silently when the keyboard window is dismissed
         if (_imeState.value.voicePhase is VoicePhase.Recording) {
             micPressDownTimeMs = 0L
+            abortActiveStreamingSession()
             serviceScope.launch {
                 audioRecorder.cancelRecording()
             }
@@ -309,6 +314,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
     override fun onDestroy() {
         repository.setImeWindowVisible(false)
         micPressDownTimeMs = 0L
+        abortActiveStreamingSession()
         activePipelineJob?.cancel()
         toastDismissJob?.cancel()
         autoLearnToastJob?.cancel()
@@ -422,6 +428,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
 
         if (_imeState.value.voicePhase is VoicePhase.Recording) {
             micPressDownTimeMs = 0L
+            abortActiveStreamingSession()
             serviceScope.launch {
                 audioRecorder.cancelRecording()
             }
@@ -669,15 +676,46 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         // Fire tactile feedback BEFORE opening AudioRecord so speaker click / motor hum isn't recorded
         performHaptic(strong = true)
 
-        val startRes = audioRecorder.startRecording(serviceScope)
+        abortActiveStreamingSession()
+        val settingsSnap = repository.settings.value
+        val streamSession = aiEngine.openLiveStreamingSession(settingsSnap)
+
+        val startRes = audioRecorder.startRecording(
+            scope = serviceScope,
+            onStreamChunk = if (streamSession != null) {
+                { pcmChunk -> streamSession.sendPcmFrame(pcmChunk) }
+            } else {
+                null
+            },
+            onSilencePrefixCleared = {
+                streamSession?.resetPrefix()
+                _imeState.update { it.copy(streamingPartialPreview = "") }
+            }
+        )
         startRes.fold(
             onSuccess = {
                 micPressDownTimeMs = System.currentTimeMillis()
+                activeStreamingSession = streamSession
+                if (streamSession != null) {
+                    streamingPreviewJob = serviceScope.launch {
+                        streamSession.partialText.collect { liveText ->
+                            _imeState.update { it.copy(streamingPartialPreview = liveText) }
+                        }
+                    }
+                }
+                // Warm up LLM / HTTP STT TCP+TLS sockets during the first ~250ms of speaking
+                serviceScope.launch {
+                    aiEngine.prewarmEndpoints(settingsSnap)
+                }
                 _imeState.update {
-                    it.copy(voicePhase = VoicePhase.Recording(isHandsFree = false))
+                    it.copy(
+                        voicePhase = VoicePhase.Recording(isHandsFree = false),
+                        streamingPartialPreview = ""
+                    )
                 }
             },
             onFailure = { err ->
+                streamSession?.cancel()
                 micPressDownTimeMs = 0L
                 performHaptic(strong = true)
                 val errorPhase = ImeLogic.classifyErrorFlags(
@@ -685,9 +723,16 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                     hasCachedAudio = hasRetryWavFile(),
                     hasMicPermission = audioRecorder.hasRecordPermission()
                 )
-                _imeState.update { it.copy(voicePhase = errorPhase) }
+                _imeState.update { it.copy(voicePhase = errorPhase, streamingPartialPreview = "") }
             }
         )
+    }
+
+    private fun abortActiveStreamingSession() {
+        streamingPreviewJob?.cancel()
+        streamingPreviewJob = null
+        activeStreamingSession?.cancel()
+        activeStreamingSession = null
     }
 
     private fun handleMicPressUp() {
@@ -737,6 +782,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
     private fun cancelRecordingOrProcessing() {
         performKeyFeedback(strong = false)
         micPressDownTimeMs = 0L
+        abortActiveStreamingSession()
         activePipelineJob?.cancel()
         activePipelineJob = null
         serviceScope.launch {
@@ -747,7 +793,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                 voicePhase = VoicePhase.Idle,
                 isArcTranslateActive = false,
                 arcStartedFromHandsFree = false,
-                isArcCancelHovered = false
+                isArcCancelHovered = false,
+                streamingPartialPreview = ""
             )
         }
     }
@@ -756,19 +803,88 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         intentOverride: VoiceIntentMode? = null,
         translateLangOverride: String? = null
     ) {
+        val liveSession = activeStreamingSession
+        activeStreamingSession = null
+        streamingPreviewJob?.cancel()
+        streamingPreviewJob = null
+
         activePipelineJob?.cancel()
         activePipelineJob = serviceScope.launch {
             val stopResult = audioRecorder.stopRecording()
             stopResult.fold(
                 onSuccess = { recorded ->
+                    var preTranscribed: String? = null
+                    var tailWaitMs = 0L
+
+                    if (liveSession != null) {
+                        _imeState.update {
+                            it.copy(
+                                voicePhase = VoicePhase.Processing(stageText = "收尾识别中..."),
+                                isArcTranslateActive = false,
+                                arcStartedFromHandsFree = false,
+                                isArcCancelHovered = false,
+                                streamingPartialPreview = ""
+                            )
+                        }
+                        val tailStart = System.currentTimeMillis()
+                        val streamRes = liveSession.finishAndAwaitFinal()
+                        tailWaitMs = (System.currentTimeMillis() - tailStart).coerceAtLeast(0L)
+
+                        val streamErr = streamRes.exceptionOrNull()
+                        if (streamErr is IllegalStateException) {
+                            // Missing API Key / immediate setup error — surface directly without retrying WAV
+                            val errorPhase = ImeLogic.classifyErrorFlags(
+                                errorMessage = streamErr.message ?: "请先完成语音 API 配置",
+                                hasCachedAudio = recorded.wavFile.exists(),
+                                hasMicPermission = audioRecorder.hasRecordPermission()
+                            )
+                            _imeState.update {
+                                it.copy(
+                                    voicePhase = errorPhase,
+                                    hasCachedAudioForRetry = errorPhase.canRetryAudio
+                                )
+                            }
+                            return@launch
+                        }
+
+                        val candidate = streamRes.getOrNull()?.trim().orEmpty()
+                        if (candidate.isNotEmpty() && !AiPipelineEngine.isHallucinatedSilence(candidate)) {
+                            preTranscribed = candidate
+                        }
+                    }
+
+                    // Multi-frame local VAD guard: skip cloud calls when neither human speech frames nor stream words exist
+                    if (preTranscribed == null && !recorded.hasValidSpeech) {
+                        liveSession?.cancel()
+                        val errorPhase = ImeLogic.classifyErrorFlags(
+                            errorMessage = "未检测到清晰说话声，请靠近麦克风重试",
+                            hasCachedAudio = false,
+                            hasMicPermission = audioRecorder.hasRecordPermission()
+                        )
+                        _imeState.update {
+                            it.copy(
+                                voicePhase = errorPhase,
+                                isArcTranslateActive = false,
+                                arcStartedFromHandsFree = false,
+                                isArcCancelHovered = false,
+                                streamingPartialPreview = "",
+                                hasCachedAudioForRetry = false
+                            )
+                        }
+                        return@launch
+                    }
+
                     executeVoicePipelineOnWav(
                         wavFile = recorded.wavFile,
                         durationMs = recorded.durationMs,
                         intentOverride = intentOverride,
-                        translateLangOverride = translateLangOverride
+                        translateLangOverride = translateLangOverride,
+                        preTranscribedText = preTranscribed,
+                        sttTailWaitMs = tailWaitMs
                     )
                 },
                 onFailure = { err ->
+                    liveSession?.cancel()
                     if (err is CancellationException) return@launch
                     val errorPhase = ImeLogic.classifyErrorFlags(
                         errorMessage = err.message ?: "录音时间过短，请重试",
@@ -781,6 +897,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                             isArcTranslateActive = false,
                             arcStartedFromHandsFree = false,
                             isArcCancelHovered = false,
+                            streamingPartialPreview = "",
                             hasCachedAudioForRetry = errorPhase.canRetryAudio
                         )
                     }
@@ -793,7 +910,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         wavFile: File,
         durationMs: Long,
         intentOverride: VoiceIntentMode? = null,
-        translateLangOverride: String? = null
+        translateLangOverride: String? = null,
+        preTranscribedText: String? = null,
+        sttTailWaitMs: Long = 0L
     ) {
         val settings = repository.settings.value
         val snapshot = _imeState.value
@@ -819,10 +938,10 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
         val surroundingContext = readSurroundingBeforeCursor(80)
 
-        val initialStage = if (settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT) {
-            PipelineStage.MULTIMODAL_PROCESSING
-        } else {
-            PipelineStage.TRANSCRIBING_STT
+        val initialStage = when {
+            settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT -> PipelineStage.MULTIMODAL_PROCESSING
+            !preTranscribedText.isNullOrBlank() -> PipelineStage.POLISHING_LLM
+            else -> PipelineStage.TRANSCRIBING_STT
         }
 
         _imeState.update {
@@ -837,6 +956,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                 isArcTranslateActive = false,
                 arcStartedFromHandsFree = false,
                 isArcCancelHovered = false,
+                streamingPartialPreview = "",
                 hasCachedAudioForRetry = wavFile.exists()
             )
         }
@@ -850,6 +970,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
             surroundingBeforeCursor = surroundingContext,
             intentMode = resolvedIntent,
             translateTargetLanguage = targetTranslateLang.ifBlank { settings.activeTranslateTarget },
+            preTranscribedText = preTranscribedText,
+            sttTailWaitMs = sttTailWaitMs,
             onStageChanged = { stage ->
                 _imeState.update { curr ->
                     curr.copy(
@@ -1765,6 +1887,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
         if (_imeState.value.voicePhase is VoicePhase.Recording) {
             micPressDownTimeMs = 0L
+            abortActiveStreamingSession()
             serviceScope.launch {
                 audioRecorder.cancelRecording()
             }

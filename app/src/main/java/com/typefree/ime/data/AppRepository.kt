@@ -98,7 +98,38 @@ class AppRepository(private val appContext: Context) {
             } else {
                 true
             }
+            val rawStt = parsed.sttConfig ?: SttConfig()
+            val safeStt = rawStt.copy(
+                presetId = rawStt.presetId ?: "siliconflow",
+                protocol = rawStt.protocol ?: SttProtocol.OPENAI_HTTP,
+                baseUrl = rawStt.baseUrl ?: "https://api.siliconflow.cn/v1",
+                apiKey = rawStt.apiKey ?: "",
+                appId = rawStt.appId ?: "",
+                resourceId = (rawStt.resourceId ?: "").ifBlank { "volc.seedasr.sauc.duration" },
+                model = rawStt.model ?: "FunAudioLLM/SenseVoiceSmall",
+                language = rawStt.language ?: ""
+            )
+            val rawLlm = parsed.llmConfig ?: LlmConfig()
+            val safeLlm = rawLlm.copy(
+                presetId = rawLlm.presetId ?: "deepseek",
+                baseUrl = rawLlm.baseUrl ?: "https://api.deepseek.com/v1",
+                apiKey = rawLlm.apiKey ?: "",
+                model = rawLlm.model ?: "deepseek-chat",
+                thinkingMode = rawLlm.thinkingMode ?: ThinkingMode.DISABLED
+            )
+            val rawMm = parsed.multimodalConfig ?: MultimodalConfig()
+            val safeMm = rawMm.copy(
+                presetId = rawMm.presetId ?: "gemini",
+                protocol = rawMm.protocol ?: MultimodalProtocol.GEMINI_NATIVE,
+                baseUrl = rawMm.baseUrl ?: "https://generativelanguage.googleapis.com/v1beta",
+                apiKey = rawMm.apiKey ?: "",
+                model = rawMm.model ?: "gemini-2.5-flash",
+                thinkingMode = rawMm.thinkingMode ?: ThinkingMode.DISABLED
+            )
             parsed.copy(
+                sttConfig = safeStt,
+                llmConfig = safeLlm,
+                multimodalConfig = safeMm,
                 themePreference = parsed.themePreference ?: ThemePreference.LIGHT,
                 flypyEnabled = resolvedFlypyEnabled,
                 flypyCommaPeriodQuickSelect = resolvedCommaPeriodQuickSelect,

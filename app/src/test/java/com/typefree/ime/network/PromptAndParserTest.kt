@@ -23,8 +23,9 @@ class PromptAndParserTest {
     }
 
     @Test
-    fun `buildDictationPrompts enforces non-chatbot guard and personal dictionary aliases`() {
-        val style = DefaultPresets.defaultStyles().first { it.id == "work_collab" }
+    fun `buildDictationPrompts enforces static prefix-cache system prompt and dynamic XML user prompt`() {
+        val styleWork = DefaultPresets.defaultStyles().first { it.id == "work_collab" }
+        val styleSocial = DefaultPresets.defaultStyles().first { it.id == "casual_chat" }
         val dict = listOf(
             DictionaryEntry(
                 term = "TypeFree",
@@ -34,15 +35,25 @@ class PromptAndParserTest {
         )
         val (sys, usr) = PromptBuilder.buildDictationPrompts(
             rawSpeech = "嗯那个明天三点不对四点讨论太普利斯方案",
-            style = style,
+            style = styleWork,
             targetAppName = "飞书",
             dictionary = dict,
             surroundingBeforeCursor = "各位同事，"
         )
+        // 100% static system prompt for cloud Prefix Cache alignment across apps/styles/dictionaries
+        val (sysOtherApp, _) = PromptBuilder.buildDictationPrompts(
+            rawSpeech = "随便聊两句",
+            style = styleSocial,
+            targetAppName = "微信",
+            dictionary = emptyList(),
+            surroundingBeforeCursor = ""
+        )
+        assertEquals(sys, sysOtherApp)
         assertTrue(sys.contains("严禁对话或回答问题"))
-        assertTrue(sys.contains("飞书"))
-        assertTrue(sys.contains("太普利斯"))
-        assertTrue(sys.contains("TypeFree"))
+        assertFalse(sys.contains("飞书"))
+        assertTrue(usr.contains("飞书"))
+        assertTrue(usr.contains("太普利斯"))
+        assertTrue(usr.contains("TypeFree"))
         assertTrue(usr.contains("<cursor_before_context>"))
         assertTrue(usr.contains("嗯那个明天三点不对四点讨论太普利斯方案"))
     }

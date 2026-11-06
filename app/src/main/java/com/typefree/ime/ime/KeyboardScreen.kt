@@ -1305,10 +1305,16 @@ private fun VoiceMainPanel(
             }
             is VoicePhase.Recording -> {
                 val timerText = ImeLogic.formatElapsedTimer(elapsedMs)
-                if (isTranslateRecording) {
-                    "🌐 正在聆听 → $activeTranslateLabel · $timerText"
-                } else {
-                    timerText
+                val livePreview = uiState.streamingPartialPreview.trim()
+                when {
+                    isTranslateRecording && livePreview.isNotEmpty() ->
+                        "🌐 $activeTranslateLabel · ${livePreview.takeLast(18)}"
+                    isTranslateRecording ->
+                        "🌐 正在聆听 → $activeTranslateLabel · $timerText"
+                    livePreview.isNotEmpty() ->
+                        "$timerText · ${livePreview.takeLast(22)}"
+                    else ->
+                        timerText
                 }
             }
             is VoicePhase.Processing -> phase.stageText

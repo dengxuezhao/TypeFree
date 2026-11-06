@@ -1,0 +1,73 @@
+package com.typefree.ime.network.asr
+
+import com.typefree.ime.audio.WavAudioRecorder
+import com.typefree.ime.data.SttConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.IOException
+
+/**
+ * Live bidirectional WebSocket speech recognition session.
+ * Accepts 16kHz 16-bit mono little-endian PCM chunks while the user speaks,
+ * and returns the finalized transcript within ~60-150ms after mic release.
+ */
+interface StreamingAsrSession {
+    /** Real-time incremental recognition preview emitted while speaking. */
+    val partialText: StateFlow<String>
+
+    /** Non-blocking push of a 16kHz 16-bit mono PCM slice (typically 200ms = 6400 bytes). */
+    fun sendPcmFrame(pcm16Le: ByteArray)
+
+    /** Clears buffered/accumulated prefix if user resets hands-free timer before speaking. */
+    fun resetPrefix() {}
+
+    /** Sends stream-end marker and suspends briefly for the server's final recognition packet. */
+    suspend fun finishAndAwaitFinal(timeoutMs: Long = 2400L): Result<String>
+
+    /** Immediately aborts the WebSocket session without waiting for results. */
+    fun cancel()
+}
+
+/**
+ * Pluggable real-time WebSocket ASR provider contract.
+ */
+interface StreamingAsrClient {
+
+    fun openSession(
+        config: SttConfig,
+        hotwords: List<String> = emptyList()
+    ): StreamingAsrSession
+
+    /**
+     * Replays a saved local WAV file through the streaming ASR protocol.
+     * Used for History audio retry, error retry, or fallback recovery.
+     */
+    suspend fun transcribeWavFile(
+        wavFile: File,
+        config: SttConfig,
+        hotwords: List<String> = emptyList(),
+        timeoutMs: Long = 10_000L
+    ): String = withContext(Dispatchers.IO) {
+        val rawPcm = WavAudioRecorder.extractPcmFromWav(wavFile)
+        if (rawPcm.isEmpty()) {
+            throw IOException("本地音频文件为空，无法识别")
+        }
+        val normalizedPcm = WavAudioRecorder.normalizePcm16Le(rawPcm)
+        val session = openSession(config, hotwords)
+        try {
+            val chunkSize = WavAudioRecorder.STREAM_CHUNK_BYTES
+            var offset = 0
+            while (offset < normalizedPcm.size) {
+                val end = minOf(offset + chunkSize, normalizedPcm.size)
+                session.sendPcmFrame(normalizedPcm.copyOfRange(offset, end))
+                offset = end
+            }
+            session.finishAndAwaitFinal(timeoutMs = timeoutMs).getOrThrow()
+        } catch (e: Throwable) {
+            session.cancel()
+            throw if (e is IOException) e else IOException(e.message ?: "流式语音识别失败", e)
+        }
+    }
+}
