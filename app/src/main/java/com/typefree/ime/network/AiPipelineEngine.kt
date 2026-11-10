@@ -20,8 +20,10 @@ import com.typefree.ime.data.ThinkingMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.UnifiedProviderCatalog
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.network.asr.AsrSessionLimits
 import com.typefree.ime.network.asr.DashScopeStreamingAsrClient
 import com.typefree.ime.network.asr.GeminiLiveTranscribeClient
+import com.typefree.ime.network.asr.RotatingStreamingAsrSession
 import com.typefree.ime.network.asr.StreamingAsrClient
 import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.network.asr.VolcengineSaucAsrClient
@@ -183,11 +185,21 @@ class AiPipelineEngine(
         if (settings.pipelineMode != PipelineMode.DUAL_STAGE) return null
         val sttCfg = settings.sttConfig
         val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
+        val limit = AsrSessionLimits.forProtocol(sttCfg.protocol)
         return when (sttCfg.protocol) {
             SttProtocol.OPENAI_HTTP -> null
-            SttProtocol.ALIYUN_DASHSCOPE_WS -> dashScopeAsrClient.openSession(sttCfg, hotwords)
-            SttProtocol.VOLCENGINE_SAUC_WS -> volcengineAsrClient.openSession(sttCfg, hotwords)
-            SttProtocol.GEMINI_LIVE_WS -> geminiLiveAsrClient.openSession(sttCfg, hotwords)
+            SttProtocol.ALIYUN_DASHSCOPE_WS -> RotatingStreamingAsrSession(
+                sessionFactory = { dashScopeAsrClient.openSession(sttCfg, hotwords) },
+                limit = limit
+            )
+            SttProtocol.VOLCENGINE_SAUC_WS -> RotatingStreamingAsrSession(
+                sessionFactory = { volcengineAsrClient.openSession(sttCfg, hotwords) },
+                limit = limit
+            )
+            SttProtocol.GEMINI_LIVE_WS -> RotatingStreamingAsrSession(
+                sessionFactory = { geminiLiveAsrClient.openSession(sttCfg, hotwords) },
+                limit = limit
+            )
         }
     }
 
@@ -323,41 +335,83 @@ class AiPipelineEngine(
                     }
 
                     onStageChanged(PipelineStage.POLISHING_LLM)
-                    val (sysPrompt, usrPrompt) = when (effectiveIntent) {
-                        VoiceIntentMode.SPEAK_TO_EDIT -> PromptBuilder.buildSpeakToEditPrompts(
-                            selectedText = selectedText,
-                            voiceInstruction = rawTranscript,
-                            style = activeStyle,
-                            dictionary = settings.dictionary
-                        )
-                        VoiceIntentMode.HELP_ME_WRITE -> PromptBuilder.buildHelpMeWritePrompts(
-                            voiceInstruction = rawTranscript,
-                            style = activeStyle,
-                            targetAppName = targetAppName,
-                            dictionary = settings.dictionary,
-                            surroundingBeforeCursor = safeContext
-                        )
-                        VoiceIntentMode.TRANSLATE -> PromptBuilder.buildTranslatePrompts(
-                            rawSpeech = rawTranscript,
-                            targetLanguage = translateTargetLanguage,
-                            style = activeStyle,
-                            dictionary = settings.dictionary
-                        )
-                        VoiceIntentMode.DICTATE -> PromptBuilder.buildDictationPrompts(
-                            rawSpeech = rawTranscript,
-                            style = activeStyle,
-                            targetAppName = targetAppName,
-                            dictionary = settings.dictionary,
-                            surroundingBeforeCursor = safeContext
-                        )
+                    val llmStart = System.currentTimeMillis()
+                    val chunks = if (effectiveIntent == VoiceIntentMode.DICTATE) {
+                        splitLongTextForChunkedPolish(rawTranscript, CHUNKED_POLISH_THRESHOLD_CHARS)
+                    } else {
+                        listOf(rawTranscript)
                     }
 
-                    val llmStart = System.currentTimeMillis()
-                    val llmOutcome = executeLlmChatWithDiagnostics(
-                        config = llmCfg,
-                        systemPrompt = sysPrompt,
-                        userPrompt = usrPrompt
-                    )
+                    val llmOutcome = if (chunks.size > 1 && effectiveIntent == VoiceIntentMode.DICTATE) {
+                        val semaphore = Semaphore(MAX_CONCURRENT_POLISH_CHUNKS)
+                        val chunkOutcomes = coroutineScope {
+                            chunks.mapIndexed { idx, chunkText ->
+                                async {
+                                    semaphore.withPermit {
+                                        val chunkContext = if (idx == 0) {
+                                            safeContext
+                                        } else {
+                                            chunks[idx - 1].takeLast(80)
+                                        }
+                                        val (sysPrompt, usrPrompt) = PromptBuilder.buildDictationPrompts(
+                                            rawSpeech = chunkText,
+                                            style = activeStyle,
+                                            targetAppName = targetAppName,
+                                            dictionary = settings.dictionary,
+                                            surroundingBeforeCursor = chunkContext
+                                        )
+                                        executeLlmChatWithDiagnostics(
+                                            config = llmCfg,
+                                            systemPrompt = sysPrompt,
+                                            userPrompt = usrPrompt
+                                        )
+                                    }
+                                }
+                            }.awaitAll()
+                        }
+                        ChatCallOutcome(
+                            text = chunkOutcomes.mapIndexed { idx, outcome ->
+                                outcome.text.ifBlank { chunks[idx] }
+                            }.joinToString(""),
+                            diagnosticLog = chunkOutcomes.mapIndexed { idx, outcome ->
+                                "[Chunk ${idx + 1}/${chunkOutcomes.size}] ${outcome.diagnosticLog}"
+                            }.joinToString("\n")
+                        )
+                    } else {
+                        val (sysPrompt, usrPrompt) = when (effectiveIntent) {
+                            VoiceIntentMode.SPEAK_TO_EDIT -> PromptBuilder.buildSpeakToEditPrompts(
+                                selectedText = selectedText,
+                                voiceInstruction = rawTranscript,
+                                style = activeStyle,
+                                dictionary = settings.dictionary
+                            )
+                            VoiceIntentMode.HELP_ME_WRITE -> PromptBuilder.buildHelpMeWritePrompts(
+                                voiceInstruction = rawTranscript,
+                                style = activeStyle,
+                                targetAppName = targetAppName,
+                                dictionary = settings.dictionary,
+                                surroundingBeforeCursor = safeContext
+                            )
+                            VoiceIntentMode.TRANSLATE -> PromptBuilder.buildTranslatePrompts(
+                                rawSpeech = rawTranscript,
+                                targetLanguage = translateTargetLanguage,
+                                style = activeStyle,
+                                dictionary = settings.dictionary
+                            )
+                            VoiceIntentMode.DICTATE -> PromptBuilder.buildDictationPrompts(
+                                rawSpeech = rawTranscript,
+                                style = activeStyle,
+                                targetAppName = targetAppName,
+                                dictionary = settings.dictionary,
+                                surroundingBeforeCursor = safeContext
+                            )
+                        }
+                        executeLlmChatWithDiagnostics(
+                            config = llmCfg,
+                            systemPrompt = sysPrompt,
+                            userPrompt = usrPrompt
+                        )
+                    }
                     val polished = llmOutcome.text
                     val llmElapsedMs = (System.currentTimeMillis() - llmStart).coerceAtLeast(0L)
                     val totalPostReleaseMs = (System.currentTimeMillis() - startMs) +
@@ -2210,6 +2264,71 @@ class AiPipelineEngine(
                     else -> 10
                 }
             }
+        }
+
+        const val CHUNKED_POLISH_THRESHOLD_CHARS: Int = 600
+        const val MAX_CONCURRENT_POLISH_CHUNKS: Int = 3
+
+        private val PARAGRAPH_BREAK_CHARS = charArrayOf('\n', '\r')
+        private val SENTENCE_END_PUNCTUATION = charArrayOf('。', '！', '？', '；', '.', '!', '?', ';')
+        private val CLAUSE_PUNCTUATION = charArrayOf('，', '、', '：', ',', ':')
+
+        /**
+         * Splits long dictation transcripts exceeding [thresholdChars] (default 600 chars) into
+         * ~300-600 character chunks along natural paragraph or sentence boundaries so Stage-2 LLM
+         * polishing can run up to [MAX_CONCURRENT_POLISH_CHUNKS] (3) requests concurrently.
+         */
+        fun splitLongTextForChunkedPolish(
+            text: String,
+            thresholdChars: Int = CHUNKED_POLISH_THRESHOLD_CHARS
+        ): List<String> {
+            val safeThreshold = thresholdChars.coerceAtLeast(50)
+            if (text.isEmpty()) return emptyList()
+            if (text.length <= safeThreshold) return listOf(text)
+
+            val minPreferredLen = (safeThreshold / 2).coerceAtLeast(1)
+            val chunks = mutableListOf<String>()
+            var remaining = text
+
+            while (remaining.length > safeThreshold) {
+                val window = remaining.substring(0, safeThreshold)
+                val splitIdx = findBestChunkBoundary(window, minPreferredLen, safeThreshold)
+                chunks.add(remaining.substring(0, splitIdx))
+                remaining = remaining.substring(splitIdx)
+            }
+            if (remaining.isNotEmpty()) {
+                chunks.add(remaining)
+            }
+            return chunks
+        }
+
+        private fun findBestChunkBoundary(
+            window: String,
+            minPreferredLen: Int,
+            maxLen: Int
+        ): Int {
+            // 1. Prefer paragraph newline in [minPreferredLen, maxLen)
+            val paraIdx = window.lastIndexOfAny(PARAGRAPH_BREAK_CHARS)
+            if (paraIdx >= minPreferredLen) {
+                return paraIdx + 1
+            }
+            // 2. Prefer sentence-ending punctuation (。！？；.!?; ) in [minPreferredLen, maxLen)
+            val sentIdx = window.lastIndexOfAny(SENTENCE_END_PUNCTUATION)
+            if (sentIdx >= minPreferredLen) {
+                return sentIdx + 1
+            }
+            // 3. Fallback to clause punctuation (，、：,:) in [minPreferredLen, maxLen)
+            val clauseIdx = window.lastIndexOfAny(CLAUSE_PUNCTUATION)
+            if (clauseIdx >= minPreferredLen) {
+                return clauseIdx + 1
+            }
+            // 4. Fallback to any sentence/clause punctuation earlier in window
+            val anySentIdx = maxOf(paraIdx, sentIdx, clauseIdx)
+            if (anySentIdx > 0) {
+                return anySentIdx + 1
+            }
+            // 5. Hard split at maxLen
+            return maxLen.coerceAtMost(window.length)
         }
     }
 }

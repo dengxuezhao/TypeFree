@@ -3,6 +3,7 @@ package com.typefree.ime.network.asr
 import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.data.SttConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -17,6 +18,14 @@ interface StreamingAsrSession {
     /** Real-time incremental recognition preview emitted while speaking. */
     val partialText: StateFlow<String>
 
+    /**
+     * Structured real-time transcript separating immutable [LiveTranscript.finalized] sentences
+     * from the mutable [LiveTranscript.interim] tail.
+     * Default implementation derives from [partialText] by treating all text as `interim`.
+     */
+    val transcript: StateFlow<LiveTranscript>
+        get() = DerivedInterimTranscriptStateFlow(partialText)
+
     /** Non-blocking push of a 16kHz 16-bit mono PCM slice (typically 200ms = 6400 bytes). */
     fun sendPcmFrame(pcm16Le: ByteArray)
 
@@ -28,6 +37,37 @@ interface StreamingAsrSession {
 
     /** Immediately aborts the WebSocket session without waiting for results. */
     fun cancel()
+}
+
+private class DerivedInterimTranscriptStateFlow(
+    private val source: StateFlow<String>
+) : StateFlow<LiveTranscript> {
+    override val replayCache: List<LiveTranscript>
+        get() = listOf(value)
+
+    override val value: LiveTranscript
+        get() {
+            val text = source.value
+            return LiveTranscript(
+                finalized = "",
+                interim = text,
+                revision = if (text.isEmpty()) 0L else 1L
+            )
+        }
+
+    override suspend fun collect(collector: FlowCollector<LiveTranscript>): Nothing {
+        var rev = 0L
+        var lastText: String? = null
+        source.collect { text ->
+            if (text != lastText) {
+                if (lastText != null || text.isNotEmpty()) {
+                    rev += 1L
+                }
+                lastText = text
+            }
+            collector.emit(LiveTranscript(finalized = "", interim = text, revision = rev))
+        }
+    }
 }
 
 /**

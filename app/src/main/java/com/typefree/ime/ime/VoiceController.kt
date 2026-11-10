@@ -29,7 +29,12 @@ class VoiceController(
     private var activePipelineJob: Job? = null
     private var activeStreamingSession: StreamingAsrSession? = null
     private var streamingPreviewJob: Job? = null
+    private var handsFreeSilenceJob: Job? = null
     private var toastDismissJob: Job? = null
+    private var activeComposer: StreamingComposer? = null
+    private var preSessionSurroundingContext: String = ""
+    private var lastKnownSelectionStart: Int = 0
+    private var lastKnownSelectionEnd: Int = 0
 
     @Volatile
     var micPressDownTimeMs: Long = 0L
@@ -139,6 +144,8 @@ class VoiceController(
         val defaultLang = settings.activeTranslateTarget.ifBlank {
             settings.translationTargets.firstOrNull() ?: DefaultPresets.defaultTranslationTargets().first()
         }
+        activeComposer?.cancelSession(rollbackWrittenText = true)
+        activeComposer = null
         host.performHaptic(strong = false)
         host.stateFlow.update {
             it.copy(
@@ -148,7 +155,8 @@ class VoiceController(
                 arcSelectedLanguage = defaultLang,
                 activeIntentMode = VoiceIntentMode.TRANSLATE,
                 isPunctuationStripOpen = false,
-                isStylePickerExpanded = false
+                isStylePickerExpanded = false,
+                liveWriteStatus = LiveWriteUiStatus.INACTIVE
             )
         }
     }
@@ -202,6 +210,7 @@ class VoiceController(
                     activeIntentMode = VoiceIntentMode.TRANSLATE
                 )
             }
+            startHandsFreeSilenceMonitor()
         } else {
             host.performKeyFeedback(strong = true)
             host.stateFlow.update {
@@ -263,8 +272,31 @@ class VoiceController(
         host.performHaptic(strong = true)
 
         abortActiveStreamingSession()
+        handsFreeSilenceJob?.cancel()
+        handsFreeSilenceJob = null
+        activeComposer?.cancelSession(rollbackWrittenText = false)
+        activeComposer = null
+
         val settingsSnap = host.repository.settings.value
+        val prevState = host.stateFlow.value
+        val liveSelected = host.readSelectedTextSafely().ifBlank { prevState.rawSelectedText }
+        val effectiveSelected = if (prevState.ignoreSelectionForThisTurn) "" else liveSelected
+        val resolvedStartIntent = when {
+            intentMode != VoiceIntentMode.DICTATE -> intentMode
+            effectiveSelected.isNotBlank() -> VoiceIntentMode.SPEAK_TO_EDIT
+            else -> VoiceIntentMode.DICTATE
+        }
+        preSessionSurroundingContext = host.readSurroundingBeforeCursor(80)
+
         val streamSession = host.aiEngine.openLiveStreamingSession(settingsSnap)
+        val enableLiveWrite = StreamingComposer.shouldEnableLiveWrite(
+            settings = settingsSnap,
+            intentMode = resolvedStartIntent,
+            effectiveSelectedText = effectiveSelected,
+            hasStreamingSession = streamSession != null,
+            targetPackage = prevState.targetPackage,
+            isFloatingBubbleChannel = false
+        )
 
         val startRes = audioRecorder.startRecording(
             scope = host.scope,
@@ -275,7 +307,13 @@ class VoiceController(
             },
             onSilencePrefixCleared = {
                 streamSession?.resetPrefix()
-                host.stateFlow.update { it.copy(streamingPartialPreview = "") }
+                activeComposer?.cancelSession(rollbackWrittenText = true)
+                host.stateFlow.update {
+                    it.copy(
+                        streamingPartialPreview = "",
+                        liveWriteStatus = activeComposer?.uiStatus ?: LiveWriteUiStatus.INACTIVE
+                    )
+                }
             },
             pauseMediaPlayback = settingsSnap.pauseMediaWhileRecording,
             whisperMode = settingsSnap.whisperModeEnabled
@@ -284,10 +322,38 @@ class VoiceController(
             onSuccess = {
                 micPressDownTimeMs = System.currentTimeMillis()
                 activeStreamingSession = streamSession
+                if (enableLiveWrite) {
+                    onResetComposing()
+                    val anchor = resolveCurrentCursorAnchor()
+                    val composer = StreamingComposer(
+                        editorBridge = InputConnectionEditorBridge { host.currentInputConnection() }
+                    )
+                    composer.startSession(
+                        anchorCursor = anchor,
+                        smartDirectMode = StreamingComposer.isSmartDirectDictation(settingsSnap, resolvedStartIntent)
+                    )
+                    activeComposer = composer
+                } else {
+                    activeComposer = null
+                }
+
                 if (streamSession != null) {
                     streamingPreviewJob = host.scope.launch {
-                        streamSession.partialText.collect { liveText ->
-                            host.stateFlow.update { it.copy(streamingPartialPreview = liveText) }
+                        streamSession.transcript.collect { liveTranscript ->
+                            val composer = activeComposer
+                            if (composer != null && composer.isActive) {
+                                composer.onTranscriptUpdate(liveTranscript)
+                                host.stateFlow.update {
+                                    it.copy(
+                                        streamingPartialPreview = liveTranscript.fullText,
+                                        liveWriteStatus = composer.uiStatus
+                                    )
+                                }
+                            } else {
+                                host.stateFlow.update {
+                                    it.copy(streamingPartialPreview = liveTranscript.fullText)
+                                }
+                            }
                         }
                     }
                 }
@@ -298,12 +364,14 @@ class VoiceController(
                 host.stateFlow.update {
                     it.copy(
                         voicePhase = VoicePhase.Recording(isHandsFree = false),
-                        streamingPartialPreview = ""
+                        streamingPartialPreview = "",
+                        liveWriteStatus = activeComposer?.uiStatus ?: LiveWriteUiStatus.INACTIVE
                     )
                 }
             },
             onFailure = { err ->
                 streamSession?.cancel()
+                activeComposer = null
                 micPressDownTimeMs = 0L
                 host.performHaptic(strong = true)
                 val errorPhase = ImeLogic.classifyErrorFlags(
@@ -311,7 +379,13 @@ class VoiceController(
                     hasCachedAudio = host.hasRetryWavFile(),
                     hasMicPermission = audioRecorder.hasRecordPermission()
                 )
-                host.stateFlow.update { it.copy(voicePhase = errorPhase, streamingPartialPreview = "") }
+                host.stateFlow.update {
+                    it.copy(
+                        voicePhase = errorPhase,
+                        streamingPartialPreview = "",
+                        liveWriteStatus = LiveWriteUiStatus.INACTIVE
+                    )
+                }
             }
         )
     }
@@ -345,7 +419,62 @@ class VoiceController(
             host.stateFlow.update {
                 it.copy(voicePhase = VoicePhase.Recording(isHandsFree = true))
             }
+            startHandsFreeSilenceMonitor()
         }
+    }
+
+    private fun startHandsFreeSilenceMonitor() {
+        handsFreeSilenceJob?.cancel()
+        val recorder = runCatching { audioRecorderProvider() }.getOrNull() ?: return
+        handsFreeSilenceJob = host.scope.launch {
+            var lastVoiceActivityAtMs = System.currentTimeMillis()
+            val ampCollectorJob = launch {
+                recorder.amplitudes.collect { amps ->
+                    if (!isSilentAmplitudeFrame(amps)) {
+                        lastVoiceActivityAtMs = System.currentTimeMillis()
+                    }
+                }
+            }
+            try {
+                while (true) {
+                    delay(200L)
+                    val curr = host.stateFlow.value
+                    val phase = curr.voicePhase
+                    if (phase !is VoicePhase.Recording || !phase.isHandsFree) {
+                        break
+                    }
+                    if (curr.isArcTranslateActive) {
+                        lastVoiceActivityAtMs = System.currentTimeMillis()
+                        continue
+                    }
+                    if (!isSilentAmplitudeFrame(recorder.amplitudes.value)) {
+                        lastVoiceActivityAtMs = System.currentTimeMillis()
+                        continue
+                    }
+                    if (System.currentTimeMillis() - lastVoiceActivityAtMs >= HANDS_FREE_SILENCE_AUTO_STOP_MS) {
+                        finishHandsFreeRecording()
+                        break
+                    }
+                }
+            } finally {
+                ampCollectorJob.cancel()
+            }
+        }
+    }
+
+    private fun resolveCurrentCursorAnchor(): Int {
+        val ic = host.currentInputConnection()
+        if (ic != null) {
+            val extracted = runCatching { ic.getExtractedText(ExtractedTextRequest(), 0) }.getOrNull()
+            if (extracted != null && extracted.selectionStart >= 0) {
+                return extracted.selectionStart
+            }
+            val before = runCatching { ic.getTextBeforeCursor(4000, 0) }.getOrNull()
+            if (before != null) {
+                return before.length
+            }
+        }
+        return lastKnownSelectionStart.coerceAtLeast(0)
     }
 
     fun finishHandsFreeRecording() {
@@ -368,7 +497,11 @@ class VoiceController(
     fun cancelRecordingOrProcessing() {
         host.performKeyFeedback(strong = false)
         micPressDownTimeMs = 0L
+        handsFreeSilenceJob?.cancel()
+        handsFreeSilenceJob = null
         abortActiveStreamingSession()
+        activeComposer?.cancelSession(rollbackWrittenText = true)
+        activeComposer = null
         activePipelineJob?.cancel()
         activePipelineJob = null
         val audioRecorder = runCatching { audioRecorderProvider() }.getOrNull()
@@ -397,6 +530,8 @@ class VoiceController(
         activeStreamingSession = null
         streamingPreviewJob?.cancel()
         streamingPreviewJob = null
+        handsFreeSilenceJob?.cancel()
+        handsFreeSilenceJob = null
 
         val audioRecorder = audioRecorderProvider()
         activePipelineJob?.cancel()
@@ -423,6 +558,8 @@ class VoiceController(
 
                         val streamErr = streamRes.exceptionOrNull()
                         if (streamErr is IllegalStateException) {
+                            activeComposer?.cancelSession(rollbackWrittenText = true)
+                            activeComposer = null
                             val errorPhase = ImeLogic.classifyErrorFlags(
                                 errorMessage = streamErr.message ?: "请先完成语音 API 配置",
                                 hasCachedAudio = recorded.wavFile.exists(),
@@ -446,6 +583,8 @@ class VoiceController(
 
                     if (preTranscribed == null && !recorded.hasValidSpeech) {
                         liveSession?.cancel()
+                        activeComposer?.cancelSession(rollbackWrittenText = true)
+                        activeComposer = null
                         val errorPhase = ImeLogic.classifyErrorFlags(
                             errorMessage = "未检测到清晰说话声，请靠近麦克风重试",
                             hasCachedAudio = false,
@@ -476,6 +615,8 @@ class VoiceController(
                 },
                 onFailure = { err ->
                     liveSession?.cancel()
+                    activeComposer?.cancelSession(rollbackWrittenText = true)
+                    activeComposer = null
                     if (err is CancellationException) return@launch
                     val errorPhase = ImeLogic.classifyErrorFlags(
                         errorMessage = err.message ?: "录音时间过短，请重试",
@@ -528,7 +669,26 @@ class VoiceController(
         } else {
             ""
         }
-        val surroundingContext = host.readSurroundingBeforeCursor(80)
+
+        val composer = activeComposer
+        val surroundingContext = if (composer != null && !composer.wasFrozenDuringSession) {
+            preSessionSurroundingContext
+        } else {
+            host.readSurroundingBeforeCursor(80)
+        }
+
+        if (composer != null && composer.isActive) {
+            if (resolvedIntent != VoiceIntentMode.DICTATE) {
+                composer.cancelSession(rollbackWrittenText = true)
+                activeComposer = null
+            } else {
+                val needsPolish = !StreamingComposer.isSmartDirectDictation(settings, resolvedIntent)
+                composer.onRecordingFinished(
+                    finalRawTranscript = preTranscribedText.orEmpty(),
+                    needsPolishing = needsPolish
+                )
+            }
+        }
 
         val initialStage = when {
             settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT -> PipelineStage.MULTIMODAL_PROCESSING
@@ -549,7 +709,8 @@ class VoiceController(
                 arcStartedFromHandsFree = false,
                 isArcCancelHovered = false,
                 streamingPartialPreview = "",
-                hasCachedAudioForRetry = wavFile.exists()
+                hasCachedAudioForRetry = wavFile.exists(),
+                liveWriteStatus = activeComposer?.uiStatus ?: LiveWriteUiStatus.INACTIVE
             )
         }
 
@@ -582,12 +743,23 @@ class VoiceController(
         pipelineResult.fold(
             onSuccess = { exec ->
                 val finalOutput = exec.finalOutput
-                val overwritten = if (isSpeakToEdit) liveSelection else host.readSelectedTextSafely()
-                commitPipelineOutput(
-                    finalText = finalOutput,
-                    overwrittenSelection = overwritten,
-                    latencyMs = exec.latencyMs
-                )
+                val activeComp = activeComposer
+                activeComposer = null
+                if (activeComp != null) {
+                    finalizeLiveWriteOutput(
+                        composer = activeComp,
+                        finalText = finalOutput,
+                        rawTranscript = exec.rawTranscript,
+                        latencyMs = exec.latencyMs
+                    )
+                } else {
+                    val overwritten = if (isSpeakToEdit) liveSelection else host.readSelectedTextSafely()
+                    commitPipelineOutput(
+                        finalText = finalOutput,
+                        overwrittenSelection = overwritten,
+                        latencyMs = exec.latencyMs
+                    )
+                }
                 if (!host.stateFlow.value.isIncognitoMode) {
                     val historyAudioFile = host.archiveWavForHistory(wavFile, settings.historyRetention)
                     host.repository.addHistory(
@@ -613,6 +785,8 @@ class VoiceController(
                 }
             },
             onFailure = { err ->
+                activeComposer?.cancelSession(rollbackWrittenText = false)
+                activeComposer = null
                 if (err is CancellationException) return
                 host.performHaptic(strong = true)
                 val audioRecorder = runCatching { audioRecorderProvider() }.getOrNull()
@@ -820,6 +994,58 @@ class VoiceController(
         }
     }
 
+    private fun finalizeLiveWriteOutput(
+        composer: StreamingComposer,
+        finalText: String,
+        rawTranscript: String,
+        latencyMs: Long
+    ) {
+        val outcome = if (composer.state == StreamingComposer.State.Done &&
+            finalText == composer.writtenRawText
+        ) {
+            ComposerFinalizeOutcome(
+                appliedToEditor = true,
+                wasFrozen = composer.wasFrozenDuringSession,
+                rawWrittenText = composer.writtenRawText,
+                finalCommittedText = finalText,
+                undoSnapshot = ImeLogic.createUndoSnapshot(
+                    committedText = finalText,
+                    replacedSelection = ""
+                )
+            )
+        } else {
+            composer.applyPolishedResult(
+                polishedText = finalText,
+                fullRawTranscript = rawTranscript
+            )
+        }
+
+        val fullBufferAfterCommit = host.readFullEditorTextSafely().ifBlank { outcome.finalCommittedText }
+        host.onDictationCommittedForAutoLearn(fullBufferAfterCommit)
+
+        host.performHaptic(strong = true)
+        if (outcome.finalCommittedText.isNotEmpty()) {
+            onExternalCommitToEngine(outcome.finalCommittedText)
+        }
+        host.pushUndoSnapshot(outcome.undoSnapshot)
+
+        host.stateFlow.update {
+            it.copy(
+                voicePhase = VoicePhase.SuccessToast(
+                    preview = ImeLogic.formatSelectionPreview(outcome.finalCommittedText.ifBlank { finalText }, 24),
+                    latencyMs = latencyMs
+                ),
+                voiceSubPanel = VoiceSubPanel.NONE,
+                activeIntentMode = VoiceIntentMode.DICTATE,
+                undoSnapshot = host.peekTopUndoSnapshot(),
+                rawSelectedText = "",
+                ignoreSelectionForThisTurn = false,
+                liveWriteStatus = LiveWriteUiStatus.INACTIVE
+            )
+        }
+        scheduleToastReset()
+    }
+
     fun commitPipelineOutput(
         finalText: String,
         overwrittenSelection: String,
@@ -1013,10 +1239,24 @@ class VoiceController(
         candidatesStart: Int,
         candidatesEnd: Int
     ) {
-        // Hook for StreamingComposer cursor movement detection (Module B)
+        if (newSelStart >= 0 && newSelEnd >= 0) {
+            lastKnownSelectionStart = newSelStart
+            lastKnownSelectionEnd = newSelEnd
+        }
+        val composer = activeComposer ?: return
+        if (!composer.isActive) return
+        composer.onUpdateSelection(newSelStart, newSelEnd)
+        val nextUiStatus = composer.uiStatus
+        if (host.stateFlow.value.liveWriteStatus != nextUiStatus) {
+            host.stateFlow.update { it.copy(liveWriteStatus = nextUiStatus) }
+        }
     }
 
     fun stopRecordingOnTabSwitchOrWindowHidden() {
+        handsFreeSilenceJob?.cancel()
+        handsFreeSilenceJob = null
+        activeComposer?.cancelSession(rollbackWrittenText = false)
+        activeComposer = null
         if (host.stateFlow.value.voicePhase is VoicePhase.Recording) {
             micPressDownTimeMs = 0L
             abortActiveStreamingSession()
@@ -1027,13 +1267,32 @@ class VoiceController(
                 }
             }
         }
+        if (host.stateFlow.value.liveWriteStatus != LiveWriteUiStatus.INACTIVE) {
+            host.stateFlow.update { it.copy(liveWriteStatus = LiveWriteUiStatus.INACTIVE) }
+        }
     }
 
     fun onDestroy() {
         micPressDownTimeMs = 0L
+        handsFreeSilenceJob?.cancel()
+        handsFreeSilenceJob = null
+        activeComposer?.cancelSession(rollbackWrittenText = false)
+        activeComposer = null
         abortActiveStreamingSession()
         host.aiEngine.evictLiveStreamingPrewarm()
         activePipelineJob?.cancel()
         toastDismissJob?.cancel()
+    }
+
+    companion object {
+        const val HANDS_FREE_SILENCE_AUTO_STOP_MS: Long = 8_000L
+        const val HANDS_FREE_SILENCE_AMPLITUDE_THRESHOLD: Float = 0.12f
+
+        fun isSilentAmplitudeFrame(
+            amplitudes: List<Float>,
+            threshold: Float = HANDS_FREE_SILENCE_AMPLITUDE_THRESHOLD
+        ): Boolean {
+            return (amplitudes.lastOrNull() ?: 0.08f) <= threshold
+        }
     }
 }

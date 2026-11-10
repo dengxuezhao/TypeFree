@@ -71,6 +71,8 @@ class DashScopeStreamingAsrClient(
         private val lock = Any()
         private val _partialText = MutableStateFlow("")
         override val partialText: StateFlow<String> = _partialText.asStateFlow()
+        private val _transcript = MutableStateFlow(LiveTranscript())
+        override val transcript: StateFlow<LiveTranscript> = _transcript.asStateFlow()
 
         private val finalDeferred = CompletableDeferred<String>()
         private val pendingFrames = ArrayDeque<ByteArray>()
@@ -149,23 +151,26 @@ class DashScopeStreamingAsrClient(
                 }
 
                 is ServerEvent.ResultGenerated -> {
-                    val fullNow = synchronized(lock) {
+                    val (liveNow, fullNow) = synchronized(lock) {
                         sentenceAggregator.update(
                             sentenceId = parsedEvent.sentenceId,
                             beginTime = parsedEvent.beginTime,
                             text = parsedEvent.text,
                             isSentenceEnd = parsedEvent.isSentenceEnd
                         )
-                        sentenceAggregator.buildFullText()
+                        sentenceAggregator.buildLiveTranscript() to sentenceAggregator.buildFullText()
                     }
+                    _transcript.value = liveNow
                     _partialText.value = AiPipelineEngine.cleanRawTranscript(fullNow)
                 }
 
                 is ServerEvent.TaskFinished -> {
-                    val finalTranscript = synchronized(lock) {
+                    val (liveFinal, finalTranscript) = synchronized(lock) {
                         closed = true
-                        sentenceAggregator.buildFullText()
+                        sentenceAggregator.finalizeAll()
+                        sentenceAggregator.buildLiveTranscript() to sentenceAggregator.buildFullText()
                     }
+                    _transcript.value = liveFinal
                     finalDeferred.complete(AiPipelineEngine.cleanRawTranscript(finalTranscript))
                     runCatching { ws.close(1000, "done") }
                 }
@@ -218,6 +223,7 @@ class DashScopeStreamingAsrClient(
                 }
                 sentenceAggregator.clear()
             }
+            _transcript.value = LiveTranscript()
             _partialText.value = ""
         }
 
@@ -281,9 +287,17 @@ class DashScopeStreamingAsrClient(
      * updating its text until `sentence_end == true` / `end_time != null` before starting the next sentence.
      */
     internal class SentenceAggregator {
-        private val segments = LinkedHashMap<Int, String>()
+        private data class SegmentState(
+            val text: String,
+            val isSentenceEnd: Boolean
+        )
+
+        private val segments = LinkedHashMap<Int, SegmentState>()
         private var fallbackKeyCounter = 1
         private var activeFallbackKeyClosed = false
+        private var revisionCounter: Long = 0L
+        private var lastFinalized: String = ""
+        private var lastInterim: String = ""
 
         fun update(
             sentenceId: Int?,
@@ -302,20 +316,60 @@ class DashScopeStreamingAsrClient(
                     fallbackKeyCounter
                 }
             }
-            segments[key] = text
-            if (isSentenceEnd) {
+            val prev = segments[key]
+            val finalized = (prev?.isSentenceEnd == true) || isSentenceEnd
+            segments[key] = SegmentState(text = text, isSentenceEnd = finalized)
+            if (finalized) {
                 activeFallbackKeyClosed = true
             }
         }
 
+        fun finalizeAll() {
+            for ((k, v) in segments.entries) {
+                if (!v.isSentenceEnd) {
+                    segments[k] = v.copy(isSentenceEnd = true)
+                }
+            }
+            activeFallbackKeyClosed = true
+        }
+
         fun buildFullText(): String {
-            return segments.values.joinToString("").trim()
+            return segments.values.joinToString("") { it.text }.trim()
+        }
+
+        fun buildLiveTranscript(): LiveTranscript {
+            val finalizedBuilder = StringBuilder()
+            val interimBuilder = StringBuilder()
+            for (seg in segments.values) {
+                val cleaned = AiPipelineEngine.cleanRawTranscript(seg.text)
+                if (cleaned.isEmpty()) continue
+                if (seg.isSentenceEnd) {
+                    finalizedBuilder.append(cleaned)
+                } else {
+                    interimBuilder.append(cleaned)
+                }
+            }
+            val finStr = finalizedBuilder.toString()
+            val intStr = interimBuilder.toString()
+            if (finStr != lastFinalized || intStr != lastInterim) {
+                revisionCounter += 1L
+                lastFinalized = finStr
+                lastInterim = intStr
+            }
+            return LiveTranscript(
+                finalized = finStr,
+                interim = intStr,
+                revision = revisionCounter
+            )
         }
 
         fun clear() {
             segments.clear()
             fallbackKeyCounter = 1
             activeFallbackKeyClosed = false
+            revisionCounter = 0L
+            lastFinalized = ""
+            lastInterim = ""
         }
     }
 
@@ -401,9 +455,9 @@ class DashScopeStreamingAsrClient(
                     val sentenceId = sentence.get("sentence_id")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asInt
                     val beginTime = sentence.get("begin_time")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asInt
                     val explicitEnd = sentence.get("sentence_end")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
-                    val endTimePresent = sentence.get("end_time")?.let { !it.isJsonNull } ?: false
+                    val endTime = sentence.get("end_time")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asInt
                     val stash = sentence.get("stash")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
-                    val isEnd = explicitEnd ?: (endTimePresent && stash != true)
+                    val isEnd = (explicitEnd == true) || (endTime != null && endTime >= 0 && stash != true)
                     ServerEvent.ResultGenerated(
                         sentenceId = sentenceId,
                         beginTime = beginTime,
@@ -419,6 +473,29 @@ class DashScopeStreamingAsrClient(
                 }
                 else -> ServerEvent.Ignored
             }
+        }
+
+        /**
+         * Pure helper for unit tests: feeds a sequence of DashScope `result-generated` / `task-finished`
+         * JSON frames into [SentenceAggregator] and returns the resulting [LiveTranscript].
+         */
+        fun parseAndAggregateLiveTranscript(eventJsons: List<String>): LiveTranscript {
+            val aggregator = SentenceAggregator()
+            for (json in eventJsons) {
+                when (val ev = parseServerEvent(json)) {
+                    is ServerEvent.ResultGenerated -> {
+                        aggregator.update(
+                            sentenceId = ev.sentenceId,
+                            beginTime = ev.beginTime,
+                            text = ev.text,
+                            isSentenceEnd = ev.isSentenceEnd
+                        )
+                    }
+                    ServerEvent.TaskFinished -> aggregator.finalizeAll()
+                    else -> Unit
+                }
+            }
+            return aggregator.buildLiveTranscript()
         }
     }
 }

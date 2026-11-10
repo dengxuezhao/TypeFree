@@ -95,6 +95,9 @@ class VolcengineSaucAsrClient(
         private val lock = Any()
         private val _partialText = MutableStateFlow("")
         override val partialText: StateFlow<String> = _partialText.asStateFlow()
+        private val _transcript = MutableStateFlow(LiveTranscript())
+        override val transcript: StateFlow<LiveTranscript> = _transcript.asStateFlow()
+        private var transcriptRevision: Long = 0L
 
         private val finalDeferred = CompletableDeferred<String>()
         private val pendingFrames = ArrayDeque<ByteArray>()
@@ -191,12 +194,23 @@ class VolcengineSaucAsrClient(
             when (decoded) {
                 is DecodedServerFrame.RecognitionResult -> {
                     val cleaned = AiPipelineEngine.cleanRawTranscript(decoded.text)
+                    var nextTranscript: LiveTranscript? = null
                     val shouldFinish = synchronized(lock) {
                         if (cleaned.isNotEmpty() || decoded.isFinalPackage) {
                             latestServerText = cleaned
                         }
+                        val prev = _transcript.value
+                        if (decoded.finalizedText != prev.finalized || decoded.interimText != prev.interim) {
+                            transcriptRevision += 1L
+                            nextTranscript = LiveTranscript(
+                                finalized = decoded.finalizedText,
+                                interim = decoded.interimText,
+                                revision = transcriptRevision
+                            )
+                        }
                         decoded.isFinalPackage || (lastPacketSent && decoded.definiteUtteranceEnded)
                     }
+                    nextTranscript?.let { _transcript.value = it }
                     if (cleaned.isNotEmpty()) {
                         _partialText.value = cleaned
                     }
@@ -259,7 +273,9 @@ class VolcengineSaucAsrClient(
                     pendingFrames.clear()
                 }
                 latestServerText = ""
+                transcriptRevision = 0L
             }
+            _transcript.value = LiveTranscript()
             _partialText.value = ""
         }
 
@@ -315,7 +331,9 @@ class VolcengineSaucAsrClient(
         data class RecognitionResult(
             val text: String,
             val isFinalPackage: Boolean,
-            val definiteUtteranceEnded: Boolean = false
+            val definiteUtteranceEnded: Boolean = false,
+            val finalizedText: String = "",
+            val interimText: String = ""
         ) : DecodedServerFrame
 
         data class ServerError(
@@ -540,10 +558,72 @@ class VolcengineSaucAsrClient(
                 lastUtt.get("definite")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
             } ?: false
 
+            val live = parseLiveTranscriptFromResultJson(
+                rawJson = jsonStr,
+                previousRevision = 0L,
+                isFinalPackage = isFinal
+            )
+
             return DecodedServerFrame.RecognitionResult(
                 text = text,
                 isFinalPackage = isFinal,
-                definiteUtteranceEnded = lastUtteranceDefinite
+                definiteUtteranceEnded = lastUtteranceDefinite,
+                finalizedText = live.finalized,
+                interimText = live.interim
+            )
+        }
+
+        /**
+         * Pure parser splitting Volcengine SeedASR `result.utterances[]` by `definite == true`:
+         * - Utterances with `definite == true` are concatenated into [LiveTranscript.finalized].
+         * - Trailing utterances with `definite == false` are placed into [LiveTranscript.interim].
+         * - When `utterances` is absent/empty, falls back to placing `result.text` into `interim`
+         *   (or `finalized` if [isFinalPackage] is true).
+         */
+        fun parseLiveTranscriptFromResultJson(
+            rawJson: String,
+            previousRevision: Long = 0L,
+            isFinalPackage: Boolean = false
+        ): LiveTranscript {
+            val root = JsonParser.parseString(rawJson).asJsonObject
+            val resultObj = root.getAsJsonObject("result") ?: root
+            val directText = resultObj.get("text")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
+            val utterances = resultObj.getAsJsonArray("utterances")
+
+            val finalizedBuilder = StringBuilder()
+            val interimBuilder = StringBuilder()
+
+            if (utterances != null && utterances.size() > 0) {
+                for (i in 0 until utterances.size()) {
+                    val elem = utterances[i]
+                    if (!elem.isJsonObject) continue
+                    val uttObj = elem.asJsonObject
+                    val uttText = AiPipelineEngine.cleanRawTranscript(
+                        uttObj.get("text")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
+                    )
+                    if (uttText.isEmpty()) continue
+                    val isDefinite = uttObj.get("definite")
+                        ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }
+                        ?.asBoolean ?: false
+                    if (isDefinite || isFinalPackage) {
+                        finalizedBuilder.append(uttText)
+                    } else {
+                        interimBuilder.append(uttText)
+                    }
+                }
+            } else {
+                val cleaned = AiPipelineEngine.cleanRawTranscript(directText)
+                if (isFinalPackage) {
+                    finalizedBuilder.append(cleaned)
+                } else {
+                    interimBuilder.append(cleaned)
+                }
+            }
+
+            return LiveTranscript(
+                finalized = finalizedBuilder.toString(),
+                interim = interimBuilder.toString(),
+                revision = previousRevision + 1L
             )
         }
 
