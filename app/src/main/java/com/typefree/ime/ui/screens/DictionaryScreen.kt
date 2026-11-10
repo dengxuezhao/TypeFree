@@ -75,8 +75,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.ime.data.AppRepository
+import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.DictionaryEntry
 import com.typefree.ime.data.DictionarySource
+import com.typefree.ime.data.SnippetEntry
+import com.typefree.ime.data.SnippetMatcher
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import com.typefree.ime.TypeFreeApp
@@ -132,6 +135,12 @@ fun DictionaryScreen(repository: AppRepository) {
     val coroutineScope = rememberCoroutineScope()
     val settings by repository.settings.collectAsState()
     val dictionary = settings.dictionary
+    val snippets = settings.snippets
+
+    // 0 = 专属热词库, 1 = 口令短语展开 (Snippets)
+    var primarySectionTab by rememberSaveable { mutableIntStateOf(0) }
+    var showSnippetDialog by remember { mutableStateOf(false) }
+    var editingSnippet by remember { mutableStateOf<SnippetEntry?>(null) }
 
     var searchQuery by rememberSaveable { mutableStateOf("") }
     // 0 = 全部, 1 = 自动学习 Auto-added, 2 = 手动添加 Manual
@@ -195,64 +204,226 @@ fun DictionaryScreen(repository: AppRepository) {
     ) {
         // 1. Top Header + Batch Mode Toggle
         item(key = "dict_header") {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
-                        Text(
-                            text = "个人词典",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.ExtraBold
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = MaterialTheme.colorScheme.surfaceVariant
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = "已启用 $enabledCount",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                                text = if (primarySectionTab == 0) "个人词典" else "口令短语展开",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = MaterialTheme.colorScheme.surfaceVariant
+                            ) {
+                                val badgeText = if (primarySectionTab == 0) {
+                                    "已启用 $enabledCount"
+                                } else {
+                                    "已启用 ${snippets.count { it.enabled }}"
+                                }
+                                Text(
+                                    text = badgeText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                        Text(
+                            text = if (primarySectionTab == 0) {
+                                "人名、品牌、技术术语声学热词偏置与自动改错学习"
+                            } else {
+                                "说出口令或敲小鹤 ;xx 快捷码，0ms 瞬时展开邮箱、地址与常用长文"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    if (primarySectionTab == 0 && dictionary.isNotEmpty()) {
+                        OutlinedButton(
+                            onClick = {
+                                isBatchMode = !isBatchMode
+                                if (!isBatchMode) {
+                                    selectedIds = emptySet()
+                                }
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = if (isBatchMode) "完成" else "批量选择",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
                     }
-                    Text(
-                        text = "人名、品牌、技术术语双阶段声学偏置与强制纠错",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
 
-                if (dictionary.isNotEmpty()) {
-                    OutlinedButton(
-                        onClick = {
-                            isBatchMode = !isBatchMode
-                            if (!isBatchMode) {
-                                selectedIds = emptySet()
-                            }
-                        },
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                // 2-Mode Primary Switcher: 专属热词库 | 口令短语展开
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(13.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Text(
-                            text = if (isBatchMode) "完成" else "批量选择",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold
+                        DictPrimaryModePill(
+                            title = "📖 专属热词库 (${dictionary.size})",
+                            selected = primarySectionTab == 0,
+                            onClick = { primarySectionTab = 0 },
+                            modifier = Modifier.weight(1f)
+                        )
+                        DictPrimaryModePill(
+                            title = "⚡ 口令短语展开 (${snippets.size})",
+                            selected = primarySectionTab == 1,
+                            onClick = {
+                                primarySectionTab = 1
+                                isBatchMode = false
+                            },
+                            modifier = Modifier.weight(1f)
                         )
                     }
                 }
             }
         }
+
+        if (primarySectionTab == 1) {
+            item(key = "snippets_intro_and_actions") {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.52f))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "双通道瞬时展开（0ms 免经过大模型）",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "• 语音触发：按住麦克风说出设定的口令（如「发我的邮箱」），识别命中后直接上屏完整文本，零延迟零幻觉。\n• 小鹤编码触发：在「鹤」模式下输入快捷码（推荐以分号开头，如 ;sd、;yx、;dz），唯一候选自动上屏且不影响内置 ;q / ;w 快符。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 18.sp
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    editingSnippet = null
+                                    showSnippetDialog = true
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("新建口令短语", fontWeight = FontWeight.Bold)
+                            }
+                            if (snippets.isEmpty()) {
+                                OutlinedButton(
+                                    onClick = {
+                                        repository.updateSettings {
+                                            it.copy(snippets = DefaultPresets.defaultSnippets())
+                                        }
+                                        Toast.makeText(context, "已载入示例短语模板", Toast.LENGTH_SHORT).show()
+                                    },
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text("载入模板")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (snippets.isEmpty()) {
+                item(key = "snippets_empty") {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "尚无口令短语",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "点击上方「新建口令短语」添加邮箱、地址、发票抬头或高频客服回复。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+            } else {
+                items(snippets, key = { "snip_${it.id}" }) { snip ->
+                    SnippetEntryCard(
+                        snippet = snip,
+                        onToggleEnabled = { enabled ->
+                            repository.updateSettings { curr ->
+                                curr.copy(
+                                    snippets = curr.snippets.map {
+                                        if (it.id == snip.id) it.copy(enabled = enabled) else it
+                                    }
+                                )
+                            }
+                        },
+                        onEdit = {
+                            editingSnippet = snip
+                            showSnippetDialog = true
+                        },
+                        onDelete = {
+                            repository.updateSettings { curr ->
+                                curr.copy(snippets = curr.snippets.filterNot { it.id == snip.id })
+                            }
+                            Toast.makeText(context, "已删除短语「${snip.title}」", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                }
+            }
+        } else {
 
         // 1.5 Custom Rime / Yinxing IME Engine Table Card
         item(key = "dict_rime_custom_card") {
@@ -660,10 +831,35 @@ fun DictionaryScreen(repository: AppRepository) {
                 )
             }
         }
+        }
 
         item(key = "dict_bottom_spacer") {
             Spacer(modifier = Modifier.height(16.dp))
         }
+    }
+
+    if (showSnippetDialog) {
+        SnippetEditorDialog(
+            initialSnippet = editingSnippet,
+            onDismiss = { showSnippetDialog = false },
+            onSave = { saved ->
+                repository.updateSettings { curr ->
+                    val exists = curr.snippets.any { it.id == saved.id }
+                    val updated = if (exists) {
+                        curr.snippets.map { if (it.id == saved.id) saved else it }
+                    } else {
+                        listOf(saved) + curr.snippets
+                    }
+                    curr.copy(snippets = updated)
+                }
+                showSnippetDialog = false
+                Toast.makeText(
+                    context,
+                    if (editingSnippet == null) "已新建短语「${saved.title}」" else "已更新短语「${saved.title}」",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        )
     }
 
     // Create / Edit Entry Dialog
@@ -1607,4 +1803,274 @@ private fun queryFileName(context: Context, uri: Uri): String? {
     } catch (e: Exception) {
         null
     }
+}
+
+@Composable
+private fun DictPrimaryModePill(
+    title: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(10.dp),
+        color = if (selected) MaterialTheme.colorScheme.surface else Color.Transparent,
+        shadowElevation = if (selected) 1.dp else 0.dp
+    ) {
+        Box(
+            modifier = Modifier.padding(vertical = 9.dp, horizontal = 8.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                color = if (selected) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 1
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SnippetEntryCard(
+    snippet: SnippetEntry,
+    onToggleEnabled: (Boolean) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val voiceList = remember(snippet.voiceTriggers) {
+        SnippetMatcher.parseTriggerList(snippet.voiceTriggers)
+    }
+    val normCode = remember(snippet.flypyCode) {
+        SnippetMatcher.normalizeFlypyCode(snippet.flypyCode)
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (snippet.enabled) {
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.52f)
+            } else {
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = snippet.title.ifBlank { "未命名短语" },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (normCode.isNotEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                text = "鹤 $normCode",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+
+                Switch(
+                    checked = snippet.enabled,
+                    onCheckedChange = onToggleEnabled
+                )
+            }
+
+            if (voiceList.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    voiceList.forEach { trig ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+                        ) {
+                            Text(
+                                text = "🎙️ 「$trig」",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+            ) {
+                Text(
+                    text = snippet.content,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 4,
+                    modifier = Modifier.padding(10.dp)
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = onEdit) {
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("编辑")
+                }
+                TextButton(onClick = onDelete) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SnippetEditorDialog(
+    initialSnippet: SnippetEntry?,
+    onDismiss: () -> Unit,
+    onSave: (SnippetEntry) -> Unit
+) {
+    var title by rememberSaveable { mutableStateOf(initialSnippet?.title.orEmpty()) }
+    var voiceTriggers by rememberSaveable { mutableStateOf(initialSnippet?.voiceTriggers.orEmpty()) }
+    var flypyCode by rememberSaveable { mutableStateOf(initialSnippet?.flypyCode.orEmpty()) }
+    var expandedContent by rememberSaveable { mutableStateOf(initialSnippet?.content.orEmpty()) }
+
+    val normCode = SnippetMatcher.normalizeFlypyCode(flypyCode)
+    val hasAnyTrigger = voiceTriggers.trim().isNotEmpty() || normCode.isNotEmpty()
+    val canSave = expandedContent.trim().isNotEmpty() && hasAnyTrigger
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (initialSnippet == null) "新建口令短语" else "编辑口令短语") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    label = { Text("短语名称") },
+                    placeholder = { Text("如：工作邮箱、默认收货地址") }
+                )
+
+                OutlinedTextField(
+                    value = voiceTriggers,
+                    onValueChange = { voiceTriggers = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 2,
+                    shape = RoundedCornerShape(12.dp),
+                    label = { Text("语音触发口令（逗号分隔，选填）") },
+                    placeholder = { Text("如：发我的邮箱, 我的工作邮箱") }
+                )
+
+                OutlinedTextField(
+                    value = flypyCode,
+                    onValueChange = { flypyCode = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    label = { Text("小鹤快捷码（推荐 ; 开头 3 码，选填）") },
+                    placeholder = { Text("如：;yx、;dz、;sd") }
+                )
+
+                OutlinedTextField(
+                    value = expandedContent,
+                    onValueChange = { expandedContent = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    maxLines = 6,
+                    shape = RoundedCornerShape(12.dp),
+                    label = { Text("展开后的完整正文 *") },
+                    placeholder = { Text("输入命中后要直接上屏的完整内容…") }
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = canSave,
+                onClick = {
+                    val cleanTitle = title.trim().ifBlank {
+                        normCode.ifBlank { voiceTriggers.trim().take(10) }
+                    }
+                    val base = initialSnippet ?: SnippetEntry(
+                        title = cleanTitle,
+                        voiceTriggers = "",
+                        flypyCode = "",
+                        content = ""
+                    )
+                    onSave(
+                        base.copy(
+                            title = cleanTitle,
+                            voiceTriggers = voiceTriggers.trim(),
+                            flypyCode = normCode,
+                            content = expandedContent.trim(),
+                            enabled = true
+                        )
+                    )
+                }
+            ) {
+                Text("保存并启用")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
 }

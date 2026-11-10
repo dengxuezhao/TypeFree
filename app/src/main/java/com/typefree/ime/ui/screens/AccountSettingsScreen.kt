@@ -1046,6 +1046,39 @@ private fun AppearanceAndPreferencesPane(repository: AppRepository) {
                 )
 
                 PreferenceSwitchRow(
+                    title = "🎵 录音时自动暂停外放媒体",
+                    subtitle = "按下麦克风瞬间自动向系统请求短暂独占焦点暂停音乐/视频外放（防止歌词串音识别），松手后立即恢复播放",
+                    checked = settings.pauseMediaWhileRecording,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(pauseMediaWhileRecording = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
+                PreferenceSwitchRow(
+                    title = "🤫 轻声耳语高灵敏收音模式",
+                    subtitle = "适合深夜、图书馆、工位贴近麦克风轻声说话；自动下调 VAD 门限并启用防削波软限幅增益（语音面板右上角亦可一键切换）",
+                    checked = settings.whisperModeEnabled,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(whisperModeEnabled = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
+                PreferenceSwitchRow(
+                    title = "🤖 输入框「==问题」回车直接问 AI",
+                    subtitle = "在任意输入框以 == 开头输入问题或指令（如 ==把下午3点换算成美西时间）后按回车/发送键，自动拦截并替换为 AI 答案",
+                    checked = settings.equalEqualAskAiEnabled,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(equalEqualAskAiEnabled = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
+                PreferenceSwitchRow(
                     title = "按键与录音提示音",
                     subtitle = "点击麦克风开始聆听、结束录音及按键反馈轻音效",
                     checked = settings.interactionSounds,

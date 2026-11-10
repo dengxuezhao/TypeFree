@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v2.5.0"><img src="https://img.shields.io/badge/Release-v2.5.0-10B981?style=flat-square&logo=github" alt="Release v2.5.0" /></a>
+  <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v2.6.1"><img src="https://img.shields.io/badge/Release-v2.6.1-10B981?style=flat-square&logo=github" alt="Release v2.6.1" /></a>
   <img src="https://img.shields.io/badge/Language-Kotlin_2.0-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" />
   <img src="https://img.shields.io/badge/UI-Jetpack_Compose_1.7-4285F4?style=flat-square&logo=android&logoColor=white" alt="Jetpack Compose" />
   <img src="https://img.shields.io/badge/Design-Material_3-000000?style=flat-square" alt="Material 3" />
@@ -20,21 +20,28 @@
 </p>
 
 <p align="center">
-  📦 <b>最新预编译安装包</b>：<a href="https://github.com/dengxuezhao/TypeFree/releases/download/v2.5.0/TypeFree-v2.5.0-release.apk">下载 TypeFree-v2.5.0-release.apk</a> · <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v2.5.0">查看 v2.5.0 发行说明</a>
+  📦 <b>最新预编译安装包</b>：<a href="https://github.com/dengxuezhao/TypeFree/releases/download/v2.6.1/TypeFree-v2.6.1-release.apk">下载 TypeFree-v2.6.1-release.apk</a> · <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v2.6.1">查看 v2.6.1 发行说明</a>
 </p>
 
 ---
 
-## 🆕 v2.5.0 核心升级亮点
+## 🆕 v2.6.1 核心升级亮点
 
+- **Google Gemini Live 原生流式直出 & `45s` 热连接预热池**：将 `Gemini Live WebSocket` (`BidiGenerateContent`) 升级为一等公民实时流式引擎，边说边出字，原生支持 **智能净写直出 (`SMART`)**（端到端去语气词、自动标点与个人词典热词注入，省去二次 LLM 往返）与 **忠实逐字 (`VERBATIM`)** 双档切换；键盘弹出即后台预热握手连接池，配合尾帧人声能量门限与自适应静默收束，消除短词松手等待，已出终稿实现 **`0ms` 秒回**，网络受阻时自动回退 `.m4a` HTTP 极速转写。
+- **三层「统一接口工作台」与厂商凭证保险箱 (`Provider Vault`)**：重构 API 设置页为「凭证保险箱 → 一键极速配好 → 按需展开高级路由微调」三层清爽结构；独立加密保存 Google、阿里云百炼、火山引擎、硅基流动、DeepSeek 与自定义网关凭证，自由切换服务商与任意模型不丢 Key。
+- **外放媒体音频焦点自动避让 & 轻声耳语增益 (`Whisper Mode`)**：录音按下瞬间自动请求 `AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE` 暂停外放音乐/播客防止背景歌词串入，松手自动恢复；新增轻声耳语模式，对麦克风 16-bit PCM 流执行实时自适应软限幅增益放大，安静办公或深夜轻语同样高准识别。
+- **零延迟口令短语展开 (`Voice Snippets`) & 历史诊断排版优化**：支持语音口令（如“发我的工作邮箱”）及四码键盘快捷码本地 **`0ms` 直接展开**长文本模板；优化历史记录原始初稿与流式诊断卡片布局，长模型名清晰对齐零遮挡。
+
+<details>
+<summary>📖 展开查看 v2.5.0 / v2.4.0 历史升级亮点</summary>
+
+### v2.5.0
 - **双通道 WebSocket 实时流式 ASR（边说边出字 + 松手百毫秒直达）**：新增 **火山豆包流式 SeedASR 2.0**（二进制协议 + Gzip 帧编解码 + 个人词典热词直注）与 **阿里云百炼 DashScope 实时流式**（`paraformer-realtime-v2` / `fun-asr-realtime`，单 `sk-` Key 免签名直连），录音期间在键盘、全局悬浮胶囊与首页沙盒实时渲染增量预览，网络波动时自动无感回退 HTTP 整包转写。
 - **全厂商通用 `Thinking` 思考开关 & `Doubao-Seed-2.x` 零思考极速适配**：支持用户在 LLM 与多模态卡片自主切换 `关闭思考 (极速)` / `模型默认` / `开启思考`；精准适配火山方舟 `Doubao-Seed-2.x`（`reasoning_effort="minimal"`）、`Seed-1.6` / 智谱 `GLM-4.5+`（`thinking.type`）、通义千问 `Qwen3+`（`enable_thinking`）、OpenAI `o/GPT-5` 与 `Gemini 2.5/3.x`，内置 `ep-...` 推理接入点双向语法自愈记忆，4G 移动网络下实测润色耗时从 `6629 ms` 直降至 **`839 ms`（提速 `7.9 倍`）**。
 - **下拉模型列表 `1-Token` 真实毫秒级测速 & 内置请求诊断日志**：彻底移除硬编码速度标签，模型弹窗支持一键并发 Ping 账号下可用模型（展示真实 `ms` 徽章并按延迟自动升序置顶，直观区分 `403 未开通` / `401` / `429`）；连通性实测卡片内嵌 HTTP 逐跳耗时、Prefix Cache 命中与 `reasoning_tokens` 诊断面板并支持一键复制。
 - **全链路低延迟基础设施重构**：长连接池保活 + 按下麦克风异步 `TLS/HTTP2` 端点预热、100% 静态 `System Prompt` 前缀缓存对齐、流式直写 WAV + `MediaCodec` 硬件 AAC `.m4a` 体积压缩（缩小 ~85%）及多帧自适应抗机械按键声 VAD。
 
-<details>
-<summary>📖 展开查看 v2.4.0 升级亮点</summary>
-
+### v2.4.0
 - **全面板恒定 `298.dp` 帧高与顶栏 `(0, 0) px` 像素级坐标锁死**：统一六大工作台面板高度与 `34.dp` 顶栏锚点，跨模式切换实现 **0px 位移零抖动**。
 - **可选顶部独立数字行 (`1–0`) 与 `~1.14 : 1` 黄金键帽人体工学重构**：新增独立数字行开关、3D 实体底棱按压反馈与底部防误触安全垫。
 - **记忆上次输入面板模式 & 密码框安全保护**：跨会话恢复上次键盘面板与中英状态，密码框自动强制切入纯净英文键盘。
@@ -70,11 +77,11 @@
 
 ### 1. 完全自由的 BYOK 双引擎与本地离线架构
 TypeFree 不绑定任何商业闭源云端，支持完全自主配置的 API 调度矩阵：
-- **STT + LLM 双阶段极速流水线**：
-  - **语音转写 (STT)**：支持 **火山豆包流式 SeedASR 2.0** 与 **阿里云百炼 Paraformer-Realtime** 双通道 WebSocket 实时流式识别（边说边出字、松手百毫秒直出），同时兼容硅基流动 (SiliconFlow) SenseVoiceSmall、Groq Whisper-large-v3、OpenAI Whisper API 及私有部署端点。
-  - **智能净写与排版 (LLM)**：兼容火山方舟 Doubao-Seed-2.x / 1.6、阿里云百炼 Qwen3 / Qwen-Turbo、DeepSeek-V3 / R1、OpenAI GPT-4o / GPT-5、智谱 GLM-4.5+ 等任意 OpenAI 兼容接口，支持自定义开关深度思考（`Thinking`）与一键毫秒级测速选型。
+- **STT + LLM 双阶段 / 单流极速流水线**：
+  - **语音转写 (STT)**：支持 **Google Gemini Live WebSocket**（支持 `SMART` 端到端智能净写一步直出与 `45s` 热连接预热池）、**火山豆包流式 SeedASR 2.0** 与 **阿里云百炼 Paraformer-Realtime** 三通道 WebSocket 实时流式识别（边说边出字、松手 `0~500ms` 直出），同时兼容硅基流动 (SiliconFlow) SenseVoiceSmall、Groq Whisper-large-v3、OpenAI Whisper API 及私有部署端点。
+  - **智能净写与排版 (LLM)**：兼容 Google Gemini 3.5 / 3.8 / 2.5 系列、火山方舟 Doubao-Seed-2.x / 1.6、阿里云百炼 Qwen3 / Qwen-Turbo、DeepSeek-V3 / R1、OpenAI GPT-4o / GPT-5、智谱 GLM-4.5+ 等任意原生或 OpenAI 兼容接口，支持自定义开关深度思考（`Thinking`）与一键毫秒级测速选型。
 - **Audio Direct 多模态原生音频一步直出**：
-  - 支持 Google Gemini 2.5 Flash / Flash Lite、OpenAI GPT-4o Audio，将 16kHz 16-bit 单声道 WAV 原生流直传多模态模型，一步完成听音理解、语意净写与格式重构。
+  - 支持 Google Gemini 3.5 Flash Lite / 3.8 Flash / 2.5 Flash、OpenAI GPT-4o Audio，将原生音频流直传多模态模型，一步完成听音理解、语意净写与格式重构。
 - **局域网与端侧零成本私有化**：
   - 支持局域网连接 `whisper.cpp` server 与 `Ollama`（如 Qwen2.5:7b），全程离线运行，严苛保护敏感商务与政务数据。
 - **聚合网关智能适配**：
@@ -143,9 +150,10 @@ TypeFree 不绑定任何商业闭源云端，支持完全自主配置的 API 调
 
 | 场景需求 | 录音识别引擎 (STT) | 智能润色引擎 (LLM) | 综合延迟 | 成本预估 |
 | :--- | :--- | :--- | :--- | :--- |
-| **极致极速推荐** | 硅基流动 `SenseVoiceSmall` | DeepSeek `deepseek-chat` (V3) | ~600ms | 极低（低至 ¥0.001/千字） |
+| **单 Key 流式极速直出** | Google `Gemini Live WebSocket` (`SMART` 净写直出) | `gemini-3.5-flash-lite`（仅写作/改写按需调用） | **0~500ms** | 极低 API 计费 |
+| **国内双阶段极速** | 阿里云百炼 `paraformer-realtime-v2` / 火山 `SeedASR 2.0` | `doubao-seed-2-1-lite` / `deepseek-chat` | ~500ms | 极低（低至 ¥0.001/千字） |
 | **海外免翻极速** | Groq `whisper-large-v3` | OpenAI `gpt-4o-mini` | ~500ms | 极低或免费 Tier |
-| **多模态直出** | Google Gemini `gemini-2.5-flash` (Audio Direct) | 一步直出 | ~900ms | 极低 API 计费 |
+| **多模态整包直出** | Google Gemini `gemini-3.5-flash-lite` (Audio Direct) | 一步直出 | ~600ms | 极低 API 计费 |
 | **局域网全离线** | 本地 `whisper.cpp` Server (`192.168.x.x`) | 本地 `Ollama` (`qwen2.5:7b`) | 视硬件性能 | **¥0 完全免费** |
 
 ---

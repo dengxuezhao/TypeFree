@@ -41,6 +41,19 @@ interface StreamingAsrClient {
     ): StreamingAsrSession
 
     /**
+     * Optional connection/handshake pre-warmer (e.g. Gemini Live `BidiGenerateContent` setup)
+     * invoked when the IME voice panel or Playground becomes visible so 1-2s short utterances
+     * experience zero cold WebSocket handshake delay.
+     */
+    fun prewarmSession(
+        config: SttConfig,
+        hotwords: List<String> = emptyList()
+    ) = Unit
+
+    /** Releases any idle pre-warmed WebSocket session immediately. */
+    fun evictPrewarmSession() = Unit
+
+    /**
      * Replays a saved local WAV file through the streaming ASR protocol.
      * Used for History audio retry, error retry, or fallback recovery.
      */
@@ -48,7 +61,7 @@ interface StreamingAsrClient {
         wavFile: File,
         config: SttConfig,
         hotwords: List<String> = emptyList(),
-        timeoutMs: Long = 10_000L
+        timeoutMs: Long = 3_200L
     ): String = withContext(Dispatchers.IO) {
         val rawPcm = WavAudioRecorder.extractPcmFromWav(wavFile)
         if (rawPcm.isEmpty()) {

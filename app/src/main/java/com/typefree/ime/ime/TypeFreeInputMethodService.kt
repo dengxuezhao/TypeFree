@@ -21,6 +21,7 @@ import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.HistoryRecord
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.PipelineMode
+import com.typefree.ime.data.SnippetMatcher
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.flypy.FlypyAction
@@ -112,6 +113,10 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         serviceScope.launch {
             var lastFlypySetting: Boolean? = null
             repository.settings.collect { currentSettings ->
+                flypyEngine.updateSnippets(currentSettings.snippets)
+                if (flypyEngine.isComposing) {
+                    syncFlypyStateToUi()
+                }
                 val prevSetting = lastFlypySetting
                 lastFlypySetting = currentSettings.flypyEnabled
                 if (prevSetting != null && prevSetting != currentSettings.flypyEnabled) {
@@ -165,12 +170,24 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
         syncEditorMetadata(info, restarting)
         syncSystemClipboardIfNeeded(allowFreshBanner = true)
+        warmVoiceConnectionsInBackground()
     }
 
     override fun onWindowShown() {
         super.onWindowShown()
         repository.setImeWindowVisible(true)
         syncSystemClipboardIfNeeded(allowFreshBanner = true)
+        warmVoiceConnectionsInBackground()
+    }
+
+    private fun warmVoiceConnectionsInBackground() {
+        val snap = repository.settings.value
+        serviceScope.launch {
+            runCatching {
+                aiEngine.prewarmLiveStreamingIfNeeded(snap)
+                aiEngine.prewarmEndpoints(snap)
+            }
+        }
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
@@ -315,6 +332,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         repository.setImeWindowVisible(false)
         micPressDownTimeMs = 0L
         abortActiveStreamingSession()
+        aiEngine.evictLiveStreamingPrewarm()
         activePipelineJob?.cancel()
         toastDismissJob?.cancel()
         autoLearnToastJob?.cancel()
@@ -339,6 +357,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         val clipboardItems by repository.clipboardItems.collectAsState()
         val amplitudes by audioRecorder.amplitudes.collectAsState()
         val elapsedMs by audioRecorder.elapsedMs.collectAsState()
+        val didPauseMedia by audioRecorder.didPauseExternalMedia.collectAsState()
 
         val (activeStyle, isAutoMatched) = remember(
             settings,
@@ -356,6 +375,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                 isAutoMatched = isAutoMatched,
                 amplitudes = amplitudes,
                 elapsedMs = elapsedMs,
+                didPauseMedia = didPauseMedia,
+                onToggleWhisperMode = ::toggleWhisperMode,
                 onSelectTabMode = ::selectTabMode,
                 onOpenHelpMeWrite = ::openOrRestoreVoicePenPanel,
                 onCloseSubPanel = ::closeVoiceSubPanel,
@@ -690,7 +711,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
             onSilencePrefixCleared = {
                 streamSession?.resetPrefix()
                 _imeState.update { it.copy(streamingPartialPreview = "") }
-            }
+            },
+            pauseMediaPlayback = settingsSnap.pauseMediaWhileRecording,
+            whisperMode = settingsSnap.whisperModeEnabled
         )
         startRes.fold(
             onSuccess = {
@@ -1014,6 +1037,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                         audioFilePath = historyAudioFile.absolutePath
                     )
                 )
+                if (repository.isImeWindowVisible.value) {
+                    warmVoiceConnectionsInBackground()
+                }
             },
             onFailure = { err ->
                 if (err is CancellationException) return
@@ -1787,6 +1813,17 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                 return
             }
         }
+
+        val settingsSnap = repository.settings.value
+        if (settingsSnap.equalEqualAskAiEnabled) {
+            val fullText = readFullEditorTextSafely()
+            val directQuery = SnippetMatcher.extractEqualEqualAskAiQuery(fullText)
+            if (directQuery != null) {
+                runEqualEqualAskAi(fullEditorText = fullText, query = directQuery)
+                return
+            }
+        }
+
         performKeyFeedback(strong = false)
         // Must read ExtractedText BEFORE performEditorAction(SEND) clears the host chat input!
         tryAutoLearnFromRecentEdit()
@@ -1808,6 +1845,134 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
             }
         } else {
             ic.commitText("\n", 1)
+        }
+    }
+
+    private fun toggleWhisperMode() {
+        performKeyFeedback(strong = true)
+        val nextWhisper = !repository.settings.value.whisperModeEnabled
+        repository.updateSettings { it.copy(whisperModeEnabled = nextWhisper) }
+        showQuickActionToast(if (nextWhisper) "🤫 已开启轻声耳语高敏收音" else "🎙️ 已恢复标准收音灵敏度")
+    }
+
+    private fun runEqualEqualAskAi(fullEditorText: String, query: String) {
+        val currPhase = _imeState.value.voicePhase
+        if (currPhase is VoicePhase.Recording || currPhase is VoicePhase.Processing) return
+
+        performKeyFeedback(strong = true)
+        toastDismissJob?.cancel()
+        activePipelineJob?.cancel()
+
+        activePipelineJob = serviceScope.launch {
+            val settings = repository.settings.value
+            val snapshot = _imeState.value
+            val targetPkg = snapshot.targetPackage
+            val targetAppName = snapshot.targetAppName
+            val (activeStyle, _) = repository.resolveActiveStyle(targetPkg, snapshot.currentInputType)
+
+            _imeState.update {
+                it.copy(voicePhase = VoicePhase.Processing(stageText = "🤖 AI 思考解答中..."))
+            }
+            if (snapshot.tabMode != KeyboardTabMode.VOICE) {
+                showQuickActionToast("🤖 AI 正在解答「${query.take(10)}」…")
+            }
+
+            val directAskInstruction =
+                "用户在输入框通过 == 向你直接提问或下达写作指令。请忽略<selected_text>的选中改写语义，直接把<selected_text>当作用户的问题或指令本身，直接输出准确、简洁、立即可发送或使用的结果正文（严禁寒暄、严禁解释前缀、严禁复述问题）。"
+
+            val transformResult = aiEngine.runTextTransform(
+                settings = settings,
+                activeStyle = activeStyle,
+                rawOrSelectedText = query,
+                explicitInstruction = directAskInstruction,
+                targetAppName = targetAppName
+            )
+
+            transformResult.fold(
+                onSuccess = { exec ->
+                    val finalOutput = exec.finalOutput
+                    val ic = currentInputConnection
+                    val currentFull = readFullEditorTextSafely().ifEmpty { fullEditorText }
+                    if (ic != null) {
+                        ic.beginBatchEdit()
+                        val extracted = runCatching {
+                            ic.getExtractedText(ExtractedTextRequest(), 0)
+                        }.getOrNull()
+                        if (extracted?.text != null) {
+                            ic.setSelection(0, extracted.text.length)
+                            ic.commitText(finalOutput, 1)
+                        } else {
+                            val beforeLen = runCatching {
+                                ic.getTextBeforeCursor(4000, 0)?.length ?: currentFull.length
+                            }.getOrDefault(currentFull.length)
+                            val afterLen = runCatching {
+                                ic.getTextAfterCursor(4000, 0)?.length ?: 0
+                            }.getOrDefault(0)
+                            ic.deleteSurroundingText(beforeLen, afterLen)
+                            ic.commitText(finalOutput, 1)
+                        }
+                        ic.endBatchEdit()
+                    }
+
+                    lastDictatedFullText = null
+                    hasManualEditSinceDictation = false
+                    performHaptic(strong = true)
+                    flypyEngine.recordExternalCommit(finalOutput)
+
+                    val undo = ImeLogic.createUndoSnapshot(
+                        committedText = finalOutput,
+                        replacedSelection = currentFull
+                    )
+                    pushUndoSnapshot(undo)
+
+                    _imeState.update {
+                        it.copy(
+                            voicePhase = VoicePhase.SuccessToast(
+                                preview = ImeLogic.formatSelectionPreview(finalOutput, 24),
+                                latencyMs = exec.latencyMs
+                            ),
+                            undoSnapshot = undoStack.firstOrNull(),
+                            rawSelectedText = "",
+                            ignoreSelectionForThisTurn = false
+                        )
+                    }
+                    scheduleToastReset()
+                    if (_imeState.value.tabMode != KeyboardTabMode.VOICE) {
+                        showQuickActionToast("✓ AI 已填入答案 · 可点 ↶ 撤回")
+                    }
+
+                    repository.addHistory(
+                        HistoryRecord(
+                            targetAppName = targetAppName,
+                            targetPackage = targetPkg,
+                            styleName = activeStyle.name,
+                            isSpeakToEdit = false,
+                            intentMode = VoiceIntentMode.HELP_ME_WRITE,
+                            translateTargetLanguage = "",
+                            originalSelectedText = currentFull,
+                            rawTranscript = "[== 问 AI] $query",
+                            polishedText = finalOutput,
+                            durationMs = 0L,
+                            latencyMs = exec.latencyMs,
+                            modeLabel = exec.modeSummary,
+                            audioFilePath = ""
+                        )
+                    )
+                },
+                onFailure = { err ->
+                    if (err is CancellationException) return@launch
+                    performHaptic(strong = true)
+                    val errorPhase = ImeLogic.classifyErrorFlags(
+                        errorMessage = err.message ?: "AI 回答失败，请检查网络或 API 配置",
+                        hasCachedAudio = false,
+                        hasMicPermission = audioRecorder.hasRecordPermission()
+                    )
+                    _imeState.update { it.copy(voicePhase = errorPhase) }
+                    if (_imeState.value.tabMode != KeyboardTabMode.VOICE) {
+                        showQuickActionToast("⚠ ${(err.message ?: "AI 回答失败").take(22)}")
+                    }
+                }
+            )
         }
     }
 

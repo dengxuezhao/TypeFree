@@ -272,7 +272,7 @@ class AiPipelineEngineEndToEndTest {
         val engine = AiPipelineEngine(httpClient = mockClient)
         val style = DefaultPresets.defaultStyles().first()
 
-        // 1. gemini-3.5-flash-lite omits temperature and thinkingLevel (already minimal by default)
+        // 1. gemini-3.5-flash-lite omits temperature and explicitly sets thinkingLevel=MINIMAL
         val settings35Lite = AppSettings(
             pipelineMode = PipelineMode.MULTIMODAL_DIRECT,
             multimodalConfig = MultimodalConfig(
@@ -286,7 +286,7 @@ class AiPipelineEngineEndToEndTest {
         engine.processVoiceAudio(tempWav, settings35Lite, style, "微信", "", "").getOrThrow()
         val body35 = capturedRequests.last().second
         assertFalse(body35.contains("temperature"))
-        assertFalse(body35.contains("thinkingConfig"))
+        assertTrue(body35.contains("\"thinkingLevel\":\"MINIMAL\""))
 
         // 2. gemini-3.8-flash omits temperature and sets thinkingLevel=LOW
         val settings38 = AppSettings(

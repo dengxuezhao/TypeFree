@@ -15,7 +15,8 @@ enum class MultimodalProtocol {
 enum class SttProtocol(val label: String, val shortBadge: String) {
     OPENAI_HTTP("OpenAI 兼容 HTTP 整包", "HTTP"),
     ALIYUN_DASHSCOPE_WS("阿里云百炼 WebSocket 实时流式", "百炼流式"),
-    VOLCENGINE_SAUC_WS("火山豆包 WebSocket 实时流式", "豆包流式")
+    VOLCENGINE_SAUC_WS("火山豆包 WebSocket 实时流式", "豆包流式"),
+    GEMINI_LIVE_WS("Google Gemini Live 智能流式", "Gemini 流式")
 }
 
 enum class ThemePreference(val label: String) {
@@ -98,9 +99,26 @@ data class MultimodalConfig(
     val protocol: MultimodalProtocol = MultimodalProtocol.GEMINI_NATIVE,
     val baseUrl: String = "https://generativelanguage.googleapis.com/v1beta",
     val apiKey: String = "",
-    val model: String = "gemini-2.5-flash",
+    val model: String = "gemini-3.5-flash-lite",
     val temperature: Float = 0.2f,
     val thinkingMode: ThinkingMode = ThinkingMode.DISABLED
+)
+
+data class ProviderCredential(
+    val providerId: String,
+    val apiKey: String = "",
+    val sttApiKey: String = "",
+    val appId: String = "",
+    val customBaseUrl: String = ""
+)
+
+data class SnippetEntry(
+    val id: String = UUID.randomUUID().toString(),
+    val title: String,
+    val voiceTriggers: String, // 逗号分隔的语音触发口令（如：发我的邮箱,插入邮箱）
+    val flypyCode: String = "", // 小鹤/键盘快捷码（如：;yx）
+    val content: String,
+    val enabled: Boolean = true
 )
 
 data class ApiPreset(
@@ -116,6 +134,14 @@ data class ApiPreset(
 
 object ApiPresets {
     val sttPresets = listOf(
+        ApiPreset(
+            id = "gemini_live_ws",
+            name = "Google Gemini Live 智能流式",
+            subtitle = "实测松手 ~0.5s 直出，原生去口癖+合并改口+热词偏置",
+            baseUrl = "https://generativelanguage.googleapis.com/v1beta",
+            defaultModel = "gemini-3.5-transcribe-live",
+            sttProtocol = SttProtocol.GEMINI_LIVE_WS
+        ),
         ApiPreset(
             id = "siliconflow",
             name = "硅基流动 SenseVoice",
@@ -168,6 +194,13 @@ object ApiPresets {
     )
 
     val llmPresets = listOf(
+        ApiPreset(
+            id = "gemini_llm",
+            name = "Google Gemini 极速文本",
+            subtitle = "与 Gemini Live 共用单 Key，帮我写/翻译/改写极速响应",
+            baseUrl = "https://generativelanguage.googleapis.com/v1beta",
+            defaultModel = "gemini-3.5-flash-lite"
+        ),
         ApiPreset(
             id = "doubao",
             name = "火山方舟豆包",
@@ -230,9 +263,9 @@ object ApiPresets {
         ApiPreset(
             id = "gemini",
             name = "Google Gemini",
-            subtitle = "原生音频理解，一步完成识别+去口癖+排版",
+            subtitle = ".m4a 硬件压缩直传，一步完成识别+排版",
             baseUrl = "https://generativelanguage.googleapis.com/v1beta",
-            defaultModel = "gemini-2.5-flash",
+            defaultModel = "gemini-3.5-flash-lite",
             protocol = MultimodalProtocol.GEMINI_NATIVE
         ),
         ApiPreset(
@@ -344,6 +377,11 @@ data class AppSettings(
     val qwertyKeyPopupPreview: Boolean = true,
     val clipboardEnabled: Boolean = true,
     val clipboardQuickPasteSuggestion: Boolean = true,
+    val pauseMediaWhileRecording: Boolean = true,
+    val whisperModeEnabled: Boolean = false,
+    val equalEqualAskAiEnabled: Boolean = true,
+    val providerVault: Map<String, ProviderCredential> = emptyMap(),
+    val snippets: List<SnippetEntry> = DefaultPresets.defaultSnippets(),
     val historyRetention: HistoryRetention = HistoryRetention.FOREVER,
     val bubbleEnabled: Boolean = false,
     val bubbleDockLeft: Boolean = false,
@@ -480,6 +518,33 @@ object DefaultPresets {
             wrongVariants = "克劳德扣, claude code",
             note = "AI 编程工具",
             source = DictionarySource.MANUAL
+        )
+    )
+
+    fun defaultSnippets(): List<SnippetEntry> = listOf(
+        SnippetEntry(
+            id = "builtin_reply_ack",
+            title = "职场礼貌收到",
+            voiceTriggers = "回复收到稍后处理,礼貌收到模板",
+            flypyCode = ";sd",
+            content = "收到，我先核对一下细节，稍后给您准确答复。",
+            enabled = true
+        ),
+        SnippetEntry(
+            id = "builtin_email_tpl",
+            title = "常用邮箱 (示例)",
+            voiceTriggers = "插入我的邮箱,发我的邮箱",
+            flypyCode = ";yx",
+            content = "your.name@example.com",
+            enabled = false
+        ),
+        SnippetEntry(
+            id = "builtin_addr_tpl",
+            title = "收货地址 (示例)",
+            voiceTriggers = "插入我的收货地址,发我的地址",
+            flypyCode = ";dz",
+            content = "请在此修改为您的常用收货地址与联系电话",
+            enabled = false
         )
     )
 }

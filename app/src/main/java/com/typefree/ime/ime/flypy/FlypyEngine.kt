@@ -1,5 +1,7 @@
 package com.typefree.ime.ime.flypy
 
+import com.typefree.ime.data.SnippetEntry
+import com.typefree.ime.data.SnippetMatcher
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -21,6 +23,7 @@ sealed interface FlypyAction {
  * - 4-code unique auto-commit (`四码唯一自动上屏`, `^\w{4}$`)
  * - 5th-code push-commit (`第五码顶字上屏`) & `auto_clear: max_length` on empty 4-codes
  * - `;x` quick-symbol 2-code auto-commit (`^;.$`, e.g. `;q -> ：“`, `;w -> ？`) & `;f` repeat last commit
+ * - `;xx` / alpha custom snippet expansion (`口令短语展开`, e.g. `;sd`, `;yx`, `;dz`) with push-commit preservation
  * - `,` / `.` secondary & tertiary candidate quick-select (`次选 / 三选`) or punctuation top-up
  * - `` ` `` wildcard bidirectional reverse lookup (`知音查形 / 知形查音` with 4-code hints)
  * - Dynamic Lua-equivalent commands: `orq` (date), `ouj` (time), `oxq` (weekday)
@@ -32,6 +35,8 @@ class FlypyEngine(
 
     var dictionary: FlypyDictionary = initialDictionary
         private set
+
+    private var customSnippets: List<SnippetEntry> = emptyList()
 
     var composingCode: String = ""
         private set
@@ -55,6 +60,22 @@ class FlypyEngine(
         if (composingCode.isNotEmpty()) {
             candidates = resolveCandidates(composingCode, nowMillis)
         }
+    }
+
+    fun updateSnippets(snippets: List<SnippetEntry>, nowMillis: Long = System.currentTimeMillis()) {
+        customSnippets = snippets.mapNotNull { entry ->
+            if (!entry.enabled || entry.content.isBlank()) return@mapNotNull null
+            val normCode = SnippetMatcher.normalizeFlypyCode(entry.flypyCode)
+            if (normCode.isEmpty()) null else entry.copy(flypyCode = normCode)
+        }
+        if (composingCode.isNotEmpty()) {
+            candidates = resolveCandidates(composingCode, nowMillis)
+        }
+    }
+
+    private fun hasCustomSnippetContinuation(prefix: String): Boolean {
+        if (prefix.isEmpty()) return false
+        return customSnippets.any { it.flypyCode.length > prefix.length && it.flypyCode.startsWith(prefix) }
     }
 
     fun resetComposing() {
@@ -254,20 +275,32 @@ class FlypyEngine(
             return FlypyAction.CommitText(out, remainComposing = false)
         }
 
-        // 5. `;x` Quick Symbol & `;f` Repeat (`auto_select_pattern: ^;.$`)
-        if (composingCode == ";") {
-            val nextCode = ";$ch"
+        // 5. `;x` Quick Symbol, `;f` Repeat & `;xx` Custom Snippets (`;sd`, `;yx`, `;dz`)
+        if (composingCode.startsWith(";")) {
+            if (composingCode.length >= 6) {
+                val pushed = flushTopCandidateOrClear()
+                val follow = onCharInput(ch, nowMillis)
+                return mergePushedWithFollowUp(pushed, follow)
+            }
+            val nextCode = composingCode + ch
             val nextCands = resolveCandidates(nextCode, nowMillis)
+            val hasMoreSnippet = hasCustomSnippetContinuation(nextCode)
             return when {
-                nextCands.size == 1 -> {
+                nextCands.size == 1 && !hasMoreSnippet -> {
                     val committed = nextCands[0].text
                     resetComposing()
                     lastCommittedText = committed
                     FlypyAction.CommitText(committed, remainComposing = false)
                 }
-                nextCands.isEmpty() -> {
-                    resetComposing()
-                    FlypyAction.ConsumedComposing
+                nextCands.isEmpty() && !hasMoreSnippet -> {
+                    if (composingCode == ";") {
+                        resetComposing()
+                        FlypyAction.ConsumedComposing
+                    } else {
+                        val pushed = flushTopCandidateOrClear()
+                        val follow = onCharInput(ch, nowMillis)
+                        mergePushedWithFollowUp(pushed, follow)
+                    }
                 }
                 else -> {
                     composingCode = nextCode
@@ -294,9 +327,12 @@ class FlypyEngine(
             return mergePushedWithFollowUp(pushed, follow)
         }
 
-        // 7. Standard `a-z` Xiaohe Yinxing Composing (`max_code_length = 4`, plus `os...` rare symbols)
+        // 7. Standard `a-z` Xiaohe Yinxing Composing (`max_code_length = 4`, plus `os...` & custom snippets)
         val canExtend = composingCode.length < 4 ||
-            (composingCode.length < 6 && dictionary.hasExtendedOsContinuation(composingCode))
+            (composingCode.length < 6 && (
+                dictionary.hasExtendedOsContinuation(composingCode) ||
+                    hasCustomSnippetContinuation(composingCode)
+                ))
 
         if (canExtend) {
             val nextCode = composingCode + ch
@@ -306,7 +342,21 @@ class FlypyEngine(
             if (
                 nextCode.length == 4 &&
                 nextCands.size == 1 &&
-                !dictionary.hasExtendedOsContinuation(nextCode)
+                !dictionary.hasExtendedOsContinuation(nextCode) &&
+                !hasCustomSnippetContinuation(nextCode)
+            ) {
+                val text = nextCands[0].text
+                resetComposing()
+                lastCommittedText = text
+                return FlypyAction.CommitText(text, remainComposing = false)
+            }
+
+            // Custom alpha snippet unique auto-commit at 5-6 chars
+            if (
+                nextCode.length > 4 &&
+                nextCands.size == 1 &&
+                !dictionary.hasExtendedOsContinuation(nextCode) &&
+                !hasCustomSnippetContinuation(nextCode)
             ) {
                 val text = nextCands[0].text
                 resetComposing()
@@ -352,12 +402,30 @@ class FlypyEngine(
             return dictionary.queryWildcard(code)
         }
 
+        val exactSnippets = customSnippets
+            .filter { it.flypyCode == code }
+            .map { entry ->
+                val hint = entry.title.trim().take(6).let { if (it.isNotEmpty()) "⚡$it" else "⚡短语" }
+                FlypyCandidate(text = entry.content, codeHint = hint)
+            }
+
+        val prefixSnippets = if (code.startsWith(";") && code.length >= 2) {
+            customSnippets
+                .filter { it.flypyCode.length > code.length && it.flypyCode.startsWith(code) }
+                .map { entry ->
+                    FlypyCandidate(text = entry.content, codeHint = entry.flypyCode)
+                }
+        } else {
+            emptyList()
+        }
+
         if (code == ";f") {
-            return if (lastCommittedText.isNotEmpty()) {
+            val repeatList = if (lastCommittedText.isNotEmpty()) {
                 listOf(FlypyCandidate(text = lastCommittedText))
             } else {
                 emptyList()
             }
+            return exactSnippets + repeatList + prefixSnippets
         }
 
         if (code == "orq") {
@@ -370,7 +438,7 @@ class FlypyEngine(
                 FlypyCandidate(isoFmt),
                 FlypyCandidate(compactFmt)
             )
-            return dynamic + dictionary.lookupExact(code)
+            return exactSnippets + dynamic + dictionary.lookupExact(code)
         }
 
         if (code == "ouj") {
@@ -381,7 +449,7 @@ class FlypyEngine(
                 FlypyCandidate(hm),
                 FlypyCandidate(hms)
             )
-            return dynamic + dictionary.lookupExact(code)
+            return exactSnippets + dynamic + dictionary.lookupExact(code)
         }
 
         if (code == "oxq") {
@@ -400,13 +468,13 @@ class FlypyEngine(
                 FlypyCandidate("星期$suffix"),
                 FlypyCandidate("周$suffix")
             )
-            return dynamic + dictionary.lookupExact(code)
+            return exactSnippets + dynamic + dictionary.lookupExact(code)
         }
 
         if (code.startsWith("os") && code.length >= 3) {
-            return dictionary.lookupWithExtendedOs(code)
+            return exactSnippets + dictionary.lookupWithExtendedOs(code)
         }
 
-        return dictionary.lookupExact(code)
+        return exactSnippets + dictionary.lookupExact(code) + prefixSnippets
     }
 }

@@ -204,7 +204,8 @@ object SetupStatsHelper {
                         stt.model.isNotBlank() &&
                         (stt.apiKey.isNotBlank() || AiPipelineEngine.isLocalEndpoint(stt.baseUrl))
                     SttProtocol.ALIYUN_DASHSCOPE_WS,
-                    SttProtocol.VOLCENGINE_SAUC_WS -> stt.apiKey.isNotBlank()
+                    SttProtocol.VOLCENGINE_SAUC_WS,
+                    SttProtocol.GEMINI_LIVE_WS -> stt.apiKey.isNotBlank()
                 }
 
                 val llm = settings.llmConfig
@@ -234,10 +235,13 @@ object SetupStatsHelper {
                     SttProtocol.OPENAI_HTTP -> settings.sttConfig.model.substringAfterLast('/').ifBlank { "STT" }
                     SttProtocol.ALIYUN_DASHSCOPE_WS -> "百炼流式"
                     SttProtocol.VOLCENGINE_SAUC_WS -> "豆包流式"
+                    SttProtocol.GEMINI_LIVE_WS -> "Gemini Live"
                 }
                 if (settings.llmConfig.enabled) {
                     val llmShort = settings.llmConfig.model.substringAfterLast('/').ifBlank { "LLM" }
                     "双阶段 · $sttShort + $llmShort"
+                } else if (settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS) {
+                    "流式智能净写 · Gemini Live"
                 } else {
                     "双阶段 · 仅 $sttShort"
                 }
@@ -412,6 +416,18 @@ fun HomeSetupScreen(
 
     val (activeStyle, isAutoStyle) = remember(settings) {
         repository.resolveActiveStyle(context.packageName)
+    }
+
+    LaunchedEffect(
+        settings.pipelineMode,
+        settings.sttConfig.protocol,
+        settings.sttConfig.apiKey,
+        settings.sttConfig.baseUrl
+    ) {
+        runCatching {
+            aiEngine.prewarmLiveStreamingIfNeeded(settings)
+            aiEngine.prewarmEndpoints(settings)
+        }
     }
 
     Column(
@@ -633,7 +649,9 @@ fun HomeSetupScreen(
                         { pcm -> liveSession.sendPcmFrame(pcm) }
                     } else {
                         null
-                    }
+                    },
+                    pauseMediaPlayback = settings.pauseMediaWhileRecording,
+                    whisperMode = settings.whisperModeEnabled
                 )
                     .onSuccess {
                         sandboxStreamSession = liveSession
@@ -730,6 +748,7 @@ fun HomeSetupScreen(
                     processingStage = null
 
                     pipelineResult.onSuccess { exec ->
+                        runCatching { aiEngine.prewarmLiveStreamingIfNeeded(settings) }
                         undoSnapshot = capturedSnapshot
                         val (newText, newCursor) = SetupStatsHelper.applySandboxInsertionOrReplacement(
                             currentText = capturedSnapshot.text,

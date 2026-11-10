@@ -148,6 +148,13 @@ class TypeFreeBubbleService :
 
         attachOverlayWindow()
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
+        serviceScope.launch {
+            runCatching {
+                val snap = repository.settings.value
+                aiEngine.prewarmLiveStreamingIfNeeded(snap)
+                aiEngine.prewarmEndpoints(snap)
+            }
+        }
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
         TypeFreeBubbleController.setBubbleServiceRunning(true)
     }
@@ -342,7 +349,9 @@ class TypeFreeBubbleService :
                 { pcmChunk -> streamSession.sendPcmFrame(pcmChunk) }
             } else {
                 null
-            }
+            },
+            pauseMediaPlayback = settingsSnap.pauseMediaWhileRecording,
+            whisperMode = settingsSnap.whisperModeEnabled
         )
         res.fold(
             onSuccess = {
@@ -468,6 +477,7 @@ class TypeFreeBubbleService :
                                 )
                             )
                             vibrate(strong = false)
+                            runCatching { aiEngine.prewarmLiveStreamingIfNeeded(settings) }
                             showTemporaryFeedback(
                                 if (inserted) "✓ 已上屏" else "✓ 已复制剪贴板",
                                 isError = false

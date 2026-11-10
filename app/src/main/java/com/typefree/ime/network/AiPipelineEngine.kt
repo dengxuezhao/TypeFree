@@ -13,12 +13,15 @@ import com.typefree.ime.data.ModelProbeResult
 import com.typefree.ime.data.MultimodalConfig
 import com.typefree.ime.data.MultimodalProtocol
 import com.typefree.ime.data.PipelineMode
+import com.typefree.ime.data.SnippetMatcher
 import com.typefree.ime.data.SttConfig
 import com.typefree.ime.data.SttProtocol
 import com.typefree.ime.data.ThinkingMode
 import com.typefree.ime.data.ToneStyle
+import com.typefree.ime.data.UnifiedProviderCatalog
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.network.asr.DashScopeStreamingAsrClient
+import com.typefree.ime.network.asr.GeminiLiveTranscribeClient
 import com.typefree.ime.network.asr.StreamingAsrClient
 import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.network.asr.VolcengineSaucAsrClient
@@ -68,7 +71,8 @@ internal data class ChatCallOutcome(
 class AiPipelineEngine(
     private val httpClient: OkHttpClient = defaultHttpClient(),
     private val dashScopeAsrClient: StreamingAsrClient = DashScopeStreamingAsrClient(httpClient),
-    private val volcengineAsrClient: StreamingAsrClient = VolcengineSaucAsrClient(httpClient)
+    private val volcengineAsrClient: StreamingAsrClient = VolcengineSaucAsrClient(httpClient),
+    private val geminiLiveAsrClient: StreamingAsrClient = GeminiLiveTranscribeClient(httpClient)
 ) {
 
     private val lastPrewarmedByOrigin = ConcurrentHashMap<String, Long>()
@@ -82,16 +86,18 @@ class AiPipelineEngine(
         val candidateUrls = buildList {
             when (settings.pipelineMode) {
                 PipelineMode.DUAL_STAGE -> {
-                    if (settings.sttConfig.protocol == SttProtocol.OPENAI_HTTP &&
+                    if ((settings.sttConfig.protocol == SttProtocol.OPENAI_HTTP ||
+                            settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS) &&
                         settings.sttConfig.baseUrl.isNotBlank() &&
                         !isLocalEndpoint(settings.sttConfig.baseUrl)
                     ) {
                         add(settings.sttConfig.baseUrl)
                     }
-                    if (settings.llmConfig.baseUrl.isNotBlank() &&
-                        !isLocalEndpoint(settings.llmConfig.baseUrl)
+                    val effectiveLlm = resolveEffectiveLlmConfig(settings)
+                    if (effectiveLlm.baseUrl.isNotBlank() &&
+                        !isLocalEndpoint(effectiveLlm.baseUrl)
                     ) {
-                        add(settings.llmConfig.baseUrl)
+                        add(effectiveLlm.baseUrl)
                     }
                 }
                 PipelineMode.MULTIMODAL_DIRECT -> {
@@ -153,8 +159,25 @@ class AiPipelineEngine(
     }
 
     /**
+     * Pre-establishes an idle, ready-to-stream `BidiGenerateContent` WebSocket session when
+     * `GEMINI_LIVE_WS` is active so short 1-2s utterances skip ~800-1100ms of cold setup wait.
+     */
+    fun prewarmLiveStreamingIfNeeded(settings: AppSettings) {
+        if (settings.pipelineMode != PipelineMode.DUAL_STAGE) return
+        val sttCfg = settings.sttConfig
+        if (sttCfg.protocol != SttProtocol.GEMINI_LIVE_WS || sttCfg.apiKey.isBlank()) return
+        val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
+        geminiLiveAsrClient.prewarmSession(sttCfg, hotwords)
+    }
+
+    fun evictLiveStreamingPrewarm() {
+        geminiLiveAsrClient.evictPrewarmSession()
+    }
+
+    /**
      * Opens a live WebSocket streaming ASR session when Dual-Stage mode is configured with
-     * Aliyun DashScope or Volcengine Doubao streaming protocol; returns `null` for HTTP batch mode.
+     * Aliyun DashScope, Volcengine Doubao, or Google Gemini Live streaming protocol;
+     * returns `null` for HTTP batch mode.
      */
     fun openLiveStreamingSession(settings: AppSettings): StreamingAsrSession? {
         if (settings.pipelineMode != PipelineMode.DUAL_STAGE) return null
@@ -164,6 +187,7 @@ class AiPipelineEngine(
             SttProtocol.OPENAI_HTTP -> null
             SttProtocol.ALIYUN_DASHSCOPE_WS -> dashScopeAsrClient.openSession(sttCfg, hotwords)
             SttProtocol.VOLCENGINE_SAUC_WS -> volcengineAsrClient.openSession(sttCfg, hotwords)
+            SttProtocol.GEMINI_LIVE_WS -> geminiLiveAsrClient.openSession(sttCfg, hotwords)
         }
     }
 
@@ -231,6 +255,11 @@ class AiPipelineEngine(
                                 config = sttCfg,
                                 hotwords = hotwords
                             )
+                            SttProtocol.GEMINI_LIVE_WS -> transcribeGeminiWavWithFastFallback(
+                                wavFile = wavFile,
+                                config = sttCfg,
+                                hotwords = hotwords
+                            )
                         }
                         sttElapsedMs = (System.currentTimeMillis() - sttStart).coerceAtLeast(0L)
                         transcribed
@@ -240,22 +269,45 @@ class AiPipelineEngine(
                         return@withContext Result.failure(IllegalArgumentException("未识别到清晰语音内容，请重试"))
                     }
 
-                    val llmCfg = settings.llmConfig
+                    // Voice Snippet 0ms Instant Expansion (before calling Stage 2 LLM)
+                    if (effectiveIntent == VoiceIntentMode.DICTATE) {
+                        SnippetMatcher.matchVoiceTranscript(rawTranscript, settings.snippets)?.let { matched ->
+                            val elapsed = (System.currentTimeMillis() - startMs) + if (usedLiveStream) sttTailWaitMs else 0L
+                            return@withContext Result.success(
+                                PipelineExecutionResult(
+                                    rawTranscript = rawTranscript,
+                                    finalOutput = matched.content,
+                                    latencyMs = elapsed,
+                                    modeSummary = "口令展开 (${matched.title})",
+                                    sttLatencyMs = sttElapsedMs,
+                                    llmLatencyMs = 0L,
+                                    usedStreamingAsr = usedLiveStream
+                                )
+                            )
+                        }
+                    }
+
                     val sttBadge = when (sttCfg.protocol) {
                         SttProtocol.OPENAI_HTTP -> sttCfg.model.substringAfterLast('/')
                         SttProtocol.ALIYUN_DASHSCOPE_WS -> "百炼流式"
                         SttProtocol.VOLCENGINE_SAUC_WS -> "豆包流式"
+                        SttProtocol.GEMINI_LIVE_WS -> "Gemini Live"
                     }
 
                     // If Speak-to-Edit / Help-me-write / Translate is active, LLM MUST run
-                    if (!llmCfg.enabled && !requiresGenerativeLlm) {
+                    if (!settings.llmConfig.enabled && !requiresGenerativeLlm) {
                         val elapsed = (System.currentTimeMillis() - startMs) + if (usedLiveStream) sttTailWaitMs else 0L
+                        val directLabel = if (sttCfg.protocol == SttProtocol.GEMINI_LIVE_WS) {
+                            "Gemini Live 智能流式"
+                        } else {
+                            "仅 STT ($sttBadge)"
+                        }
                         return@withContext Result.success(
                             PipelineExecutionResult(
                                 rawTranscript = rawTranscript,
                                 finalOutput = rawTranscript,
                                 latencyMs = elapsed,
-                                modeSummary = "仅 STT ($sttBadge)",
+                                modeSummary = directLabel,
                                 sttLatencyMs = sttElapsedMs,
                                 llmLatencyMs = 0L,
                                 usedStreamingAsr = usedLiveStream
@@ -263,6 +315,7 @@ class AiPipelineEngine(
                         )
                     }
 
+                    val llmCfg = resolveEffectiveLlmConfig(settings)
                     if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
                         return@withContext Result.failure(
                             IllegalStateException("请先在「API 配置」中填写 LLM 润色 API Key（或关闭 LLM 润色开关）")
@@ -300,7 +353,7 @@ class AiPipelineEngine(
                     }
 
                     val llmStart = System.currentTimeMillis()
-                    val llmOutcome = callOpenAiChatCompletionWithDiagnostics(
+                    val llmOutcome = executeLlmChatWithDiagnostics(
                         config = llmCfg,
                         systemPrompt = sysPrompt,
                         userPrompt = usrPrompt
@@ -345,20 +398,36 @@ class AiPipelineEngine(
                         dictionary = settings.dictionary,
                         surroundingBeforeCursor = safeContext
                     )
-                    val audioBytes = wavFile.readBytes()
-                    val base64Audio = java.util.Base64.getEncoder().encodeToString(audioBytes)
-
                     val output = when (mmCfg.protocol) {
-                        MultimodalProtocol.GEMINI_NATIVE -> callGeminiMultimodalAudio(
-                            config = mmCfg,
-                            prompt = prompt,
-                            base64Wav = base64Audio
-                        )
-                        MultimodalProtocol.OPENAI_AUDIO_CHAT -> callOpenAiMultimodalAudio(
-                            config = mmCfg,
-                            prompt = prompt,
-                            base64Wav = base64Audio
-                        )
+                        MultimodalProtocol.GEMINI_NATIVE -> {
+                            val compressedM4a = AacAudioCompressor.compressWavToM4aOrNull(wavFile)
+                            try {
+                                val (uploadBytes, uploadMime) = if (compressedM4a != null) {
+                                    compressedM4a.readBytes() to "audio/mp4"
+                                } else {
+                                    wavFile.readBytes() to "audio/wav"
+                                }
+                                val b64 = java.util.Base64.getEncoder().encodeToString(uploadBytes)
+                                callGeminiMultimodalAudio(
+                                    config = mmCfg,
+                                    prompt = prompt,
+                                    base64Wav = b64,
+                                    mimeType = uploadMime
+                                )
+                            } finally {
+                                if (compressedM4a != null) {
+                                    runCatching { compressedM4a.delete() }
+                                }
+                            }
+                        }
+                        MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
+                            val b64 = java.util.Base64.getEncoder().encodeToString(wavFile.readBytes())
+                            callOpenAiMultimodalAudio(
+                                config = mmCfg,
+                                prompt = prompt,
+                                base64Wav = b64
+                            )
+                        }
                     }
 
                     if (output.isBlank() || output.contains("[EMPTY_SPEECH]")) {
@@ -407,7 +476,126 @@ class AiPipelineEngine(
                     "请先在「API 配置」中填写火山豆包语音 Access Token 或 API Key"
                 } else null
             }
+            SttProtocol.GEMINI_LIVE_WS -> {
+                if (sttCfg.apiKey.isBlank()) {
+                    "请先在「API 配置」中填写 Google Gemini API Key"
+                } else null
+            }
         }
+    }
+
+    private suspend fun transcribeGeminiWavWithFastFallback(
+        wavFile: File,
+        config: SttConfig,
+        hotwords: List<String>
+    ): String {
+        val wsAttempt = runCatching {
+            geminiLiveAsrClient.transcribeWavFile(
+                wavFile = wavFile,
+                config = config,
+                hotwords = hotwords,
+                timeoutMs = 2_400L
+            )
+        }
+        val wsText = wsAttempt.getOrNull()?.trim().orEmpty()
+        if (wsText.isNotEmpty() && !isHallucinatedSilence(wsText)) {
+            return wsText
+        }
+
+        // Fast HTTP .m4a fallback via gemini-3.5-flash-lite if WebSocket was blocked or dropped by proxy
+        val httpBase = config.baseUrl
+            .takeIf { it.isNotBlank() && !it.startsWith("wss://", ignoreCase = true) && !it.startsWith("ws://", ignoreCase = true) }
+            ?: "https://generativelanguage.googleapis.com/v1beta"
+        val vocabHint = if (hotwords.isNotEmpty()) {
+            "专有名词参考：${hotwords.take(50).joinToString("、")}。"
+        } else ""
+        val fastPrompt = "请将这段语音准确转写为文字，自动去除无意义口头禅并补全自然标点，不要输出任何额外解释。若无有效人声请只输出 [EMPTY_SPEECH]。$vocabHint"
+
+        val compressedM4a = AacAudioCompressor.compressWavToM4aOrNull(wavFile)
+        val fallbackOut = try {
+            val (uploadBytes, uploadMime) = if (compressedM4a != null) {
+                compressedM4a.readBytes() to "audio/mp4"
+            } else {
+                wavFile.readBytes() to "audio/wav"
+            }
+            val b64 = java.util.Base64.getEncoder().encodeToString(uploadBytes)
+            callGeminiMultimodalAudio(
+                config = MultimodalConfig(
+                    presetId = "gemini",
+                    protocol = MultimodalProtocol.GEMINI_NATIVE,
+                    baseUrl = httpBase,
+                    apiKey = config.apiKey,
+                    model = "gemini-3.5-flash-lite",
+                    temperature = 0.1f,
+                    thinkingMode = ThinkingMode.DISABLED
+                ),
+                prompt = fastPrompt,
+                base64Wav = b64,
+                mimeType = uploadMime
+            )
+        } catch (_: Throwable) {
+            wsAttempt.getOrThrow()
+        } finally {
+            if (compressedM4a != null) {
+                runCatching { compressedM4a.delete() }
+            }
+        }
+        return if (fallbackOut.contains("[EMPTY_SPEECH]")) "" else cleanRawTranscript(fallbackOut)
+    }
+
+    private fun resolveEffectiveLlmConfig(settings: AppSettings): LlmConfig {
+        val primary = settings.llmConfig
+        if (primary.apiKey.isNotBlank() || isLocalEndpoint(primary.baseUrl)) {
+            return primary
+        }
+        // Single-Key Google Gemini fallback when user configured Gemini Live STT or Vault
+        val googleVaultKey = settings.providerVault[UnifiedProviderCatalog.ID_GOOGLE]?.apiKey.orEmpty()
+        val geminiKey = when {
+            settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS && settings.sttConfig.apiKey.isNotBlank() ->
+                settings.sttConfig.apiKey
+            settings.multimodalConfig.protocol == MultimodalProtocol.GEMINI_NATIVE && settings.multimodalConfig.apiKey.isNotBlank() ->
+                settings.multimodalConfig.apiKey
+            googleVaultKey.isNotBlank() -> googleVaultKey
+            else -> ""
+        }
+        if (geminiKey.isNotBlank()) {
+            val geminiBase = settings.providerVault[UnifiedProviderCatalog.ID_GOOGLE]?.customBaseUrl
+                ?.takeIf { it.isNotBlank() }
+                ?: settings.sttConfig.baseUrl.takeIf {
+                    settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS && it.isNotBlank() && !it.startsWith("wss://", true)
+                }
+                ?: "https://generativelanguage.googleapis.com/v1beta"
+            return primary.copy(
+                presetId = "gemini_llm",
+                baseUrl = geminiBase,
+                apiKey = geminiKey,
+                model = "gemini-3.5-flash-lite",
+                thinkingMode = ThinkingMode.DISABLED
+            )
+        }
+        return primary
+    }
+
+    private fun executeLlmChatWithDiagnostics(
+        config: LlmConfig,
+        systemPrompt: String,
+        userPrompt: String
+    ): ChatCallOutcome {
+        if (EndpointResolver.isGeminiNativeHttpUrl(config.baseUrl)) {
+            return callGeminiTextOnlyWithDiagnostics(
+                config = MultimodalConfig(
+                    presetId = "gemini",
+                    protocol = MultimodalProtocol.GEMINI_NATIVE,
+                    baseUrl = config.baseUrl,
+                    apiKey = config.apiKey,
+                    model = config.model.ifBlank { "gemini-3.5-flash-lite" },
+                    temperature = config.temperature,
+                    thinkingMode = config.thinkingMode
+                ),
+                fullPrompt = "$systemPrompt\n\n$userPrompt"
+            )
+        }
+        return callOpenAiChatCompletionWithDiagnostics(config, systemPrompt, userPrompt)
     }
 
     /**
@@ -446,11 +634,11 @@ class AiPipelineEngine(
 
             when (settings.pipelineMode) {
                 PipelineMode.DUAL_STAGE -> {
-                    val llmCfg = settings.llmConfig
+                    val llmCfg = resolveEffectiveLlmConfig(settings)
                     if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
                         return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
                     }
-                    val outcome = callOpenAiChatCompletionWithDiagnostics(llmCfg, sysPrompt, usrPrompt)
+                    val outcome = executeLlmChatWithDiagnostics(llmCfg, sysPrompt, usrPrompt)
                     output = outcome.text
                     diagLog = outcome.diagnosticLog
                     modelLabel = llmCfg.model
@@ -530,7 +718,10 @@ class AiPipelineEngine(
                 throw IllegalArgumentException("请先填写 API Key 后再拉取可用模型")
             }
 
-            val models = if (slot == ModelCapabilitySlot.MULTIMODAL && protocol == MultimodalProtocol.GEMINI_NATIVE) {
+            val isGeminiNativeSlot =
+                (slot == ModelCapabilitySlot.MULTIMODAL && protocol == MultimodalProtocol.GEMINI_NATIVE) ||
+                    (slot == ModelCapabilitySlot.LLM && EndpointResolver.isGeminiNativeHttpUrl(cleanBase))
+            val models = if (isGeminiNativeSlot) {
                 fetchGeminiOrGatewayModels(cleanBase, cleanKey, slot)
             } else {
                 fetchOpenAiOrLocalModels(cleanBase, cleanKey, slot)
@@ -669,7 +860,8 @@ class AiPipelineEngine(
     ): List<ModelProbeResult> = withContext(Dispatchers.IO) {
         if (modelIds.isEmpty()) return@withContext emptyList()
         val warmTarget = when {
-            slot == ModelCapabilitySlot.MULTIMODAL && protocol == MultimodalProtocol.GEMINI_NATIVE ->
+            (slot == ModelCapabilitySlot.MULTIMODAL && protocol == MultimodalProtocol.GEMINI_NATIVE) ||
+                (slot == ModelCapabilitySlot.LLM && EndpointResolver.isGeminiNativeHttpUrl(baseUrl)) ->
                 EndpointResolver.resolveGeminiModelsEndpoint(baseUrl, apiKey)
             slot == ModelCapabilitySlot.STT ->
                 EndpointResolver.resolveSttEndpoint(baseUrl)
@@ -751,7 +943,8 @@ class AiPipelineEngine(
                     }
                 }
 
-                slot == ModelCapabilitySlot.MULTIMODAL && protocol == MultimodalProtocol.GEMINI_NATIVE -> {
+                (slot == ModelCapabilitySlot.MULTIMODAL && protocol == MultimodalProtocol.GEMINI_NATIVE) ||
+                    (slot == ModelCapabilitySlot.LLM && EndpointResolver.isGeminiNativeHttpUrl(baseUrl)) -> {
                     val url = EndpointResolver.resolveGeminiEndpoint(baseUrl, cleanModel, apiKey)
                     fun buildGeminiProbe(withThinking: Boolean): JsonObject {
                         val genCfg = buildGeminiGenerationConfig(
@@ -1131,7 +1324,8 @@ class AiPipelineEngine(
     internal fun callGeminiMultimodalAudio(
         config: MultimodalConfig,
         prompt: String,
-        base64Wav: String
+        base64Wav: String,
+        mimeType: String = "audio/wav"
     ): String {
         val parts = JsonArray().apply {
             add(JsonObject().apply {
@@ -1139,7 +1333,7 @@ class AiPipelineEngine(
             })
             add(JsonObject().apply {
                 add("inline_data", JsonObject().apply {
-                    addProperty("mime_type", "audio/wav")
+                    addProperty("mime_type", mimeType)
                     addProperty("data", base64Wav)
                 })
             })
@@ -1750,8 +1944,11 @@ class AiPipelineEngine(
         fun recommendedGeminiThinkingLevel(model: String): String? {
             val code = normalizeModelCode(model)
             if (code.isEmpty()) return null
-            if (code.contains("lite") || code.contains("tts") || code.contains("live") || code.contains("image")) {
+            if (code.contains("tts") || code.contains("live") || code.contains("image") || code.contains("transcribe")) {
                 return null
+            }
+            if (code.startsWith("gemini-3") && code.contains("lite")) {
+                return "MINIMAL"
             }
             val isFlash36Plus = code.startsWith("gemini-3.6-flash") ||
                 code.startsWith("gemini-3.7-flash") ||
@@ -1985,8 +2182,8 @@ class AiPipelineEngine(
                     code == "gemini-3.5-flash-lite" -> 100
                     code == "gemini-2.5-flash" -> 98
                     code == "gemini-3.1-flash-lite" -> 96
-                    code == "gemini-3.8-flash" -> 94
-                    code == "gemini-3.6-flash" -> 90
+                    code == "gemini-3.6-flash" -> 92
+                    code == "gemini-3.8-flash" -> 90
                     code == "gpt-4o-mini-audio-preview" -> 88
                     code.startsWith("gemini-") -> 75
                     else -> 10
@@ -1999,7 +2196,8 @@ class AiPipelineEngine(
                     code == "deepseek-chat" -> 100
                     code == "gemini-3.5-flash-lite" -> 98
                     code == "gemini-2.5-flash" -> 96
-                    code == "gemini-3.8-flash" -> 94
+                    code == "gemini-3.6-flash" -> 94
+                    code == "gemini-3.8-flash" -> 93
                     code == "gpt-4o-mini" -> 92
                     code.startsWith("qwen3-8b") -> 91
                     else -> 10

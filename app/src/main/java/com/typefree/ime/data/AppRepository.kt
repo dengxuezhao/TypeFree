@@ -98,6 +98,40 @@ class AppRepository(private val appContext: Context) {
             } else {
                 true
             }
+            val resolvedPauseMedia = if (raw.contains("\"pauseMediaWhileRecording\"")) {
+                parsed.pauseMediaWhileRecording
+            } else {
+                true
+            }
+            val resolvedWhisperMode = if (raw.contains("\"whisperModeEnabled\"")) {
+                parsed.whisperModeEnabled
+            } else {
+                false
+            }
+            val resolvedEqualAskAi = if (raw.contains("\"equalEqualAskAiEnabled\"")) {
+                parsed.equalEqualAskAiEnabled
+            } else {
+                true
+            }
+            val safeSnippets = (parsed.snippets ?: DefaultPresets.defaultSnippets()).map { s ->
+                s.copy(
+                    id = s.id.ifBlank { UUID.randomUUID().toString() },
+                    title = s.title ?: "",
+                    voiceTriggers = s.voiceTriggers ?: "",
+                    flypyCode = SnippetMatcher.normalizeFlypyCode(s.flypyCode ?: ""),
+                    content = s.content ?: ""
+                )
+            }
+            val rawVault = parsed.providerVault ?: emptyMap()
+            val safeVault = rawVault.mapValues { (k, v) ->
+                ProviderCredential(
+                    providerId = (v.providerId ?: "").ifBlank { k },
+                    apiKey = v.apiKey ?: "",
+                    sttApiKey = v.sttApiKey ?: "",
+                    appId = v.appId ?: "",
+                    customBaseUrl = v.customBaseUrl ?: ""
+                )
+            }
             val rawStt = parsed.sttConfig ?: SttConfig()
             val safeStt = rawStt.copy(
                 presetId = rawStt.presetId ?: "siliconflow",
@@ -123,10 +157,10 @@ class AppRepository(private val appContext: Context) {
                 protocol = rawMm.protocol ?: MultimodalProtocol.GEMINI_NATIVE,
                 baseUrl = rawMm.baseUrl ?: "https://generativelanguage.googleapis.com/v1beta",
                 apiKey = rawMm.apiKey ?: "",
-                model = rawMm.model ?: "gemini-2.5-flash",
+                model = rawMm.model ?: "gemini-3.5-flash-lite",
                 thinkingMode = rawMm.thinkingMode ?: ThinkingMode.DISABLED
             )
-            parsed.copy(
+            val preliminary = parsed.copy(
                 sttConfig = safeStt,
                 llmConfig = safeLlm,
                 multimodalConfig = safeMm,
@@ -140,6 +174,11 @@ class AppRepository(private val appContext: Context) {
                 qwertyKeyPopupPreview = resolvedQwertyKeyPopupPreview,
                 clipboardEnabled = resolvedClipboardEnabled,
                 clipboardQuickPasteSuggestion = resolvedClipboardQuickSuggestion,
+                pauseMediaWhileRecording = resolvedPauseMedia,
+                whisperModeEnabled = resolvedWhisperMode,
+                equalEqualAskAiEnabled = resolvedEqualAskAi,
+                providerVault = safeVault,
+                snippets = safeSnippets,
                 historyRetention = parsed.historyRetention ?: HistoryRetention.FOREVER,
                 translationTargets = safeTargets,
                 activeTranslateTarget = safeActiveTarget,
@@ -147,6 +186,9 @@ class AppRepository(private val appContext: Context) {
                 styles = (parsed.styles ?: emptyList()).ifEmpty { DefaultPresets.defaultStyles() },
                 appRules = parsed.appRules ?: DefaultPresets.defaultAppRules(),
                 dictionary = safeDict
+            )
+            preliminary.copy(
+                providerVault = UnifiedProviderCatalog.hydrateVaultFromSettings(preliminary)
             )
         } catch (_: Exception) {
             AppSettings()

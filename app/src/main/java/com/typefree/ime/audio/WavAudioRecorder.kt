@@ -4,7 +4,10 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import androidx.core.content.ContextCompat
@@ -38,6 +41,7 @@ class WavAudioRecorder(private val context: Context) {
 
     private var recordingJob: Job? = null
     private var audioRecord: AudioRecord? = null
+    private var activeAudioFocusRequest: AudioFocusRequest? = null
 
     @Volatile
     private var startTimeMs: Long = 0L
@@ -45,11 +49,17 @@ class WavAudioRecorder(private val context: Context) {
     @Volatile
     private var ignoreAudioUntilMs: Long = 0L
 
+    @Volatile
+    private var activeWhisperMode: Boolean = false
+
     private val _amplitudes = MutableStateFlow(List(BAR_COUNT) { 0.08f })
     val amplitudes: StateFlow<List<Float>> = _amplitudes.asStateFlow()
 
     private val _elapsedMs = MutableStateFlow(0L)
     val elapsedMs: StateFlow<Long> = _elapsedMs.asStateFlow()
+
+    private val _didPauseExternalMedia = MutableStateFlow(false)
+    val didPauseExternalMedia: StateFlow<Boolean> = _didPauseExternalMedia.asStateFlow()
 
     private val sessionLock = Any()
     private var activeDiskFile: RandomAccessFile? = null
@@ -84,6 +94,47 @@ class WavAudioRecorder(private val context: Context) {
         return isLikelyHumanSpeech(speechFrameCount, maxStrongStreak)
     }
 
+    private fun requestTransientAudioFocusIfNeeded(pauseMediaPlayback: Boolean) {
+        abandonTransientAudioFocus()
+        if (!pauseMediaPlayback) return
+        val am = runCatching {
+            context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        }.getOrNull() ?: return
+
+        val wasMusicActive = runCatching { am.isMusicActive }.getOrDefault(false)
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+        val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+            .setAudioAttributes(attrs)
+            .setAcceptsDelayedFocusGain(false)
+            .setWillPauseWhenDucked(true)
+            .setOnAudioFocusChangeListener { /* transient dictation capture */ }
+            .build()
+
+        val res = runCatching { am.requestAudioFocus(req) }
+            .getOrDefault(AudioManager.AUDIOFOCUS_REQUEST_FAILED)
+        if (res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            activeAudioFocusRequest = req
+            _didPauseExternalMedia.value = wasMusicActive
+        } else {
+            _didPauseExternalMedia.value = false
+        }
+    }
+
+    private fun abandonTransientAudioFocus() {
+        val req = activeAudioFocusRequest
+        activeAudioFocusRequest = null
+        _didPauseExternalMedia.value = false
+        if (req != null) {
+            runCatching {
+                val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                am?.abandonAudioFocusRequest(req)
+            }
+        }
+    }
+
     /**
      * Clears initial swipe/touch friction & haptic motor frames when locking from the
      * Swipe-Up Arc Translate wheel into Hands-Free Translate recording, resetting timer to 00:00.
@@ -116,7 +167,9 @@ class WavAudioRecorder(private val context: Context) {
     fun startRecording(
         scope: CoroutineScope,
         onStreamChunk: ((ByteArray) -> Unit)? = null,
-        onSilencePrefixCleared: (() -> Unit)? = null
+        onSilencePrefixCleared: (() -> Unit)? = null,
+        pauseMediaPlayback: Boolean = false,
+        whisperMode: Boolean = false
     ): Result<Unit> {
         if (!hasRecordPermission()) {
             return Result.failure(SecurityException("尚未授予麦克风录音权限"))
@@ -171,6 +224,7 @@ class WavAudioRecorder(private val context: Context) {
         }
 
         audioRecord = record
+        activeWhisperMode = whisperMode
         prefixClearedCallback = onSilencePrefixCleared
         speechFrameCount = 0
         currentStrongStreak = 0
@@ -183,9 +237,12 @@ class WavAudioRecorder(private val context: Context) {
         _elapsedMs.value = 0L
         _amplitudes.value = List(BAR_COUNT) { 0.08f }
 
+        requestTransientAudioFocusIfNeeded(pauseMediaPlayback)
+
         try {
             record.startRecording()
         } catch (e: Exception) {
+            abandonTransientAudioFocus()
             synchronized(sessionLock) {
                 runCatching { activeDiskFile?.close() }
                 activeDiskFile = null
@@ -194,6 +251,10 @@ class WavAudioRecorder(private val context: Context) {
             audioRecord = null
             return Result.failure(e)
         }
+
+        val speechRmsFloor = if (whisperMode) WHISPER_SPEECH_RMS_THRESHOLD else SPEECH_RMS_THRESHOLD
+        val strongRmsFloor = if (whisperMode) WHISPER_STRONG_SPEECH_RMS_THRESHOLD else STRONG_SPEECH_RMS_THRESHOLD
+        val waveformDivisor = if (whisperMode) 950.0 else 2400.0
 
         recordingJob = scope.launch(Dispatchers.IO) {
             val shortBuf = ShortArray(CHUNK_SAMPLES)
@@ -244,7 +305,8 @@ class WavAudioRecorder(private val context: Context) {
                                     val chunks = ArrayList<ByteArray>(2)
                                     var offset = 0
                                     while (allBytes.size - offset >= STREAM_CHUNK_BYTES) {
-                                        chunks.add(allBytes.copyOfRange(offset, offset + STREAM_CHUNK_BYTES))
+                                        val rawSlice = allBytes.copyOfRange(offset, offset + STREAM_CHUNK_BYTES)
+                                        chunks.add(if (whisperMode) boostWhisperPcm16Le(rawSlice) else rawSlice)
                                         offset += STREAM_CHUNK_BYTES
                                     }
                                     if (offset < allBytes.size) {
@@ -265,10 +327,10 @@ class WavAudioRecorder(private val context: Context) {
                             if (framePeak > observedGlobalPeak) {
                                 observedGlobalPeak = framePeak
                             }
-                            if (rms >= SPEECH_RMS_THRESHOLD) {
+                            if (rms >= speechRmsFloor) {
                                 speechFrameCount += 1
                             }
-                            if (rms >= STRONG_SPEECH_RMS_THRESHOLD) {
+                            if (rms >= strongRmsFloor) {
                                 currentStrongStreak += 1
                                 if (currentStrongStreak > maxStrongStreak) {
                                     maxStrongStreak = currentStrongStreak
@@ -279,7 +341,7 @@ class WavAudioRecorder(private val context: Context) {
                         }
 
                         // Normalize speech level into [0.08f .. 1.0f] for crisp waveform display
-                        val normalized = ((rms / 2400.0).toFloat()).coerceIn(0.08f, 1.0f)
+                        val normalized = ((rms / waveformDivisor).toFloat()).coerceIn(0.08f, 1.0f)
                         if (rollingBars.size >= BAR_COUNT) {
                             rollingBars.removeFirst()
                         }
@@ -299,7 +361,8 @@ class WavAudioRecorder(private val context: Context) {
                         }
                     }
                     if (tailBytes != null && tailBytes.isNotEmpty()) {
-                        runCatching { onStreamChunk.invoke(tailBytes) }
+                        val finalTail = if (whisperMode) boostWhisperPcm16Le(tailBytes) else tailBytes
+                        runCatching { onStreamChunk.invoke(finalTail) }
                     }
                 }
             }
@@ -312,6 +375,8 @@ class WavAudioRecorder(private val context: Context) {
         val job = recordingJob
         recordingJob = null
         prefixClearedCallback = null
+        val sessionWhisper = activeWhisperMode
+        activeWhisperMode = false
         try {
             job?.cancelAndJoin()
         } catch (_: Exception) {
@@ -329,6 +394,8 @@ class WavAudioRecorder(private val context: Context) {
                 record?.release()
             } catch (_: Exception) {
             }
+            // Immediately release transient AudioFocus so paused background music resumes right away
+            abandonTransientAudioFocus()
         }
 
         _amplitudes.value = List(BAR_COUNT) { 0.08f }
@@ -362,12 +429,17 @@ class WavAudioRecorder(private val context: Context) {
         val hasSpeech = isLikelyHumanSpeech(speechFrameCount, maxStrongStreak)
 
         // Fast path (<1ms): if mic gain is already strong or pure silence, header was patched in-place!
-        // Only run software gain boost if OEM VOICE_RECOGNITION source produced a quiet voice track.
-        if (hasSpeech && observedGlobalPeak in MIN_VOICE_PEAK_FOR_BOOST until TARGET_PEAK_AMPLITUDE) {
+        // Only run software gain boost if OEM VOICE_RECOGNITION source or Whisper mode produced a quiet voice track.
+        val minBoostPeak = if (sessionWhisper) MIN_WHISPER_VOICE_PEAK else MIN_VOICE_PEAK_FOR_BOOST
+        if (hasSpeech && observedGlobalPeak in minBoostPeak until TARGET_PEAK_AMPLITUDE) {
             runCatching {
                 val rawPcm = extractPcmFromWav(outFile)
                 if (rawPcm.isNotEmpty()) {
-                    val boosted = normalizePcm16Le(rawPcm)
+                    val boosted = normalizePcm16Le(
+                        pcmBytes = rawPcm,
+                        sampleRate = SAMPLE_RATE,
+                        whisperMode = sessionWhisper
+                    )
                     if (boosted !== rawPcm) {
                         writeWavFile(outFile, boosted, SAMPLE_RATE, 1, 16)
                     }
@@ -388,6 +460,7 @@ class WavAudioRecorder(private val context: Context) {
         val job = recordingJob
         recordingJob = null
         prefixClearedCallback = null
+        activeWhisperMode = false
         try {
             job?.cancelAndJoin()
         } catch (_: Exception) {
@@ -404,6 +477,7 @@ class WavAudioRecorder(private val context: Context) {
                 record?.release()
             } catch (_: Exception) {
             }
+            abandonTransientAudioFocus()
         }
         synchronized(sessionLock) {
             runCatching { activeDiskFile?.close() }
@@ -432,16 +506,22 @@ class WavAudioRecorder(private val context: Context) {
     companion object {
         const val SAMPLE_RATE = 16000
         const val WAV_HEADER_BYTES = 44
-        /** 200ms slice at 16kHz 16-bit mono = 3200 samples = 6400 bytes (ideal for Doubao & DashScope WS). */
+        /** 200ms slice at 16kHz 16-bit mono = 3200 samples = 6400 bytes (ideal for Doubao, DashScope & Gemini Live WS). */
         const val STREAM_CHUNK_BYTES = 6400
         private const val CHUNK_SAMPLES = 720 // ~45ms per UI frame at 16kHz
         const val SPEECH_RMS_THRESHOLD = 155.0
         const val STRONG_SPEECH_RMS_THRESHOLD = 420.0
+        const val WHISPER_SPEECH_RMS_THRESHOLD = 62.0
+        const val WHISPER_STRONG_SPEECH_RMS_THRESHOLD = 105.0
         const val MIN_SPEECH_FRAMES = 3       // >= ~135ms voiced energy (filters 1-2 frame tap clicks)
         const val MIN_STRONG_STREAK_FRAMES = 2
         private const val MIN_VOICE_PEAK_FOR_BOOST = 220
+        const val MIN_WHISPER_VOICE_PEAK = 80
         private const val TARGET_PEAK_AMPLITUDE = 18500
         private const val MAX_NORMALIZATION_GAIN = 6.0
+        private const val MAX_WHISPER_NORMALIZATION_GAIN = 9.0
+        private const val WHISPER_LIVE_GAIN = 3.8
+        private const val SOFT_KNEE_START = 22000.0
         const val BAR_COUNT = 24
 
         fun getLastRecordingFile(context: Context): File {
@@ -460,15 +540,17 @@ class WavAudioRecorder(private val context: Context) {
         /**
          * Pure helper for evaluating a sequence of 45ms frame RMS values in unit tests or offline WAV checks.
          */
-        fun scanFramesForSpeech(rmsFrames: List<Double>): Boolean {
+        fun scanFramesForSpeech(rmsFrames: List<Double>, whisperMode: Boolean = false): Boolean {
+            val speechFloor = if (whisperMode) WHISPER_SPEECH_RMS_THRESHOLD else SPEECH_RMS_THRESHOLD
+            val strongFloor = if (whisperMode) WHISPER_STRONG_SPEECH_RMS_THRESHOLD else STRONG_SPEECH_RMS_THRESHOLD
             var voicedCount = 0
             var strongStreak = 0
             var bestStrongStreak = 0
             for (rms in rmsFrames) {
-                if (rms >= SPEECH_RMS_THRESHOLD) {
+                if (rms >= speechFloor) {
                     voicedCount += 1
                 }
-                if (rms >= STRONG_SPEECH_RMS_THRESHOLD) {
+                if (rms >= strongFloor) {
                     strongStreak += 1
                     if (strongStreak > bestStrongStreak) {
                         bestStrongStreak = strongStreak
@@ -478,6 +560,48 @@ class WavAudioRecorder(private val context: Context) {
                 }
             }
             return isLikelyHumanSpeech(voicedCount, bestStrongStreak)
+        }
+
+        /**
+         * Real-time soft-knee Whisper AGC booster for 200ms streaming WebSocket chunks:
+         * - Noise gate below [MIN_WHISPER_VOICE_PEAK] (`80`) prevents amplifying silent mic floor hiss.
+         * - Applies [WHISPER_LIVE_GAIN] (`3.8x`, ~`+11.6 dB`) with soft-knee compression above `22000`
+         *   so sudden normal-volume words never clip harshly.
+         */
+        fun boostWhisperPcm16Le(pcmBytes: ByteArray): ByteArray {
+            val sampleCount = pcmBytes.size / 2
+            if (sampleCount <= 0) return pcmBytes
+
+            var peak = 0
+            for (i in 0 until sampleCount) {
+                val lo = pcmBytes[i * 2].toInt() and 0xFF
+                val hi = pcmBytes[i * 2 + 1].toInt()
+                val sample = (hi shl 8) or lo
+                val mag = if (sample == Short.MIN_VALUE.toInt()) 32767 else abs(sample)
+                if (mag > peak) peak = mag
+            }
+            if (peak < MIN_WHISPER_VOICE_PEAK) {
+                return pcmBytes
+            }
+
+            val out = ByteArray(sampleCount * 2)
+            for (i in 0 until sampleCount) {
+                val lo = pcmBytes[i * 2].toInt() and 0xFF
+                val hi = pcmBytes[i * 2 + 1].toInt()
+                val sample = (hi shl 8) or lo
+                val rawScaled = sample * WHISPER_LIVE_GAIN
+                val absRaw = abs(rawScaled)
+                val compressedAbs = if (absRaw <= SOFT_KNEE_START) {
+                    absRaw
+                } else {
+                    SOFT_KNEE_START + (absRaw - SOFT_KNEE_START) * 0.35
+                }
+                val signed = if (rawScaled < 0.0) -compressedAbs else compressedAbs
+                val clamped = signed.roundToInt().coerceIn(-32767, 32767)
+                out[i * 2] = (clamped and 0xFF).toByte()
+                out[i * 2 + 1] = ((clamped shr 8) and 0xFF).toByte()
+            }
+            return out
         }
 
         fun buildWavHeader(
@@ -550,12 +674,19 @@ class WavAudioRecorder(private val context: Context) {
         /**
          * Boosts quiet 16-bit little-endian PCM recordings (common on Android OEMs where
          * `AudioSource.VOICE_RECOGNITION` disables hardware AGC) up toward [TARGET_PEAK_AMPLITUDE]
-         * with a capped gain ([MAX_NORMALIZATION_GAIN], +15.5 dB) and soft sample clamping, while
-         * leaving pure digital silence (`peak < MIN_VOICE_PEAK_FOR_BOOST`) untouched.
+         * with a capped gain ([MAX_NORMALIZATION_GAIN] or [MAX_WHISPER_NORMALIZATION_GAIN]) and soft sample clamping,
+         * while leaving pure digital silence (`peak < minPeak`) untouched.
          */
-        fun normalizePcm16Le(pcmBytes: ByteArray, sampleRate: Int = SAMPLE_RATE): ByteArray {
+        fun normalizePcm16Le(
+            pcmBytes: ByteArray,
+            sampleRate: Int = SAMPLE_RATE,
+            whisperMode: Boolean = false
+        ): ByteArray {
             val sampleCount = pcmBytes.size / 2
             if (sampleCount <= 0) return pcmBytes
+
+            val minPeak = if (whisperMode) MIN_WHISPER_VOICE_PEAK else MIN_VOICE_PEAK_FOR_BOOST
+            val maxGain = if (whisperMode) MAX_WHISPER_NORMALIZATION_GAIN else MAX_NORMALIZATION_GAIN
 
             val edgeMargin = if (sampleCount > sampleRate / 2) sampleRate / 10 else 0 // 100ms edge trim for peak scan
             var interiorPeak = 0
@@ -572,13 +703,13 @@ class WavAudioRecorder(private val context: Context) {
                 }
             }
 
-            val refPeak = if (interiorPeak >= MIN_VOICE_PEAK_FOR_BOOST) interiorPeak else globalPeak
-            if (refPeak < MIN_VOICE_PEAK_FOR_BOOST || refPeak >= TARGET_PEAK_AMPLITUDE) {
+            val refPeak = if (interiorPeak >= minPeak) interiorPeak else globalPeak
+            if (refPeak < minPeak || refPeak >= TARGET_PEAK_AMPLITUDE) {
                 return pcmBytes
             }
 
             val gain = (TARGET_PEAK_AMPLITUDE.toDouble() / refPeak.toDouble())
-                .coerceIn(1.0, MAX_NORMALIZATION_GAIN)
+                .coerceIn(1.0, maxGain)
             if (gain <= 1.05) return pcmBytes
 
             val out = ByteArray(sampleCount * 2)

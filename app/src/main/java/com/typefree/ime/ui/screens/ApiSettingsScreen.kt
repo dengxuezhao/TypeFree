@@ -3,6 +3,7 @@ package com.typefree.ime.ui.screens
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -32,6 +33,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -64,6 +67,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,7 +86,6 @@ import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.typefree.ime.data.ApiPreset
-import com.typefree.ime.data.ApiPresets
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.AppToneRule
@@ -97,11 +100,15 @@ import com.typefree.ime.data.ModelProbeResult
 import com.typefree.ime.data.MultimodalConfig
 import com.typefree.ime.data.MultimodalProtocol
 import com.typefree.ime.data.PipelineMode
+import com.typefree.ime.data.ProviderCredential
+import com.typefree.ime.data.SnippetEntry
 import com.typefree.ime.data.SttConfig
 import com.typefree.ime.data.SttProtocol
 import com.typefree.ime.data.ThemePreference
 import com.typefree.ime.data.ThinkingMode
 import com.typefree.ime.data.ToneStyle
+import com.typefree.ime.data.UnifiedProviderCatalog
+import com.typefree.ime.data.UnifiedProviderSpec
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.EndpointResolver
 import com.typefree.ime.network.PipelineExecutionResult
@@ -125,6 +132,11 @@ object ApiConfigBackupHelper {
         "sttConfig",
         "llmConfig",
         "multimodalConfig",
+        "providerVault",
+        "snippets",
+        "pauseMediaWhileRecording",
+        "whisperModeEnabled",
+        "equalEqualAskAiEnabled",
         "themePreference",
         "appAwareToneEnabled",
         "selectedManualStyleId",
@@ -182,12 +194,22 @@ object ApiConfigBackupHelper {
     /**
      * 1-tap reuse of STT Base URL & API Key for LLM stage.
      * Automatically selects matching LLM model & HTTP endpoint when switching to
-     * Aliyun Bailian (DashScope), SiliconFlow, Groq, or OpenAI.
+     * Google Gemini, Aliyun Bailian (DashScope), Volcengine, SiliconFlow, Groq, or OpenAI.
      */
     fun reuseSttCredentialsForLlm(stt: SttConfig, llm: LlmConfig): LlmConfig {
         val sttUrl = stt.baseUrl.trim()
         val sttLower = sttUrl.lowercase()
         val llmLower = llm.baseUrl.trim().lowercase()
+
+        if (stt.protocol == SttProtocol.GEMINI_LIVE_WS || sttLower.contains("googleapis.com")) {
+            return llm.copy(
+                enabled = false,
+                presetId = "gemini_llm",
+                baseUrl = sttUrl.ifBlank { "https://generativelanguage.googleapis.com/v1beta" },
+                apiKey = stt.apiKey.trim(),
+                model = "gemini-3.5-flash-lite"
+            )
+        }
 
         if (stt.protocol == SttProtocol.ALIYUN_DASHSCOPE_WS || sttLower.contains("dashscope.aliyuncs.com")) {
             val targetModel = if (llmLower.contains("dashscope.aliyuncs.com") && llm.model.isNotBlank()) {
@@ -245,6 +267,9 @@ object ApiConfigBackupHelper {
     }
 
     fun sttModelSuggestions(presetId: String, protocol: SttProtocol = SttProtocol.OPENAI_HTTP): List<String> {
+        if (protocol == SttProtocol.GEMINI_LIVE_WS || presetId == "gemini_live_ws") {
+            return listOf("gemini-3.5-transcribe-live")
+        }
         if (protocol == SttProtocol.ALIYUN_DASHSCOPE_WS || presetId == "aliyun_asr_ws") {
             return listOf(
                 "paraformer-realtime-v2",
@@ -280,6 +305,11 @@ object ApiConfigBackupHelper {
 
     fun llmModelSuggestions(presetId: String): List<String> {
         return when (presetId) {
+            "gemini_llm" -> listOf(
+                "gemini-3.5-flash-lite",
+                "gemini-3.6-flash",
+                "gemini-2.5-flash"
+            )
             "doubao" -> listOf(
                 "doubao-seed-2-1-lite-260915",
                 "doubao-seed-2-1-turbo-260628",
@@ -304,9 +334,9 @@ object ApiConfigBackupHelper {
             "zhipu" -> listOf("glm-4-flash", "glm-4-air", "glm-4-plus")
             "ollama" -> listOf("qwen2.5:7b", "qwen2.5:14b", "llama3.2:3b")
             else -> listOf(
+                "gemini-3.5-flash-lite",
                 "doubao-seed-2-1-lite-260915",
                 "qwen-turbo-latest",
-                "gpt-4o-mini",
                 "deepseek-chat"
             )
         }
@@ -316,9 +346,8 @@ object ApiConfigBackupHelper {
         return when {
             presetId == "gemini" || presetId == "newapi_gemini" || protocol == MultimodalProtocol.GEMINI_NATIVE -> listOf(
                 "gemini-3.5-flash-lite",
-                "gemini-2.5-flash",
-                "gemini-3.8-flash",
-                "gemini-2.5-pro"
+                "gemini-3.6-flash",
+                "gemini-2.5-flash"
             )
             presetId == "openai_audio" -> listOf(
                 "gpt-4o-mini-audio-preview",
@@ -327,7 +356,6 @@ object ApiConfigBackupHelper {
             else -> listOf(
                 "google/gemini-3.5-flash-lite",
                 "google/gemini-2.5-flash",
-                "google/gemini-3.8-flash",
                 "gpt-4o-mini-audio-preview"
             )
         }
@@ -352,6 +380,12 @@ object ApiConfigBackupHelper {
         val target = if (includeSecrets) {
             settings
         } else {
+            val redactedVault = settings.providerVault.mapValues { (_, cred) ->
+                cred.copy(
+                    apiKey = if (cred.apiKey.isNotBlank()) REDACTED_SECRET else "",
+                    sttApiKey = if (cred.sttApiKey.isNotBlank()) REDACTED_SECRET else ""
+                )
+            }
             settings.copy(
                 sttConfig = settings.sttConfig.copy(
                     apiKey = if (settings.sttConfig.apiKey.isNotBlank()) REDACTED_SECRET else ""
@@ -361,7 +395,8 @@ object ApiConfigBackupHelper {
                 ),
                 multimodalConfig = settings.multimodalConfig.copy(
                     apiKey = if (settings.multimodalConfig.apiKey.isNotBlank()) REDACTED_SECRET else ""
-                )
+                ),
+                providerVault = redactedVault
             )
         }
         return prettyGson.toJson(target)
@@ -481,6 +516,38 @@ object ApiConfigBackupHelper {
                 existingSettings.multimodalConfig
             }
 
+            val mergedVault = rootObj.optObject("providerVault")?.let { vaultObj ->
+                val mutable = existingSettings.providerVault.toMutableMap()
+                vaultObj.entrySet().forEach { (pid, el) ->
+                    if (el.isJsonObject) {
+                        val obj = el.asJsonObject
+                        val prev = mutable[pid] ?: ProviderCredential(providerId = pid)
+                        mutable[pid] = prev.copy(
+                            providerId = pid,
+                            apiKey = resolveImportedSecret(obj.optString("apiKey"), prev.apiKey),
+                            sttApiKey = resolveImportedSecret(obj.optString("sttApiKey"), prev.sttApiKey),
+                            appId = obj.optString("appId")?.trim() ?: prev.appId,
+                            customBaseUrl = obj.optString("customBaseUrl")?.trim() ?: prev.customBaseUrl
+                        )
+                    }
+                }
+                mutable
+            } ?: existingSettings.providerVault
+
+            val mergedSnippets = rootObj.optArrayObjects("snippets")?.mapNotNull { item ->
+                val expanded = (item.optString("content") ?: item.optString("expandedContent"))
+                    ?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                SnippetEntry(
+                    id = item.optString("id")?.takeIf { it.isNotBlank() } ?: expanded.take(12),
+                    title = item.optString("title") ?: "短语",
+                    voiceTriggers = item.optString("voiceTriggers") ?: "",
+                    flypyCode = item.optString("flypyCode") ?: "",
+                    content = expanded,
+                    enabled = item.optBoolean("enabled") ?: true
+                )
+            } ?: existingSettings.snippets
+
             val mergedStyles = rootObj.optArrayObjects("styles")?.mapNotNull { item ->
                 val name = item.optString("name")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 val instruction = item.optString("promptInstruction")?.takeIf { it.isNotBlank() }
@@ -532,34 +599,44 @@ object ApiConfigBackupHelper {
                 ?.takeIf { it.isNotBlank() }
                 ?: existingSettings.activeTranslateTarget
 
+            val candidate = existingSettings.copy(
+                pipelineMode = mode,
+                sttConfig = mergedStt,
+                llmConfig = mergedLlm,
+                multimodalConfig = mergedMm,
+                providerVault = mergedVault,
+                snippets = mergedSnippets,
+                pauseMediaWhileRecording = rootObj.optBoolean("pauseMediaWhileRecording")
+                    ?: existingSettings.pauseMediaWhileRecording,
+                whisperModeEnabled = rootObj.optBoolean("whisperModeEnabled")
+                    ?: existingSettings.whisperModeEnabled,
+                equalEqualAskAiEnabled = rootObj.optBoolean("equalEqualAskAiEnabled")
+                    ?: existingSettings.equalEqualAskAiEnabled,
+                themePreference = themePref,
+                appAwareToneEnabled = rootObj.optBoolean("appAwareToneEnabled")
+                    ?: existingSettings.appAwareToneEnabled,
+                selectedManualStyleId = rootObj.optString("selectedManualStyleId")
+                    ?.takeIf { it.isNotBlank() } ?: existingSettings.selectedManualStyleId,
+                hapticFeedback = rootObj.optBoolean("hapticFeedback")
+                    ?: existingSettings.hapticFeedback,
+                interactionSounds = rootObj.optBoolean("interactionSounds")
+                    ?: existingSettings.interactionSounds,
+                useSurroundingContext = rootObj.optBoolean("useSurroundingContext")
+                    ?: existingSettings.useSurroundingContext,
+                autoLearnDictionary = rootObj.optBoolean("autoLearnDictionary")
+                    ?: existingSettings.autoLearnDictionary,
+                historyRetention = retention,
+                bubbleEnabled = rootObj.optBoolean("bubbleEnabled")
+                    ?: existingSettings.bubbleEnabled,
+                translationTargets = mergedTargets,
+                activeTranslateTarget = mergedActiveTarget,
+                styles = mergedStyles,
+                appRules = mergedRules,
+                dictionary = mergedDict
+            )
+
             Result.success(
-                existingSettings.copy(
-                    pipelineMode = mode,
-                    sttConfig = mergedStt,
-                    llmConfig = mergedLlm,
-                    multimodalConfig = mergedMm,
-                    themePreference = themePref,
-                    appAwareToneEnabled = rootObj.optBoolean("appAwareToneEnabled")
-                        ?: existingSettings.appAwareToneEnabled,
-                    selectedManualStyleId = rootObj.optString("selectedManualStyleId")
-                        ?.takeIf { it.isNotBlank() } ?: existingSettings.selectedManualStyleId,
-                    hapticFeedback = rootObj.optBoolean("hapticFeedback")
-                        ?: existingSettings.hapticFeedback,
-                    interactionSounds = rootObj.optBoolean("interactionSounds")
-                        ?: existingSettings.interactionSounds,
-                    useSurroundingContext = rootObj.optBoolean("useSurroundingContext")
-                        ?: existingSettings.useSurroundingContext,
-                    autoLearnDictionary = rootObj.optBoolean("autoLearnDictionary")
-                        ?: existingSettings.autoLearnDictionary,
-                    historyRetention = retention,
-                    bubbleEnabled = rootObj.optBoolean("bubbleEnabled")
-                        ?: existingSettings.bubbleEnabled,
-                    translationTargets = mergedTargets,
-                    activeTranslateTarget = mergedActiveTarget,
-                    styles = mergedStyles,
-                    appRules = mergedRules,
-                    dictionary = mergedDict
-                )
+                candidate.copy(providerVault = UnifiedProviderCatalog.hydrateVaultFromSettings(candidate))
             )
         } catch (e: Exception) {
             Result.failure(IllegalArgumentException("导入配置时发生异常：${e.message}"))
@@ -628,7 +705,26 @@ fun ApiSettingsScreen(
     val coroutineScope = rememberCoroutineScope()
     val settings by repository.settings.collectAsState()
 
-    var reuseFeedback by remember { mutableStateOf<String?>(null) }
+    val hydratedVault = remember(settings) {
+        UnifiedProviderCatalog.hydrateVaultFromSettings(settings)
+    }
+
+    val activePrimaryProviderId = remember(settings.pipelineMode, settings.sttConfig, settings.multimodalConfig) {
+        if (settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT) {
+            UnifiedProviderCatalog.inferMultimodalProviderId(settings.multimodalConfig)
+        } else {
+            UnifiedProviderCatalog.inferSttProviderId(settings.sttConfig)
+        }
+    }
+
+    var selectedVaultProviderId by rememberSaveable {
+        mutableStateOf(activePrimaryProviderId)
+    }
+
+    // Collapsible Advanced Drawers (collapsed by default for a clean, zero-clutter studio)
+    var showAdvancedDrawer by rememberSaveable { mutableStateOf(false) }
+    var showTesterDrawer by rememberSaveable { mutableStateOf(false) }
+    var showBackupDrawer by rememberSaveable { mutableStateOf(false) }
 
     // Live API Tester state
     var testInput by remember { mutableStateOf(DEFAULT_LIVE_TEST_INPUT) }
@@ -655,11 +751,16 @@ fun ApiSettingsScreen(
                 settings.sttConfig.apiKey,
                 MultimodalProtocol.OPENAI_AUDIO_CHAT
             )
-            ModelCapabilitySlot.LLM -> Triple(
-                settings.llmConfig.baseUrl,
-                settings.llmConfig.apiKey,
-                MultimodalProtocol.OPENAI_AUDIO_CHAT
-            )
+            ModelCapabilitySlot.LLM -> {
+                val effKey = settings.llmConfig.apiKey.ifBlank {
+                    if (settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS) settings.sttConfig.apiKey else ""
+                }
+                Triple(
+                    settings.llmConfig.baseUrl,
+                    effKey,
+                    MultimodalProtocol.OPENAI_AUDIO_CHAT
+                )
+            }
             ModelCapabilitySlot.MULTIMODAL -> Triple(
                 settings.multimodalConfig.baseUrl,
                 settings.multimodalConfig.apiKey,
@@ -703,7 +804,9 @@ fun ApiSettingsScreen(
             }
             ModelCapabilitySlot.LLM -> {
                 activeBaseUrl = settings.llmConfig.baseUrl
-                activeApiKey = settings.llmConfig.apiKey
+                activeApiKey = settings.llmConfig.apiKey.ifBlank {
+                    if (settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS) settings.sttConfig.apiKey else ""
+                }
                 currentModel = settings.llmConfig.model
                 activeProtocol = MultimodalProtocol.OPENAI_AUDIO_CHAT
                 activeThinkingMode = settings.llmConfig.thinkingMode
@@ -755,19 +858,19 @@ fun ApiSettingsScreen(
         if (showScreenHeader) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    text = "自定义 API 工作台",
+                    text = "统一 API 服务商与模型路由",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.ExtraBold
                 )
                 Text(
-                    text = "完全自托管密钥与模型端点，兼容硅基流动 / DeepSeek / Groq / Gemini / OpenAI / Ollama",
+                    text = "同一服务商只需填写一次 Key，一键切换 Google Gemini 0.5s 流式、百炼、豆包或自由混搭",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
 
-        // Top Readiness Banner Pill
+        // Top Readiness Summary Banner
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
@@ -803,7 +906,7 @@ fun ApiSettingsScreen(
                         text = if (isApiReady) {
                             "引擎就绪 · ${SetupStatsHelper.formatActivePipelineBadge(settings)}"
                         } else {
-                            "待填写 API Key · ${SetupStatsHelper.formatActivePipelineBadge(settings)}"
+                            "待填密钥 · ${SetupStatsHelper.formatActivePipelineBadge(settings)}"
                         },
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold,
@@ -813,74 +916,91 @@ fun ApiSettingsScreen(
                     )
                 }
                 Text(
-                    text = "直连无中转",
+                    text = "本地加密直连",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
 
-        // 1. Pipeline Mode Segmented Selector
-        PipelineModeSelectorCard(
-            selectedMode = settings.pipelineMode,
+        // Layer 1: Unified Provider Vault Card (1 Key per Provider + 1-Tap Activate)
+        UnifiedProviderVaultCard(
+            vault = hydratedVault,
+            selectedProviderId = selectedVaultProviderId,
+            activePrimaryProviderId = activePrimaryProviderId,
+            activeLlmProviderId = UnifiedProviderCatalog.inferLlmProviderId(settings.llmConfig),
+            isLlmEnabled = settings.llmConfig.enabled,
+            onSelectProvider = { selectedVaultProviderId = it },
+            onUpdateCredential = { updatedCred ->
+                repository.updateSettings { curr ->
+                    UnifiedProviderCatalog.updateProviderCredential(curr, updatedCred)
+                }
+            },
+            onApplyQuickSetup = { providerId ->
+                repository.updateSettings { curr ->
+                    UnifiedProviderCatalog.applyQuickProviderSetup(curr, providerId)
+                }
+                testSuccessResult = null
+                testErrorMessage = null
+                val spec = UnifiedProviderCatalog.specFor(providerId)
+                Toast.makeText(
+                    context,
+                    if (providerId == UnifiedProviderCatalog.ID_DEEPSEEK) {
+                        "✓ 已将 DeepSeek 设为二阶段语义润色引擎"
+                    } else {
+                        "🚀 已切换主力方案：${spec.name}"
+                    },
+                    Toast.LENGTH_SHORT
+                ).show()
+            },
+            onPasteClipboard = { readFromClipboard(context) }
+        )
+
+        // Layer 2: Clean Workflow & Role Model Routing Card
+        UnifiedWorkflowRoutingCard(
+            settings = settings,
+            vault = hydratedVault,
+            fetchingSlot = fetchingSlot,
+            modelFetchErrors = modelFetchErrors,
             onSelectMode = { mode ->
                 repository.updateSettings { it.copy(pipelineMode = mode) }
                 testSuccessResult = null
                 testErrorMessage = null
-            }
+            },
+            onSelectSttProvider = { pid ->
+                selectedVaultProviderId = pid
+                repository.updateSettings { UnifiedProviderCatalog.selectSttProvider(it, pid) }
+            },
+            onSelectLlmProvider = { pid ->
+                selectedVaultProviderId = pid
+                repository.updateSettings { UnifiedProviderCatalog.selectLlmProvider(it, pid) }
+            },
+            onSelectMultimodalProvider = { pid ->
+                selectedVaultProviderId = pid
+                repository.updateSettings { UnifiedProviderCatalog.selectMultimodalProvider(it, pid) }
+            },
+            onUpdateStt = { updated -> repository.updateSettings { it.copy(sttConfig = updated) } },
+            onUpdateLlm = { updated -> repository.updateSettings { it.copy(llmConfig = updated) } },
+            onUpdateMultimodal = { updated -> repository.updateSettings { it.copy(multimodalConfig = updated) } },
+            onFetchModels = ::triggerModelDiscovery
         )
 
-        // 2. Dual-Stage Configuration OR 3. Multimodal Direct Configuration
-        when (settings.pipelineMode) {
-            PipelineMode.DUAL_STAGE -> {
-                SttConfigurationCard(
-                    sttConfig = settings.sttConfig,
-                    isFetchingModels = fetchingSlot == ModelCapabilitySlot.STT,
-                    modelFetchError = modelFetchErrors[ModelCapabilitySlot.STT],
-                    onFetchModels = { triggerModelDiscovery(ModelCapabilitySlot.STT) },
-                    onUpdateStt = { updatedStt ->
-                        repository.updateSettings { it.copy(sttConfig = updatedStt) }
-                    },
-                    onPasteClipboard = { readFromClipboard(context) }
-                )
-
-                LlmConfigurationCard(
-                    llmConfig = settings.llmConfig,
-                    reuseFeedback = reuseFeedback,
-                    isFetchingModels = fetchingSlot == ModelCapabilitySlot.LLM,
-                    modelFetchError = modelFetchErrors[ModelCapabilitySlot.LLM],
-                    onFetchModels = { triggerModelDiscovery(ModelCapabilitySlot.LLM) },
-                    onUpdateLlm = { updatedLlm ->
-                        reuseFeedback = null
-                        repository.updateSettings { it.copy(llmConfig = updatedLlm) }
-                    },
-                    onReuseSttCredentials = {
-                        val synced = ApiConfigBackupHelper.reuseSttCredentialsForLlm(
-                            stt = settings.sttConfig,
-                            llm = settings.llmConfig
-                        )
-                        repository.updateSettings { it.copy(llmConfig = synced) }
-                        reuseFeedback = "✓ 已同步 STT 的 Base URL 与 API Key（模型：${synced.model}）"
-                    },
-                    onPasteClipboard = { readFromClipboard(context) }
-                )
-            }
-
-            PipelineMode.MULTIMODAL_DIRECT -> {
-                MultimodalConfigurationCard(
-                    mmConfig = settings.multimodalConfig,
-                    isFetchingModels = fetchingSlot == ModelCapabilitySlot.MULTIMODAL,
-                    modelFetchError = modelFetchErrors[ModelCapabilitySlot.MULTIMODAL],
-                    onFetchModels = { triggerModelDiscovery(ModelCapabilitySlot.MULTIMODAL) },
-                    onUpdateMultimodal = { updatedMm ->
-                        repository.updateSettings { it.copy(multimodalConfig = updatedMm) }
-                    },
-                    onPasteClipboard = { readFromClipboard(context) }
-                )
-            }
+        // Layer 3A: Collapsible Advanced Tuning Drawer
+        CollapsibleStudioDrawer(
+            title = "⚙️ 高级参数微调",
+            subtitle = "思考模式开关、采样温度、自定义反代地址与火山 Resource ID",
+            expanded = showAdvancedDrawer,
+            onToggle = { showAdvancedDrawer = !showAdvancedDrawer }
+        ) {
+            AdvancedParametersDrawerContent(
+                settings = settings,
+                onUpdateStt = { updated -> repository.updateSettings { it.copy(sttConfig = updated) } },
+                onUpdateLlm = { updated -> repository.updateSettings { it.copy(llmConfig = updated) } },
+                onUpdateMultimodal = { updated -> repository.updateSettings { it.copy(multimodalConfig = updated) } }
+            )
         }
 
-        // 4. Live API Connectivity & Polish Tester Card
+        // Layer 3B: Collapsible Live Connectivity & Polish Tester Drawer
         val (activeStyle, _) = remember(settings) {
             repository.resolveActiveStyle(context.packageName)
         }
@@ -888,97 +1008,134 @@ fun ApiSettingsScreen(
             settings.dictionary.count { it.enabled && it.term.isNotBlank() }
         }
 
-        LiveApiTesterCard(
-            testInput = testInput,
-            onTestInputChange = { testInput = it },
-            onResetDefaultInput = { testInput = DEFAULT_LIVE_TEST_INPUT },
-            activeStyleLabel = "${activeStyle.emoji} ${activeStyle.name}",
-            activeDictionaryCount = activeDictCount,
-            isTesting = isTestingApi,
-            successResult = testSuccessResult,
-            errorMessage = testErrorMessage,
-            copiedResult = copiedTestResult,
-            copiedDiagLog = copiedDiagLog,
-            isDualStageLlmDisabled = settings.pipelineMode == PipelineMode.DUAL_STAGE && !settings.llmConfig.enabled,
-            onRunTest = {
-                if (testInput.isBlank()) {
-                    testErrorMessage = "请先输入一段待润色的测试文字"
-                    testSuccessResult = null
-                    return@LiveApiTesterCard
-                }
-                coroutineScope.launch {
-                    isTestingApi = true
-                    testErrorMessage = null
-                    testSuccessResult = null
-                    copiedTestResult = false
-                    copiedDiagLog = false
+        CollapsibleStudioDrawer(
+            title = "🩺 连通性实测与毫秒级诊断日志",
+            subtitle = "模拟带口癖与改口的真实句子，一键验证首包与全链路耗时",
+            expanded = showTesterDrawer,
+            onToggle = { showTesterDrawer = !showTesterDrawer }
+        ) {
+            LiveApiTesterContent(
+                testInput = testInput,
+                onTestInputChange = { testInput = it },
+                onResetDefaultInput = { testInput = DEFAULT_LIVE_TEST_INPUT },
+                activeStyleLabel = "${activeStyle.emoji} ${activeStyle.name}",
+                activeDictionaryCount = activeDictCount,
+                isTesting = isTestingApi,
+                successResult = testSuccessResult,
+                errorMessage = testErrorMessage,
+                copiedResult = copiedTestResult,
+                copiedDiagLog = copiedDiagLog,
+                isGeminiSmartSingleStage = settings.pipelineMode == PipelineMode.DUAL_STAGE &&
+                    settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS &&
+                    !settings.llmConfig.enabled,
+                isDualStageLlmDisabled = settings.pipelineMode == PipelineMode.DUAL_STAGE &&
+                    settings.sttConfig.protocol != SttProtocol.GEMINI_LIVE_WS &&
+                    !settings.llmConfig.enabled,
+                onRunTest = {
+                    if (testInput.isBlank()) {
+                        testErrorMessage = "请先输入一段待润色的测试文字"
+                        testSuccessResult = null
+                        return@LiveApiTesterContent
+                    }
+                    coroutineScope.launch {
+                        isTestingApi = true
+                        testErrorMessage = null
+                        testSuccessResult = null
+                        copiedTestResult = false
+                        copiedDiagLog = false
 
-                    val (styleNow, _) = repository.resolveActiveStyle(context.packageName)
-                    val res = aiEngine.runTextTransform(
-                        settings = settings,
-                        activeStyle = styleNow,
-                        rawOrSelectedText = testInput,
-                        explicitInstruction = null,
-                        targetAppName = "API 实测台"
-                    )
-                    isTestingApi = false
-                    res.onSuccess { exec ->
-                        testSuccessResult = exec
-                    }.onFailure { err ->
-                        testErrorMessage = err.message ?: "请求失败，请检查网络连接与接口地址"
+                        val (styleNow, _) = repository.resolveActiveStyle(context.packageName)
+                        val res = aiEngine.runTextTransform(
+                            settings = settings,
+                            activeStyle = styleNow,
+                            rawOrSelectedText = testInput,
+                            explicitInstruction = null,
+                            targetAppName = "API 实测台"
+                        )
+                        isTestingApi = false
+                        res.onSuccess { exec ->
+                            testSuccessResult = exec
+                        }.onFailure { err ->
+                            testErrorMessage = err.message ?: "请求失败，请检查网络连接与接口地址"
+                        }
                     }
+                },
+                onCopyPolishedResult = { text ->
+                    writeToClipboard(context, "TypeFree Test Output", text)
+                    copiedTestResult = true
+                },
+                onCopyDiagnosticLog = { diagText ->
+                    writeToClipboard(context, "TypeFree API Diagnostic Log", diagText)
+                    copiedDiagLog = true
                 }
-            },
-            onCopyPolishedResult = { text ->
-                writeToClipboard(context, "TypeFree Test Output", text)
-                copiedTestResult = true
-            },
-            onCopyDiagnosticLog = { diagText ->
-                writeToClipboard(context, "TypeFree API Diagnostic Log", diagText)
-                copiedDiagLog = true
-            }
-        )
+            )
+        }
 
-        // 5. JSON Config Import / Export Backup Card
-        ConfigBackupCard(
-            statusMessage = backupStatusMsg,
-            statusIsError = backupIsError,
-            onExportFullJson = {
-                val json = ApiConfigBackupHelper.exportSettingsJson(settings, includeSecrets = true)
-                writeToClipboard(context, "TypeFree Config Backup", json)
-                backupIsError = false
-                backupStatusMsg = "✓ 完整配置 JSON 已复制到剪贴板（包含 API Key，请妥善保管）"
-            },
-            onExportRedactedJson = {
-                val json = ApiConfigBackupHelper.exportSettingsJson(settings, includeSecrets = false)
-                writeToClipboard(context, "TypeFree Config Share", json)
-                backupIsError = false
-                backupStatusMsg = "✓ 脱敏配置 JSON 已复制到剪贴板（已隐藏 API Key，可安全分享）"
-            },
-            onImportFromClipboard = {
-                val clipText = readFromClipboard(context)
-                ApiConfigBackupHelper.parseAndMergeConfigJson(clipText, settings)
-                    .onSuccess { merged ->
-                        repository.updateSettings { merged }
-                        backupIsError = false
-                        backupStatusMsg = "✓ 配置 JSON 导入成功！已应用接口、风格、翻译目标与词典设置"
-                    }
-                    .onFailure { err ->
-                        backupIsError = true
-                        backupStatusMsg = "✕ ${err.message ?: "导入配置失败"}"
-                    }
-            }
-        )
+        // Layer 3C: Collapsible JSON Config Backup / Migration Drawer
+        CollapsibleStudioDrawer(
+            title = "📦 配置 JSON 备份与跨机迁移",
+            subtitle = "一键导出完整或脱敏 JSON，跨设备恢复所有密钥、短语与词典",
+            expanded = showBackupDrawer,
+            onToggle = { showBackupDrawer = !showBackupDrawer }
+        ) {
+            ConfigBackupContent(
+                statusMessage = backupStatusMsg,
+                statusIsError = backupIsError,
+                onExportFullJson = {
+                    val json = ApiConfigBackupHelper.exportSettingsJson(settings, includeSecrets = true)
+                    writeToClipboard(context, "TypeFree Config Backup", json)
+                    backupIsError = false
+                    backupStatusMsg = "✓ 完整配置 JSON 已复制到剪贴板（包含服务商密钥库，请妥善保管）"
+                },
+                onExportRedactedJson = {
+                    val json = ApiConfigBackupHelper.exportSettingsJson(settings, includeSecrets = false)
+                    writeToClipboard(context, "TypeFree Config Share", json)
+                    backupIsError = false
+                    backupStatusMsg = "✓ 脱敏配置 JSON 已复制到剪贴板（已隐藏所有 API Key，可安全分享）"
+                },
+                onImportFromClipboard = {
+                    val clipText = readFromClipboard(context)
+                    ApiConfigBackupHelper.parseAndMergeConfigJson(clipText, settings)
+                        .onSuccess { merged ->
+                            repository.updateSettings { merged }
+                            backupIsError = false
+                            backupStatusMsg = "✓ 配置 JSON 导入成功！已同步服务商密钥库、模型路由、短语与个人词典"
+                        }
+                        .onFailure { err ->
+                            backupIsError = true
+                            backupStatusMsg = "✕ ${err.message ?: "导入配置失败"}"
+                        }
+                }
+            )
+        }
 
         Spacer(modifier = Modifier.height(12.dp))
     }
 }
 
+// =============================================================================
+// Layer 1: Unified Provider Vault Card
+// =============================================================================
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PipelineModeSelectorCard(
-    selectedMode: PipelineMode,
-    onSelectMode: (PipelineMode) -> Unit
+private fun UnifiedProviderVaultCard(
+    vault: Map<String, ProviderCredential>,
+    selectedProviderId: String,
+    activePrimaryProviderId: String,
+    activeLlmProviderId: String,
+    isLlmEnabled: Boolean,
+    onSelectProvider: (String) -> Unit,
+    onUpdateCredential: (ProviderCredential) -> Unit,
+    onApplyQuickSetup: (String) -> Unit,
+    onPasteClipboard: () -> String
 ) {
+    val selectedSpec = remember(selectedProviderId) {
+        UnifiedProviderCatalog.specFor(selectedProviderId)
+    }
+    val selectedCred = vault[selectedSpec.id] ?: ProviderCredential(providerId = selectedSpec.id)
+    val isSelectedReady = UnifiedProviderCatalog.isCredentialReady(selectedSpec.id, selectedCred)
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
@@ -988,16 +1145,339 @@ private fun PipelineModeSelectorCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = "语音推理管线架构",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "1. 服务商统一密钥库",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    val readyCount = UnifiedProviderCatalog.providers.count { spec ->
+                        UnifiedProviderCatalog.isCredentialReady(spec.id, vault[spec.id])
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Text(
+                            text = "已填 $readyCount / ${UnifiedProviderCatalog.providers.size}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+                Text(
+                    text = "每个平台只需填一次 API Key，听音、润色、帮我写与快译自动共享复用",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
 
-            // Monochrome segmented capsule switcher
+            // 6 Unified Provider Tiles (2 per row via FlowRow / Row chunks)
+            UnifiedProviderCatalog.providers.chunked(2).forEach { rowSpecs ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    rowSpecs.forEach { spec ->
+                        val cred = vault[spec.id]
+                        val ready = UnifiedProviderCatalog.isCredentialReady(spec.id, cred)
+                        val isSelected = spec.id == selectedSpec.id
+                        val isActiveRole = spec.id == activePrimaryProviderId ||
+                            (isLlmEnabled && spec.id == activeLlmProviderId)
+
+                        ProviderVaultTile(
+                            spec = spec,
+                            isSelected = isSelected,
+                            isReady = ready,
+                            isActiveRole = isActiveRole,
+                            onClick = { onSelectProvider(spec.id) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+
+            // Selected Provider Single-Form Credential Drawer
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = selectedSpec.name,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (isSelectedReady) {
+                                TypeFreeEmerald.copy(alpha = 0.14f)
+                            } else {
+                                MaterialTheme.colorScheme.primaryContainer
+                            }
+                        ) {
+                            Text(
+                                text = if (isSelectedReady) "✓ 密钥已就绪" else selectedSpec.badge,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (isSelectedReady) {
+                                    TypeFreeEmerald
+                                } else {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                },
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = selectedSpec.summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 17.sp
+                    )
+
+                    if (selectedSpec.id == UnifiedProviderCatalog.ID_CUSTOM) {
+                        SyncedOutlinedField(
+                            externalValue = selectedCred.customBaseUrl,
+                            onValueCommit = { url ->
+                                onUpdateCredential(selectedCred.copy(customBaseUrl = url.trim()))
+                            },
+                            label = "聚合网关 / 本地服务 Base URL",
+                            placeholder = "https://api.openai.com/v1 或 http://192.168.1.10:11434/v1"
+                        )
+                    }
+
+                    val primaryKeyLabel = when (selectedSpec.id) {
+                        UnifiedProviderCatalog.ID_GOOGLE -> "Google AI Studio API Key (AIza...)"
+                        UnifiedProviderCatalog.ID_ALIYUN -> "阿里云百炼 API Key (sk-...)"
+                        UnifiedProviderCatalog.ID_VOLCENGINE -> "火山方舟 API Key（豆包 LLM 润色 / 单 Key）"
+                        UnifiedProviderCatalog.ID_SILICONFLOW -> "硅基流动 API Key (sk-...)"
+                        UnifiedProviderCatalog.ID_DEEPSEEK -> "DeepSeek API Key (sk-...)"
+                        else -> "API Key"
+                    }
+
+                    SecretApiKeyField(
+                        externalKey = selectedCred.apiKey,
+                        onKeyCommit = { newKey ->
+                            onUpdateCredential(selectedCred.copy(apiKey = newKey.trim()))
+                        },
+                        label = primaryKeyLabel,
+                        isLocalUrl = selectedSpec.id == UnifiedProviderCatalog.ID_CUSTOM &&
+                            AiPipelineEngine.isLocalEndpoint(selectedCred.customBaseUrl),
+                        onPasteClipboard = onPasteClipboard
+                    )
+
+                    if (selectedSpec.hasSeparateSpeechToken) {
+                        SecretApiKeyField(
+                            externalKey = selectedCred.sttApiKey,
+                            onKeyCommit = { tok ->
+                                onUpdateCredential(selectedCred.copy(sttApiKey = tok.trim()))
+                            },
+                            label = "火山语音豆包流式 Access Token（与上方同 Key 可留空）",
+                            isLocalUrl = false,
+                            onPasteClipboard = onPasteClipboard
+                        )
+                        SyncedOutlinedField(
+                            externalValue = selectedCred.appId,
+                            onValueCommit = { app ->
+                                onUpdateCredential(selectedCred.copy(appId = app.trim()))
+                            },
+                            label = "火山语音 AppID（新版单 X-Api-Key 可留空）",
+                            placeholder = "选填，如 1234567890"
+                        )
+                    }
+
+                    val isAlreadyPrimary = selectedSpec.id == activePrimaryProviderId &&
+                        (selectedSpec.id != UnifiedProviderCatalog.ID_GOOGLE ||
+                            !isLlmEnabled)
+
+                    Button(
+                        onClick = { onApplyQuickSetup(selectedSpec.id) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(11.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isAlreadyPrimary) {
+                                MaterialTheme.colorScheme.secondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                            contentColor = if (isAlreadyPrimary) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onPrimary
+                            }
+                        )
+                    ) {
+                        val btnText = when {
+                            selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK ->
+                                "🧠 一键设为二阶段润色引擎"
+                            isAlreadyPrimary ->
+                                "✓ 当前已是主力方案（点击重置为官方推荐模型）"
+                            else ->
+                                "🚀 一键设为当前主力方案"
+                        }
+                        Text(
+                            text = btnText,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProviderVaultTile(
+    spec: UnifiedProviderSpec,
+    isSelected: Boolean,
+    isReady: Boolean,
+    isActiveRole: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        shape = RoundedCornerShape(13.dp),
+        color = if (isSelected) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)
+        },
+        border = BorderStroke(
+            width = if (isSelected) 1.6.dp else 1.dp,
+            color = when {
+                isSelected -> MaterialTheme.colorScheme.primary
+                isActiveRole -> TypeFreeEmerald.copy(alpha = 0.55f)
+                else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.32f)
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = spec.name,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isReady) {
+                                TypeFreeEmerald
+                            } else {
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+                            }
+                        )
+                )
+            }
+            Text(
+                text = if (isActiveRole) "正在使用 · ${spec.badge}" else spec.badge,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isActiveRole) {
+                    TypeFreeEmerald
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+// =============================================================================
+// Layer 2: Unified Workflow & Role Model Routing Card
+// =============================================================================
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun UnifiedWorkflowRoutingCard(
+    settings: AppSettings,
+    vault: Map<String, ProviderCredential>,
+    fetchingSlot: ModelCapabilitySlot?,
+    modelFetchErrors: Map<ModelCapabilitySlot, String>,
+    onSelectMode: (PipelineMode) -> Unit,
+    onSelectSttProvider: (String) -> Unit,
+    onSelectLlmProvider: (String) -> Unit,
+    onSelectMultimodalProvider: (String) -> Unit,
+    onUpdateStt: (SttConfig) -> Unit,
+    onUpdateLlm: (LlmConfig) -> Unit,
+    onUpdateMultimodal: (MultimodalConfig) -> Unit,
+    onFetchModels: (ModelCapabilitySlot) -> Unit
+) {
+    val activeSttPid = remember(settings.sttConfig) {
+        UnifiedProviderCatalog.inferSttProviderId(settings.sttConfig)
+    }
+    val activeLlmPid = remember(settings.llmConfig) {
+        UnifiedProviderCatalog.inferLlmProviderId(settings.llmConfig)
+    }
+    val activeMmPid = remember(settings.multimodalConfig) {
+        UnifiedProviderCatalog.inferMultimodalProviderId(settings.multimodalConfig)
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "2. 工作流与模型自由混搭",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "无需手动填写底层 WS/HTTP 协议地址，点选服务商即可自动挂载对应密钥",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            // Clean 2-Segment Mode Switcher
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
@@ -1010,32 +1490,506 @@ private fun PipelineModeSelectorCard(
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     PipelineSegmentPill(
-                        title = "双阶段 STT + LLM",
-                        selected = selectedMode == PipelineMode.DUAL_STAGE,
+                        title = "⚡ 实时流式 / 双阶段",
+                        selected = settings.pipelineMode == PipelineMode.DUAL_STAGE,
                         onClick = { onSelectMode(PipelineMode.DUAL_STAGE) },
                         modifier = Modifier.weight(1f)
                     )
                     PipelineSegmentPill(
-                        title = "多模态原生直连",
-                        selected = selectedMode == PipelineMode.MULTIMODAL_DIRECT,
+                        title = "🎙️ 多模态整包直出",
+                        selected = settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT,
                         onClick = { onSelectMode(PipelineMode.MULTIMODAL_DIRECT) },
                         modifier = Modifier.weight(1f)
                     )
                 }
             }
 
-            Text(
-                text = when (selectedMode) {
-                    PipelineMode.DUAL_STAGE ->
-                        "国内直连低延迟首选：阶段 1 实时流式边说边传（阿里云百炼 Paraformer / 火山豆包流式 2.0）或 AAC 极速整包（硅基流动 SenseVoice），阶段 2 关闭思考链极速提纯（火山 Doubao-Seed-1.6-flash / Qwen）。"
-                    PipelineMode.MULTIMODAL_DIRECT ->
-                        "端到端原生听音理解：将 16kHz WAV 音频一步直传多模态大模型（如 Google Gemini 2.5 Flash / GPT-4o Audio），单次请求完成识别、润色与快译。"
+            when (settings.pipelineMode) {
+                PipelineMode.DUAL_STAGE -> {
+                    // Role A: Speech Listening Engine
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.32f))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "👂 听音转写引擎（边说边传 / 声学热词）",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            val sttProviders = remember {
+                                UnifiedProviderCatalog.providers.filter { it.supportsStt }
+                            }
+                            RoleProviderChipsRow(
+                                specs = sttProviders,
+                                selectedId = activeSttPid,
+                                vault = vault,
+                                onSelect = onSelectSttProvider
+                            )
+
+                            if (settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS) {
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = TypeFreeEmerald.copy(alpha = 0.10f),
+                                    border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.42f))
+                                ) {
+                                    Text(
+                                        text = "✨ Gemini 3.5 Live SMART 已激活：边说边实时出字，松手 ~0.5s 秒出净稿，原生自带去口癖与改口自纠！日常口述无需开启二阶段润色；使用「帮我写 / 改写 / 快译 / ==问AI」时会自动共享同一把 Gemini Key 调用 Flash-Lite。",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        lineHeight = 16.sp,
+                                        modifier = Modifier.padding(10.dp)
+                                    )
+                                }
+                            }
+
+                            val sttSuggestions = UnifiedProviderCatalog.sttSuggestedModelsByProvider[activeSttPid]
+                                ?: ApiConfigBackupHelper.sttModelSuggestions(
+                                    settings.sttConfig.presetId,
+                                    settings.sttConfig.protocol
+                                )
+
+                            if (settings.sttConfig.protocol == SttProtocol.OPENAI_HTTP) {
+                                ProviderModelFieldSection(
+                                    externalModel = settings.sttConfig.model,
+                                    onModelCommit = { m -> onUpdateStt(settings.sttConfig.copy(model = m)) },
+                                    label = "听音模型名称 (Model)",
+                                    placeholder = "FunAudioLLM/SenseVoiceSmall",
+                                    suggestions = sttSuggestions,
+                                    isFetching = fetchingSlot == ModelCapabilitySlot.STT,
+                                    fetchError = modelFetchErrors[ModelCapabilitySlot.STT],
+                                    onFetchModels = { onFetchModels(ModelCapabilitySlot.STT) }
+                                )
+                            } else {
+                                SyncedOutlinedField(
+                                    externalValue = settings.sttConfig.model,
+                                    onValueCommit = { m -> onUpdateStt(settings.sttConfig.copy(model = m)) },
+                                    label = "流式听音模型 (Model)",
+                                    placeholder = sttSuggestions.firstOrNull().orEmpty()
+                                )
+                                QuickModelChipsRow(
+                                    suggestions = sttSuggestions,
+                                    currentModel = settings.sttConfig.model,
+                                    onSelectModel = { m -> onUpdateStt(settings.sttConfig.copy(model = m)) }
+                                )
+                            }
+                        }
+                    }
+
+                    // Role B: Optional 2nd-Stage LLM Polish & Generative Engine
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.32f))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(end = 8.dp)
+                                ) {
+                                    Text(
+                                        text = "🧠 二阶段语义润色 & 写作快译模型",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = when {
+                                            settings.llmConfig.enabled ->
+                                                "日常口述也会经过该模型按应用语气深度润色"
+                                            settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS ->
+                                                "日常口述由 Gemini Live 单阶直出；帮我写/快译自动用下方模型"
+                                            else ->
+                                                "日常口述直出原始识别词；仅帮我写/编辑/快译调用下方模型"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = settings.llmConfig.enabled,
+                                    onCheckedChange = { enabled ->
+                                        onUpdateLlm(settings.llmConfig.copy(enabled = enabled))
+                                    }
+                                )
+                            }
+
+                            val llmProviders = remember {
+                                UnifiedProviderCatalog.providers.filter { it.supportsLlm }
+                            }
+                            RoleProviderChipsRow(
+                                specs = llmProviders,
+                                selectedId = activeLlmPid,
+                                vault = vault,
+                                onSelect = onSelectLlmProvider
+                            )
+
+                            val llmSuggestions = UnifiedProviderCatalog.llmSuggestedModelsByProvider[activeLlmPid]
+                                ?: ApiConfigBackupHelper.llmModelSuggestions(settings.llmConfig.presetId)
+
+                            ProviderModelFieldSection(
+                                externalModel = settings.llmConfig.model,
+                                onModelCommit = { m -> onUpdateLlm(settings.llmConfig.copy(model = m)) },
+                                label = "润色 / 写作 / 翻译模型 (Model)",
+                                placeholder = "gemini-3.5-flash-lite",
+                                suggestions = llmSuggestions,
+                                isFetching = fetchingSlot == ModelCapabilitySlot.LLM,
+                                fetchError = modelFetchErrors[ModelCapabilitySlot.LLM],
+                                onFetchModels = { onFetchModels(ModelCapabilitySlot.LLM) }
+                            )
+                        }
+                    }
+                }
+
+                PipelineMode.MULTIMODAL_DIRECT -> {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.32f))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "🎙️ 多模态音频一步直出（已启用 .m4a 硬件极速压缩）",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "录音结束后硬件压缩体积缩小约 87%，单次请求完成听音理解、语气适配与翻译（注：若追求松手 0.5s 秒出体验，推荐切回上方「实时流式」使用 Gemini Live）。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                lineHeight = 16.sp
+                            )
+
+                            val mmProviders = remember {
+                                UnifiedProviderCatalog.providers.filter { it.supportsMultimodal }
+                            }
+                            RoleProviderChipsRow(
+                                specs = mmProviders,
+                                selectedId = activeMmPid,
+                                vault = vault,
+                                onSelect = onSelectMultimodalProvider
+                            )
+
+                            val mmSuggestions = UnifiedProviderCatalog.multimodalSuggestedModelsByProvider[activeMmPid]
+                                ?: ApiConfigBackupHelper.multimodalModelSuggestions(
+                                    settings.multimodalConfig.presetId,
+                                    settings.multimodalConfig.protocol
+                                )
+
+                            ProviderModelFieldSection(
+                                externalModel = settings.multimodalConfig.model,
+                                onModelCommit = { m ->
+                                    onUpdateMultimodal(settings.multimodalConfig.copy(model = m))
+                                },
+                                label = "多模态音频模型 (Model)",
+                                placeholder = "gemini-3.5-flash-lite",
+                                suggestions = mmSuggestions,
+                                isFetching = fetchingSlot == ModelCapabilitySlot.MULTIMODAL,
+                                fetchError = modelFetchErrors[ModelCapabilitySlot.MULTIMODAL],
+                                onFetchModels = { onFetchModels(ModelCapabilitySlot.MULTIMODAL) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun RoleProviderChipsRow(
+    specs: List<UnifiedProviderSpec>,
+    selectedId: String,
+    vault: Map<String, ProviderCredential>,
+    onSelect: (String) -> Unit
+) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        specs.forEach { spec ->
+            val selected = spec.id == selectedId
+            val ready = UnifiedProviderCatalog.isCredentialReady(spec.id, vault[spec.id])
+            FilterChip(
+                selected = selected,
+                onClick = { onSelect(spec.id) },
+                label = {
+                    Text(
+                        text = if (ready) "● ${spec.name}" else spec.name,
+                        style = MaterialTheme.typography.labelMedium
+                    )
                 },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                lineHeight = 18.sp
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                )
             )
         }
+    }
+}
+
+// =============================================================================
+// Layer 3: Collapsible Studio Drawers (Advanced / Diagnostics / JSON Backup)
+// =============================================================================
+
+@Composable
+private fun CollapsibleStudioDrawer(
+    title: String,
+    subtitle: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.50f))
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggle)
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = if (expanded) "收起" else "展开",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                    content()
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun AdvancedParametersDrawerContent(
+    settings: AppSettings,
+    onUpdateStt: (SttConfig) -> Unit,
+    onUpdateLlm: (LlmConfig) -> Unit,
+    onUpdateMultimodal: (MultimodalConfig) -> Unit
+) {
+    val languageOptions = listOf(
+        "" to "自动识别",
+        "zh" to "中文 (zh)",
+        "en" to "英文 (en)",
+        "ja" to "日文 (ja)"
+    )
+
+    if (settings.pipelineMode == PipelineMode.DUAL_STAGE) {
+        val sttEndpoint = remember(settings.sttConfig.baseUrl, settings.sttConfig.protocol) {
+            when (settings.sttConfig.protocol) {
+                SttProtocol.OPENAI_HTTP -> EndpointResolver.resolveSttEndpoint(settings.sttConfig.baseUrl)
+                SttProtocol.ALIYUN_DASHSCOPE_WS -> EndpointResolver.resolveDashScopeWsEndpoint(settings.sttConfig.baseUrl)
+                SttProtocol.VOLCENGINE_SAUC_WS -> EndpointResolver.resolveVolcengineSaucWsEndpoint(settings.sttConfig.baseUrl)
+                SttProtocol.GEMINI_LIVE_WS -> EndpointResolver.resolveGeminiLiveWsEndpoint(
+                    settings.sttConfig.baseUrl,
+                    if (settings.sttConfig.apiKey.isBlank()) "YOUR_API_KEY" else "***"
+                )
+            }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            SyncedOutlinedField(
+                externalValue = settings.sttConfig.baseUrl,
+                onValueCommit = { onUpdateStt(settings.sttConfig.copy(baseUrl = it.trim())) },
+                label = "听音引擎地址覆盖（反代 / 自建网关可在此修改）",
+                placeholder = "https://generativelanguage.googleapis.com/v1beta"
+            )
+            EndpointPreviewCaption(endpoint = sttEndpoint)
+        }
+
+        if (settings.sttConfig.protocol == SttProtocol.VOLCENGINE_SAUC_WS) {
+            SyncedOutlinedField(
+                externalValue = settings.sttConfig.resourceId,
+                onValueCommit = { onUpdateStt(settings.sttConfig.copy(resourceId = it.trim())) },
+                label = "火山豆包语音 Resource ID",
+                placeholder = VolcengineSaucAsrClient.DEFAULT_RESOURCE_ID
+            )
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                text = "听音语言偏好",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                languageOptions.forEach { (code, label) ->
+                    val selected = settings.sttConfig.language == code
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onUpdateStt(settings.sttConfig.copy(language = code)) },
+                        label = { Text(label, style = MaterialTheme.typography.labelMedium) }
+                    )
+                }
+            }
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            SyncedOutlinedField(
+                externalValue = settings.llmConfig.baseUrl,
+                onValueCommit = { onUpdateLlm(settings.llmConfig.copy(baseUrl = it.trim())) },
+                label = "LLM 润色/写作端点覆盖",
+                placeholder = "https://generativelanguage.googleapis.com/v1beta"
+            )
+            EndpointPreviewCaption(
+                endpoint = if (EndpointResolver.isGeminiNativeHttpUrl(settings.llmConfig.baseUrl) ||
+                    settings.llmConfig.presetId == "gemini_llm"
+                ) {
+                    EndpointResolver.resolveGeminiEndpoint(
+                        settings.llmConfig.baseUrl,
+                        settings.llmConfig.model,
+                        "***"
+                    )
+                } else {
+                    EndpointResolver.resolveChatEndpoint(settings.llmConfig.baseUrl)
+                }
+            )
+        }
+
+        ThinkingModeSelectorSection(
+            thinkingMode = settings.llmConfig.thinkingMode,
+            onSelectMode = { mode -> onUpdateLlm(settings.llmConfig.copy(thinkingMode = mode)) }
+        )
+
+        TemperatureSliderSection(
+            temperature = settings.llmConfig.temperature,
+            model = settings.llmConfig.model,
+            onTemperatureChange = { temp -> onUpdateLlm(settings.llmConfig.copy(temperature = temp)) }
+        )
+    } else {
+        val mmPreview = remember(
+            settings.multimodalConfig.baseUrl,
+            settings.multimodalConfig.model,
+            settings.multimodalConfig.protocol,
+            settings.multimodalConfig.apiKey
+        ) {
+            ApiConfigBackupHelper.previewMultimodalEndpoint(settings.multimodalConfig)
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                text = "多模态音频协议格式",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                FilterChip(
+                    selected = settings.multimodalConfig.protocol == MultimodalProtocol.GEMINI_NATIVE,
+                    onClick = {
+                        onUpdateMultimodal(
+                            settings.multimodalConfig.copy(protocol = MultimodalProtocol.GEMINI_NATIVE)
+                        )
+                    },
+                    label = { Text("Gemini 原生 (generateContent)") }
+                )
+                FilterChip(
+                    selected = settings.multimodalConfig.protocol == MultimodalProtocol.OPENAI_AUDIO_CHAT,
+                    onClick = {
+                        onUpdateMultimodal(
+                            settings.multimodalConfig.copy(protocol = MultimodalProtocol.OPENAI_AUDIO_CHAT)
+                        )
+                    },
+                    label = { Text("OpenAI 音频兼容 (input_audio)") }
+                )
+            }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            SyncedOutlinedField(
+                externalValue = settings.multimodalConfig.baseUrl,
+                onValueCommit = {
+                    onUpdateMultimodal(settings.multimodalConfig.copy(baseUrl = it.trim()))
+                },
+                label = "多模态网关地址覆盖",
+                placeholder = "https://generativelanguage.googleapis.com/v1beta"
+            )
+            EndpointPreviewCaption(endpoint = mmPreview)
+        }
+
+        ThinkingModeSelectorSection(
+            thinkingMode = settings.multimodalConfig.thinkingMode,
+            onSelectMode = { mode ->
+                onUpdateMultimodal(settings.multimodalConfig.copy(thinkingMode = mode))
+            }
+        )
+
+        TemperatureSliderSection(
+            temperature = settings.multimodalConfig.temperature,
+            model = settings.multimodalConfig.model,
+            onTemperatureChange = { temp ->
+                onUpdateMultimodal(settings.multimodalConfig.copy(temperature = temp))
+            }
+        )
     }
 }
 
@@ -1074,643 +2028,8 @@ private fun PipelineSegmentPill(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun SttConfigurationCard(
-    sttConfig: SttConfig,
-    isFetchingModels: Boolean,
-    modelFetchError: String?,
-    onFetchModels: () -> Unit,
-    onUpdateStt: (SttConfig) -> Unit,
-    onPasteClipboard: () -> String
-) {
-    val resolvedEndpoint = remember(sttConfig.baseUrl, sttConfig.protocol) {
-        when (sttConfig.protocol) {
-            SttProtocol.OPENAI_HTTP -> EndpointResolver.resolveSttEndpoint(sttConfig.baseUrl)
-            SttProtocol.ALIYUN_DASHSCOPE_WS -> EndpointResolver.resolveDashScopeWsEndpoint(sttConfig.baseUrl)
-            SttProtocol.VOLCENGINE_SAUC_WS -> EndpointResolver.resolveVolcengineSaucWsEndpoint(sttConfig.baseUrl)
-        }
-    }
-    val modelSuggestions = remember(sttConfig.presetId, sttConfig.protocol) {
-        ApiConfigBackupHelper.sttModelSuggestions(sttConfig.presetId, sttConfig.protocol)
-    }
-
-    val protocolOptions = listOf(
-        SttProtocol.OPENAI_HTTP to "OpenAI HTTP 整包",
-        SttProtocol.ALIYUN_DASHSCOPE_WS to "阿里云百炼流式 WS",
-        SttProtocol.VOLCENGINE_SAUC_WS to "火山豆包流式 WS"
-    )
-
-    val volcResourceSuggestions = listOf(
-        VolcengineSaucAsrClient.DEFAULT_RESOURCE_ID,
-        VolcengineSaucAsrClient.LEGACY_RESOURCE_ID_V1,
-        "volc.seedasr.sauc.concurrent"
-    )
-
-    val languageOptions = listOf(
-        "" to "自动识别",
-        "zh" to "中文 (zh)",
-        "en" to "英文 (en)",
-        "ja" to "日文 (ja)"
-    )
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = TypeFreeIcons.Mic,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = "阶段 1 · STT 语音转写引擎",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = when (sttConfig.protocol) {
-                            SttProtocol.OPENAI_HTTP ->
-                                "标准 OpenAI /v1/audio/transcriptions 整包识别（自动 AAC 硬件压缩加速）"
-                            SttProtocol.ALIYUN_DASHSCOPE_WS ->
-                                "阿里云百炼 WebSocket 边说边传流式识别（松手即得终稿，单 Key 通用）"
-                            SttProtocol.VOLCENGINE_SAUC_WS ->
-                                "火山豆包流式大模型 2.0 WebSocket 二进制协议（松手极速终稿 + 个人词典热词注入）"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            PresetHorizontalRow(
-                presets = ApiPresets.sttPresets,
-                selectedPresetId = sttConfig.presetId,
-                onSelectPreset = { preset ->
-                    onUpdateStt(ApiConfigBackupHelper.applyPresetToStt(sttConfig, preset))
-                }
-            )
-
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = "STT 传输协议（流式 WS 边说边传松手零等待）",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    protocolOptions.forEach { (proto, label) ->
-                        val selected = sttConfig.protocol == proto
-                        FilterChip(
-                            selected = selected,
-                            onClick = {
-                                val curUrl = sttConfig.baseUrl.trim()
-                                val switched = when (proto) {
-                                    SttProtocol.ALIYUN_DASHSCOPE_WS -> sttConfig.copy(
-                                        protocol = proto,
-                                        presetId = "aliyun_asr_ws",
-                                        baseUrl = if (curUrl.contains("dashscope.aliyuncs.com", ignoreCase = true)) {
-                                            curUrl
-                                        } else {
-                                            "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
-                                        },
-                                        model = if (curUrl.contains("dashscope.aliyuncs.com", ignoreCase = true) && sttConfig.model.isNotBlank()) {
-                                            sttConfig.model
-                                        } else {
-                                            "paraformer-realtime-v2"
-                                        }
-                                    )
-                                    SttProtocol.VOLCENGINE_SAUC_WS -> sttConfig.copy(
-                                        protocol = proto,
-                                        presetId = "volcengine_sauc_ws",
-                                        baseUrl = if (curUrl.contains("bytedance.com", ignoreCase = true)) {
-                                            curUrl
-                                        } else {
-                                            "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
-                                        },
-                                        model = "bigmodel",
-                                        resourceId = sttConfig.resourceId.ifBlank {
-                                            VolcengineSaucAsrClient.DEFAULT_RESOURCE_ID
-                                        }
-                                    )
-                                    SttProtocol.OPENAI_HTTP -> sttConfig.copy(
-                                        protocol = proto,
-                                        presetId = if (sttConfig.presetId.endsWith("_ws")) "siliconflow" else sttConfig.presetId,
-                                        baseUrl = if (curUrl.startsWith("ws://", ignoreCase = true) || curUrl.startsWith("wss://", ignoreCase = true)) {
-                                            "https://api.siliconflow.cn/v1"
-                                        } else {
-                                            curUrl
-                                        },
-                                        model = if (curUrl.startsWith("ws://", ignoreCase = true) || curUrl.startsWith("wss://", ignoreCase = true)) {
-                                            "FunAudioLLM/SenseVoiceSmall"
-                                        } else {
-                                            sttConfig.model
-                                        }
-                                    )
-                                }
-                                onUpdateStt(switched)
-                            },
-                            label = { Text(label, style = MaterialTheme.typography.labelMedium) },
-                            leadingIcon = if (selected) {
-                                {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-                            } else null,
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        )
-                    }
-                }
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                SyncedOutlinedField(
-                    externalValue = sttConfig.baseUrl,
-                    onValueCommit = { onUpdateStt(sttConfig.copy(baseUrl = it)) },
-                    label = if (sttConfig.protocol == SttProtocol.OPENAI_HTTP) "STT Base URL" else "流式 WebSocket 端点 URL",
-                    placeholder = when (sttConfig.protocol) {
-                        SttProtocol.OPENAI_HTTP -> "https://api.siliconflow.cn/v1"
-                        SttProtocol.ALIYUN_DASHSCOPE_WS -> "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
-                        SttProtocol.VOLCENGINE_SAUC_WS -> "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
-                    }
-                )
-                EndpointPreviewCaption(endpoint = resolvedEndpoint)
-            }
-
-            if (sttConfig.protocol == SttProtocol.VOLCENGINE_SAUC_WS) {
-                SyncedOutlinedField(
-                    externalValue = sttConfig.appId,
-                    onValueCommit = { onUpdateStt(sttConfig.copy(appId = it.trim())) },
-                    label = "火山语音 AppID（若使用新版单 X-Api-Key 可留空）",
-                    placeholder = "例如：1234567890"
-                )
-            }
-
-            SecretApiKeyField(
-                externalKey = sttConfig.apiKey,
-                onKeyCommit = { onUpdateStt(sttConfig.copy(apiKey = it)) },
-                label = when (sttConfig.protocol) {
-                    SttProtocol.OPENAI_HTTP -> "STT API Key"
-                    SttProtocol.ALIYUN_DASHSCOPE_WS -> "阿里云百炼 API Key (sk-...)"
-                    SttProtocol.VOLCENGINE_SAUC_WS -> "火山语音 Access Token / v3 API Key"
-                },
-                isLocalUrl = sttConfig.protocol == SttProtocol.OPENAI_HTTP &&
-                    AiPipelineEngine.isLocalEndpoint(sttConfig.baseUrl),
-                onPasteClipboard = onPasteClipboard
-            )
-
-            if (sttConfig.protocol == SttProtocol.VOLCENGINE_SAUC_WS) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    SyncedOutlinedField(
-                        externalValue = sttConfig.resourceId,
-                        onValueCommit = { onUpdateStt(sttConfig.copy(resourceId = it.trim())) },
-                        label = "火山语音 Resource ID（豆包 2.0 / 1.0 小时版资源标识）",
-                        placeholder = VolcengineSaucAsrClient.DEFAULT_RESOURCE_ID
-                    )
-                    QuickModelChipsRow(
-                        suggestions = volcResourceSuggestions,
-                        currentModel = sttConfig.resourceId.ifBlank { VolcengineSaucAsrClient.DEFAULT_RESOURCE_ID },
-                        onSelectModel = { chosenRes -> onUpdateStt(sttConfig.copy(resourceId = chosenRes)) }
-                    )
-                }
-            }
-
-            if (sttConfig.protocol == SttProtocol.OPENAI_HTTP) {
-                ProviderModelFieldSection(
-                    externalModel = sttConfig.model,
-                    onModelCommit = { onUpdateStt(sttConfig.copy(model = it)) },
-                    label = "识别模型名称 (Model)",
-                    placeholder = "FunAudioLLM/SenseVoiceSmall",
-                    suggestions = modelSuggestions,
-                    isFetching = isFetchingModels,
-                    fetchError = modelFetchError,
-                    onFetchModels = onFetchModels
-                )
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    SyncedOutlinedField(
-                        externalValue = sttConfig.model,
-                        onValueCommit = { onUpdateStt(sttConfig.copy(model = it)) },
-                        label = "流式识别模型名称 (Model)",
-                        placeholder = if (sttConfig.protocol == SttProtocol.ALIYUN_DASHSCOPE_WS) {
-                            "paraformer-realtime-v2"
-                        } else {
-                            "bigmodel"
-                        }
-                    )
-                    QuickModelChipsRow(
-                        suggestions = modelSuggestions,
-                        currentModel = sttConfig.model,
-                        onSelectModel = { onUpdateStt(sttConfig.copy(model = it)) }
-                    )
-                }
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = "识别语言偏好",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    languageOptions.forEach { (code, label) ->
-                        val selected = sttConfig.language == code
-                        FilterChip(
-                            selected = selected,
-                            onClick = { onUpdateStt(sttConfig.copy(language = code)) },
-                            label = { Text(label, style = MaterialTheme.typography.labelMedium) },
-                            leadingIcon = if (selected) {
-                                {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-                            } else null,
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun LlmConfigurationCard(
-    llmConfig: LlmConfig,
-    reuseFeedback: String?,
-    isFetchingModels: Boolean,
-    modelFetchError: String?,
-    onFetchModels: () -> Unit,
-    onUpdateLlm: (LlmConfig) -> Unit,
-    onReuseSttCredentials: () -> Unit,
-    onPasteClipboard: () -> String
-) {
-    val resolvedEndpoint = remember(llmConfig.baseUrl) {
-        EndpointResolver.resolveChatEndpoint(llmConfig.baseUrl)
-    }
-    val modelSuggestions = remember(llmConfig.presetId) {
-        ApiConfigBackupHelper.llmModelSuggestions(llmConfig.presetId)
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(32.dp)
-                            .clip(RoundedCornerShape(9.dp))
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = TypeFreeIcons.Sparkles,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = "阶段 2 · LLM 语义提纯与排版",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = if (llmConfig.enabled) {
-                                "自动去口癖、改口自纠、应用语气适配与快译"
-                            } else {
-                                "日常口述仅输出原始 STT（帮我写/编辑/快译仍会调用）"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Switch(
-                    checked = llmConfig.enabled,
-                    onCheckedChange = { onUpdateLlm(llmConfig.copy(enabled = it)) }
-                )
-            }
-
-            FilledTonalButton(
-                onClick = onReuseSttCredentials,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(
-                    imageVector = TypeFreeIcons.Copy,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "一键复用上方 STT 的 Base URL 与 API Key",
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            AnimatedVisibility(visible = reuseFeedback != null) {
-                reuseFeedback?.let { msg ->
-                    Text(
-                        text = msg,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TypeFreeEmerald
-                    )
-                }
-            }
-
-            PresetHorizontalRow(
-                presets = ApiPresets.llmPresets,
-                selectedPresetId = llmConfig.presetId,
-                onSelectPreset = { preset ->
-                    onUpdateLlm(ApiConfigBackupHelper.applyPresetToLlm(llmConfig, preset))
-                }
-            )
-
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                SyncedOutlinedField(
-                    externalValue = llmConfig.baseUrl,
-                    onValueCommit = { onUpdateLlm(llmConfig.copy(baseUrl = it)) },
-                    label = "LLM Base URL",
-                    placeholder = "https://api.deepseek.com/v1"
-                )
-                EndpointPreviewCaption(endpoint = resolvedEndpoint)
-            }
-
-            SecretApiKeyField(
-                externalKey = llmConfig.apiKey,
-                onKeyCommit = { onUpdateLlm(llmConfig.copy(apiKey = it)) },
-                label = "LLM API Key",
-                isLocalUrl = AiPipelineEngine.isLocalEndpoint(llmConfig.baseUrl),
-                onPasteClipboard = onPasteClipboard
-            )
-
-            ProviderModelFieldSection(
-                externalModel = llmConfig.model,
-                onModelCommit = { onUpdateLlm(llmConfig.copy(model = it)) },
-                label = "润色模型名称 (Model)",
-                placeholder = "deepseek-chat",
-                suggestions = modelSuggestions,
-                isFetching = isFetchingModels,
-                fetchError = modelFetchError,
-                onFetchModels = onFetchModels
-            )
-
-            ThinkingModeSelectorSection(
-                thinkingMode = llmConfig.thinkingMode,
-                onSelectMode = { chosenMode ->
-                    onUpdateLlm(llmConfig.copy(thinkingMode = chosenMode))
-                }
-            )
-
-            TemperatureSliderSection(
-                temperature = llmConfig.temperature,
-                model = llmConfig.model,
-                onTemperatureChange = { newTemp ->
-                    onUpdateLlm(llmConfig.copy(temperature = newTemp))
-                }
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
-@Composable
-private fun MultimodalConfigurationCard(
-    mmConfig: MultimodalConfig,
-    isFetchingModels: Boolean,
-    modelFetchError: String?,
-    onFetchModels: () -> Unit,
-    onUpdateMultimodal: (MultimodalConfig) -> Unit,
-    onPasteClipboard: () -> String
-) {
-    val endpointPreview = remember(mmConfig.baseUrl, mmConfig.model, mmConfig.protocol, mmConfig.apiKey) {
-        ApiConfigBackupHelper.previewMultimodalEndpoint(mmConfig)
-    }
-    val modelSuggestions = remember(mmConfig.presetId, mmConfig.protocol) {
-        ApiConfigBackupHelper.multimodalModelSuggestions(mmConfig.presetId, mmConfig.protocol)
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = TypeFreeIcons.VoiceWaveform,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = "多模态音频一步直出配置",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "16kHz WAV 原生音频直传，单次请求完成识别与润色",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            PresetHorizontalRow(
-                presets = ApiPresets.multimodalPresets,
-                selectedPresetId = mmConfig.presetId,
-                onSelectPreset = { preset ->
-                    onUpdateMultimodal(ApiConfigBackupHelper.applyPresetToMultimodal(mmConfig, preset))
-                }
-            )
-
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = "音频传输协议格式",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    FilterChip(
-                        selected = mmConfig.protocol == MultimodalProtocol.GEMINI_NATIVE,
-                        onClick = {
-                            onUpdateMultimodal(mmConfig.copy(protocol = MultimodalProtocol.GEMINI_NATIVE))
-                        },
-                        label = {
-                            Text(
-                                "Gemini 原生 (generateContent)",
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                        },
-                        leadingIcon = if (mmConfig.protocol == MultimodalProtocol.GEMINI_NATIVE) {
-                            {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                        } else null,
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                    )
-                    FilterChip(
-                        selected = mmConfig.protocol == MultimodalProtocol.OPENAI_AUDIO_CHAT,
-                        onClick = {
-                            onUpdateMultimodal(mmConfig.copy(protocol = MultimodalProtocol.OPENAI_AUDIO_CHAT))
-                        },
-                        label = {
-                            Text(
-                                "OpenAI 音频兼容 (input_audio)",
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                        },
-                        leadingIcon = if (mmConfig.protocol == MultimodalProtocol.OPENAI_AUDIO_CHAT) {
-                            {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                        } else null,
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                    )
-                }
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                SyncedOutlinedField(
-                    externalValue = mmConfig.baseUrl,
-                    onValueCommit = { onUpdateMultimodal(mmConfig.copy(baseUrl = it)) },
-                    label = "Multimodal Base URL",
-                    placeholder = "https://generativelanguage.googleapis.com/v1beta"
-                )
-                EndpointPreviewCaption(endpoint = endpointPreview)
-            }
-
-            SecretApiKeyField(
-                externalKey = mmConfig.apiKey,
-                onKeyCommit = { onUpdateMultimodal(mmConfig.copy(apiKey = it)) },
-                label = "Multimodal API Key",
-                isLocalUrl = AiPipelineEngine.isLocalEndpoint(mmConfig.baseUrl),
-                onPasteClipboard = onPasteClipboard
-            )
-
-            ProviderModelFieldSection(
-                externalModel = mmConfig.model,
-                onModelCommit = { onUpdateMultimodal(mmConfig.copy(model = it)) },
-                label = "多模态模型名称 (Model)",
-                placeholder = "gemini-3.5-flash-lite",
-                suggestions = modelSuggestions,
-                isFetching = isFetchingModels,
-                fetchError = modelFetchError,
-                onFetchModels = onFetchModels
-            )
-
-            ThinkingModeSelectorSection(
-                thinkingMode = mmConfig.thinkingMode,
-                onSelectMode = { chosenMode ->
-                    onUpdateMultimodal(mmConfig.copy(thinkingMode = chosenMode))
-                }
-            )
-
-            TemperatureSliderSection(
-                temperature = mmConfig.temperature,
-                model = mmConfig.model,
-                onTemperatureChange = { newTemp ->
-                    onUpdateMultimodal(mmConfig.copy(temperature = newTemp))
-                }
-            )
-        }
-    }
-}
-
-@Composable
-private fun LiveApiTesterCard(
+private fun LiveApiTesterContent(
     testInput: String,
     onTestInputChange: (String) -> Unit,
     onResetDefaultInput: () -> Unit,
@@ -1721,244 +2040,228 @@ private fun LiveApiTesterCard(
     errorMessage: String?,
     copiedResult: Boolean,
     copiedDiagLog: Boolean,
+    isGeminiSmartSingleStage: Boolean,
     isDualStageLlmDisabled: Boolean,
     onRunTest: () -> Unit,
     onCopyPolishedResult: (String) -> Unit,
     onCopyDiagnosticLog: (String) -> Unit
 ) {
-    Card(
+    Row(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        Text(
+            text = "当前风格：$activeStyleLabel · 启用词典：$activeDictionaryCount 条",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        if (testInput != DEFAULT_LIVE_TEST_INPUT) {
+            TextButton(
+                onClick = onResetDefaultInput,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text("重置示例", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+
+    if (isGeminiSmartSingleStage) {
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = TypeFreeEmerald.copy(alpha = 0.10f),
+            border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.4f))
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "真实连通性与润色效果实测",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "当前风格：$activeStyleLabel · 启用词典：$activeDictionaryCount 条",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                if (testInput != DEFAULT_LIVE_TEST_INPUT) {
-                    TextButton(
-                        onClick = onResetDefaultInput,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Text("重置示例", style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-            }
-
-            if (isDualStageLlmDisabled) {
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = TypeFreeAmber.copy(alpha = 0.12f),
-                    border = BorderStroke(1.dp, TypeFreeAmber.copy(alpha = 0.4f))
-                ) {
-                    Text(
-                        text = "提示：上方 LLM 润色开关当前已关闭，此按钮仍会验证已填写的 LLM 接口连通性。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TypeFreeAmber,
-                        modifier = Modifier.padding(10.dp)
-                    )
-                }
-            }
-
-            OutlinedTextField(
-                value = testInput,
-                onValueChange = onTestInputChange,
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 2,
-                maxLines = 4,
-                shape = RoundedCornerShape(12.dp),
-                label = { Text("模拟带口癖、改口与专有名词的口述原稿") }
+            Text(
+                text = "当前处于 Gemini Live SMART 单阶听写模式；点击下方按钮将验证同把 Gemini Key 驱动的写作/快译引擎连通性与响应延迟。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(10.dp)
             )
+        }
+    } else if (isDualStageLlmDisabled) {
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = TypeFreeAmber.copy(alpha = 0.12f),
+            border = BorderStroke(1.dp, TypeFreeAmber.copy(alpha = 0.4f))
+        ) {
+            Text(
+                text = "提示：二阶段润色开关当前已关闭，此按钮仍会验证已配置的写作/快译模型连通性。",
+                style = MaterialTheme.typography.bodySmall,
+                color = TypeFreeAmber,
+                modifier = Modifier.padding(10.dp)
+            )
+        }
+    }
 
-            Button(
-                onClick = onRunTest,
-                enabled = !isTesting,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                )
-            ) {
-                if (isTesting) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text("正在请求自定义 API 验证连通性...", fontWeight = FontWeight.Bold)
-                } else {
-                    Text("一键发送真实连通性测试", fontWeight = FontWeight.Bold)
+    OutlinedTextField(
+        value = testInput,
+        onValueChange = onTestInputChange,
+        modifier = Modifier.fillMaxWidth(),
+        minLines = 2,
+        maxLines = 4,
+        shape = RoundedCornerShape(12.dp),
+        label = { Text("模拟带口癖、改口与专有名词的口述原稿") }
+    )
+
+    Button(
+        onClick = onRunTest,
+        enabled = !isTesting,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(46.dp),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        if (isTesting) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.2.dp,
+                color = MaterialTheme.colorScheme.onPrimary
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text("正在请求接口实测连通性...", fontWeight = FontWeight.Bold)
+        } else {
+            Text("一键发送真实连通性测试", fontWeight = FontWeight.Bold)
+        }
+    }
+
+    AnimatedVisibility(visible = successResult != null) {
+        successResult?.let { res ->
+            val fullDiagnosticClipboard = buildString {
+                appendLine("TypeFree API 连通性诊断日志")
+                appendLine("总耗时: ${res.latencyMs} ms")
+                appendLine("响应模型: ${res.modeSummary}")
+                if (res.diagnosticLog.isNotBlank()) {
+                    appendLine(res.diagnosticLog)
                 }
+                append("输出结果: ${res.finalOutput}")
             }
-
-            AnimatedVisibility(visible = successResult != null) {
-                successResult?.let { res ->
-                    val fullDiagnosticClipboard = buildString {
-                        appendLine("TypeFree API 连通性诊断日志")
-                        appendLine("总耗时: ${res.latencyMs} ms")
-                        appendLine("响应模型: ${res.modeSummary}")
-                        if (res.diagnosticLog.isNotBlank()) {
-                            appendLine(res.diagnosticLog)
-                        }
-                        append("输出结果: ${res.finalOutput}")
-                    }
-                    Surface(
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = TypeFreeEmerald.copy(alpha = 0.10f),
+                border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.50f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        color = TypeFreeEmerald.copy(alpha = 0.10f),
-                        border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.50f))
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                        Text(
+                            text = "✓ 接口连通成功 · ${res.latencyMs} ms",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = TypeFreeEmerald
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                onClick = { onCopyDiagnosticLog(fullDiagnosticClipboard) },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
                             ) {
                                 Text(
-                                    text = "✓ 接口连通成功 · ${res.latencyMs} ms",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Bold,
+                                    text = if (copiedDiagLog) "✓ 已复制日志" else "复制日志",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(
+                                onClick = { onCopyPolishedResult(res.finalOutput) },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                            ) {
+                                Icon(
+                                    imageVector = TypeFreeIcons.Copy,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = TypeFreeEmerald
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (copiedResult) "已复制" else "复制",
+                                    style = MaterialTheme.typography.labelSmall,
                                     color = TypeFreeEmerald
                                 )
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    TextButton(
-                                        onClick = { onCopyDiagnosticLog(fullDiagnosticClipboard) },
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                                    ) {
-                                        Text(
-                                            text = if (copiedDiagLog) "✓ 已复制日志" else "复制日志",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    TextButton(
-                                        onClick = { onCopyPolishedResult(res.finalOutput) },
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = TypeFreeIcons.Copy,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(14.dp),
-                                            tint = TypeFreeEmerald
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = if (copiedResult) "已复制" else "复制",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = TypeFreeEmerald
-                                        )
-                                    }
-                                }
                             }
+                        }
+                    }
+                    Text(
+                        text = "响应模型：${res.modeSummary}",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = res.finalOutput,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    if (res.diagnosticLog.isNotBlank()) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+                            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                        ) {
                             Text(
-                                text = "响应模型：${res.modeSummary}",
+                                text = res.diagnosticLog,
                                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(8.dp)
                             )
-                            Text(
-                                text = res.finalOutput,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            if (res.diagnosticLog.isNotBlank()) {
-                                Surface(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
-                                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-                                ) {
-                                    Text(
-                                        text = res.diagnosticLog,
-                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(8.dp)
-                                    )
-                                }
-                            }
                         }
                     }
                 }
             }
+        }
+    }
 
-            AnimatedVisibility(visible = errorMessage != null) {
-                errorMessage?.let { errMsg ->
-                    Surface(
+    AnimatedVisibility(visible = errorMessage != null) {
+        errorMessage?.let { errMsg ->
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = TypeFreeRose.copy(alpha = 0.10f),
+                border = BorderStroke(1.dp, TypeFreeRose.copy(alpha = 0.50f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        color = TypeFreeRose.copy(alpha = 0.10f),
-                        border = BorderStroke(1.dp, TypeFreeRose.copy(alpha = 0.50f))
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        Text(
+                            text = "✕ 接口请求失败（诊断详情）",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = TypeFreeRose
+                        )
+                        TextButton(
+                            onClick = { onCopyDiagnosticLog(errMsg) },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "✕ 接口请求失败（诊断详情）",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    color = TypeFreeRose
-                                )
-                                TextButton(
-                                    onClick = { onCopyDiagnosticLog(errMsg) },
-                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                                ) {
-                                    Text(
-                                        text = if (copiedDiagLog) "✓ 已复制日志" else "复制日志",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = TypeFreeRose
-                                    )
-                                }
-                            }
                             Text(
-                                text = errMsg,
-                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                color = TypeFreeRose
-                            )
-                            Text(
-                                text = "排查建议：请核对 Base URL、API Key 余额权限及模型名称（Model）拼写是否正确。",
+                                text = if (copiedDiagLog) "✓ 已复制日志" else "复制日志",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = TypeFreeRose
                             )
                         }
                     }
+                    Text(
+                        text = errMsg,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = TypeFreeRose
+                    )
                 }
             }
         }
@@ -1967,181 +2270,69 @@ private fun LiveApiTesterCard(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ConfigBackupCard(
+private fun ConfigBackupContent(
     statusMessage: String?,
     statusIsError: Boolean,
     onExportFullJson: () -> Unit,
     onExportRedactedJson: () -> Unit,
     onImportFromClipboard: () -> Unit
 ) {
-    Card(
+    FlowRow(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        FilledTonalButton(
+            onClick = onExportFullJson,
+            shape = RoundedCornerShape(11.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = TypeFreeIcons.Tune,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Column {
-                    Text(
-                        text = "JSON 配置备份与跨机迁移",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "一键导入导出 API 端点、模型预设、翻译语言、语气规则与个人词典",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+            Icon(
+                imageVector = TypeFreeIcons.Copy,
+                contentDescription = null,
+                modifier = Modifier.size(15.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("导出完整配置 JSON")
+        }
 
-            FlowRow(
+        OutlinedButton(
+            onClick = onExportRedactedJson,
+            shape = RoundedCornerShape(11.dp)
+        ) {
+            Text("脱敏导出 (隐藏 Key)")
+        }
+
+        OutlinedButton(
+            onClick = onImportFromClipboard,
+            shape = RoundedCornerShape(11.dp)
+        ) {
+            Text("从剪贴板导入 JSON")
+        }
+    }
+
+    AnimatedVisibility(visible = statusMessage != null) {
+        statusMessage?.let { msg ->
+            val statusColor = if (statusIsError) TypeFreeRose else TypeFreeEmerald
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                shape = RoundedCornerShape(10.dp),
+                color = statusColor.copy(alpha = 0.10f),
+                border = BorderStroke(1.dp, statusColor.copy(alpha = 0.40f))
             ) {
-                FilledTonalButton(
-                    onClick = onExportFullJson,
-                    shape = RoundedCornerShape(11.dp)
-                ) {
-                    Icon(
-                        imageVector = TypeFreeIcons.Copy,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("导出完整配置 JSON")
-                }
-
-                OutlinedButton(
-                    onClick = onExportRedactedJson,
-                    shape = RoundedCornerShape(11.dp)
-                ) {
-                    Text("脱敏导出 (隐藏 Key)")
-                }
-
-                OutlinedButton(
-                    onClick = onImportFromClipboard,
-                    shape = RoundedCornerShape(11.dp)
-                ) {
-                    Text("从剪贴板导入 JSON")
-                }
-            }
-
-            AnimatedVisibility(visible = statusMessage != null) {
-                statusMessage?.let { msg ->
-                    val statusColor = if (statusIsError) TypeFreeRose else TypeFreeEmerald
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp),
-                        color = statusColor.copy(alpha = 0.10f),
-                        border = BorderStroke(1.dp, statusColor.copy(alpha = 0.40f))
-                    ) {
-                        Text(
-                            text = msg,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = statusColor,
-                            modifier = Modifier.padding(10.dp)
-                        )
-                    }
-                }
+                Text(
+                    text = msg,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = statusColor,
+                    modifier = Modifier.padding(10.dp)
+                )
             }
         }
     }
 }
 
-@Composable
-private fun PresetHorizontalRow(
-    presets: List<ApiPreset>,
-    selectedPresetId: String,
-    onSelectPreset: (ApiPreset) -> Unit
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            text = "国内外主流服务商一键填充（切换时自动保留已填 API Key）",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            presets.forEach { preset ->
-                val isSelected = preset.id == selectedPresetId
-                Surface(
-                    onClick = { onSelectPreset(preset) },
-                    modifier = Modifier.width(196.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    color = if (isSelected) {
-                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.50f)
-                    },
-                    border = BorderStroke(
-                        width = if (isSelected) 1.5.dp else 1.dp,
-                        color = if (isSelected) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
-                        }
-                    )
-                ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = preset.name,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                            if (isSelected) {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                            }
-                        }
-                        Text(
-                            text = preset.subtitle,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            lineHeight = 15.sp
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
+// =============================================================================
+// Shared Reusable Field & Model Discovery Components
+// =============================================================================
 
 @Composable
 private fun SyncedOutlinedField(
@@ -2200,7 +2391,7 @@ private fun SecretApiKeyField(
             shape = RoundedCornerShape(12.dp),
             label = { Text(label) },
             placeholder = {
-                Text(if (isLocalUrl) "局域网本地服务可留空" else "sk-...")
+                Text(if (isLocalUrl) "局域网本地服务可留空" else "粘贴或输入密钥…")
             },
             visualTransformation = if (keyVisible) {
                 VisualTransformation.None
@@ -2293,7 +2484,7 @@ private fun ProviderModelFieldSection(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "正在从当前 Provider 拉取可用模型列表...",
+                    text = "正在拉取可用模型列表...",
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -2400,7 +2591,6 @@ private fun ProviderModelPickerDialog(
         }
     }
 
-    // Auto-ping top candidate models as soon as the dropdown opens
     LaunchedEffect(models, thinkingMode, baseUrl, canAutoProbe) {
         if (!canAutoProbe || models.isEmpty()) return@LaunchedEffect
         val trimmedCurrent = currentModel.trim()
@@ -2433,9 +2623,9 @@ private fun ProviderModelPickerDialog(
             compareBy<DiscoveredModelItem> { item ->
                 val res = probeResults[item.id]
                 when {
-                    res?.latencyMs != null -> 0 // Fastest reachable models float to the top
-                    res == null -> 1            // Unprobed models stay in middle
-                    else -> 2                   // 403 / failed models sink to bottom
+                    res?.latencyMs != null -> 0
+                    res == null -> 1
+                    else -> 2
                 }
             }.thenBy { item ->
                 probeResults[item.id]?.latencyMs ?: Long.MAX_VALUE
@@ -2474,7 +2664,7 @@ private fun ProviderModelPickerDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
-                    placeholder = { Text("搜索模型 ID（如 seed / qwen / flash）") },
+                    placeholder = { Text("搜索模型 ID（如 gemini / seed / qwen）") },
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Default.Search,

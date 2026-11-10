@@ -104,6 +104,8 @@ fun KeyboardScreen(
     isAutoMatched: Boolean,
     amplitudes: List<Float>,
     elapsedMs: Long,
+    didPauseMedia: Boolean = false,
+    onToggleWhisperMode: () -> Unit = {},
     onSelectTabMode: (KeyboardTabMode) -> Unit,
     onOpenHelpMeWrite: () -> Unit,
     onCloseSubPanel: () -> Unit,
@@ -370,6 +372,8 @@ fun KeyboardScreen(
                                         settings = settings,
                                         amplitudes = amplitudes,
                                         elapsedMs = elapsedMs,
+                                        didPauseMedia = didPauseMedia,
+                                        onToggleWhisperMode = onToggleWhisperMode,
                                         onSwipeToTab = onSelectTabMode,
                                         onVoicePenClick = onOpenHelpMeWrite,
                                         onMicPressDown = { onMicPressDown(VoiceIntentMode.DICTATE) },
@@ -937,8 +941,13 @@ private fun FlypyComposingCandidateBar(
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
+                        val visualCandText = if (cand.text.length > 16 || cand.text.contains('\n')) {
+                            cand.text.replace('\n', '↵').take(16) + "…"
+                        } else {
+                            cand.text
+                        }
                         Text(
-                            text = cand.text,
+                            text = visualCandText,
                             color = palette.keyTextPrimary,
                             fontSize = 14.sp,
                             fontWeight = if (isFirst) FontWeight.Bold else FontWeight.Medium,
@@ -1040,8 +1049,13 @@ private fun FlypyExpandedCandidateGridOverlay(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
+                        val gridCandText = if (cand.text.length > 22 || cand.text.contains('\n')) {
+                            cand.text.replace('\n', '↵').take(22) + "…"
+                        } else {
+                            cand.text
+                        }
                         Text(
-                            text = cand.text,
+                            text = gridCandText,
                             color = palette.keyTextPrimary,
                             fontSize = 15.sp,
                             fontWeight = if (idx == 0) FontWeight.Bold else FontWeight.Medium
@@ -1219,6 +1233,8 @@ private fun VoiceMainPanel(
     settings: AppSettings,
     amplitudes: List<Float>,
     elapsedMs: Long,
+    didPauseMedia: Boolean,
+    onToggleWhisperMode: () -> Unit,
     onSwipeToTab: (KeyboardTabMode) -> Unit,
     onVoicePenClick: () -> Unit,
     onMicPressDown: () -> Unit,
@@ -1306,19 +1322,27 @@ private fun VoiceMainPanel(
             is VoicePhase.Recording -> {
                 val timerText = ImeLogic.formatElapsedTimer(elapsedMs)
                 val livePreview = uiState.streamingPartialPreview.trim()
+                val recBadges = buildString {
+                    if (didPauseMedia) append("🎵外放已静音 · ")
+                    if (settings.whisperModeEnabled) append("🤫轻声 · ")
+                }
                 when {
                     isTranslateRecording && livePreview.isNotEmpty() ->
                         "🌐 $activeTranslateLabel · ${livePreview.takeLast(18)}"
                     isTranslateRecording ->
-                        "🌐 正在聆听 → $activeTranslateLabel · $timerText"
+                        "🌐 ${recBadges}正在聆听 → $activeTranslateLabel · $timerText"
                     livePreview.isNotEmpty() ->
-                        "$timerText · ${livePreview.takeLast(22)}"
+                        "$recBadges$timerText · ${livePreview.takeLast(20)}"
                     else ->
-                        timerText
+                        "$recBadges$timerText"
                 }
             }
             is VoicePhase.Processing -> phase.stageText
-            else -> "Tap to speak · 轻点说话 / 上滑快译"
+            else -> if (settings.whisperModeEnabled) {
+                "🤫 轻声耳语高敏模式 · 靠近麦克风轻声说"
+            } else {
+                "Tap to speak · 轻点说话 / 上滑快译"
+            }
         }
 
         Text(
@@ -1543,6 +1567,39 @@ private fun VoiceMainPanel(
                 }
             }
         } else {
+            // Top-Right Compact Whisper AGC Toggle Pill (`🤫 轻声`)
+            val whisperOn = settings.whisperModeEnabled
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 28.dp)
+                    .height(26.dp)
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(
+                        if (whisperOn) TypeFreeEmerald.copy(alpha = 0.16f) else palette.keyCapBg
+                    )
+                    .border(
+                        width = 1.dp,
+                        color = if (whisperOn) TypeFreeEmerald.copy(alpha = 0.55f) else palette.keyBorder,
+                        shape = RoundedCornerShape(13.dp)
+                    )
+                    .clickable(onClick = onToggleWhisperMode)
+                    .padding(horizontal = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (whisperOn) "🤫 轻声开" else "🤫 轻声",
+                    color = if (whisperOn) {
+                        if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+                    } else {
+                        palette.keyTextMuted
+                    },
+                    fontSize = 11.sp,
+                    fontWeight = if (whisperOn) FontWeight.Bold else FontWeight.Medium,
+                    maxLines = 1
+                )
+            }
+
             // Optional Quick Punctuation Floating Strip (toggled by `@` circle key)
             if (uiState.isPunctuationStripOpen) {
                 FloatingQuickPunctuationStrip(

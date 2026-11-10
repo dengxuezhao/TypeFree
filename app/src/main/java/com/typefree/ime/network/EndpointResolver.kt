@@ -135,6 +135,44 @@ object EndpointResolver {
         return DEFAULT_VOLCENGINE_SAUC_WS_URL
     }
 
+    fun resolveGeminiLiveWsEndpoint(rawBaseUrl: String, apiKey: String): String {
+        val clean = rawBaseUrl.trim().trimEnd('/')
+        val wsBase = when {
+            clean.isEmpty() -> DEFAULT_GEMINI_LIVE_WS_URL
+            clean.startsWith("wss://", ignoreCase = true) || clean.startsWith("ws://", ignoreCase = true) -> {
+                val noQuery = clean.substringBefore("?")
+                if (noQuery.contains("/ws/") || noQuery.contains("BidiGenerateContent", ignoreCase = true)) {
+                    clean
+                } else {
+                    "$noQuery$GEMINI_LIVE_WS_PATH"
+                }
+            }
+            else -> {
+                val origin = extractHttpOrigin(clean)
+                    ?.replaceFirst(Regex("^https://", RegexOption.IGNORE_CASE), "wss://")
+                    ?.replaceFirst(Regex("^http://", RegexOption.IGNORE_CASE), "ws://")
+                    ?: "wss://generativelanguage.googleapis.com"
+                "$origin$GEMINI_LIVE_WS_PATH"
+            }
+        }
+        val trimmedKey = apiKey.trim()
+        return if (trimmedKey.isEmpty() || wsBase.contains("key=")) {
+            wsBase
+        } else {
+            val sep = if (wsBase.contains("?")) "&" else "?"
+            "$wsBase${sep}key=$trimmedKey"
+        }
+    }
+
+    fun isGeminiNativeHttpUrl(rawBaseUrl: String): Boolean {
+        val lower = rawBaseUrl.trim().trimEnd('/').lowercase()
+        if (lower.isEmpty()) return false
+        if (lower.contains("/openai")) return false
+        return lower.contains("generativelanguage.googleapis.com") ||
+            lower.endsWith("/v1beta") ||
+            lower.contains(":generatecontent")
+    }
+
     /**
      * Extracts `http(s)://host[:port]` origin from an HTTP or WebSocket URL for connection pool pre-warming.
      */
@@ -157,4 +195,8 @@ object EndpointResolver {
 
     const val DEFAULT_DASHSCOPE_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
     const val DEFAULT_VOLCENGINE_SAUC_WS_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+    const val GEMINI_LIVE_WS_PATH =
+        "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+    const val DEFAULT_GEMINI_LIVE_WS_URL =
+        "wss://generativelanguage.googleapis.com$GEMINI_LIVE_WS_PATH"
 }

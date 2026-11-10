@@ -1003,7 +1003,7 @@ private fun HistoryTimelineCard(
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
@@ -1015,22 +1015,32 @@ private fun HistoryTimelineCard(
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
                             )
 
                             Row(
+                                modifier = Modifier.weight(1f),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                horizontalArrangement = Arrangement.End
                             ) {
                                 if (metricsText.isNotBlank()) {
                                     Text(
                                         text = metricsText,
+                                        modifier = Modifier.weight(1f, fill = false),
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontFamily = FontFamily.Monospace,
-                                            fontSize = 10.sp
+                                            fontSize = 10.sp,
+                                            lineHeight = 13.sp
                                         ),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                                        textAlign = TextAlign.End,
+                                        maxLines = if (rawExpanded) 2 else 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
+                                    Spacer(modifier = Modifier.width(4.dp))
                                 }
                                 Icon(
                                     imageVector = if (rawExpanded) {
