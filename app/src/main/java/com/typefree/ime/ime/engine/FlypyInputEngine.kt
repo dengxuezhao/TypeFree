@@ -24,6 +24,20 @@ class FlypyInputEngine(
     val isComposing: Boolean
         get() = delegate.isComposing
 
+    var isIncognitoMode: Boolean = false
+        private set
+
+    var fixedCandidateOrder: Boolean? = null
+        private set
+
+    override fun setIncognitoMode(incognito: Boolean) {
+        isIncognitoMode = incognito
+    }
+
+    override fun setFixedCandidateOrder(fixedOrder: Boolean?) {
+        fixedCandidateOrder = fixedOrder
+    }
+
     fun updateDictionary(newDict: FlypyDictionary, nowMillis: Long = System.currentTimeMillis()) {
         delegate.updateDictionary(newDict, nowMillis)
         syncState()
