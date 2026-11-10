@@ -24,6 +24,7 @@ import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.bubble.CapturedChatContext
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.HistoryRetention
+import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.network.AiPipelineEngine
@@ -103,7 +104,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 tabMode = initialMode.tabMode,
                 isFlypyChineseMode = initialMode.isFlypyChineseMode,
                 activeInputScheme = initialSettings.inputScheme,
-                activeHeightLevel = initialSettings.keyboardHeightLevel
+                activeHeightLevel = initialSettings.keyboardHeightLevel,
+                activeHeightMode = initialSettings.keyboardHeightMode,
+                activeLiftLevel = initialSettings.keyboardLiftLevel
             )
         }
         TypeFreeApp.instance.ensureFlypyDictionaryLoaded()
@@ -146,7 +149,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     it.copy(
                         activeInputScheme = currentSettings.inputScheme,
                         isRimeDeploying = currentSettings.inputScheme.usesRime && !typingController.isRimeReady,
-                        activeHeightLevel = currentSettings.keyboardHeightLevel
+                        activeHeightLevel = currentSettings.keyboardHeightLevel,
+                        activeHeightMode = currentSettings.keyboardHeightMode,
+                        activeLiftLevel = currentSettings.keyboardLiftLevel
                     )
                 }
                 val prevSetting = lastFlypySetting
@@ -188,6 +193,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         super.onStartInputView(info, restarting)
         repository.setImeWindowVisible(true)
         val latestHeightLevel = repository.settings.value.keyboardHeightLevel
+        val latestHeightMode = repository.settings.value.keyboardHeightMode
+        val latestLiftLevel = repository.settings.value.keyboardLiftLevel
         if (!restarting) {
             typingController.resetComposing()
             _imeState.update {
@@ -207,11 +214,19 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     isFlypyCandidateSheetExpanded = false,
                     predictionCandidates = emptyList(),
                     aiCompletionSuggestion = null,
-                    activeHeightLevel = latestHeightLevel
+                    activeHeightLevel = latestHeightLevel,
+                    activeHeightMode = latestHeightMode,
+                    activeLiftLevel = latestLiftLevel
                 )
             }
         } else {
-            _imeState.update { it.copy(activeHeightLevel = latestHeightLevel) }
+            _imeState.update {
+                it.copy(
+                    activeHeightLevel = latestHeightLevel,
+                    activeHeightMode = latestHeightMode,
+                    activeLiftLevel = latestLiftLevel
+                )
+            }
         }
         syncEditorMetadata(info, restarting)
         syncSystemClipboardIfNeeded(allowFreshBanner = true)
@@ -413,8 +428,18 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         val configuration = LocalConfiguration.current
         val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
-        val keyboardMetrics = remember(uiState.activeHeightLevel, isLandscape) {
-            KeyboardMetrics.fromLevel(uiState.activeHeightLevel, isLandscape)
+        val keyboardMetrics = remember(
+            uiState.activeHeightLevel,
+            uiState.activeHeightMode,
+            uiState.activeLiftLevel,
+            isLandscape
+        ) {
+            KeyboardMetrics.fromLevel(
+                level = uiState.activeHeightLevel,
+                isLandscape = isLandscape,
+                heightMode = uiState.activeHeightMode,
+                liftLevel = uiState.activeLiftLevel
+            )
         }
 
         val (activeStyle, isAutoMatched) = remember(
@@ -491,6 +516,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     onToggleToolPanel = ::toggleToolPanel,
                     onToggleToolPanelHeight = ::toggleToolPanelHeight,
                     onSelectKeyboardHeightLevel = ::selectKeyboardHeightLevel,
+                    onSelectKeyboardHeightMode = ::selectKeyboardHeightMode,
+                    onSelectKeyboardLiftLevel = ::selectKeyboardLiftLevel,
                     onCycleInputScheme = ::cycleInputScheme,
                     onOpenStylePickerFromToolPanel = ::openStylePickerFromToolPanel,
                     onToggleAiCompletion = ::toggleAiCompletion,
@@ -1038,6 +1065,19 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         performKeyFeedback(strong = false)
         repository.updateSettings { it.copy(keyboardHeightLevel = clamped) }
         _imeState.update { it.copy(activeHeightLevel = clamped) }
+    }
+
+    private fun selectKeyboardHeightMode(mode: KeyboardHeightMode) {
+        performKeyFeedback(strong = false)
+        repository.updateSettings { it.copy(keyboardHeightMode = mode) }
+        _imeState.update { it.copy(activeHeightMode = mode) }
+    }
+
+    private fun selectKeyboardLiftLevel(liftLevel: Int) {
+        val clamped = liftLevel.coerceIn(KeyboardMetrics.MIN_LIFT_LEVEL, KeyboardMetrics.MAX_LIFT_LEVEL)
+        performKeyFeedback(strong = false)
+        repository.updateSettings { it.copy(keyboardLiftLevel = clamped) }
+        _imeState.update { it.copy(activeLiftLevel = clamped) }
     }
 
     private fun cycleInputScheme() {

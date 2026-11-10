@@ -57,6 +57,16 @@ enum class ThinkingMode(val label: String, val description: String) {
     ENABLED("开启思考", "显式启用深度推理，适合长文「帮我写」但首字延迟会增加")
 }
 
+/**
+ * Keyboard height adjustment mode.
+ * - [STRETCH]: scales the key area vertically (keys get taller/shorter).
+ * - [LIFT]: keeps keys at standard size and raises the whole keyboard with a blank bottom cushion.
+ */
+enum class KeyboardHeightMode(val label: String) {
+    STRETCH("拉伸"),
+    LIFT("垫高")
+}
+
 enum class InputScheme(
     val label: String,
     val shortBadge: String,
@@ -418,6 +428,8 @@ data class AppSettings(
     val whisperModeEnabled: Boolean = false,
     val equalEqualAskAiEnabled: Boolean = true,
     val keyboardHeightLevel: Int = 0, // -2..+2，0 = 标准 298dp
+    val keyboardHeightMode: KeyboardHeightMode = KeyboardHeightMode.STRETCH, // 拉伸（缩放按键）/ 垫高（按键不变，底部留白托起）
+    val keyboardLiftLevel: Int = 0, // 垫高档位 0..4 → 0 / 8 / 16 / 24 / 32dp
     val liveWriteToEditor: Boolean = false, // 实时写入输入框
     val inputScheme: InputScheme = if (com.typefree.ime.BuildConfig.USE_PRIVATE_DICT) InputScheme.FLYPY_TABLE else InputScheme.RIME_PINYIN, // 音形专享版或老用户升级默认 FLYPY_TABLE；标准版新装默认 RIME_PINYIN (真实 librime 1.17.0)
     val fixedCandidateOrder: Boolean? = null, // null = 按方案自动

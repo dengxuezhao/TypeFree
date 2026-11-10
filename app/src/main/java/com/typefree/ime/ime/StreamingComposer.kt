@@ -125,6 +125,18 @@ class StreamingComposer(
     private var cursorMovedDuringPolish: Boolean = false
     private var frozenRemainderCommitted: Boolean = false
 
+    /**
+     * Set when the host editor silently dropped our composing span (e.g. mobile QQ re-sets its text
+     * on every change) while the stale interim text is still physically in the buffer. The next write
+     * must delete that stale interim explicitly, otherwise `setComposingText` / `commitText` would
+     * insert a second copy next to it ("落字重复两遍").
+     */
+    var hostDroppedComposing: Boolean = false
+        private set
+
+    /** Text right before [anchor] captured at session start; used to rule out ambiguous self-heals. */
+    private var anchorPrefix: String = ""
+
     val totalWrittenLength: Int
         get() = committedFinalText.length + currentInterimText.length
 
@@ -165,6 +177,10 @@ class StreamingComposer(
         isInBatchEdit = false
         cursorMovedDuringPolish = false
         frozenRemainderCommitted = false
+        hostDroppedComposing = false
+        anchorPrefix = runCatching {
+            editorBridge.getTextBeforeCursor(ANCHOR_PREFIX_WINDOW, 0)?.toString()
+        }.getOrNull().orEmpty()
         state = State.Live
     }
 
@@ -205,6 +221,24 @@ class StreamingComposer(
         return true
     }
 
+    /**
+     * Removes the stale interim text that the host editor solidified on its own (composing span lost).
+     * Verifies the exact characters before the cursor first so user text is never deleted.
+     * Must be called inside a batch edit. Returns true if the stale interim was removed.
+     */
+    private fun purgeStaleInterimIfHostDroppedComposing(): Boolean {
+        if (!hostDroppedComposing) return false
+        hostDroppedComposing = false
+        val stale = currentInterimText
+        if (stale.isEmpty()) return false
+        val before = editorBridge.getTextBeforeCursor(stale.length, 0)?.toString()
+        if (before != stale) return false
+        editorBridge.finishComposingText()
+        editorBridge.deleteSurroundingText(stale.length, 0)
+        currentInterimText = ""
+        return true
+    }
+
     private fun flushToEditor(
         targetFinal: String,
         targetInterim: String,
@@ -213,6 +247,11 @@ class StreamingComposer(
         isInBatchEdit = true
         editorBridge.beginBatchEdit()
         try {
+            purgeStaleInterimIfHostDroppedComposing()
+            val prevFinal = committedFinalText
+            val prevInterim = currentInterimText
+            var committedDelta = ""
+            var composedInterim = ""
             val hasNewFinalDelta = targetFinal.length > committedFinalText.length &&
                 targetFinal != committedFinalText
 
@@ -224,6 +263,7 @@ class StreamingComposer(
                 }
                 if (delta.isNotEmpty()) {
                     editorBridge.commitText(delta, 1)
+                    committedDelta = delta
                 }
                 committedFinalText = targetFinal
             }
@@ -231,6 +271,7 @@ class StreamingComposer(
             if (targetInterim.isNotEmpty()) {
                 if (targetInterim != currentInterimText || hasNewFinalDelta) {
                     editorBridge.setComposingText(targetInterim, 1)
+                    composedInterim = targetInterim
                 }
                 currentInterimText = targetInterim
             } else {
@@ -239,6 +280,14 @@ class StreamingComposer(
                 }
                 currentInterimText = ""
             }
+
+            healSilentComposingDrop(
+                prevFinal = prevFinal,
+                prevInterim = prevInterim,
+                committedDelta = committedDelta,
+                composedInterim = composedInterim,
+                clearedInterim = targetInterim.isEmpty() && !hasNewFinalDelta
+            )
             lastFlushAtMs = nowMs
         } finally {
             editorBridge.endBatchEdit()
@@ -247,13 +296,54 @@ class StreamingComposer(
     }
 
     /**
+     * Self-heal for hosts that drop the composing span without (or before) an `onUpdateSelection`
+     * callback: if our write landed *after* the stale interim instead of replacing it, the buffer ends
+     * with `prevInterim + newlyWritten`. Only acts when that tail is unambiguous, i.e. a correctly
+     * replaced buffer (`prevFinal + newlyWritten`) could not end the same way.
+     * Must be called inside a batch edit.
+     */
+    private fun healSilentComposingDrop(
+        prevFinal: String,
+        prevInterim: String,
+        committedDelta: String,
+        composedInterim: String,
+        clearedInterim: Boolean
+    ) {
+        if (prevInterim.isEmpty()) return
+        val newlyWritten = committedDelta + composedInterim
+        if (newlyWritten.isNotEmpty()) {
+            val duplicatedTail = prevInterim + newlyWritten
+            if (isAmbiguousTail(anchorPrefix + prevFinal + newlyWritten, duplicatedTail)) return
+            val tail = editorBridge.getTextBeforeCursor(duplicatedTail.length, 0)?.toString()
+            if (tail != duplicatedTail) return
+            editorBridge.finishComposingText()
+            editorBridge.deleteSurroundingText(duplicatedTail.length, 0)
+            if (committedDelta.isNotEmpty()) {
+                editorBridge.commitText(committedDelta, 1)
+            }
+            if (composedInterim.isNotEmpty()) {
+                editorBridge.setComposingText(composedInterim, 1)
+            }
+        } else if (clearedInterim) {
+            if (isAmbiguousTail(anchorPrefix + prevFinal, prevInterim)) return
+            val tail = editorBridge.getTextBeforeCursor(prevInterim.length, 0)?.toString()
+            if (tail != prevInterim) return
+            editorBridge.finishComposingText()
+            editorBridge.deleteSurroundingText(prevInterim.length, 0)
+        }
+    }
+
+
+    /**
      * Monitors selection / cursor callbacks from `InputMethodService.onUpdateSelection`.
      * If the cursor is moved away from [expectedCursorPosition] by the user or host app while `Live`,
      * immediately solidifies the composing region via `finishComposingText()` and transitions to `Frozen`.
      */
     fun onUpdateSelection(
         newSelStart: Int,
-        newSelEnd: Int
+        newSelEnd: Int,
+        candidatesStart: Int = CANDIDATES_UNKNOWN,
+        candidatesEnd: Int = CANDIDATES_UNKNOWN
     ) {
         if (isInBatchEdit) return
         if (newSelStart < 0 || newSelEnd < 0) return
@@ -261,6 +351,14 @@ class StreamingComposer(
         when (state) {
             State.Live -> {
                 val expected = expectedCursorPosition
+                if (newSelStart == newSelEnd && newSelStart == expected) {
+                    // Cursor is where we expect, but the host reports no composing span although
+                    // we still hold interim text -> the host ended composition on its own.
+                    if (candidatesStart == -1 && candidatesEnd == -1 && currentInterimText.isNotEmpty()) {
+                        hostDroppedComposing = true
+                    }
+                    return
+                }
                 if (newSelStart != newSelEnd || newSelStart != expected) {
                     isInBatchEdit = true
                     try {
@@ -316,26 +414,40 @@ class StreamingComposer(
             isInBatchEdit = true
             editorBridge.beginBatchEdit()
             try {
+                if (purgeStaleInterimIfHostDroppedComposing() && targetRaw.isEmpty()) {
+                    // Nothing newer to write: re-insert the purged interim once as plain text.
+                    val tail = (pendingThrottledTranscript ?: latestObservedTranscript).interim
+                    if (tail.isNotEmpty()) {
+                        editorBridge.commitText(tail, 1)
+                        committedFinalText += tail
+                    }
+                }
                 val currentFull = committedFinalText + currentInterimText
+                // Flatten whatever is in the buffer first so later writes never rely on a composing
+                // span that the host (e.g. mobile QQ) may already have dropped.
+                editorBridge.finishComposingText()
                 if (targetRaw.isNotEmpty() && targetRaw != currentFull) {
-                    if (targetRaw.startsWith(committedFinalText)) {
-                        val delta = targetRaw.substring(committedFinalText.length)
-                        if (delta.isNotEmpty()) {
-                            editorBridge.commitText(delta, 1)
+                    // Align the buffer to targetRaw by common prefix: delete only the diverging tail
+                    // of what we wrote, then commit the new tail once (handles interim revisions and
+                    // whitespace differences between streaming slices and the final transcript).
+                    val bufferTail = editorBridge.getTextBeforeCursor(currentFull.length, 0)?.toString()
+                    if (bufferTail == currentFull) {
+                        val commonLen = currentFull.commonPrefixWith(targetRaw).length
+                        val deleteLen = currentFull.length - commonLen
+                        if (deleteLen > 0) {
+                            editorBridge.deleteSurroundingText(deleteLen, 0)
+                        }
+                        val appendTail = targetRaw.substring(commonLen)
+                        if (appendTail.isNotEmpty()) {
+                            editorBridge.commitText(appendTail, 1)
                         }
                         committedFinalText = targetRaw
-                        currentInterimText = ""
                     } else {
-                        // Rare case where final packet revised an earlier character: replace currentInterim if possible
-                        if (currentInterimText.isNotEmpty()) {
-                            editorBridge.setComposingText("", 1)
-                            currentInterimText = ""
-                        }
-                        if (targetRaw.length > committedFinalText.length) {
-                            editorBridge.commitText(targetRaw.substring(committedFinalText.length), 1)
-                            committedFinalText = targetRaw
-                        }
+                        // Buffer no longer matches what we wrote: keep the editor untouched and
+                        // track what is physically there so polish verification stays truthful.
+                        committedFinalText = currentFull
                     }
+                    currentInterimText = ""
                 } else if (currentInterimText.isNotEmpty()) {
                     committedFinalText += currentInterimText
                     currentInterimText = ""
@@ -478,8 +590,14 @@ class StreamingComposer(
         }
 
         // Verify that the text immediately before the cursor still matches `writtenText`
-        val actualBeforeCursor = editorBridge.getTextBeforeCursor(writtenText.length, 0)?.toString()
-        val verified = !cursorMovedDuringPolish && (actualBeforeCursor == writtenText)
+        // (whitespace-tolerant: streaming drafts may carry spaces the host or ASR later normalized).
+        val replaceLength = if (cursorMovedDuringPolish) -1 else resolveDraftReplaceLength(writtenText)
+        val verified = replaceLength > 0
+        val editorDraftSnapshot = if (verified) {
+            editorBridge.getTextBeforeCursor(replaceLength, 0)?.toString()
+        } else {
+            null
+        }
 
         if (!verified) {
             // Verification failed: user edited or moved cursor -> NEVER overwrite!
@@ -496,17 +614,20 @@ class StreamingComposer(
         isInBatchEdit = true
         editorBridge.beginBatchEdit()
         try {
-            val regionSupported = editorBridge.setComposingRegion(anchor, anchor + writtenText.length)
-            if (regionSupported) {
-                editorBridge.commitText(polishedText, 1)
-            } else {
-                editorBridge.deleteSurroundingText(writtenText.length, 0)
-                editorBridge.commitText(polishedText, 1)
-            }
+            // Delete-then-commit relative to the verified cursor is honored by far more host editors
+            // (e.g. mobile QQ) than setComposingRegion, which some hosts acknowledge but silently ignore,
+            // causing the polished text to be appended after the raw draft ("重复两遍").
+            editorBridge.finishComposingText()
+            editorBridge.deleteSurroundingText(replaceLength, 0)
+            editorBridge.commitText(polishedText, 1)
         } finally {
             editorBridge.endBatchEdit()
             isInBatchEdit = false
         }
+        repairDuplicatedDraftIfHostIgnoredDeletion(
+            rawDraft = editorDraftSnapshot ?: writtenText,
+            polished = polishedText
+        )
 
         state = State.Done
         val undo = UndoSnapshot(
@@ -520,6 +641,56 @@ class StreamingComposer(
             finalCommittedText = polishedText,
             undoSnapshot = undo
         )
+    }
+
+    /**
+     * True when a correctly written buffer ([honoredBuffer]) could itself end with [suspectTail],
+     * or when we cannot see far enough before the anchor to rule that out.
+     */
+    private fun isAmbiguousTail(honoredBuffer: String, suspectTail: String): Boolean {
+        if (honoredBuffer.endsWith(suspectTail)) return true
+        val prefixTruncated = anchorPrefix.length >= ANCHOR_PREFIX_WINDOW
+        return prefixTruncated && honoredBuffer.length < suspectTail.length
+    }
+
+    /**
+     * Returns how many characters before the cursor form our raw draft, or -1 if the user changed it.
+     * Exact match first; otherwise accepts a suffix whose non-whitespace content equals the draft's.
+     */
+    private fun resolveDraftReplaceLength(writtenText: String): Int {
+        val exact = editorBridge.getTextBeforeCursor(writtenText.length, 0)?.toString()
+        if (exact == writtenText) return writtenText.length
+        val target = writtenText.filterNot { it.isWhitespace() }
+        if (target.isEmpty()) return -1
+        val window = editorBridge.getTextBeforeCursor(writtenText.length + DRAFT_MATCH_SLACK, 0)
+            ?.toString() ?: return -1
+        for (len in 1..window.length) {
+            val suffix = window.substring(window.length - len)
+            val stripped = suffix.filterNot { it.isWhitespace() }
+            if (stripped.length > target.length) break
+            if (stripped == target && !suffix.first().isWhitespace()) return len
+        }
+        return -1
+    }
+
+    /**
+     * Post-write safety net: if the host ignored the deletion and the buffer now ends with
+     * `rawDraft + polished`, remove both and commit the polished text exactly once.
+     */
+    private fun repairDuplicatedDraftIfHostIgnoredDeletion(rawDraft: String, polished: String) {
+        if (rawDraft.isEmpty() || polished.isEmpty()) return
+        val duplicated = rawDraft + polished
+        val tail = editorBridge.getTextBeforeCursor(duplicated.length, 0)?.toString() ?: return
+        if (tail != duplicated) return
+        isInBatchEdit = true
+        editorBridge.beginBatchEdit()
+        try {
+            editorBridge.deleteSurroundingText(duplicated.length, 0)
+            editorBridge.commitText(polished, 1)
+        } finally {
+            editorBridge.endBatchEdit()
+            isInBatchEdit = false
+        }
     }
 
     /**
@@ -569,6 +740,15 @@ class StreamingComposer(
     companion object {
         /** Maximum 15 UI flushes per second (~66.6ms minimum interval). */
         const val MIN_UPDATE_INTERVAL_MS: Long = 66L
+
+        /** Characters captured before the anchor at session start for self-heal disambiguation. */
+        private const val ANCHOR_PREFIX_WINDOW: Int = 64
+
+        /** Extra characters read when matching a whitespace-normalized draft before the cursor. */
+        private const val DRAFT_MATCH_SLACK: Int = 32
+
+        /** Sentinel for callers that cannot provide `onUpdateSelection` candidate bounds. */
+        const val CANDIDATES_UNKNOWN: Int = -2
 
         /**
          * Built-in terminal / code editor packages where standard Android `setComposingText` /

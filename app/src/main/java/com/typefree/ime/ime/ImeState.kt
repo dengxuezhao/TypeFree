@@ -6,6 +6,7 @@ import com.typefree.ime.bubble.CapturedChatContext
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ClipboardEntry
 import com.typefree.ime.data.InputScheme
+import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.flypy.FlypyCandidate
@@ -137,6 +138,8 @@ data class ImeUiState(
     val aiCompletionSuggestion: String? = null,
     val isIncognitoMode: Boolean = false,
     val activeHeightLevel: Int = KeyboardMetrics.DEFAULT_LEVEL,
+    val activeHeightMode: KeyboardHeightMode = KeyboardHeightMode.STRETCH,
+    val activeLiftLevel: Int = KeyboardMetrics.DEFAULT_LIFT_LEVEL,
     val capturedChatContext: CapturedChatContext = CapturedChatContext(),
     val ignoreChatContextForThisTurn: Boolean = false,
     val showChatContextDisclosurePrompt: Boolean = false

@@ -76,6 +76,7 @@ import com.typefree.ime.bubble.TypeFreeBubbleController
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.InputScheme
+import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ThemePreference
 import com.typefree.ime.ime.KeyboardMetrics
 import com.typefree.ime.network.AiPipelineEngine
@@ -824,11 +825,16 @@ private fun AppearanceAndPreferencesPane(repository: AppRepository) {
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
-                // Keyboard Height (5 levels: -2..+2)
+                // Keyboard Height: 拉伸 (scale keys, -2..+2) / 垫高 (keep keys, bottom cushion 0..32dp)
                 val currentHeightLevel = settings.keyboardHeightLevel.coerceIn(
                     KeyboardMetrics.MIN_LEVEL,
                     KeyboardMetrics.MAX_LEVEL
                 )
+                val currentLiftLevel = settings.keyboardLiftLevel.coerceIn(
+                    KeyboardMetrics.MIN_LIFT_LEVEL,
+                    KeyboardMetrics.MAX_LIFT_LEVEL
+                )
+                val isLiftMode = settings.keyboardHeightMode == KeyboardHeightMode.LIFT
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -840,26 +846,38 @@ private fun AppearanceAndPreferencesPane(repository: AppRepository) {
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             Text(
-                                text = "键盘高度 · ${KeyboardMetrics.labelForLevel(currentHeightLevel)}",
+                                text = if (isLiftMode) {
+                                    "键盘高度 · 垫高 ${KeyboardMetrics.labelForLiftLevel(currentLiftLevel)}"
+                                } else {
+                                    "键盘高度 · ${KeyboardMetrics.labelForLevel(currentHeightLevel)}"
+                                },
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "所有面板同步生效，切换面板高度始终一致",
+                                text = if (isLiftMode) {
+                                    "按键大小不变，底部留白把键盘整体托高；所有面板同步生效"
+                                } else {
+                                    "按比例拉伸按键高度；所有面板同步生效，切换面板高度始终一致"
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        TextButton(
-                            enabled = currentHeightLevel != KeyboardMetrics.DEFAULT_LEVEL,
-                            onClick = {
-                                repository.updateSettings {
-                                    it.copy(keyboardHeightLevel = KeyboardMetrics.DEFAULT_LEVEL)
-                                }
-                            },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            Text("恢复默认", style = MaterialTheme.typography.labelMedium)
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            KeyboardHeightMode.entries.forEach { mode ->
+                                FilterChip(
+                                    selected = settings.keyboardHeightMode == mode,
+                                    onClick = {
+                                        repository.updateSettings { it.copy(keyboardHeightMode = mode) }
+                                    },
+                                    label = { Text(mode.label, fontSize = 12.sp, maxLines = 1) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                )
+                            }
                         }
                     }
 
@@ -867,16 +885,23 @@ private fun AppearanceAndPreferencesPane(repository: AppRepository) {
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        KeyboardMetrics.ALL_LEVELS.forEach { level ->
-                            val selected = level == currentHeightLevel
+                        val levels = if (isLiftMode) KeyboardMetrics.ALL_LIFT_LEVELS else KeyboardMetrics.ALL_LEVELS
+                        levels.forEach { level ->
+                            val selected = if (isLiftMode) level == currentLiftLevel else level == currentHeightLevel
                             FilterChip(
                                 selected = selected,
                                 onClick = {
-                                    repository.updateSettings { it.copy(keyboardHeightLevel = level) }
+                                    repository.updateSettings {
+                                        if (isLiftMode) it.copy(keyboardLiftLevel = level) else it.copy(keyboardHeightLevel = level)
+                                    }
                                 },
                                 label = {
                                     Text(
-                                        text = KeyboardMetrics.labelForLevel(level),
+                                        text = if (isLiftMode) {
+                                            KeyboardMetrics.labelForLiftLevel(level)
+                                        } else {
+                                            KeyboardMetrics.labelForLevel(level)
+                                        },
                                         fontSize = 12.sp,
                                         maxLines = 1
                                     )

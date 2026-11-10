@@ -80,6 +80,7 @@ import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ClipboardEntry
 import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.InputScheme
+import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.clipboard.ClipboardSmartExtractor
@@ -163,6 +164,8 @@ fun KeyboardScreen(
     onToggleToolPanel: () -> Unit = {},
     onToggleToolPanelHeight: () -> Unit = {},
     onSelectKeyboardHeightLevel: (Int) -> Unit = {},
+    onSelectKeyboardHeightMode: (KeyboardHeightMode) -> Unit = {},
+    onSelectKeyboardLiftLevel: (Int) -> Unit = {},
     onCycleInputScheme: () -> Unit = {},
     onOpenStylePickerFromToolPanel: () -> Unit = {},
     onToggleAiCompletion: () -> Unit = {},
@@ -215,7 +218,8 @@ fun KeyboardScreen(
         // edge-to-edge (`3.dp` side margin) for a balanced ~1.18:1 keycap aspect ratio.
         Box(
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
+                .weight(1f)
                 .then(
                     if (isActiveQwertyGrid) {
                         Modifier.padding(top = 8.dp, bottom = 0.dp)
@@ -386,6 +390,8 @@ fun KeyboardScreen(
                                         onOpenClipboard = onOpenClipboard,
                                         onToggleHeightExpanded = onToggleToolPanelHeight,
                                         onSelectHeightLevel = onSelectKeyboardHeightLevel,
+                                        onSelectHeightMode = onSelectKeyboardHeightMode,
+                                        onSelectLiftLevel = onSelectKeyboardLiftLevel,
                                         onCycleInputScheme = onCycleInputScheme,
                                         onOpenStylePicker = onOpenStylePickerFromToolPanel,
                                         onToggleAiCompletion = onToggleAiCompletion,
@@ -563,6 +569,22 @@ fun KeyboardScreen(
                     onSwitchKeyboard = onSwitchKeyboard
                 )
             }
+        }
+
+        // LIFT mode (垫高): blank bottom cushion that raises every panel without stretching keys.
+        // Consumes taps so the gap never triggers accidental key presses; 0.dp in STRETCH mode.
+        if (metrics.liftHeight > 0.dp) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(metrics.liftHeight)
+                    .background(palette.keyboardCanvas)
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false).consume()
+                        }
+                    }
+            )
         }
     }
 }
@@ -2358,7 +2380,9 @@ private fun HelpMeWritePanel(
                         text = "仅在你点 ✍️ 时读取当前聊天最近几条消息，发送给你配置的 AI 模型生成回复；不保存、不写入历史。",
                         color = palette.keyTextMuted,
                         fontSize = 10.sp,
-                        maxLines = 1,
+                        lineHeight = 13.sp,
+                        // Disclosure must stay fully readable (data destination + no storage): 2 lines.
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }

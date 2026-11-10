@@ -118,6 +118,18 @@ class AppRepository(private val appContext: Context) {
             } else {
                 0
             }
+            val resolvedKeyboardHeightMode: KeyboardHeightMode =
+                if (raw.contains("\"keyboardHeightMode\"")) {
+                    @Suppress("USELESS_ELVIS")
+                    parsed.keyboardHeightMode ?: KeyboardHeightMode.STRETCH
+                } else {
+                    KeyboardHeightMode.STRETCH
+                }
+            val resolvedKeyboardLiftLevel = if (raw.contains("\"keyboardLiftLevel\"")) {
+                parsed.keyboardLiftLevel.coerceIn(0, 4)
+            } else {
+                0
+            }
             val resolvedLiveWriteToEditor = if (raw.contains("\"liveWriteToEditor\"")) {
                 parsed.liveWriteToEditor
             } else {
@@ -229,6 +241,8 @@ class AppRepository(private val appContext: Context) {
                 whisperModeEnabled = resolvedWhisperMode,
                 equalEqualAskAiEnabled = resolvedEqualAskAi,
                 keyboardHeightLevel = resolvedKeyboardHeightLevel,
+                keyboardHeightMode = resolvedKeyboardHeightMode,
+                keyboardLiftLevel = resolvedKeyboardLiftLevel,
                 liveWriteToEditor = resolvedLiveWriteToEditor,
                 inputScheme = resolvedInputScheme,
                 fixedCandidateOrder = resolvedFixedCandidateOrder,

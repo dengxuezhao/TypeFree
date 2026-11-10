@@ -4,6 +4,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.typefree.ime.data.KeyboardHeightMode
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -28,7 +29,12 @@ data class KeyboardMetrics(
     val dividerHeight: Dp,
     val keyAreaHeight: Dp,
     val frameHeight: Dp,
-    val label: String
+    val label: String,
+    /** STRETCH scales the key area; LIFT keeps keys at standard size and adds [liftHeight] at the bottom. */
+    val heightMode: KeyboardHeightMode = KeyboardHeightMode.STRETCH,
+    val liftLevel: Int = 0,
+    /** Blank bottom cushion inside [frameHeight] (0.dp in STRETCH mode and in landscape). */
+    val liftHeight: Dp = 0.dp
 ) {
     companion object {
         const val MIN_LEVEL = -2
@@ -65,15 +71,40 @@ data class KeyboardMetrics(
             else -> "标准"
         }
 
-        fun fromLevel(level: Int, isLandscape: Boolean = false): KeyboardMetrics {
+        // ---------------------------------------------------------------------------------
+        // LIFT mode (垫高): keys keep the standard size; a blank bottom cushion raises the keyboard.
+        // ---------------------------------------------------------------------------------
+        const val MIN_LIFT_LEVEL = 0
+        const val MAX_LIFT_LEVEL = 4
+        const val DEFAULT_LIFT_LEVEL = 0
+        private const val LIFT_STEP_DP = 8
+
+        val ALL_LIFT_LEVELS: List<Int> = listOf(0, 1, 2, 3, 4)
+
+        /** Bottom cushion height for a lift level: 0 / 8 / 16 / 24 / 32 dp. */
+        fun liftDpForLevel(liftLevel: Int): Int =
+            liftLevel.coerceIn(MIN_LIFT_LEVEL, MAX_LIFT_LEVEL) * LIFT_STEP_DP
+
+        fun labelForLiftLevel(liftLevel: Int): String = "${liftDpForLevel(liftLevel)}dp"
+
+        fun fromLevel(
+            level: Int,
+            isLandscape: Boolean = false,
+            heightMode: KeyboardHeightMode = KeyboardHeightMode.STRETCH,
+            liftLevel: Int = DEFAULT_LIFT_LEVEL
+        ): KeyboardMetrics {
             val clamped = level.coerceIn(MIN_LEVEL, MAX_LEVEL)
-            val effectiveScale = if (isLandscape) {
-                SCALE_COMPACT * LANDSCAPE_FACTOR
-            } else {
-                scaleForLevel(clamped)
+            val isLift = heightMode == KeyboardHeightMode.LIFT
+            val effectiveScale = when {
+                isLandscape -> SCALE_COMPACT * LANDSCAPE_FACTOR
+                isLift -> SCALE_STANDARD
+                else -> scaleForLevel(clamped)
             }
+            val clampedLift = liftLevel.coerceIn(MIN_LIFT_LEVEL, MAX_LIFT_LEVEL)
+            // Landscape never adds a cushion: vertical space is already scarce.
+            val liftDp = if (isLift && !isLandscape) liftDpForLevel(clampedLift) else 0
             val keyAreaDp = (BASE_KEY_AREA_DP * effectiveScale).roundToInt()
-            val frameDp = FIXED_CHROME_DP + keyAreaDp
+            val frameDp = FIXED_CHROME_DP + keyAreaDp + liftDp
             return KeyboardMetrics(
                 level = clamped,
                 isLandscape = isLandscape,
@@ -83,7 +114,10 @@ data class KeyboardMetrics(
                 dividerHeight = 1.dp,
                 keyAreaHeight = keyAreaDp.dp,
                 frameHeight = frameDp.dp,
-                label = labelForLevel(clamped)
+                label = if (isLift) "垫高 · ${labelForLiftLevel(clampedLift)}" else labelForLevel(clamped),
+                heightMode = heightMode,
+                liftLevel = clampedLift,
+                liftHeight = liftDp.dp
             )
         }
     }

@@ -95,6 +95,7 @@ import com.typefree.ime.data.DictionarySource
 import com.typefree.ime.data.DiscoveredModelItem
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InputScheme
+import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.LlmConfig
 import com.typefree.ime.data.ModelCapabilitySlot
 import com.typefree.ime.data.ModelProbeResult
@@ -139,6 +140,8 @@ object ApiConfigBackupHelper {
         "whisperModeEnabled",
         "equalEqualAskAiEnabled",
         "keyboardHeightLevel",
+        "keyboardHeightMode",
+        "keyboardLiftLevel",
         "liveWriteToEditor",
         "inputScheme",
         "fixedCandidateOrder",
@@ -611,6 +614,15 @@ object ApiConfigBackupHelper {
                 ?.coerceIn(-2, 2)
                 ?: existingSettings.keyboardHeightLevel
 
+            val mergedHeightMode = rootObj.optString("keyboardHeightMode")?.let { rawMode ->
+                KeyboardHeightMode.entries.firstOrNull { it.name.equals(rawMode, ignoreCase = true) }
+            } ?: existingSettings.keyboardHeightMode
+
+            val mergedLiftLevel = rootObj.optLong("keyboardLiftLevel")
+                ?.toInt()
+                ?.coerceIn(0, 4)
+                ?: existingSettings.keyboardLiftLevel
+
             val mergedInputScheme = rootObj.optString("inputScheme")?.let { rawScheme ->
                 InputScheme.entries.firstOrNull { it.name.equals(rawScheme, ignoreCase = true) }
             } ?: existingSettings.inputScheme
@@ -635,6 +647,8 @@ object ApiConfigBackupHelper {
                 equalEqualAskAiEnabled = rootObj.optBoolean("equalEqualAskAiEnabled")
                     ?: existingSettings.equalEqualAskAiEnabled,
                 keyboardHeightLevel = mergedHeightLevel,
+                keyboardHeightMode = mergedHeightMode,
+                keyboardLiftLevel = mergedLiftLevel,
                 liveWriteToEditor = rootObj.optBoolean("liveWriteToEditor")
                     ?: existingSettings.liveWriteToEditor,
                 inputScheme = mergedInputScheme,

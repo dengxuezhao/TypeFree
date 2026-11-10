@@ -1375,7 +1375,7 @@ class VoiceController(
         }
         val composer = activeComposer ?: return
         if (!composer.isActive) return
-        composer.onUpdateSelection(newSelStart, newSelEnd)
+        composer.onUpdateSelection(newSelStart, newSelEnd, candidatesStart, candidatesEnd)
         val nextUiStatus = composer.uiStatus
         if (host.stateFlow.value.liveWriteStatus != nextUiStatus) {
             host.stateFlow.update { it.copy(liveWriteStatus = nextUiStatus) }
