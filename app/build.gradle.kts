@@ -7,13 +7,17 @@ plugins {
 android {
     namespace = "com.typefree.ime"
     compileSdk = 35
+    ndkVersion = "26.1.10909125"
+
+    val usePrivateDict = project.findProperty("usePrivateDict") == "true"
 
     defaultConfig {
         applicationId = "com.typefree.ime"
         minSdk = 26
         targetSdk = 35
-        versionCode = 12
-        versionName = "2.6.1"
+        versionCode = 13
+        versionName = "2.7.0"
+        buildConfigField("boolean", "USE_PRIVATE_DICT", usePrivateDict.toString())
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -55,7 +59,6 @@ android {
         }
     }
 
-    val usePrivateDict = project.findProperty("usePrivateDict") == "true"
     val privateDictDir = rootProject.file("local_private")
     val stagedPrivateAssetsDir = layout.buildDirectory.dir("generated/privateDictAssets")
 

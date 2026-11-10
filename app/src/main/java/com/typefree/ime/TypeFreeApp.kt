@@ -66,7 +66,7 @@ class TypeFreeApp : Application() {
                 if (state is RimeDeploymentState.Ready) {
                     Log.i(
                         "TypeFreeRime",
-                        "Rime deployed in background: words=${state.wordCount}, schema=${state.activeSchemaId}, full=${state.hasFullRimeIce}"
+                        "librime(${rimeDataManager.rimeBridge.getVersion()}) deployed in background: words=${state.wordCount}, schema=${state.activeSchemaId}, full=${state.hasFullRimeIce}, durationMs=${state.deployDurationMs}"
                     )
                 }
             } catch (e: Exception) {

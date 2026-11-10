@@ -1,9 +1,62 @@
 # Rime default settings for TypeFree v2.7
-config_version: "1.0"
+# encoding: utf-8
+
+config_version: "2026-06-30"
 
 schema_list:
   - schema: rime_ice
   - schema: double_pinyin_flypy
 
+switcher:
+  caption: "〔方案选单〕"
+  hotkeys:
+    - F4
+  save_options:
+    - ascii_punct
+    - traditionalization
+    - emoji
+    - full_shape
+
 menu:
   page_size: 9
+
+punctuator:
+  half_shape:
+    ',' : '，'
+    '.' : '。'
+    '<' : '《'
+    '>' : '》'
+    '/' : '、'
+    '?' : '？'
+    ';' : '；'
+    ':' : '：'
+    '''' : { pair: [ '‘', '’' ] }
+    '"' : { pair: [ '“', '”' ] }
+    '\' : '、'
+    '|' : '·'
+    '`' : '`'
+    '~' : '～'
+    '!' : '！'
+    '@' : '@'
+    '#' : '#'
+    '%' : '%'
+    '$' : '¥'
+    '^' : '……'
+    '&' : '&'
+    '*' : '*'
+    '(' : '（'
+    ')' : '）'
+    '[' : '【'
+    ']' : '】'
+    '{' : '「'
+    '}' : '」'
+
+key_binder:
+  bindings:
+    - { when: paging, accept: minus, send: Page_Up }
+    - { when: has_menu, accept: equal, send: Page_Down }
+
+recognizer:
+  patterns:
+    email: "^[A-Za-z][-_.0-9A-Za-z]*@.*$"
+    url: "^(www[.]|https?:|ftp[.:]|mailto:|file:).*$|^[a-z]+[.][a-z]+[.].*$"

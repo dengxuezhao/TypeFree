@@ -1593,27 +1593,30 @@ private fun VoiceMainPanel(
             }
         }
 
-        Text(
-            text = topSubtitle,
-            color = when {
-                phase is VoicePhase.SuccessToast -> TypeFreeEmerald
-                isTranslateRecording -> TypeFreeEmerald
-                phase is VoicePhase.Recording && uiState.liveWriteStatus == LiveWriteUiStatus.WRITING -> TypeFreeEmerald
-                else -> palette.keyTextMuted
-            },
-            fontSize = 12.5.sp,
-            fontWeight = if (phase is VoicePhase.Recording || phase is VoicePhase.SuccessToast) {
-                FontWeight.SemiBold
-            } else {
-                FontWeight.Normal
-            },
-            fontFamily = if (phase is VoicePhase.Recording) FontFamily.Monospace else FontFamily.Default,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = (4f * s).dp)
-        )
+        val isTopOverlayExpanded = uiState.isStylePickerExpanded || phase is VoicePhase.Error
+        if (!isTopOverlayExpanded) {
+            Text(
+                text = topSubtitle,
+                color = when {
+                    phase is VoicePhase.SuccessToast -> TypeFreeEmerald
+                    isTranslateRecording -> TypeFreeEmerald
+                    phase is VoicePhase.Recording && uiState.liveWriteStatus == LiveWriteUiStatus.WRITING -> TypeFreeEmerald
+                    else -> palette.keyTextMuted
+                },
+                fontSize = 12.5.sp,
+                fontWeight = if (phase is VoicePhase.Recording || phase is VoicePhase.SuccessToast) {
+                    FontWeight.SemiBold
+                } else {
+                    FontWeight.Normal
+                },
+                fontFamily = if (phase is VoicePhase.Recording) FontFamily.Monospace else FontFamily.Default,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = (4f * s).dp)
+            )
+        }
 
         // 2. Stationary Gesture Anchor for Center Primary Mic Capsule <-> 84.dp Recording Circle
         val micButtonWidth by animateDpAsState(
@@ -1816,37 +1819,39 @@ private fun VoiceMainPanel(
                 }
             }
         } else {
-            // Top-Right Compact Whisper AGC Toggle Pill (`🤫 轻声`)
-            val whisperOn = settings.whisperModeEnabled
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = (28f * s).dp)
-                    .height((26f * s).dp)
-                    .clip(RoundedCornerShape((13f * s).dp))
-                    .background(
-                        if (whisperOn) TypeFreeEmerald.copy(alpha = 0.16f) else palette.keyCapBg
+            // Top-Right Compact Whisper AGC Toggle Pill (`🤫 轻声`) — hidden when style/error top overlay is expanded
+            if (!isTopOverlayExpanded) {
+                val whisperOn = settings.whisperModeEnabled
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = (28f * s).dp)
+                        .height((26f * s).dp)
+                        .clip(RoundedCornerShape((13f * s).dp))
+                        .background(
+                            if (whisperOn) TypeFreeEmerald.copy(alpha = 0.16f) else palette.keyCapBg
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = if (whisperOn) TypeFreeEmerald.copy(alpha = 0.55f) else palette.keyBorder,
+                            shape = RoundedCornerShape((13f * s).dp)
+                        )
+                        .clickable(onClick = onToggleWhisperMode)
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = if (whisperOn) "🤫 轻声开" else "🤫 轻声",
+                        color = if (whisperOn) {
+                            if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+                        } else {
+                            palette.keyTextMuted
+                        },
+                        fontSize = 11.sp,
+                        fontWeight = if (whisperOn) FontWeight.Bold else FontWeight.Medium,
+                        maxLines = 1
                     )
-                    .border(
-                        width = 1.dp,
-                        color = if (whisperOn) TypeFreeEmerald.copy(alpha = 0.55f) else palette.keyBorder,
-                        shape = RoundedCornerShape((13f * s).dp)
-                    )
-                    .clickable(onClick = onToggleWhisperMode)
-                    .padding(horizontal = 8.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = if (whisperOn) "🤫 轻声开" else "🤫 轻声",
-                    color = if (whisperOn) {
-                        if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
-                    } else {
-                        palette.keyTextMuted
-                    },
-                    fontSize = 11.sp,
-                    fontWeight = if (whisperOn) FontWeight.Bold else FontWeight.Medium,
-                    maxLines = 1
-                )
+                }
             }
 
             // Optional Quick Punctuation Floating Strip (toggled by `@` circle key)

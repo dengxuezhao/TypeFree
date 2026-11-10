@@ -567,7 +567,8 @@ fun DictionaryScreen(repository: AppRepository) {
                             is RimeDeploymentState.Ready -> {
                                 val tier = if (st.hasFullRimeIce) "完整雾凇词库" else "内置精简词库"
                                 val customSuffix = st.customSchemaName?.let { " · $it" }.orEmpty()
-                                "Rime 就绪：$tier (${st.wordCount} 词条)$customSuffix"
+                                val timeSuffix = if (st.deployDurationMs > 0L) " · ${st.deployDurationMs}ms" else ""
+                                "Rime 就绪：$tier (${st.wordCount} 词条$timeSuffix)$customSuffix"
                             }
                             is RimeDeploymentState.Error -> "Rime 状态：${st.message}"
                         }

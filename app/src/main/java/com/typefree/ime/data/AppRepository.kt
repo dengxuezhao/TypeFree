@@ -123,7 +123,7 @@ class AppRepository(private val appContext: Context) {
             } else {
                 false
             }
-            // 新用户默认 Rime 全拼；老用户升级（存在旧 JSON 但无 inputScheme 字段）保持 FLYPY_TABLE
+            // 新用户默认 Rime 全拼 (真实 librime 1.17.0)；老用户升级（存在旧 JSON 但无 inputScheme 字段）保持 FLYPY_TABLE
             val resolvedInputScheme = if (raw.contains("\"inputScheme\"")) {
                 parsed.inputScheme ?: InputScheme.RIME_PINYIN
             } else {

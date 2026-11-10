@@ -17,7 +17,8 @@ android {
 
         externalNativeBuild {
             cmake {
-                cppFlags += listOf("-std=c++17", "-O2", "-fvisibility=hidden")
+                cppFlags += listOf("-std=c++17", "-O2")
+                targets("rime", "rime_jni")
             }
         }
     }

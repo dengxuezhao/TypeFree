@@ -419,7 +419,7 @@ data class AppSettings(
     val equalEqualAskAiEnabled: Boolean = true,
     val keyboardHeightLevel: Int = 0, // -2..+2，0 = 标准 298dp
     val liveWriteToEditor: Boolean = false, // 实时写入输入框
-    val inputScheme: InputScheme = InputScheme.RIME_PINYIN, // 新用户默认全拼；老用户升级保持 FLYPY_TABLE
+    val inputScheme: InputScheme = if (com.typefree.ime.BuildConfig.USE_PRIVATE_DICT) InputScheme.FLYPY_TABLE else InputScheme.RIME_PINYIN, // 音形专享版或老用户升级默认 FLYPY_TABLE；标准版新装默认 RIME_PINYIN (真实 librime 1.17.0)
     val fixedCandidateOrder: Boolean? = null, // null = 按方案自动
     val predictionEnabled: Boolean = true,
     val aiCompletionEnabled: Boolean = false,

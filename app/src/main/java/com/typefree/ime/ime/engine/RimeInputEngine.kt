@@ -4,22 +4,23 @@ import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.SnippetEntry
 import com.typefree.ime.ime.flypy.FlypyCandidate
 import com.typefree.rime.RimeBridge
+import com.typefree.rime.RimeSessionClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * [InputEngine] implementation backed by `:rime` ([RimeBridge]) supporting:
+ * [InputEngine] implementation backed by `:rime` ([RimeSessionClient] / [RimeBridge]) supporting:
  * - [InputScheme.RIME_PINYIN] (`rime_ice`, 雾凇全拼整句)
  * - [InputScheme.RIME_DOUBLE_PINYIN_FLYPY] (`double_pinyin_flypy`, 小鹤双拼整句)
  * - [InputScheme.RIME_CUSTOM] (`custom`, 用户导入的 Rime 方案包)
  *
  * Shares [CandidateMerger] with [FlypyInputEngine] so custom snippets (`;sd`, `;yx`, etc.),
  * dynamic date/time/weekday commands (`orq`, `ouj`, `oxq`), `;x` quick symbols (`;q -> ：“`),
- * and `;f` repeat commit behave identically across all input schemes without requiring librime-lua.
+ * and `;f` repeat commit behave identically across all input schemes.
  */
 class RimeInputEngine(
-    val rimeBridge: RimeBridge = RimeBridge(),
+    val rimeBridge: RimeSessionClient = RimeBridge(),
     initialScheme: InputScheme = InputScheme.RIME_PINYIN
 ) : InputEngine {
 
@@ -69,6 +70,13 @@ class RimeInputEngine(
     private fun applySchemeToBridge(scheme: InputScheme) {
         val targetSchema = resolveSchemaId(scheme)
         rimeBridge.selectSchema(targetSchema)
+        applySessionOptions()
+    }
+
+    private fun applySessionOptions() {
+        rimeBridge.setOption("_incognito", isIncognito)
+        rimeBridge.setOption("enable_user_dict", !isIncognito)
+        rimeBridge.setOption("fixed_candidate_order", isFixedCandidateOrder)
     }
 
     override fun updateSnippets(snippets: List<SnippetEntry>, nowMillis: Long) {
@@ -111,10 +119,6 @@ class RimeInputEngine(
         }
     }
 
-    fun learnCustomPhrase(pinyinKey: String, word: String): Boolean {
-        return rimeBridge.learnWord(pinyinKey, word)
-    }
-
     override fun onKey(key: KeyInput): EngineResult {
         return when (key) {
             is KeyInput.CharKey -> onCharInput(key.char, key.nowMillis)
@@ -133,7 +137,18 @@ class RimeInputEngine(
                 CandidateMerger.dynamicCommandCandidates(currentRawCode).size
             val rimeIdx = index - prefixCount
             if (rimeIdx >= 0) {
-                rimeBridge.selectCandidate(rimeIdx)
+                val committed = rimeBridge.selectCandidate(rimeIdx)
+                val afterCtx = rimeBridge.getContext(currentMaxCandidates)
+                if (committed == null && afterCtx.rawInput.isNotEmpty() && afterCtx.candidates.isNotEmpty()) {
+                    // Partial segment selection in multi-syllable composition: stay composing remaining syllables
+                    currentRawCode = afterCtx.rawInput
+                    syncState()
+                    return EngineResult.Consumed
+                }
+                val finalOut = committed?.takeIf { it.isNotEmpty() } ?: picked.text
+                clear()
+                lastCommittedText = finalOut
+                return EngineResult.Commit(finalOut, remainComposing = false)
             }
         }
         clear()
@@ -153,8 +168,18 @@ class RimeInputEngine(
         if (currentRawCode.isEmpty()) return ""
         val cands = _state.value.candidates
         if (cands.isNotEmpty()) {
-            val res = select(0)
-            return (res as? EngineResult.Commit)?.text.orEmpty()
+            if (!currentRawCode.startsWith(";")) {
+                val committed = rimeBridge.commitComposition()
+                if (!committed.isNullOrEmpty()) {
+                    clear()
+                    lastCommittedText = committed
+                    return committed
+                }
+            }
+            val firstText = cands.first().text
+            clear()
+            lastCommittedText = firstText
+            return firstText
         }
         val raw = currentRawCode
         clear()
@@ -259,6 +284,15 @@ class RimeInputEngine(
             }
             currentRawCode += ch
             rimeBridge.processKey(ch.code, 0)
+            val autoCommit = rimeBridge.getCommit()
+            if (!autoCommit.isNullOrEmpty()) {
+                val afterCtx = rimeBridge.getContext(currentMaxCandidates)
+                if (afterCtx.rawInput.isEmpty()) {
+                    clear()
+                    lastCommittedText = autoCommit
+                    return EngineResult.Commit(autoCommit, remainComposing = false)
+                }
+            }
             syncState(nowMillis)
             return EngineResult.Consumed
         }
@@ -274,13 +308,23 @@ class RimeInputEngine(
 
     private fun onBackspace(nowMillis: Long): EngineResult {
         if (currentRawCode.isEmpty()) return EngineResult.PassThrough
-        currentRawCode = currentRawCode.dropLast(1)
-        if (currentRawCode.isEmpty()) {
+        if (currentRawCode.startsWith(";")) {
+            currentRawCode = currentRawCode.dropLast(1)
+            if (currentRawCode.isEmpty()) {
+                clear()
+            } else {
+                syncState(nowMillis)
+            }
+            return EngineResult.Consumed
+        }
+
+        rimeBridge.processKey(RimeBridge.XK_BackSpace, 0)
+        val afterCtx = rimeBridge.getContext(currentMaxCandidates)
+        val nextRaw = afterCtx.rawInput.ifEmpty { currentRawCode.dropLast(1) }
+        if (nextRaw.isEmpty() && afterCtx.preedit.isEmpty()) {
             clear()
         } else {
-            if (!currentRawCode.startsWith(";")) {
-                rimeBridge.processKey(RimeBridge.KEY_BACKSPACE, 0)
-            }
+            currentRawCode = nextRaw
             syncState(nowMillis)
         }
         return EngineResult.Consumed
@@ -327,8 +371,7 @@ class RimeInputEngine(
             }
         }
 
-        val firstRes = select(0)
-        val firstText = (firstRes as? EngineResult.Commit)?.text.orEmpty()
+        val firstText = flush()
         val topUp = firstText + cnPunct
         lastCommittedText = topUp
         return EngineResult.Commit(topUp, remainComposing = false)

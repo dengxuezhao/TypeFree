@@ -1,22 +1,102 @@
-# Rime schema: rime_ice (雾凇拼音全拼)
+# Rime schema - 雾凇拼音 (iDvel/rime-ice tag 2026.06.30)
+# encoding: utf-8
+
 schema:
   schema_id: rime_ice
   name: 雾凇拼音
-  version: "2.7.0"
+  version: "2026-06-30"
+  author:
+    - Dvel
   description: |
-    TypeFree 内置雾凇拼音（全拼整句 + 动态调频 + 自造词）
+    雾凇拼音 (rime-ice)
+    https://github.com/iDvel/rime-ice
 
 switches:
   - name: ascii_mode
     reset: 0
-    states: [ 中文, 英文 ]
+    states: [ 中, Ａ ]
+  - name: ascii_punct
+    reset: 0
+    states: [ ¥, $ ]
+  - name: traditionalization
+    reset: 0
+    states: [ 简, 繁 ]
 
-speller:
-  alphabet: zyxwvutsrqponmlkjihgfedcba
-  delimiter: " '"
+engine:
+  processors:
+    - predictor
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - predict_translator
+    - punct_translator
+    - script_translator
+  filters:
+    - uniquifier
+
+predictor:
+  db: predict.db
+  max_candidates: 8
+  max_iterations: 1
 
 translator:
   dictionary: rime_ice
   enable_user_dict: true
-  enable_sentence: true
+  enable_word_completion: true
   enable_completion: true
+  enable_sentence: true
+  max_sentences: 1
+  initial_quality: 1.2
+  preedit_format:
+    - xform/([jqxy])v/$1u/
+    - xform/([nl])v/$1v/
+    - xform/([nl])ue/$1ve/
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA`
+  initials: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA
+  delimiter: " '"
+  algebra:
+    - erase/^hm$/
+    - erase/^m$/
+    - erase/^n$/
+    - erase/^ng$/
+    - abbrev/^([a-z]).+$/$1/
+    - abbrev/^([zcs]h).+$/$1/
+    - derive/^([nl])ve$/$1ue/
+    - derive/^([jqxy])u/$1v/
+    - derive/^([nl])ue$/$1ve/
+    - derive/^([jqxy])v/$1u/
+    - derive/([zcs])h(a|e|i|u|ai|ei|an|en|ou|uo|ua|un|ui|uan|uai|uang|ang|eng|ong)$/h$1$2/
+    - derive/([zcs])h([aeiu])$/$1$2h/
+    - derive/^([wghk])ai$/$1ia/
+    - derive/([wfghkz])ei$/$1ie/
+    - derive/([jqx])ie$/$1ei/
+    - derive/([rtypsdghklzcbnm])ao$/$1oa/
+    - derive/([ypfm])ou$/$1uo/
+    - derive/([wrtypsdfghklzcbnm])ang$/$1nag/
+    - derive/([wrtypsdfghklzcbnm])eng$/$1neg/
+    - derive/([qtypdjlxbnm])ing$/$1nig/
+    - derive/([rtysdghklzcn])ong$/$1nog/
+    - derive/([jqx])iong$/$1inog/
+
+punctuator:
+  import_preset: default
+
+key_binder:
+  import_preset: default
+
+recognizer:
+  import_preset: default

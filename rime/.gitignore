@@ -1,0 +1,11 @@
+# Downloaded upstream C++ source trees (fetched reproducibly via fetch_librime_deps.sh)
+src/main/cpp/librime/
+src/main/cpp/snappy/
+src/main/cpp/librime-lua/
+src/main/cpp/librime-lua-deps/
+src/main/cpp/librime-octagram/
+src/main/cpp/librime-predict/
+src/main/cpp/boost/
+src/main/cpp/*.tar.*
+.cxx/
+build/

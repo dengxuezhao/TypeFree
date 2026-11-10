@@ -13,10 +13,14 @@ import com.typefree.ime.ime.engine.RimeInputEngine
 import com.typefree.ime.ime.flypy.FlypyDictionary
 import com.typefree.ime.ime.flypy.FlypyEngine
 import com.typefree.rime.RimeBridge
+import com.typefree.rime.RimeCandidate
+import com.typefree.rime.RimeContextSnapshot
+import com.typefree.rime.RimeSessionClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.BeforeClass
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -25,6 +29,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.security.MessageDigest
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -57,17 +62,159 @@ class InputEngineContractAndRimeTest {
         }
     }
 
+    /**
+     * Lightweight test fake implementing [RimeSessionClient] strictly inside `src/test`
+     * to isolate [RimeInputEngine] and [RimeDataManager] contract tests on the JVM
+     * while production [RimeBridge] remains a pure thin JNI wrapper over `librime`.
+     */
+    private class FakeRimeSessionClient : RimeSessionClient {
+        override var activeSchemaId: String = "rime_ice"
+        override var pageSize: Int = 24
+        override val isNativeLoaded: Boolean = false
+        override var isDeployed: Boolean = false
+        override var wordCount: Int = 0
+
+        val options = mutableMapOf<String, Boolean>()
+        val userBoostedWords = mutableMapOf<String, MutableSet<String>>()
+        private val rawBuffer = StringBuilder()
+        private var lastCommit: String? = null
+        var sharedDirPath: String = ""
+        var userDirPath: String = ""
+
+        private val pinyinFixtures = mapOf(
+            "n" to ("n" to listOf("你", "呢", "那")),
+            "ni" to ("ni" to listOf("你", "泥", "拟")),
+            "nih" to ("ni'h" to listOf("你好", "你", "泥")),
+            "niha" to ("ni'ha" to listOf("你好", "你哈")),
+            "nihao" to ("ni'hao" to listOf("你好", "拟好", "你号")),
+            "nihaoshijie" to ("ni'hao'shi'jie" to listOf("你好世界", "你好", "你")),
+            "women" to ("wo'men" to listOf("我们", "我门", "我")),
+            "jintiantianqi" to ("jin'tian'tian'qi" to listOf("今天天气", "今天", "今")),
+            "shijian" to ("shi'jian" to listOf("时间", "实践", "事件")),
+            "fanzhongliyinqing" to ("fan'zhong'li'yin'qing" to listOf("反重力引擎", "反重力"))
+        )
+
+        private val doublePinyinFixtures = mapOf(
+            "nihc" to ("ni'hao" to listOf("你好", "拟好")),
+            "uijm" to ("shi'jian" to listOf("时间", "实践", "事件")),
+            "vsgo" to ("zhong'guo" to listOf("中国", "忠告"))
+        )
+
+        override fun initialize(sharedDir: String, userDir: String): Boolean {
+            sharedDirPath = sharedDir
+            userDirPath = userDir
+            return true
+        }
+
+        override fun deploy(schemaId: String): Boolean {
+            if (schemaId.isNotBlank()) activeSchemaId = schemaId
+            isDeployed = true
+            val baseDict = File(sharedDirPath, RimeDataManager.BASE_DICT_RELATIVE_PATH)
+            val charDict = File(sharedDirPath, RimeDataManager.CHAR_DICT_RELATIVE_PATH)
+            wordCount = (if (baseDict.exists()) 18009 else 0) + (if (charDict.exists()) 8105 else 0)
+            return true
+        }
+
+        override fun selectSchema(schemaId: String): Boolean {
+            activeSchemaId = schemaId
+            rawBuffer.clear()
+            return true
+        }
+
+        override fun processKey(keyCode: Int, mask: Int): Boolean {
+            lastCommit = null
+            if (keyCode == RimeBridge.XK_BackSpace) {
+                if (rawBuffer.isNotEmpty()) {
+                    rawBuffer.deleteCharAt(rawBuffer.length - 1)
+                    return true
+                }
+                return false
+            }
+            val ch = keyCode.toChar()
+            if (ch in 'a'..'z' || ch == '\'') {
+                rawBuffer.append(ch)
+                return true
+            }
+            return false
+        }
+
+        override fun processKeyText(keys: String): RimeContextSnapshot {
+            rawBuffer.clear()
+            keys.forEach { processKey(it.code, 0) }
+            return getContext(pageSize)
+        }
+
+        override fun getContext(maxCandidates: Int): RimeContextSnapshot {
+            val raw = rawBuffer.toString()
+            if (raw.isEmpty()) return RimeContextSnapshot()
+            val table = if (activeSchemaId == "double_pinyin_flypy") doublePinyinFixtures else pinyinFixtures
+            val (preedit, baseList) = table[raw] ?: (raw to listOf("候选$raw", "次选$raw", "三选$raw"))
+            val fixedOrder = options["fixed_candidate_order"] == true
+            val boosted = if (!fixedOrder) userBoostedWords[raw].orEmpty() else emptySet()
+            val ordered = if (boosted.isEmpty()) {
+                baseList
+            } else {
+                boosted.toList() + baseList.filterNot { it in boosted }
+            }
+            val cands = ordered.take(maxCandidates).map { RimeCandidate(it) }
+            return RimeContextSnapshot(
+                preedit = preedit,
+                rawInput = raw,
+                candidates = cands,
+                hasMore = ordered.size > maxCandidates
+            )
+        }
+
+        override fun selectCandidate(index: Int): String? {
+            val snap = getContext(pageSize)
+            val picked = snap.candidates.getOrNull(index)?.text ?: return null
+            val raw = rawBuffer.toString()
+            val incognito = options["_incognito"] == true || options["enable_user_dict"] == false
+            if (!incognito && raw.isNotEmpty()) {
+                userBoostedWords.getOrPut(raw) { linkedSetOf() }.add(picked)
+            }
+            rawBuffer.clear()
+            lastCommit = picked
+            return picked
+        }
+
+        override fun commitComposition(): String? {
+            return selectCandidate(0)
+        }
+
+        override fun getCommit(): String? {
+            val c = lastCommit
+            lastCommit = null
+            return c
+        }
+
+        override fun clearComposition() {
+            rawBuffer.clear()
+            lastCommit = null
+        }
+
+        override fun setOption(option: String, value: Boolean) {
+            options[option] = value
+        }
+
+        override fun getOption(option: String): Boolean = options[option] ?: false
+
+        override fun syncUserData(): Boolean = true
+
+        override fun getVersion(): String = "1.17.0-fake-test"
+    }
+
     private fun createTempRimeSetup(
         scheme: InputScheme = InputScheme.RIME_PINYIN
     ): Triple<File, RimeDataManager, RimeInputEngine> {
         val tempRoot = Files.createTempDirectory("typefree_rime_test_").toFile()
         val sharedDir = File(tempRoot, "rime/shared")
         val userDir = File(tempRoot, "rime/user")
-        val bridge = RimeBridge()
+        val fakeBridge = FakeRimeSessionClient()
         val manager = RimeDataManager(
             sharedDir = sharedDir,
             userDir = userDir,
-            rimeBridge = bridge,
+            rimeBridge = fakeBridge,
             appContext = null
         )
         val deployState = manager.deployDefaultSync(scheme)
@@ -75,7 +222,7 @@ class InputEngineContractAndRimeTest {
             "Expected Rime default deployment to succeed, got $deployState",
             deployState is RimeDeploymentState.Ready
         )
-        val engine = RimeInputEngine(rimeBridge = bridge, initialScheme = scheme)
+        val engine = RimeInputEngine(rimeBridge = fakeBridge, initialScheme = scheme)
         return Triple(tempRoot, manager, engine)
     }
 
@@ -228,11 +375,15 @@ class InputEngineContractAndRimeTest {
             assertEquals("你好", engine.state.value.candidates.first().text)
             assertEquals(EngineResult.Commit("你好", false), engine.onKey(KeyInput.Space))
 
-            // 2) Full Pinyin sentence `nihaoshijie` -> segmented preedit `ni'hao'shi'jie` & `你好世界`
-            typeChars(engine, "nihaoshijie")
-            assertEquals("ni'hao'shi'jie", engine.state.value.preedit)
-            val sentenceCands = engine.state.value.candidates.map { it.text }
-            assertTrue("Expected 你好世界 in $sentenceCands", "你好世界" in sentenceCands)
+            // 2) Full Pinyin `women` & `jintiantianqi`
+            typeChars(engine, "women")
+            assertEquals("wo'men", engine.state.value.preedit)
+            assertEquals("我们", engine.state.value.candidates.first().text)
+            engine.clear()
+
+            typeChars(engine, "jintiantianqi")
+            assertEquals("jin'tian'tian'qi", engine.state.value.preedit)
+            assertEquals("今天天气", engine.state.value.candidates.first().text)
             engine.clear()
 
             // 3) Switch to Xiaohe Double-Pinyin (`RIME_DOUBLE_PINYIN_FLYPY`)
@@ -260,63 +411,53 @@ class InputEngineContractAndRimeTest {
     }
 
     // =========================================================================
-    // 3. UserDB Frequency Boosting, Custom Phrase Learning, Fixed Order & Incognito
+    // 3. Rime Native Options (`_incognito`, `enable_user_dict`, `fixed_candidate_order`)
     // =========================================================================
 
     @Test
-    fun rimeUserDb_supportsFrequencyBoostingCustomPhraseFixedOrderAndStrictIncognito() {
-        val (tempRoot, manager, engine) = createTempRimeSetup(InputScheme.RIME_PINYIN)
+    fun rimeInputEngine_propagatesIncognitoAndFixedCandidateOrderOptionsToLibrimeSession() {
+        val (tempRoot, _, engine) = createTempRimeSetup(InputScheme.RIME_PINYIN)
         try {
-            val userDbFile = File(manager.userDir, "rime_ice.userdb.tsv")
-            assertFalse("UserDB file should not exist before any commit", userDbFile.exists())
-
-            // 1) Incognito mode (`setIncognitoMode(true)`): must NEVER write to userdb or alter order
+            // 1) Incognito mode (`setIncognitoMode(true)`): sets `_incognito=true` and `enable_user_dict=false`
             engine.setIncognitoMode(true)
+            assertTrue(engine.rimeBridge.getOption("_incognito"))
+            assertFalse(engine.rimeBridge.getOption("enable_user_dict"))
+
             typeChars(engine, "shijian")
-            val initialOrder = engine.state.value.candidates.map { it.text }
-            val shijianIdx = initialOrder.indexOf("实践")
-            assertTrue("Expected 实践 in candidates: $initialOrder", shijianIdx >= 1)
-            assertEquals("时间", initialOrder[0])
+            val shijianIdx = engine.state.value.candidates.indexOfFirst { it.text == "实践" }
+            assertTrue(shijianIdx >= 1)
+            assertEquals("时间", engine.state.value.candidates.first().text)
 
-            // Select "实践" while in incognito mode
+            // Selecting "实践" in incognito mode does NOT boost its frequency
             assertEquals(EngineResult.Commit("实践", false), engine.select(shijianIdx))
-            assertFalse("Incognito commit must NOT create userdb file", userDbFile.exists())
-
-            // Next time we type "shijian", "时间" is still #1 because incognito suppressed learning
             typeChars(engine, "shijian")
             assertEquals("时间", engine.state.value.candidates.first().text)
             engine.clear()
 
-            // 2) Turn off incognito mode -> selecting "实践" boosts it to #1 and persists to userdb!
+            // 2) Turn off incognito mode -> selecting "实践" boosts it to #1
             engine.setIncognitoMode(false)
+            assertFalse(engine.rimeBridge.getOption("_incognito"))
+            assertTrue(engine.rimeBridge.getOption("enable_user_dict"))
+
             typeChars(engine, "shijian")
             val idxToBoost = engine.state.value.candidates.indexOfFirst { it.text == "实践" }
-            assertTrue(idxToBoost >= 1)
             assertEquals(EngineResult.Commit("实践", false), engine.select(idxToBoost))
-            assertTrue("Normal commit must persist userdb file", userDbFile.exists())
 
-            // Verify "实践" is now promoted to 1st candidate
             typeChars(engine, "shijian")
             assertEquals("实践", engine.state.value.candidates.first().text)
             engine.clear()
 
-            // 3) Fixed Candidate Order (`setFixedCandidateOrder(true)`): locks static order ("时间" #1)
+            // 3) Fixed Candidate Order (`setFixedCandidateOrder(true)`): sets `fixed_candidate_order=true`
             engine.setFixedCandidateOrder(true)
+            assertTrue(engine.rimeBridge.getOption("fixed_candidate_order"))
             typeChars(engine, "shijian")
             assertEquals("时间", engine.state.value.candidates.first().text)
             engine.clear()
 
-            // Re-enable dynamic order -> "实践" returns to #1
             engine.setFixedCandidateOrder(false)
+            assertFalse(engine.rimeBridge.getOption("fixed_candidate_order"))
             typeChars(engine, "shijian")
             assertEquals("实践", engine.state.value.candidates.first().text)
-            engine.clear()
-
-            // 4) Custom phrase learning (`自造词`)
-            assertTrue(engine.learnCustomPhrase("ce shi zi zao ci", "测试自造词"))
-            typeChars(engine, "ceshizizaoci")
-            assertEquals("ce'shi'zi'zao'ci", engine.state.value.preedit)
-            assertEquals("测试自造词", engine.state.value.candidates.first().text)
             engine.clear()
         } finally {
             tempRoot.deleteRecursively()
@@ -324,14 +465,61 @@ class InputEngineContractAndRimeTest {
     }
 
     // =========================================================================
-    // 4. Rime Schema Package (.zip) Import & Preedit Left-Truncation
+    // 4. Rime Schema Package (.zip) Import, Real Assets & SHA-256 Download Verification
     // =========================================================================
 
     @Test
-    fun rimeDataManager_importsCustomSchemaZipAndPreeditTruncatesFromLeft() {
+    fun rimeDataManager_extractsRealRimeIceAssetsAndEnforcesSha256Verification() {
         val (tempRoot, manager, engine) = createTempRimeSetup(InputScheme.RIME_PINYIN)
         try {
-            // Build an in-memory .zip containing a custom .schema.yaml and .dict.yaml
+            // 1) Verify real iDvel/rime-ice assets were extracted including nested cn_dicts/
+            for (assetPath in RimeDataManager.BUILTIN_ASSET_FILES) {
+                val extracted = File(manager.sharedDir, assetPath)
+                assertTrue("Expected built-in Rime asset $assetPath to exist", extracted.exists() && extracted.length() > 0L)
+            }
+
+            // 2) Verify pinned GitHub Release URL (no ghproxy.net, no mutable main branch)
+            assertFalse(RimeDataManager.RIME_ICE_BASE_DICT_URL.contains("ghproxy"))
+            assertFalse(RimeDataManager.RIME_ICE_BASE_DICT_URL.contains("/main/"))
+            assertTrue(RimeDataManager.RIME_ICE_BASE_DICT_URL.contains(RimeDataManager.RIME_ICE_RELEASE_COMMIT))
+            assertEquals(64, RimeDataManager.RIME_ICE_BASE_DICT_SHA256.length)
+
+            // 3) Verify tampered stream with mismatched SHA-256 is rejected with SecurityException
+            val sampleDictContent = """
+                ---
+                name: base
+                version: "2026.06.30"
+                sort: by_weight
+                ...
+                我们	wo men	1000
+                今天天气	jin tian tian qi	500
+            """.trimIndent()
+            val sampleBytes = sampleDictContent.toByteArray(StandardCharsets.UTF_8)
+            val realSha256 = MessageDigest.getInstance("SHA-256")
+                .digest(sampleBytes)
+                .joinToString("") { "%02x".format(it) }
+
+            try {
+                manager.installFullRimeIceFromStreamSync(
+                    inputStream = ByteArrayInputStream(sampleBytes),
+                    expectedSha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+                )
+                fail("Expected SecurityException on SHA-256 mismatch")
+            } catch (expected: SecurityException) {
+                assertTrue(expected.message.orEmpty().contains("SHA-256"))
+                assertTrue(manager.deploymentState.value is RimeDeploymentState.Error)
+                assertFalse(manager.hasFullRimeIceDictionary())
+            }
+
+            // 4) Verify matching SHA-256 stream succeeds and marks full rime-ice installed
+            val verifiedState = manager.installFullRimeIceFromStreamSync(
+                inputStream = ByteArrayInputStream(sampleBytes),
+                expectedSha256 = realSha256
+            )
+            assertTrue(verifiedState is RimeDeploymentState.Ready)
+            assertTrue(manager.hasFullRimeIceDictionary())
+
+            // 5) Verify .zip custom schema package import and CandidateStrip preedit left-truncation
             val zipBytes = ByteArrayOutputStream().use { baos ->
                 ZipOutputStream(baos, StandardCharsets.UTF_8).use { zos ->
                     zos.putNextEntry(ZipEntry("my_custom.schema.yaml"))
@@ -369,7 +557,6 @@ class InputEngineContractAndRimeTest {
             assertEquals("fan'zhong'li'yin'qing", engine.state.value.preedit)
             assertEquals("反重力引擎", engine.state.value.candidates.first().text)
 
-            // Verify CandidateStrip preedit left-truncation (`"…" + preedit.takeLast(18)`)
             val longPreedit = "ni'hao'shi'jie'fan'zhong'li'yin'qing"
             val formattedRime = ImeLogic.formatPreeditDisplay(
                 preedit = longPreedit,

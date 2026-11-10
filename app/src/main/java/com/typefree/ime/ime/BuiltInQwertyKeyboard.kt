@@ -567,9 +567,10 @@ fun BuiltInQwertyKeyboard(
                         }
                     )
 
-                    // Wide Space Bar: Tap commits 1st candidate / space, Long-Press toggles 鹤 (中文) <-> EN
+                    // Wide Space Bar: Tap commits 1st candidate / space, Long-Press toggles 中文 <-> EN
                     QwertySpaceBarKey(
                         isFlypyChineseMode = isFlypyChineseMode && !isSymbolLayer,
+                        activeInputScheme = activeInputScheme,
                         hasComposing = hasActiveFlypyComposing,
                         verticalCellPad = rowVPad,
                         onTap = onInsertSpace,

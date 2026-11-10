@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v2.6.1"><img src="https://img.shields.io/badge/Release-v2.6.1-10B981?style=flat-square&logo=github" alt="Release v2.6.1" /></a>
+  <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v2.7.0"><img src="https://img.shields.io/badge/Release-v2.7.0-10B981?style=flat-square&logo=github" alt="Release v2.7.0" /></a>
   <img src="https://img.shields.io/badge/Language-Kotlin_2.0-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" />
   <img src="https://img.shields.io/badge/UI-Jetpack_Compose_1.7-4285F4?style=flat-square&logo=android&logoColor=white" alt="Jetpack Compose" />
   <img src="https://img.shields.io/badge/Design-Material_3-000000?style=flat-square" alt="Material 3" />
@@ -20,20 +20,26 @@
 </p>
 
 <p align="center">
-  📦 <b>最新预编译安装包</b>：<a href="https://github.com/dengxuezhao/TypeFree/releases/download/v2.6.1/TypeFree-v2.6.1-release.apk">下载 TypeFree-v2.6.1-release.apk</a> · <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v2.6.1">查看 v2.6.1 发行说明</a>
+  📦 <b>最新预编译安装包</b>：<a href="https://github.com/dengxuezhao/TypeFree/releases/download/v2.7.0/TypeFree-v2.7.0-release.apk">下载 TypeFree-v2.7.0-release.apk</a> · <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v2.7.0">查看 v2.7.0 发行说明</a>
 </p>
 
 ---
 
-## 🆕 v2.6.1 核心升级亮点
+## 🆕 v2.7.0 核心升级亮点
 
-- **Google Gemini Live 原生流式直出 & `45s` 热连接预热池**：将 `Gemini Live WebSocket` (`BidiGenerateContent`) 升级为一等公民实时流式引擎，边说边出字，原生支持 **智能净写直出 (`SMART`)**（端到端去语气词、自动标点与个人词典热词注入，省去二次 LLM 往返）与 **忠实逐字 (`VERBATIM`)** 双档切换；键盘弹出即后台预热握手连接池，配合尾帧人声能量门限与自适应静默收束，消除短词松手等待，已出终稿实现 **`0ms` 秒回**，网络受阻时自动回退 `.m4a` HTTP 极速转写。
-- **三层「统一接口工作台」与厂商凭证保险箱 (`Provider Vault`)**：重构 API 设置页为「凭证保险箱 → 一键极速配好 → 按需展开高级路由微调」三层清爽结构；独立加密保存 Google、阿里云百炼、火山引擎、硅基流动、DeepSeek 与自定义网关凭证，自由切换服务商与任意模型不丢 Key。
-- **外放媒体音频焦点自动避让 & 轻声耳语增益 (`Whisper Mode`)**：录音按下瞬间自动请求 `AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE` 暂停外放音乐/播客防止背景歌词串入，松手自动恢复；新增轻声耳语模式，对麦克风 16-bit PCM 流执行实时自适应软限幅增益放大，安静办公或深夜轻语同样高准识别。
-- **零延迟口令短语展开 (`Voice Snippets`) & 历史诊断排版优化**：支持语音口令（如“发我的工作邮箱”）及四码键盘快捷码本地 **`0ms` 直接展开**长文本模板；优化历史记录原始初稿与流式诊断卡片布局，长模型名清晰对齐零遮挡。
+- **原生 C++ `librime 1.17.0` NDK 引擎与雾凇拼音 (`rime-ice`) 深度集成**：新增 `:rime` NDK/JNI 模块，将上游 `librime 1.17.0` 核心及 `librime-lua`、`librime-octagram`、`librime-predict` 插件编译为原生 `arm64-v8a` 动态库；开箱内置 **全拼（雾凇拼音）**、**小鹤双拼（整句）** 与 **小鹤音形（四码顶功）** 三大方案一键切换，支持拼音整句组词、简拼（如 `jttq` → `今天天气`）、动态词频自学习与 `2D` 展开候选网格，并支持在词典页一键 SHA-256 校验下载 `58 万` 雾凇完整词库或挂载自定义 YAML 方案。
+- **全面板 5 档无极帧高统一 (`KeyboardMetrics`) & 4×2 快捷工具面板**：以单一 `KeyboardMetrics.frameHeight` 驱动语音、26 键、快译、剪贴板、帮我写、改写等全部面板，彻底消除展开文风条或切换面板时的 `298→334dp` 高度跳变；支持 **紧凑 (`268dp`) / 偏低 (`283dp`) / 标准 (`298dp`) / 偏高 (`316dp`) / 舒适 (`333dp`)** 五档高度调节，顶栏左侧新增 `⊞` 4×2 快捷工具面板（收纳方案切换、实时写入、联想词、高度调节、无痕模式等开关）。
+- **流式边说边上屏 (`StreamingComposer`) & 超长听写无感续接**：新增基于 `InputConnection.setComposingText` 的流式直写状态机，支持在说话同时将识别草稿实时写入宿主输入框并在松手后无感替换为润色定稿（遇光标移动打断自动冻结防覆盖，支持一键退回原文）；针对超过 60 秒的长语音自动执行静音边界会话轮换与按句分块并发润色。
+- **L1/L2/L3 三层紧邻联想词 & 隐私无痕模式 (`Incognito Mode`)**：汉字上屏后 `34.dp` 候选栏自动呈现静态高频搭配 (`L1`)、个人二元词频 (`L2 SQLite Bigram`) 与可选 AI 续写 (`L3`)；在密码框、宿主 `IME_FLAG_NO_PERSONALIZED_LEARNING` 或手动开启无痕模式时，自动暂停一切个人词频写入、Rime 用户词典落盘、剪贴板监听与语音历史记录。
 
 <details>
-<summary>📖 展开查看 v2.5.0 / v2.4.0 历史升级亮点</summary>
+<summary>📖 展开查看 v2.6.1 / v2.5.0 / v2.4.0 历史升级亮点</summary>
+
+### v2.6.1
+- **Google Gemini Live 原生流式直出 & `45s` 热连接预热池**：将 `Gemini Live WebSocket` (`BidiGenerateContent`) 升级为一等公民实时流式引擎，边说边出字，原生支持 **智能净写直出 (`SMART`)**（端到端去语气词、自动标点与个人词典热词注入，省去二次 LLM 往返）与 **忠实逐字 (`VERBATIM`)** 双档切换；键盘弹出即后台预热握手连接池，配合尾帧人声能量门限与自适应静默收束，消除短词松手等待，已出终稿实现 **`0ms` 秒回**，网络受阻时自动回退 `.m4a` HTTP 极速转写。
+- **三层「统一接口工作台」与厂商凭证凭证保险箱 (`Provider Vault`)**：重构 API 设置页为「凭证保险箱 → 一键极速配好 → 按需展开高级路由微调」三层清爽结构；独立加密保存 Google、阿里云百炼、火山引擎、硅基流动、DeepSeek 与自定义网关凭证，自由切换服务商与任意模型不丢 Key。
+- **外放媒体音频焦点自动避让 & 轻声耳语增益 (`Whisper Mode`)**：录音按下瞬间自动请求 `AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE` 暂停外放音乐/播客防止背景歌词串入，松手自动恢复；新增轻声耳语模式，对麦克风 16-bit PCM 流执行实时自适应软限幅增益放大，安静办公或深夜轻语同样高准识别。
+- **零延迟口令短语展开 (`Voice Snippets`) & 历史诊断排版优化**：支持语音口令（如“发我的工作邮箱”）及四码键盘快捷码本地 **`0ms` 直接展开**长文本模板；优化历史记录原始初稿与流式诊断卡片布局，长模型名清晰对齐零遮挡。
 
 ### v2.5.0
 - **双通道 WebSocket 实时流式 ASR（边说边出字 + 松手百毫秒直达）**：新增 **火山豆包流式 SeedASR 2.0**（二进制协议 + Gzip 帧编解码 + 个人词典热词直注）与 **阿里云百炼 DashScope 实时流式**（`paraformer-realtime-v2` / `fun-asr-realtime`，单 `sk-` Key 免签名直连），录音期间在键盘、全局悬浮胶囊与首页沙盒实时渲染增量预览，网络波动时自动无感回退 HTTP 整包转写。
