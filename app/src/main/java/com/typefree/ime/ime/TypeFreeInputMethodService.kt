@@ -3,6 +3,7 @@ package com.typefree.ime.ime
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.media.AudioManager
 import android.os.Build
 import android.os.VibrationEffect
@@ -10,28 +11,22 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
+import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalConfiguration
 import com.typefree.ime.TypeFreeApp
 import com.typefree.ime.audio.WavAudioRecorder
-import com.typefree.ime.data.DefaultPresets
-import com.typefree.ime.data.HistoryRecord
+import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.HistoryRetention
-import com.typefree.ime.data.PipelineMode
-import com.typefree.ime.data.SnippetMatcher
 import com.typefree.ime.data.ToneStyle
-import com.typefree.ime.data.VoiceIntentMode
-import com.typefree.ime.ime.flypy.FlypyAction
-import com.typefree.ime.ime.flypy.FlypyEngine
 import com.typefree.ime.network.AiPipelineEngine
-import com.typefree.ime.network.PipelineStage
-import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.theme.TypeFreeTheme
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -44,21 +39,20 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
 
-class TypeFreeInputMethodService : ComposeInputMethodService() {
+class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks {
 
-    private val repository
+    override val repository: AppRepository
         get() = TypeFreeApp.instance.repository
 
-    private val aiEngine
+    override val aiEngine: AiPipelineEngine
         get() = TypeFreeApp.instance.aiEngine
 
     private lateinit var audioRecorder: WavAudioRecorder
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var activePipelineJob: Job? = null
-    private var activeStreamingSession: StreamingAsrSession? = null
-    private var streamingPreviewJob: Job? = null
-    private var toastDismissJob: Job? = null
+    override val scope: CoroutineScope
+        get() = serviceScope
+
     private var autoLearnToastJob: Job? = null
     private var quickToastJob: Job? = null
     private var freshClipBannerJob: Job? = null
@@ -69,11 +63,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         syncSystemClipboardIfNeeded(allowFreshBanner = true)
     }
 
-    private val flypyEngine = FlypyEngine()
     private val undoStack = ArrayDeque<UndoSnapshot>()
-
-    @Volatile
-    private var micPressDownTimeMs: Long = 0L
 
     // Auto-Learned Dictionary (`Auto-added`) tracking state
     private var lastDictatedFullText: String? = null
@@ -81,7 +71,17 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
     private var hasManualEditSinceDictation: Boolean = false
 
     private val _imeState = MutableStateFlow(ImeUiState())
+    override val stateFlow: MutableStateFlow<ImeUiState>
+        get() = _imeState
     val imeState = _imeState.asStateFlow()
+
+    val typingController = TypingController(host = this)
+    val voiceController = VoiceController(
+        host = this,
+        audioRecorderProvider = { audioRecorder },
+        onExternalCommitToEngine = { text -> typingController.recordExternalCommit(text) },
+        onResetComposing = { typingController.resetComposing() }
+    )
 
     override fun onCreate() {
         super.onCreate()
@@ -91,36 +91,37 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
             clipboardManager?.addPrimaryClipChangedListener(primaryClipListener)
         }
         syncSystemClipboardIfNeeded(allowFreshBanner = false)
+        val initialSettings = repository.settings.value
         val initialMode = ImeLogic.resolveInitialKeyboardMode(
-            settings = repository.settings.value,
+            settings = initialSettings,
             isPasswordField = false
         )
         _imeState.update {
             it.copy(
                 tabMode = initialMode.tabMode,
-                isFlypyChineseMode = initialMode.isFlypyChineseMode
+                isFlypyChineseMode = initialMode.isFlypyChineseMode,
+                activeInputScheme = initialSettings.inputScheme,
+                activeHeightLevel = initialSettings.keyboardHeightLevel
             )
         }
         TypeFreeApp.instance.ensureFlypyDictionaryLoaded()
         serviceScope.launch {
             TypeFreeApp.instance.flypyDictionary.collect { dict ->
                 if (dict.isLoaded) {
-                    flypyEngine.updateDictionary(dict)
-                    syncFlypyStateToUi()
+                    typingController.updateFlypyDictionary(dict)
                 }
             }
         }
         serviceScope.launch {
             var lastFlypySetting: Boolean? = null
             repository.settings.collect { currentSettings ->
-                flypyEngine.updateSnippets(currentSettings.snippets)
-                if (flypyEngine.isComposing) {
-                    syncFlypyStateToUi()
-                }
+                typingController.updateSnippets(currentSettings.snippets)
+                typingController.setFixedCandidateOrder(currentSettings.fixedCandidateOrder)
+                _imeState.update { it.copy(activeInputScheme = currentSettings.inputScheme) }
                 val prevSetting = lastFlypySetting
                 lastFlypySetting = currentSettings.flypyEnabled
                 if (prevSetting != null && prevSetting != currentSettings.flypyEnabled) {
-                    flypyEngine.resetComposing()
+                    typingController.resetComposing()
                     val isPwd = ImeLogic.isPasswordEditorInputType(_imeState.value.currentInputType)
                     val nextChinese = currentSettings.flypyEnabled && !isPwd
                     if (currentSettings.flypyEnabled) {
@@ -130,6 +131,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                         it.copy(
                             isFlypyChineseMode = nextChinese,
                             flypyComposingCode = "",
+                            preeditDisplay = "",
                             flypyCandidates = emptyList(),
                             isFlypyCandidateSheetExpanded = false
                         )
@@ -145,7 +147,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
             lastDictatedFullText = null
             lastDictatedAtMs = 0L
             hasManualEditSinceDictation = false
-            flypyEngine.resetComposing()
+            typingController.resetComposing()
             undoStack.clear()
         }
         syncEditorMetadata(attribute, restarting)
@@ -154,40 +156,39 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         repository.setImeWindowVisible(true)
+        val latestHeightLevel = repository.settings.value.keyboardHeightLevel
         if (!restarting) {
-            flypyEngine.resetComposing()
+            typingController.resetComposing()
             _imeState.update {
                 it.copy(
                     isClipboardOpen = false,
+                    isToolPanelOpen = false,
+                    isToolPanelHeightExpanded = false,
                     voiceSubPanel = VoiceSubPanel.NONE,
                     isPunctuationStripOpen = false,
                     isStylePickerExpanded = false,
                     flypyComposingCode = "",
+                    preeditDisplay = "",
                     flypyCandidates = emptyList(),
-                    isFlypyCandidateSheetExpanded = false
+                    isFlypyCandidateSheetExpanded = false,
+                    predictionCandidates = emptyList(),
+                    aiCompletionSuggestion = null,
+                    activeHeightLevel = latestHeightLevel
                 )
             }
+        } else {
+            _imeState.update { it.copy(activeHeightLevel = latestHeightLevel) }
         }
         syncEditorMetadata(info, restarting)
         syncSystemClipboardIfNeeded(allowFreshBanner = true)
-        warmVoiceConnectionsInBackground()
+        voiceController.warmVoiceConnectionsInBackground()
     }
 
     override fun onWindowShown() {
         super.onWindowShown()
         repository.setImeWindowVisible(true)
         syncSystemClipboardIfNeeded(allowFreshBanner = true)
-        warmVoiceConnectionsInBackground()
-    }
-
-    private fun warmVoiceConnectionsInBackground() {
-        val snap = repository.settings.value
-        serviceScope.launch {
-            runCatching {
-                aiEngine.prewarmLiveStreamingIfNeeded(snap)
-                aiEngine.prewarmEndpoints(snap)
-            }
-        }
+        voiceController.warmVoiceConnectionsInBackground()
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
@@ -206,6 +207,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         val hasCachedWav = hasRetryWavFile()
         val settingsSnapshot = repository.settings.value
         val isPasswordField = ImeLogic.isPasswordEditorInputType(inputType)
+        val isIncognito = ImeLogic.isIncognitoImeOptions(imeOptions, inputType)
+        typingController.setIncognitoMode(isIncognito)
 
         var shouldEnsureFlypyDict = false
         _imeState.update { prev ->
@@ -216,7 +219,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                 isPasswordField = isPasswordField,
                 restarting = restarting
             )
-            if (sessionMode.tabMode == KeyboardTabMode.QWERTY && !flypyEngine.dictionary.isLoaded) {
+            if (sessionMode.tabMode == KeyboardTabMode.QWERTY && !typingController.isDictionaryLoaded) {
                 shouldEnsureFlypyDict = true
             }
             val currentPhase = prev.voicePhase
@@ -242,11 +245,14 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                 targetAppName = appName,
                 currentInputType = inputType,
                 currentImeOptions = imeOptions,
+                isIncognitoMode = isIncognito,
+                activeInputScheme = settingsSnapshot.inputScheme,
                 rawSelectedText = selected,
                 ignoreSelectionForThisTurn = nextIgnore,
                 hasCachedAudioForRetry = hasCachedWav,
                 isFlypyChineseMode = sessionMode.isFlypyChineseMode,
                 flypyComposingCode = if (!restarting) "" else prev.flypyComposingCode,
+                preeditDisplay = if (!restarting) "" else prev.preeditDisplay,
                 flypyCandidates = if (!restarting) emptyList() else prev.flypyCandidates,
                 isFlypyCandidateSheetExpanded = if (!restarting) false else prev.isFlypyCandidateSheetExpanded,
                 undoSnapshot = if (!restarting) null else prev.undoSnapshot
@@ -273,6 +279,14 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
             candidatesStart,
             candidatesEnd
         )
+        voiceController.onSelectionUpdated(
+            oldSelStart = oldSelStart,
+            oldSelEnd = oldSelEnd,
+            newSelStart = newSelStart,
+            newSelEnd = newSelEnd,
+            candidatesStart = candidatesStart,
+            candidatesEnd = candidatesEnd
+        )
         val selected = if (newSelStart != newSelEnd && newSelStart >= 0 && newSelEnd >= 0) {
             readSelectedTextSafely()
         } else {
@@ -294,15 +308,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         tryAutoLearnFromRecentEdit()
         repository.setImeWindowVisible(false)
         super.onWindowHidden()
-        // Never leave microphone recording silently when the keyboard window is dismissed
-        if (_imeState.value.voicePhase is VoicePhase.Recording) {
-            micPressDownTimeMs = 0L
-            abortActiveStreamingSession()
-            serviceScope.launch {
-                audioRecorder.cancelRecording()
-            }
-        }
-        flypyEngine.resetComposing()
+        voiceController.stopRecordingOnTabSwitchOrWindowHidden()
+        typingController.resetComposing()
         val hiddenBaseMode = ImeLogic.resolveInitialKeyboardMode(
             settings = repository.settings.value,
             isPasswordField = false
@@ -321,20 +328,21 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                 isPunctuationStripOpen = false,
                 isHistoryDrawerOpen = false,
                 isClipboardOpen = false,
+                isToolPanelOpen = false,
+                isToolPanelHeightExpanded = false,
                 flypyComposingCode = "",
+                preeditDisplay = "",
                 flypyCandidates = emptyList(),
-                isFlypyCandidateSheetExpanded = false
+                isFlypyCandidateSheetExpanded = false,
+                predictionCandidates = emptyList(),
+                aiCompletionSuggestion = null
             )
         }
     }
 
     override fun onDestroy() {
         repository.setImeWindowVisible(false)
-        micPressDownTimeMs = 0L
-        abortActiveStreamingSession()
-        aiEngine.evictLiveStreamingPrewarm()
-        activePipelineJob?.cancel()
-        toastDismissJob?.cancel()
+        voiceController.onDestroy()
         autoLearnToastJob?.cancel()
         quickToastJob?.cancel()
         freshClipBannerJob?.cancel()
@@ -358,6 +366,12 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         val amplitudes by audioRecorder.amplitudes.collectAsState()
         val elapsedMs by audioRecorder.elapsedMs.collectAsState()
         val didPauseMedia by audioRecorder.didPauseExternalMedia.collectAsState()
+        val configuration = LocalConfiguration.current
+        val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+        val keyboardMetrics = remember(uiState.activeHeightLevel, isLandscape) {
+            KeyboardMetrics.fromLevel(uiState.activeHeightLevel, isLandscape)
+        }
 
         val (activeStyle, isAutoMatched) = remember(
             settings,
@@ -368,92 +382,88 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
 
         TypeFreeTheme(themePreference = settings.themePreference) {
-            KeyboardScreen(
-                uiState = uiState,
-                settings = settings,
-                activeStyle = activeStyle,
-                isAutoMatched = isAutoMatched,
-                amplitudes = amplitudes,
-                elapsedMs = elapsedMs,
-                didPauseMedia = didPauseMedia,
-                onToggleWhisperMode = ::toggleWhisperMode,
-                onSelectTabMode = ::selectTabMode,
-                onOpenHelpMeWrite = ::openOrRestoreVoicePenPanel,
-                onCloseSubPanel = ::closeVoiceSubPanel,
-                onDismissSpeakToEdit = ::dismissSpeakToEditForTurn,
-                onSelectTranslateLanguage = ::selectTranslateLanguage,
-                onTogglePunctuationStrip = ::togglePunctuationStrip,
-                onToggleStylePicker = ::toggleStylePicker,
-                onSelectAutoStyle = ::selectAutoStyle,
-                onSelectManualStyle = ::selectManualStyle,
-                onPerformUndo = ::performUndo,
-                onOpenHostApp = ::openHostApp,
-                onQuickEditChipClick = ::runQuickEditChip,
-                onHelpWritePresetClick = ::runHelpWritePreset,
-                onMicPressDown = ::handleMicPressDown,
-                onMicPressUp = ::handleMicPressUp,
-                onEnterArcTranslate = ::enterArcTranslateMode,
-                onUpdateArcTranslate = ::updateArcTranslateSelection,
-                onReleaseArcTranslate = ::releaseArcTranslate,
-                onFinishHandsFree = ::finishHandsFreeRecording,
-                onCancelRecording = ::cancelRecordingOrProcessing,
-                onRetryLastAudio = ::retryLastAudio,
-                onDismissError = ::dismissErrorBanner,
-                onCommitText = { text -> commitDirectText(text, recordUndo = true, markManualEdit = true) },
-                onCommitQwertyChar = ::commitQwertyChar,
-                onCommaOrPeriodKey = ::handleCommaOrPeriodKey,
-                onToggleFlypyLanguageMode = ::toggleFlypyLanguageMode,
-                onSelectFlypyCandidate = ::selectFlypyCandidate,
-                onClearFlypyComposing = ::clearFlypyComposing,
-                onFlushFlypyComposing = ::flushFlypyComposing,
-                onToggleFlypyCandidateSheet = ::toggleFlypyCandidateSheet,
-                onEditorShortcutAction = ::handleEditorShortcutAction,
-                onInsertPairedSymbol = ::insertPairedSymbol,
-                onHideKeyboard = ::hideKeyboardSelf,
-                onSwitchKeyboard = ::switchKeyboard,
-                onShowImePicker = ::showImePicker,
-                onInsertSpace = ::insertSpace,
-                onBackspace = ::deleteBackward,
-                onEnterOrNewline = ::performEnterOrNewline,
-                clipboardItems = clipboardItems,
-                onOpenClipboard = ::openClipboardPanel,
-                onCloseClipboard = ::closeClipboardPanel,
-                onPasteClipboardText = ::pasteFromClipboard,
-                onTogglePinClipboardItem = ::togglePinClipboardEntry,
-                onDeleteClipboardItem = ::deleteClipboardEntry,
-                onClearUnpinnedClipboard = ::clearUnpinnedClipboardEntries,
-                onSaveSelectionToClipboard = ::saveCurrentSelectionToClipboard,
-                onEnableClipboard = ::enableClipboardFromKeyboard,
-                onOpenClipboardSettings = ::openClipboardPreferencesInHostApp
-            )
+            CompositionLocalProvider(LocalKeyboardMetrics provides keyboardMetrics) {
+                KeyboardScreen(
+                    uiState = uiState,
+                    settings = settings,
+                    activeStyle = activeStyle,
+                    isAutoMatched = isAutoMatched,
+                    amplitudes = amplitudes,
+                    elapsedMs = elapsedMs,
+                    didPauseMedia = didPauseMedia,
+                    onToggleWhisperMode = voiceController::toggleWhisperMode,
+                    onSelectTabMode = ::selectTabMode,
+                    onOpenHelpMeWrite = voiceController::openOrRestoreVoicePenPanel,
+                    onCloseSubPanel = voiceController::closeVoiceSubPanel,
+                    onDismissSpeakToEdit = voiceController::dismissSpeakToEditForTurn,
+                    onSelectTranslateLanguage = voiceController::selectTranslateLanguage,
+                    onTogglePunctuationStrip = voiceController::togglePunctuationStrip,
+                    onToggleStylePicker = ::toggleStylePicker,
+                    onSelectAutoStyle = ::selectAutoStyle,
+                    onSelectManualStyle = ::selectManualStyle,
+                    onPerformUndo = ::performUndo,
+                    onOpenHostApp = ::openHostApp,
+                    onQuickEditChipClick = voiceController::runQuickEditChip,
+                    onHelpWritePresetClick = voiceController::runHelpWritePreset,
+                    onMicPressDown = voiceController::handleMicPressDown,
+                    onMicPressUp = voiceController::handleMicPressUp,
+                    onEnterArcTranslate = voiceController::enterArcTranslateMode,
+                    onUpdateArcTranslate = voiceController::updateArcTranslateSelection,
+                    onReleaseArcTranslate = voiceController::releaseArcTranslate,
+                    onFinishHandsFree = voiceController::finishHandsFreeRecording,
+                    onCancelRecording = voiceController::cancelRecordingOrProcessing,
+                    onRetryLastAudio = voiceController::retryLastAudio,
+                    onDismissError = voiceController::dismissErrorBanner,
+                    onCommitText = { text -> commitDirectText(text, recordUndo = true, markManualEdit = true) },
+                    onCommitQwertyChar = typingController::commitQwertyChar,
+                    onCommaOrPeriodKey = typingController::handleCommaOrPeriodKey,
+                    onToggleFlypyLanguageMode = typingController::toggleFlypyLanguageMode,
+                    onSelectFlypyCandidate = typingController::selectFlypyCandidate,
+                    onClearFlypyComposing = typingController::clearFlypyComposing,
+                    onFlushFlypyComposing = typingController::flushFlypyComposing,
+                    onToggleFlypyCandidateSheet = typingController::toggleFlypyCandidateSheet,
+                    onEditorShortcutAction = typingController::handleEditorShortcutAction,
+                    onInsertPairedSymbol = typingController::insertPairedSymbol,
+                    onHideKeyboard = ::hideKeyboardSelf,
+                    onSwitchKeyboard = ::switchKeyboard,
+                    onShowImePicker = ::showImePicker,
+                    onInsertSpace = typingController::insertSpace,
+                    onBackspace = typingController::deleteBackward,
+                    onEnterOrNewline = ::performEnterOrNewline,
+                    clipboardItems = clipboardItems,
+                    onOpenClipboard = ::openClipboardPanel,
+                    onCloseClipboard = ::closeClipboardPanel,
+                    onPasteClipboardText = ::pasteFromClipboard,
+                    onTogglePinClipboardItem = ::togglePinClipboardEntry,
+                    onDeleteClipboardItem = ::deleteClipboardEntry,
+                    onClearUnpinnedClipboard = ::clearUnpinnedClipboardEntries,
+                    onSaveSelectionToClipboard = ::saveCurrentSelectionToClipboard,
+                    onEnableClipboard = ::enableClipboardFromKeyboard,
+                    onOpenClipboardSettings = ::openClipboardPreferencesInHostApp
+                )
+            }
         }
     }
 
     // -------------------------------------------------------------------------
-    // Mode Switching, Sub-Panels & Arc Translate Wheel
+    // Mode Switching & Top-Level Navigation
     // -------------------------------------------------------------------------
 
     private fun selectTabMode(mode: KeyboardTabMode) {
         val prevMode = _imeState.value.tabMode
-        if (prevMode == mode && !_imeState.value.isClipboardOpen) return
+        if (prevMode == mode && !_imeState.value.isClipboardOpen && !_imeState.value.isToolPanelOpen) return
 
         performKeyFeedback(strong = false)
-        if (mode == KeyboardTabMode.QWERTY && !flypyEngine.dictionary.isLoaded) {
+        if (mode == KeyboardTabMode.QWERTY && !typingController.isDictionaryLoaded) {
             TypeFreeApp.instance.ensureFlypyDictionaryLoaded()
         }
 
         if (prevMode == KeyboardTabMode.QWERTY && mode != KeyboardTabMode.QWERTY) {
-            flypyEngine.resetComposing()
+            typingController.resetComposing()
             tryAutoLearnFromRecentEdit()
         }
 
-        if (_imeState.value.voicePhase is VoicePhase.Recording) {
-            micPressDownTimeMs = 0L
-            abortActiveStreamingSession()
-            serviceScope.launch {
-                audioRecorder.cancelRecording()
-            }
-        }
+        voiceController.stopRecordingOnTabSwitchOrWindowHidden()
 
         if (!ImeLogic.isPasswordEditorInputType(_imeState.value.currentInputType)) {
             repository.updateSettings { it.copy(lastKeyboardTab = mode.name) }
@@ -470,1028 +480,31 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
                 isPunctuationStripOpen = false,
                 isStylePickerExpanded = false,
                 isClipboardOpen = false,
+                isToolPanelOpen = false,
+                isToolPanelHeightExpanded = false,
                 flypyComposingCode = "",
+                preeditDisplay = "",
                 flypyCandidates = emptyList(),
                 isFlypyCandidateSheetExpanded = false
             )
         }
     }
 
-    private fun openOrRestoreVoicePenPanel() {
-        performKeyFeedback(strong = false)
-        flypyEngine.resetComposing()
-        _imeState.update { prev ->
-            if (prev.rawSelectedText.isNotBlank()) {
-                prev.copy(
-                    tabMode = KeyboardTabMode.VOICE,
-                    ignoreSelectionForThisTurn = false,
-                    voiceSubPanel = VoiceSubPanel.SPEAK_TO_EDIT,
-                    isClipboardOpen = false,
-                    isPunctuationStripOpen = false,
-                    isStylePickerExpanded = false,
-                    flypyComposingCode = "",
-                    flypyCandidates = emptyList(),
-                    isFlypyCandidateSheetExpanded = false
-                )
-            } else {
-                prev.copy(
-                    tabMode = KeyboardTabMode.VOICE,
-                    voiceSubPanel = VoiceSubPanel.HELP_ME_WRITE,
-                    isClipboardOpen = false,
-                    isPunctuationStripOpen = false,
-                    isStylePickerExpanded = false,
-                    flypyComposingCode = "",
-                    flypyCandidates = emptyList(),
-                    isFlypyCandidateSheetExpanded = false
-                )
-            }
-        }
-    }
-
-    private fun closeVoiceSubPanel() {
-        performKeyFeedback(strong = false)
-        if (_imeState.value.voicePhase is VoicePhase.Recording ||
-            _imeState.value.voicePhase is VoicePhase.Processing
-        ) {
-            cancelRecordingOrProcessing()
-        }
-        _imeState.update {
-            it.copy(
-                voiceSubPanel = VoiceSubPanel.NONE,
-                activeIntentMode = VoiceIntentMode.DICTATE
-            )
-        }
-    }
-
-    private fun dismissSpeakToEditForTurn() {
-        performKeyFeedback(strong = false)
-        if (_imeState.value.voicePhase is VoicePhase.Recording ||
-            _imeState.value.voicePhase is VoicePhase.Processing
-        ) {
-            cancelRecordingOrProcessing()
-        }
-        _imeState.update {
-            it.copy(
-                ignoreSelectionForThisTurn = true,
-                voiceSubPanel = VoiceSubPanel.NONE,
-                activeIntentMode = VoiceIntentMode.DICTATE
-            )
-        }
-    }
-
-    private fun selectTranslateLanguage(language: String) {
-        if (language.isBlank()) return
-        performKeyFeedback(strong = false)
-        repository.updateSettings {
-            it.copy(activeTranslateTarget = language)
-        }
-        _imeState.update {
-            it.copy(arcSelectedLanguage = language)
-        }
-    }
-
-    private fun togglePunctuationStrip() {
-        performKeyFeedback(strong = false)
-        _imeState.update {
-            it.copy(
-                isPunctuationStripOpen = !it.isPunctuationStripOpen,
-                isStylePickerExpanded = false
-            )
-        }
-    }
-
-    private fun enterArcTranslateMode(startedFromHandsFree: Boolean) {
-        val curr = _imeState.value
-        if (curr.voicePhase !is VoicePhase.Recording) return
-        val settings = repository.settings.value
-        val defaultLang = settings.activeTranslateTarget.ifBlank {
-            settings.translationTargets.firstOrNull() ?: DefaultPresets.defaultTranslationTargets().first()
-        }
-        performHaptic(strong = false)
-        _imeState.update {
-            it.copy(
-                isArcTranslateActive = true,
-                arcStartedFromHandsFree = startedFromHandsFree,
-                isArcCancelHovered = false,
-                arcSelectedLanguage = defaultLang,
-                activeIntentMode = VoiceIntentMode.TRANSLATE,
-                isPunctuationStripOpen = false,
-                isStylePickerExpanded = false
-            )
-        }
-    }
-
-    private fun updateArcTranslateSelection(language: String, cancelHovered: Boolean) {
-        val prev = _imeState.value
-        if (!prev.isArcTranslateActive) return
-        val changed = prev.arcSelectedLanguage != language || prev.isArcCancelHovered != cancelHovered
-        if (!changed) return
-
-        performHaptic(strong = false)
-        _imeState.update {
-            it.copy(
-                arcSelectedLanguage = language,
-                isArcCancelHovered = cancelHovered
-            )
-        }
-    }
-
-    private fun releaseArcTranslate() {
-        val snapshot = _imeState.value
-        micPressDownTimeMs = 0L
-        if (!snapshot.isArcTranslateActive) {
-            handleMicPressUp()
-            return
-        }
-
-        if (snapshot.isArcCancelHovered) {
-            cancelRecordingOrProcessing()
-            return
-        }
-
-        val chosenLang = snapshot.arcSelectedLanguage.ifBlank {
-            repository.settings.value.activeTranslateTarget.ifBlank { "English (US)" }
-        }
-        repository.updateSettings {
-            it.copy(activeTranslateTarget = chosenLang)
-        }
-
-        if (ImeLogic.shouldLockArcIntoHandsFree(snapshot.arcStartedFromHandsFree)) {
-            // Started from Idle (`上滑选语言松开 → 开口说话 → 轻点完成`):
-            // Fire haptic first, then unconditionally wipe pre-release swipe/haptic audio and reset 00:00 timer!
-            performHaptic(strong = false)
-            if (::audioRecorder.isInitialized) {
-                audioRecorder.clearSilencePrefix(skipHapticMs = 120L)
-            }
-            _imeState.update {
-                it.copy(
-                    voicePhase = VoicePhase.Recording(isHandsFree = true),
-                    isArcTranslateActive = false,
-                    arcStartedFromHandsFree = false,
-                    isArcCancelHovered = false,
-                    arcSelectedLanguage = chosenLang,
-                    activeIntentMode = VoiceIntentMode.TRANSLATE
-                )
-            }
-        } else {
-            // Started from already-active Hands-Free recording (`轻点先说话 → 上滑选语言松手立即直译`):
-            performKeyFeedback(strong = true)
-            _imeState.update {
-                it.copy(
-                    isArcTranslateActive = false,
-                    arcStartedFromHandsFree = false,
-                    isArcCancelHovered = false,
-                    arcSelectedLanguage = chosenLang,
-                    activeIntentMode = VoiceIntentMode.TRANSLATE
-                )
-            }
-            stopRecordingAndRunPipeline(
-                intentOverride = VoiceIntentMode.TRANSLATE,
-                translateLangOverride = chosenLang
-            )
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Dual Mic Interaction (Push-to-Talk >= 280ms vs Short-Tap Hands-Free < 280ms)
-    // -------------------------------------------------------------------------
-
-    private fun handleMicPressDown(intentMode: VoiceIntentMode = VoiceIntentMode.DICTATE) {
-        val currentPhase = _imeState.value.voicePhase
-        if (currentPhase is VoicePhase.Processing) return
-        if (currentPhase is VoicePhase.Recording && currentPhase.isHandsFree) return
-
-        tryAutoLearnFromRecentEdit()
-        toastDismissJob?.cancel()
-
-        val defaultTranslateLang = repository.settings.value.activeTranslateTarget
-        _imeState.update {
-            it.copy(
-                activeIntentMode = intentMode,
-                isArcTranslateActive = false,
-                arcStartedFromHandsFree = false,
-                isArcCancelHovered = false,
-                arcSelectedLanguage = defaultTranslateLang,
-                isPunctuationStripOpen = false,
-                isStylePickerExpanded = false,
-                isHistoryDrawerOpen = false
-            )
-        }
-
-        if (!audioRecorder.hasRecordPermission()) {
-            micPressDownTimeMs = 0L
-            performHaptic(strong = true)
-            _imeState.update {
-                it.copy(
-                    voicePhase = VoicePhase.Error(
-                        message = "尚未授予麦克风录音权限，请先授权后使用",
-                        canRetryAudio = false,
-                        needsApiSetup = false,
-                        needsMicPermission = true
-                    )
-                )
-            }
-            return
-        }
-
-        // Fire tactile feedback BEFORE opening AudioRecord so speaker click / motor hum isn't recorded
-        performHaptic(strong = true)
-
-        abortActiveStreamingSession()
-        val settingsSnap = repository.settings.value
-        val streamSession = aiEngine.openLiveStreamingSession(settingsSnap)
-
-        val startRes = audioRecorder.startRecording(
-            scope = serviceScope,
-            onStreamChunk = if (streamSession != null) {
-                { pcmChunk -> streamSession.sendPcmFrame(pcmChunk) }
-            } else {
-                null
-            },
-            onSilencePrefixCleared = {
-                streamSession?.resetPrefix()
-                _imeState.update { it.copy(streamingPartialPreview = "") }
-            },
-            pauseMediaPlayback = settingsSnap.pauseMediaWhileRecording,
-            whisperMode = settingsSnap.whisperModeEnabled
-        )
-        startRes.fold(
-            onSuccess = {
-                micPressDownTimeMs = System.currentTimeMillis()
-                activeStreamingSession = streamSession
-                if (streamSession != null) {
-                    streamingPreviewJob = serviceScope.launch {
-                        streamSession.partialText.collect { liveText ->
-                            _imeState.update { it.copy(streamingPartialPreview = liveText) }
-                        }
-                    }
-                }
-                // Warm up LLM / HTTP STT TCP+TLS sockets during the first ~250ms of speaking
-                serviceScope.launch {
-                    aiEngine.prewarmEndpoints(settingsSnap)
-                }
-                _imeState.update {
-                    it.copy(
-                        voicePhase = VoicePhase.Recording(isHandsFree = false),
-                        streamingPartialPreview = ""
-                    )
-                }
-            },
-            onFailure = { err ->
-                streamSession?.cancel()
-                micPressDownTimeMs = 0L
-                performHaptic(strong = true)
-                val errorPhase = ImeLogic.classifyErrorFlags(
-                    errorMessage = err.message ?: "无法启动麦克风录音",
-                    hasCachedAudio = hasRetryWavFile(),
-                    hasMicPermission = audioRecorder.hasRecordPermission()
-                )
-                _imeState.update { it.copy(voicePhase = errorPhase, streamingPartialPreview = "") }
-            }
-        )
-    }
-
-    private fun abortActiveStreamingSession() {
-        streamingPreviewJob?.cancel()
-        streamingPreviewJob = null
-        activeStreamingSession?.cancel()
-        activeStreamingSession = null
-    }
-
-    private fun handleMicPressUp() {
-        if (_imeState.value.isArcTranslateActive) {
-            releaseArcTranslate()
-            return
-        }
-
-        val downTime = micPressDownTimeMs
-        micPressDownTimeMs = 0L
-        val phase = _imeState.value.voicePhase
-        if (downTime <= 0L || phase !is VoicePhase.Recording || phase.isHandsFree) {
-            return
-        }
-
-        val heldDurationMs = System.currentTimeMillis() - downTime
-        if (ImeLogic.isPressAndHoldGesture(heldDurationMs)) {
-            // Press-and-Hold (>=280ms): stop immediately and run AI pipeline
-            performKeyFeedback(strong = false)
-            stopRecordingAndRunPipeline()
-        } else {
-            // Short Tap (<280ms): keep recording seamlessly in Hands-Free mode
-            performHaptic(strong = false)
-            _imeState.update {
-                it.copy(voicePhase = VoicePhase.Recording(isHandsFree = true))
-            }
-        }
-    }
-
-    private fun finishHandsFreeRecording() {
-        val snapshot = _imeState.value
-        if (snapshot.voicePhase !is VoicePhase.Recording) return
-        performKeyFeedback(strong = true)
-        if (snapshot.activeIntentMode == VoiceIntentMode.TRANSLATE) {
-            val targetLang = snapshot.arcSelectedLanguage.ifBlank {
-                repository.settings.value.activeTranslateTarget
-            }
-            stopRecordingAndRunPipeline(
-                intentOverride = VoiceIntentMode.TRANSLATE,
-                translateLangOverride = targetLang
-            )
-        } else {
-            stopRecordingAndRunPipeline()
-        }
-    }
-
-    private fun cancelRecordingOrProcessing() {
-        performKeyFeedback(strong = false)
-        micPressDownTimeMs = 0L
-        abortActiveStreamingSession()
-        activePipelineJob?.cancel()
-        activePipelineJob = null
-        serviceScope.launch {
-            audioRecorder.cancelRecording()
-        }
-        _imeState.update {
-            it.copy(
-                voicePhase = VoicePhase.Idle,
-                isArcTranslateActive = false,
-                arcStartedFromHandsFree = false,
-                isArcCancelHovered = false,
-                streamingPartialPreview = ""
-            )
-        }
-    }
-
-    private fun stopRecordingAndRunPipeline(
-        intentOverride: VoiceIntentMode? = null,
-        translateLangOverride: String? = null
-    ) {
-        val liveSession = activeStreamingSession
-        activeStreamingSession = null
-        streamingPreviewJob?.cancel()
-        streamingPreviewJob = null
-
-        activePipelineJob?.cancel()
-        activePipelineJob = serviceScope.launch {
-            val stopResult = audioRecorder.stopRecording()
-            stopResult.fold(
-                onSuccess = { recorded ->
-                    var preTranscribed: String? = null
-                    var tailWaitMs = 0L
-
-                    if (liveSession != null) {
-                        _imeState.update {
-                            it.copy(
-                                voicePhase = VoicePhase.Processing(stageText = "收尾识别中..."),
-                                isArcTranslateActive = false,
-                                arcStartedFromHandsFree = false,
-                                isArcCancelHovered = false,
-                                streamingPartialPreview = ""
-                            )
-                        }
-                        val tailStart = System.currentTimeMillis()
-                        val streamRes = liveSession.finishAndAwaitFinal()
-                        tailWaitMs = (System.currentTimeMillis() - tailStart).coerceAtLeast(0L)
-
-                        val streamErr = streamRes.exceptionOrNull()
-                        if (streamErr is IllegalStateException) {
-                            // Missing API Key / immediate setup error — surface directly without retrying WAV
-                            val errorPhase = ImeLogic.classifyErrorFlags(
-                                errorMessage = streamErr.message ?: "请先完成语音 API 配置",
-                                hasCachedAudio = recorded.wavFile.exists(),
-                                hasMicPermission = audioRecorder.hasRecordPermission()
-                            )
-                            _imeState.update {
-                                it.copy(
-                                    voicePhase = errorPhase,
-                                    hasCachedAudioForRetry = errorPhase.canRetryAudio
-                                )
-                            }
-                            return@launch
-                        }
-
-                        val candidate = streamRes.getOrNull()?.trim().orEmpty()
-                        if (candidate.isNotEmpty() && !AiPipelineEngine.isHallucinatedSilence(candidate)) {
-                            preTranscribed = candidate
-                        }
-                    }
-
-                    // Multi-frame local VAD guard: skip cloud calls when neither human speech frames nor stream words exist
-                    if (preTranscribed == null && !recorded.hasValidSpeech) {
-                        liveSession?.cancel()
-                        val errorPhase = ImeLogic.classifyErrorFlags(
-                            errorMessage = "未检测到清晰说话声，请靠近麦克风重试",
-                            hasCachedAudio = false,
-                            hasMicPermission = audioRecorder.hasRecordPermission()
-                        )
-                        _imeState.update {
-                            it.copy(
-                                voicePhase = errorPhase,
-                                isArcTranslateActive = false,
-                                arcStartedFromHandsFree = false,
-                                isArcCancelHovered = false,
-                                streamingPartialPreview = "",
-                                hasCachedAudioForRetry = false
-                            )
-                        }
-                        return@launch
-                    }
-
-                    executeVoicePipelineOnWav(
-                        wavFile = recorded.wavFile,
-                        durationMs = recorded.durationMs,
-                        intentOverride = intentOverride,
-                        translateLangOverride = translateLangOverride,
-                        preTranscribedText = preTranscribed,
-                        sttTailWaitMs = tailWaitMs
-                    )
-                },
-                onFailure = { err ->
-                    liveSession?.cancel()
-                    if (err is CancellationException) return@launch
-                    val errorPhase = ImeLogic.classifyErrorFlags(
-                        errorMessage = err.message ?: "录音时间过短，请重试",
-                        hasCachedAudio = hasRetryWavFile(),
-                        hasMicPermission = audioRecorder.hasRecordPermission()
-                    )
-                    _imeState.update {
-                        it.copy(
-                            voicePhase = errorPhase,
-                            isArcTranslateActive = false,
-                            arcStartedFromHandsFree = false,
-                            isArcCancelHovered = false,
-                            streamingPartialPreview = "",
-                            hasCachedAudioForRetry = errorPhase.canRetryAudio
-                        )
-                    }
-                }
-            )
-        }
-    }
-
-    private suspend fun executeVoicePipelineOnWav(
-        wavFile: File,
-        durationMs: Long,
-        intentOverride: VoiceIntentMode? = null,
-        translateLangOverride: String? = null,
-        preTranscribedText: String? = null,
-        sttTailWaitMs: Long = 0L
-    ) {
-        val settings = repository.settings.value
-        val snapshot = _imeState.value
-        val targetPkg = snapshot.targetPackage
-        val targetAppName = snapshot.targetAppName
-        val (activeStyle, _) = repository.resolveActiveStyle(targetPkg, snapshot.currentInputType)
-
-        val liveSelection = readSelectedTextSafely().ifBlank { snapshot.rawSelectedText }
-        val effectiveSelected = if (snapshot.ignoreSelectionForThisTurn) "" else liveSelection
-
-        val resolvedIntent = when {
-            intentOverride != null -> intentOverride
-            snapshot.activeIntentMode == VoiceIntentMode.TRANSLATE -> VoiceIntentMode.TRANSLATE
-            snapshot.activeIntentMode == VoiceIntentMode.HELP_ME_WRITE -> VoiceIntentMode.HELP_ME_WRITE
-            effectiveSelected.isNotBlank() -> VoiceIntentMode.SPEAK_TO_EDIT
-            else -> VoiceIntentMode.DICTATE
-        }
-        val isSpeakToEdit = resolvedIntent == VoiceIntentMode.SPEAK_TO_EDIT
-        val targetTranslateLang = if (resolvedIntent == VoiceIntentMode.TRANSLATE) {
-            (translateLangOverride ?: settings.activeTranslateTarget).ifBlank { "English (US)" }
-        } else {
-            ""
-        }
-        val surroundingContext = readSurroundingBeforeCursor(80)
-
-        val initialStage = when {
-            settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT -> PipelineStage.MULTIMODAL_PROCESSING
-            !preTranscribedText.isNullOrBlank() -> PipelineStage.POLISHING_LLM
-            else -> PipelineStage.TRANSCRIBING_STT
-        }
-
-        _imeState.update {
-            it.copy(
-                voicePhase = VoicePhase.Processing(
-                    stageText = ImeLogic.stageDisplayTextForIntent(
-                        stage = initialStage,
-                        intentMode = resolvedIntent,
-                        targetLanguage = targetTranslateLang
-                    )
-                ),
-                isArcTranslateActive = false,
-                arcStartedFromHandsFree = false,
-                isArcCancelHovered = false,
-                streamingPartialPreview = "",
-                hasCachedAudioForRetry = wavFile.exists()
-            )
-        }
-
-        val pipelineResult = aiEngine.processVoiceAudio(
-            wavFile = wavFile,
-            settings = settings,
-            activeStyle = activeStyle,
-            targetAppName = targetAppName,
-            selectedText = if (isSpeakToEdit) effectiveSelected else "",
-            surroundingBeforeCursor = surroundingContext,
-            intentMode = resolvedIntent,
-            translateTargetLanguage = targetTranslateLang.ifBlank { settings.activeTranslateTarget },
-            preTranscribedText = preTranscribedText,
-            sttTailWaitMs = sttTailWaitMs,
-            onStageChanged = { stage ->
-                _imeState.update { curr ->
-                    curr.copy(
-                        voicePhase = VoicePhase.Processing(
-                            stageText = ImeLogic.stageDisplayTextForIntent(
-                                stage = stage,
-                                intentMode = resolvedIntent,
-                                targetLanguage = targetTranslateLang
-                            )
-                        )
-                    )
-                }
-            }
-        )
-
-        pipelineResult.fold(
-            onSuccess = { exec ->
-                val finalOutput = exec.finalOutput
-                val overwritten = if (isSpeakToEdit) liveSelection else readSelectedTextSafely()
-                commitPipelineOutput(
-                    finalText = finalOutput,
-                    overwrittenSelection = overwritten,
-                    latencyMs = exec.latencyMs
-                )
-                val historyAudioFile = archiveWavForHistory(wavFile, settings.historyRetention)
-                repository.addHistory(
-                    HistoryRecord(
-                        targetAppName = targetAppName,
-                        targetPackage = targetPkg,
-                        styleName = activeStyle.name,
-                        isSpeakToEdit = isSpeakToEdit,
-                        intentMode = resolvedIntent,
-                        translateTargetLanguage = targetTranslateLang,
-                        originalSelectedText = if (isSpeakToEdit) effectiveSelected else "",
-                        rawTranscript = exec.rawTranscript,
-                        polishedText = finalOutput,
-                        durationMs = durationMs,
-                        latencyMs = exec.latencyMs,
-                        modeLabel = exec.modeSummary,
-                        audioFilePath = historyAudioFile.absolutePath
-                    )
-                )
-                if (repository.isImeWindowVisible.value) {
-                    warmVoiceConnectionsInBackground()
-                }
-            },
-            onFailure = { err ->
-                if (err is CancellationException) return
-                performHaptic(strong = true)
-                val errorPhase = ImeLogic.classifyErrorFlags(
-                    errorMessage = err.message ?: "语音处理失败，请检查网络或 API 配置",
-                    hasCachedAudio = wavFile.exists(),
-                    hasMicPermission = audioRecorder.hasRecordPermission()
-                )
-                _imeState.update {
-                    it.copy(
-                        voicePhase = errorPhase,
-                        hasCachedAudioForRetry = errorPhase.canRetryAudio
-                    )
-                }
-            }
-        )
-    }
-
-    // -------------------------------------------------------------------------
-    // Speak-to-Edit 1-Tap Quick Chips, Help-me-Write Presets & Retry
-    // -------------------------------------------------------------------------
-
-    private fun runQuickEditChip(chip: QuickEditChip) {
-        val currPhase = _imeState.value.voicePhase
-        if (currPhase is VoicePhase.Recording || currPhase is VoicePhase.Processing) return
-
-        val liveSelected = readSelectedTextSafely().ifBlank { _imeState.value.effectiveSelectedText }
-        if (liveSelected.isBlank()) return
-
-        performKeyFeedback(strong = false)
-        toastDismissJob?.cancel()
-        activePipelineJob?.cancel()
-
-        activePipelineJob = serviceScope.launch {
-            val settings = repository.settings.value
-            val snapshot = _imeState.value
-            val targetPkg = snapshot.targetPackage
-            val targetAppName = snapshot.targetAppName
-            val (activeStyle, _) = repository.resolveActiveStyle(targetPkg, snapshot.currentInputType)
-
-            _imeState.update {
-                it.copy(voicePhase = VoicePhase.Processing(stageText = "${chip.label}中..."))
-            }
-
-            val transformResult = aiEngine.runTextTransform(
-                settings = settings,
-                activeStyle = activeStyle,
-                rawOrSelectedText = liveSelected,
-                explicitInstruction = chip.instruction,
-                targetAppName = targetAppName
-            )
-
-            transformResult.fold(
-                onSuccess = { exec ->
-                    val finalOutput = exec.finalOutput
-                    commitPipelineOutput(
-                        finalText = finalOutput,
-                        overwrittenSelection = liveSelected,
-                        latencyMs = exec.latencyMs
-                    )
-                    repository.addHistory(
-                        HistoryRecord(
-                            targetAppName = targetAppName,
-                            targetPackage = targetPkg,
-                            styleName = activeStyle.name,
-                            isSpeakToEdit = true,
-                            intentMode = VoiceIntentMode.SPEAK_TO_EDIT,
-                            translateTargetLanguage = "",
-                            originalSelectedText = liveSelected,
-                            rawTranscript = "[快捷改写] ${chip.label}",
-                            polishedText = finalOutput,
-                            durationMs = 0L,
-                            latencyMs = exec.latencyMs,
-                            modeLabel = exec.modeSummary,
-                            audioFilePath = ""
-                        )
-                    )
-                },
-                onFailure = { err ->
-                    if (err is CancellationException) return@launch
-                    performHaptic(strong = true)
-                    val errorPhase = ImeLogic.classifyErrorFlags(
-                        errorMessage = err.message ?: "改写失败，请检查网络或 API 配置",
-                        hasCachedAudio = false,
-                        hasMicPermission = audioRecorder.hasRecordPermission()
-                    )
-                    _imeState.update { it.copy(voicePhase = errorPhase) }
-                }
-            )
-        }
-    }
-
-    private fun runHelpWritePreset(preset: HelpWritePromptPreset) {
-        val currPhase = _imeState.value.voicePhase
-        if (currPhase is VoicePhase.Recording || currPhase is VoicePhase.Processing) return
-
-        performKeyFeedback(strong = false)
-        toastDismissJob?.cancel()
-        activePipelineJob?.cancel()
-
-        activePipelineJob = serviceScope.launch {
-            val settings = repository.settings.value
-            val snapshot = _imeState.value
-            val targetPkg = snapshot.targetPackage
-            val targetAppName = snapshot.targetAppName
-            val (activeStyle, _) = repository.resolveActiveStyle(targetPkg, snapshot.currentInputType)
-
-            _imeState.update {
-                it.copy(voicePhase = VoicePhase.Processing(stageText = "正在起草：${preset.label}..."))
-            }
-
-            val draftInstruction =
-                "请忽略<selected_text>中的占位文字，直接根据以下写作需求起草完整、自然得体、可直接发送的成稿正文（绝不输出任何寒暄或解释）：${preset.instruction}"
-
-            val transformResult = aiEngine.runTextTransform(
-                settings = settings,
-                activeStyle = activeStyle,
-                rawOrSelectedText = preset.label,
-                explicitInstruction = draftInstruction,
-                targetAppName = targetAppName
-            )
-
-            transformResult.fold(
-                onSuccess = { exec ->
-                    val finalOutput = exec.finalOutput
-                    val existingSel = readSelectedTextSafely()
-                    commitPipelineOutput(
-                        finalText = finalOutput,
-                        overwrittenSelection = existingSel,
-                        latencyMs = exec.latencyMs
-                    )
-                    repository.addHistory(
-                        HistoryRecord(
-                            targetAppName = targetAppName,
-                            targetPackage = targetPkg,
-                            styleName = activeStyle.name,
-                            isSpeakToEdit = false,
-                            intentMode = VoiceIntentMode.HELP_ME_WRITE,
-                            translateTargetLanguage = "",
-                            originalSelectedText = "",
-                            rawTranscript = "[帮我写灵感] ${preset.instruction}",
-                            polishedText = finalOutput,
-                            durationMs = 0L,
-                            latencyMs = exec.latencyMs,
-                            modeLabel = exec.modeSummary,
-                            audioFilePath = ""
-                        )
-                    )
-                },
-                onFailure = { err ->
-                    if (err is CancellationException) return@launch
-                    performHaptic(strong = true)
-                    val errorPhase = ImeLogic.classifyErrorFlags(
-                        errorMessage = err.message ?: "起草失败，请检查网络或 API 配置",
-                        hasCachedAudio = false,
-                        hasMicPermission = audioRecorder.hasRecordPermission()
-                    )
-                    _imeState.update { it.copy(voicePhase = errorPhase) }
-                }
-            )
-        }
-    }
-
     fun retryLastAudio() {
-        val currPhase = _imeState.value.voicePhase
-        if (currPhase is VoicePhase.Recording || currPhase is VoicePhase.Processing) return
-
-        val wavFile = WavAudioRecorder.getLastRecordingFile(this)
-        if (!wavFile.exists() || wavFile.length() <= 44L) {
-            _imeState.update {
-                it.copy(
-                    voicePhase = VoicePhase.Error(
-                        message = "未找到可重试的最近录音文件，请重新说话",
-                        canRetryAudio = false,
-                        needsApiSetup = false,
-                        needsMicPermission = false
-                    ),
-                    hasCachedAudioForRetry = false
-                )
-            }
-            return
-        }
-
-        performKeyFeedback(strong = false)
-        val estimatedDurationMs =
-            ((wavFile.length() - 44L).coerceAtLeast(0L) * 1000L) / (WavAudioRecorder.SAMPLE_RATE * 2L)
-
-        activePipelineJob?.cancel()
-        activePipelineJob = serviceScope.launch {
-            executeVoicePipelineOnWav(wavFile, estimatedDurationMs)
-        }
+        voiceController.retryLastAudio()
     }
 
-    private fun dismissErrorBanner() {
-        performKeyFeedback(strong = false)
-        _imeState.update {
-            if (it.voicePhase is VoicePhase.Error) {
-                it.copy(voicePhase = VoicePhase.Idle)
-            } else {
-                it
-            }
-        }
+    fun performEnterOrNewline() {
+        typingController.performEnterOrNewline(
+            onRunEqualEqualAskAi = voiceController::runEqualEqualAskAi
+        )
     }
 
     // -------------------------------------------------------------------------
     // Commit, Undo, Auto-Learned Dictionary (`Auto-added`), Style Selector
     // -------------------------------------------------------------------------
 
-    private fun commitPipelineOutput(
-        finalText: String,
-        overwrittenSelection: String,
-        latencyMs: Long
-    ) {
-        val ic = currentInputConnection
-        if (ic != null) {
-            ic.beginBatchEdit()
-            ic.commitText(finalText, 1)
-            ic.endBatchEdit()
-        }
-
-        // Snapshot full editor buffer right after dictation commits for Auto-Learned Dictionary diffing
-        val fullBufferAfterCommit = readFullEditorTextSafely().ifBlank { finalText }
-        lastDictatedFullText = fullBufferAfterCommit
-        lastDictatedAtMs = System.currentTimeMillis()
-        hasManualEditSinceDictation = false
-
-        performHaptic(strong = true)
-        flypyEngine.recordExternalCommit(finalText)
-        val undo = ImeLogic.createUndoSnapshot(
-            committedText = finalText,
-            replacedSelection = overwrittenSelection
-        )
-        pushUndoSnapshot(undo)
-
-        _imeState.update {
-            it.copy(
-                voicePhase = VoicePhase.SuccessToast(
-                    preview = ImeLogic.formatSelectionPreview(finalText, 24),
-                    latencyMs = latencyMs
-                ),
-                voiceSubPanel = VoiceSubPanel.NONE,
-                activeIntentMode = VoiceIntentMode.DICTATE,
-                undoSnapshot = undoStack.firstOrNull(),
-                rawSelectedText = "",
-                ignoreSelectionForThisTurn = false
-            )
-        }
-        scheduleToastReset()
-    }
-
-    // -------------------------------------------------------------------------
-    // Built-in Xiaohe Yinxing (小鹤音形) & QWERTY Handlers
-    // -------------------------------------------------------------------------
-
-    private fun syncFlypyStateToUi() {
-        val code = flypyEngine.composingCode
-        val cands = flypyEngine.candidates
-        _imeState.update { prev ->
-            prev.copy(
-                flypyComposingCode = code,
-                flypyCandidates = cands,
-                isFlypyCandidateSheetExpanded = if (code.isEmpty() || cands.size <= 4) {
-                    false
-                } else {
-                    prev.isFlypyCandidateSheetExpanded
-                }
-            )
-        }
-    }
-
-    private fun handleFlypyAction(action: FlypyAction) {
-        when (action) {
-            FlypyAction.ConsumedComposing -> {
-                syncFlypyStateToUi()
-            }
-            is FlypyAction.CommitText -> {
-                syncFlypyStateToUi()
-                if (action.committed.isNotEmpty()) {
-                    commitDirectText(
-                        text = action.committed,
-                        recordUndo = true,
-                        markManualEdit = true,
-                        playFeedback = false
-                    )
-                }
-            }
-        }
-    }
-
-    private fun toggleFlypyLanguageMode() {
-        performKeyFeedback(strong = true)
-        val wasChinese = _imeState.value.isFlypyChineseMode
-        if (wasChinese && flypyEngine.isComposing) {
-            val rawAscii = flypyEngine.onEnterWhenComposing()
-            if (!rawAscii.isNullOrEmpty()) {
-                commitDirectText(
-                    text = rawAscii,
-                    recordUndo = true,
-                    markManualEdit = true,
-                    playFeedback = false
-                )
-            }
-        } else {
-            flypyEngine.resetComposing()
-        }
-        val nextChinese = !wasChinese
-        if (!ImeLogic.isPasswordEditorInputType(_imeState.value.currentInputType)) {
-            repository.updateSettings {
-                it.copy(
-                    lastKeyboardTab = KeyboardTabMode.QWERTY.name,
-                    lastQwertyIsChinese = nextChinese
-                )
-            }
-        }
-        _imeState.update {
-            it.copy(
-                isFlypyChineseMode = nextChinese,
-                flypyComposingCode = "",
-                flypyCandidates = emptyList(),
-                isFlypyCandidateSheetExpanded = false
-            )
-        }
-        showQuickActionToast(if (nextChinese) "鹤 · 小鹤音形" else "EN · 英文键盘")
-    }
-
-    private fun commitQwertyChar(ch: String) {
-        if (ch.isEmpty()) return
-        val curr = _imeState.value
-        if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode) {
-            if (ch.length == 1) {
-                performKeyFeedback(strong = false)
-                val action = flypyEngine.onCharInput(ch[0])
-                handleFlypyAction(action)
-                return
-            } else {
-                val flushed = flypyEngine.flushTopCandidateOrClear()
-                syncFlypyStateToUi()
-                commitDirectText(
-                    text = flushed + ch,
-                    recordUndo = true,
-                    markManualEdit = true
-                )
-                return
-            }
-        }
-        commitDirectText(text = ch, recordUndo = true, markManualEdit = true)
-    }
-
-    private fun handleCommaOrPeriodKey(isComma: Boolean) {
-        val curr = _imeState.value
-        if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode) {
-            performKeyFeedback(strong = false)
-            val quickSelect = repository.settings.value.flypyCommaPeriodQuickSelect
-            val action = flypyEngine.onCommaOrPeriod(
-                isComma = isComma,
-                commaPeriodQuickSelect = quickSelect
-            )
-            handleFlypyAction(action)
-            return
-        }
-        commitDirectText(
-            text = if (isComma) "," else ".",
-            recordUndo = true,
-            markManualEdit = true
-        )
-    }
-
-    private fun selectFlypyCandidate(index: Int) {
-        performKeyFeedback(strong = false)
-        val action = flypyEngine.selectCandidate(index)
-        handleFlypyAction(action)
-    }
-
-    private fun clearFlypyComposing() {
-        performKeyFeedback(strong = false)
-        if (flypyEngine.clearComposing()) {
-            syncFlypyStateToUi()
-        }
-    }
-
-    private fun flushFlypyComposing() {
-        val flushed = flypyEngine.flushTopCandidateOrClear()
-        syncFlypyStateToUi()
-        if (flushed.isNotEmpty()) {
-            commitDirectText(
-                text = flushed,
-                recordUndo = true,
-                markManualEdit = true,
-                playFeedback = false
-            )
-        }
-    }
-
-    private fun toggleFlypyCandidateSheet() {
-        performKeyFeedback(strong = false)
-        _imeState.update {
-            it.copy(isFlypyCandidateSheetExpanded = !it.isFlypyCandidateSheetExpanded)
-        }
-    }
-
-    private fun handleEditorShortcutAction(action: EditorShortcutAction) {
-        flypyEngine.resetComposing()
-        syncFlypyStateToUi()
-        performHaptic(strong = true)
-        val ic = currentInputConnection ?: return
-        when (action) {
-            EditorShortcutAction.SELECT_ALL -> {
-                runCatching { ic.performContextMenuAction(android.R.id.selectAll) }
-                showQuickActionToast("✓ 已全选")
-            }
-            EditorShortcutAction.CUT -> {
-                runCatching { ic.performContextMenuAction(android.R.id.cut) }
-                recordManualEditTouch()
-                syncSystemClipboardIfNeeded(allowFreshBanner = true)
-                showQuickActionToast("✓ 已剪切")
-            }
-            EditorShortcutAction.COPY -> {
-                runCatching { ic.performContextMenuAction(android.R.id.copy) }
-                syncSystemClipboardIfNeeded(allowFreshBanner = true)
-                showQuickActionToast("✓ 已复制")
-            }
-            EditorShortcutAction.PASTE -> {
-                val handled = runCatching {
-                    ic.performContextMenuAction(android.R.id.paste)
-                }.getOrDefault(false)
-                if (!handled) {
-                    val clipText = runCatching {
-                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                        cm?.primaryClip?.takeIf { it.itemCount > 0 }
-                            ?.getItemAt(0)
-                            ?.coerceToText(this)
-                            ?.toString()
-                            .orEmpty()
-                    }.getOrDefault("")
-                    if (clipText.isNotEmpty()) {
-                        commitDirectText(
-                            text = clipText,
-                            recordUndo = true,
-                            markManualEdit = true,
-                            playFeedback = false
-                        )
-                    }
-                } else {
-                    recordManualEditTouch()
-                }
-                showQuickActionToast("✓ 已粘贴")
-            }
-        }
-    }
-
-    private fun showQuickActionToast(message: String) {
+    override fun showQuickActionToast(message: String) {
         quickToastJob?.cancel()
         _imeState.update { it.copy(quickActionToast = message) }
         quickToastJob = serviceScope.launch {
@@ -1506,7 +519,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
     }
 
-    private fun pushUndoSnapshot(snapshot: UndoSnapshot?) {
+    override fun pushUndoSnapshot(snapshot: UndoSnapshot?) {
         if (snapshot == null) return
         undoStack.addFirst(snapshot)
         while (undoStack.size > 12) {
@@ -1514,11 +527,13 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
     }
 
-    private fun commitDirectText(
+    override fun peekTopUndoSnapshot(): UndoSnapshot? = undoStack.firstOrNull()
+
+    override fun commitDirectText(
         text: String,
         recordUndo: Boolean,
-        markManualEdit: Boolean = false,
-        playFeedback: Boolean = true
+        markManualEdit: Boolean,
+        playFeedback: Boolean
     ) {
         if (playFeedback) {
             performKeyFeedback(strong = false)
@@ -1530,7 +545,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         ic.endBatchEdit()
 
         if (text.isNotBlank()) {
-            flypyEngine.recordExternalCommit(text)
+            typingController.recordExternalCommit(text)
         }
 
         if (markManualEdit) {
@@ -1553,7 +568,19 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
     }
 
-    private fun recordManualEditTouch() {
+    override fun onDictationCommittedForAutoLearn(fullBufferAfterCommit: String) {
+        if (_imeState.value.isIncognitoMode) return
+        lastDictatedFullText = fullBufferAfterCommit
+        lastDictatedAtMs = System.currentTimeMillis()
+        hasManualEditSinceDictation = false
+    }
+
+    override fun clearAutoLearnBaseline() {
+        lastDictatedFullText = null
+        hasManualEditSinceDictation = false
+    }
+
+    override fun recordManualEditTouch() {
         val baseline = lastDictatedFullText ?: return
         if (baseline.isBlank()) return
         if (System.currentTimeMillis() - lastDictatedAtMs <= ImeLogic.AUTO_LEARN_WINDOW_MS) {
@@ -1564,7 +591,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
     }
 
-    private fun tryAutoLearnFromRecentEdit() {
+    override fun tryAutoLearnFromRecentEdit() {
+        if (_imeState.value.isIncognitoMode) {
+            clearAutoLearnBaseline()
+            return
+        }
         val before = lastDictatedFullText ?: return
         val now = System.currentTimeMillis()
         if (now - lastDictatedAtMs > ImeLogic.AUTO_LEARN_WINDOW_MS) {
@@ -1606,9 +637,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
     }
 
     fun performUndo() {
-        if (_imeState.value.isFlypyComposing && flypyEngine.clearComposing()) {
+        if (_imeState.value.isFlypyComposing && typingController.clearComposing()) {
             performKeyFeedback(strong = false)
-            syncFlypyStateToUi()
             showQuickActionToast("已清码")
             return
         }
@@ -1617,9 +647,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         val ic = currentInputConnection ?: return
         performKeyFeedback(strong = true)
 
-        // Clear auto-learn baseline so an Undo is never treated as a manual correction
-        lastDictatedFullText = null
-        hasManualEditSinceDictation = false
+        clearAutoLearnBaseline()
 
         ic.beginBatchEdit()
         val currentlySelected = readSelectedTextSafely()
@@ -1646,23 +674,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
             )
         }
         if (_imeState.value.tabMode == KeyboardTabMode.VOICE) {
-            scheduleToastReset()
+            voiceController.scheduleToastReset()
         } else {
             showQuickActionToast("↶ 已撤回上屏")
-        }
-    }
-
-    private fun scheduleToastReset() {
-        toastDismissJob?.cancel()
-        toastDismissJob = serviceScope.launch {
-            delay(2200L)
-            _imeState.update { curr ->
-                if (curr.voicePhase is VoicePhase.SuccessToast) {
-                    curr.copy(voicePhase = VoicePhase.Idle)
-                } else {
-                    curr
-                }
-            }
         }
     }
 
@@ -1694,30 +708,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
     }
 
     // -------------------------------------------------------------------------
-    // Auxiliary Keyboard Actions (Punctuation, Hide, Switch IME, Backspace, Enter)
+    // Auxiliary Keyboard Actions (Hide, Switch IME, Select All, Open Host App)
     // -------------------------------------------------------------------------
-
-    private fun insertPairedSymbol(left: String, right: String) {
-        performKeyFeedback(strong = false)
-        val ic = currentInputConnection ?: return
-        val selected = readSelectedTextSafely()
-        ic.beginBatchEdit()
-        if (selected.isNotEmpty()) {
-            ic.commitText("$left$selected$right", 1)
-        } else {
-            ic.commitText("$left$right", 1)
-            val extracted = try {
-                ic.getExtractedText(ExtractedTextRequest(), 0)
-            } catch (_: Exception) {
-                null
-            }
-            if (extracted != null && extracted.selectionStart >= right.length) {
-                val cursorInside = extracted.selectionStart - right.length
-                ic.setSelection(cursorInside, cursorInside)
-            }
-        }
-        ic.endBatchEdit()
-    }
 
     fun hideKeyboardSelf() {
         performKeyFeedback(strong = false)
@@ -1763,217 +755,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
     }
 
     fun insertSpace() {
-        val curr = _imeState.value
-        if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode && flypyEngine.isComposing) {
-            performKeyFeedback(strong = false)
-            val action = flypyEngine.onSpace()
-            handleFlypyAction(action)
-            return
-        }
-        // Evaluate auto-learned correction before/after space commit
-        tryAutoLearnFromRecentEdit()
-        commitDirectText(" ", recordUndo = false, markManualEdit = false)
+        typingController.insertSpace()
     }
 
     fun deleteBackward() {
-        val curr = _imeState.value
-        if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode && flypyEngine.onBackspace()) {
-            performKeyFeedback(strong = false)
-            syncFlypyStateToUi()
-            return
-        }
-        performKeyFeedback(strong = false)
-        val ic = currentInputConnection ?: return
-        try {
-            val selected = ic.getSelectedText(0)?.toString().orEmpty()
-            if (selected.isNotEmpty()) {
-                ic.commitText("", 1)
-            } else {
-                val before = ic.getTextBeforeCursor(2, 0)?.toString().orEmpty()
-                val deleteLen = ImeLogic.computeBackspaceDeleteLength(before).coerceAtLeast(1)
-                ic.deleteSurroundingText(deleteLen, 0)
-            }
-            recordManualEditTouch()
-        } catch (_: Exception) {
-        }
-    }
-
-    fun performEnterOrNewline() {
-        val curr = _imeState.value
-        if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode && flypyEngine.isComposing) {
-            val rawAscii = flypyEngine.onEnterWhenComposing()
-            syncFlypyStateToUi()
-            if (!rawAscii.isNullOrEmpty()) {
-                commitDirectText(
-                    text = rawAscii,
-                    recordUndo = true,
-                    markManualEdit = true,
-                    playFeedback = true
-                )
-                return
-            }
-        }
-
-        val settingsSnap = repository.settings.value
-        if (settingsSnap.equalEqualAskAiEnabled) {
-            val fullText = readFullEditorTextSafely()
-            val directQuery = SnippetMatcher.extractEqualEqualAskAiQuery(fullText)
-            if (directQuery != null) {
-                runEqualEqualAskAi(fullEditorText = fullText, query = directQuery)
-                return
-            }
-        }
-
-        performKeyFeedback(strong = false)
-        // Must read ExtractedText BEFORE performEditorAction(SEND) clears the host chat input!
-        tryAutoLearnFromRecentEdit()
-
-        val ic = currentInputConnection ?: return
-        val actionInfo = ImeLogic.resolveEnterAction(
-            imeOptions = _imeState.value.currentImeOptions,
-            inputType = _imeState.value.currentInputType
-        )
-        val actionId = actionInfo.performEditorActionId
-        if (actionId != null) {
-            val handled = try {
-                ic.performEditorAction(actionId)
-            } catch (_: Exception) {
-                false
-            }
-            if (!handled) {
-                ic.commitText("\n", 1)
-            }
-        } else {
-            ic.commitText("\n", 1)
-        }
-    }
-
-    private fun toggleWhisperMode() {
-        performKeyFeedback(strong = true)
-        val nextWhisper = !repository.settings.value.whisperModeEnabled
-        repository.updateSettings { it.copy(whisperModeEnabled = nextWhisper) }
-        showQuickActionToast(if (nextWhisper) "🤫 已开启轻声耳语高敏收音" else "🎙️ 已恢复标准收音灵敏度")
-    }
-
-    private fun runEqualEqualAskAi(fullEditorText: String, query: String) {
-        val currPhase = _imeState.value.voicePhase
-        if (currPhase is VoicePhase.Recording || currPhase is VoicePhase.Processing) return
-
-        performKeyFeedback(strong = true)
-        toastDismissJob?.cancel()
-        activePipelineJob?.cancel()
-
-        activePipelineJob = serviceScope.launch {
-            val settings = repository.settings.value
-            val snapshot = _imeState.value
-            val targetPkg = snapshot.targetPackage
-            val targetAppName = snapshot.targetAppName
-            val (activeStyle, _) = repository.resolveActiveStyle(targetPkg, snapshot.currentInputType)
-
-            _imeState.update {
-                it.copy(voicePhase = VoicePhase.Processing(stageText = "🤖 AI 思考解答中..."))
-            }
-            if (snapshot.tabMode != KeyboardTabMode.VOICE) {
-                showQuickActionToast("🤖 AI 正在解答「${query.take(10)}」…")
-            }
-
-            val directAskInstruction =
-                "用户在输入框通过 == 向你直接提问或下达写作指令。请忽略<selected_text>的选中改写语义，直接把<selected_text>当作用户的问题或指令本身，直接输出准确、简洁、立即可发送或使用的结果正文（严禁寒暄、严禁解释前缀、严禁复述问题）。"
-
-            val transformResult = aiEngine.runTextTransform(
-                settings = settings,
-                activeStyle = activeStyle,
-                rawOrSelectedText = query,
-                explicitInstruction = directAskInstruction,
-                targetAppName = targetAppName
-            )
-
-            transformResult.fold(
-                onSuccess = { exec ->
-                    val finalOutput = exec.finalOutput
-                    val ic = currentInputConnection
-                    val currentFull = readFullEditorTextSafely().ifEmpty { fullEditorText }
-                    if (ic != null) {
-                        ic.beginBatchEdit()
-                        val extracted = runCatching {
-                            ic.getExtractedText(ExtractedTextRequest(), 0)
-                        }.getOrNull()
-                        if (extracted?.text != null) {
-                            ic.setSelection(0, extracted.text.length)
-                            ic.commitText(finalOutput, 1)
-                        } else {
-                            val beforeLen = runCatching {
-                                ic.getTextBeforeCursor(4000, 0)?.length ?: currentFull.length
-                            }.getOrDefault(currentFull.length)
-                            val afterLen = runCatching {
-                                ic.getTextAfterCursor(4000, 0)?.length ?: 0
-                            }.getOrDefault(0)
-                            ic.deleteSurroundingText(beforeLen, afterLen)
-                            ic.commitText(finalOutput, 1)
-                        }
-                        ic.endBatchEdit()
-                    }
-
-                    lastDictatedFullText = null
-                    hasManualEditSinceDictation = false
-                    performHaptic(strong = true)
-                    flypyEngine.recordExternalCommit(finalOutput)
-
-                    val undo = ImeLogic.createUndoSnapshot(
-                        committedText = finalOutput,
-                        replacedSelection = currentFull
-                    )
-                    pushUndoSnapshot(undo)
-
-                    _imeState.update {
-                        it.copy(
-                            voicePhase = VoicePhase.SuccessToast(
-                                preview = ImeLogic.formatSelectionPreview(finalOutput, 24),
-                                latencyMs = exec.latencyMs
-                            ),
-                            undoSnapshot = undoStack.firstOrNull(),
-                            rawSelectedText = "",
-                            ignoreSelectionForThisTurn = false
-                        )
-                    }
-                    scheduleToastReset()
-                    if (_imeState.value.tabMode != KeyboardTabMode.VOICE) {
-                        showQuickActionToast("✓ AI 已填入答案 · 可点 ↶ 撤回")
-                    }
-
-                    repository.addHistory(
-                        HistoryRecord(
-                            targetAppName = targetAppName,
-                            targetPackage = targetPkg,
-                            styleName = activeStyle.name,
-                            isSpeakToEdit = false,
-                            intentMode = VoiceIntentMode.HELP_ME_WRITE,
-                            translateTargetLanguage = "",
-                            originalSelectedText = currentFull,
-                            rawTranscript = "[== 问 AI] $query",
-                            polishedText = finalOutput,
-                            durationMs = 0L,
-                            latencyMs = exec.latencyMs,
-                            modeLabel = exec.modeSummary,
-                            audioFilePath = ""
-                        )
-                    )
-                },
-                onFailure = { err ->
-                    if (err is CancellationException) return@launch
-                    performHaptic(strong = true)
-                    val errorPhase = ImeLogic.classifyErrorFlags(
-                        errorMessage = err.message ?: "AI 回答失败，请检查网络或 API 配置",
-                        hasCachedAudio = false,
-                        hasMicPermission = audioRecorder.hasRecordPermission()
-                    )
-                    _imeState.update { it.copy(voicePhase = errorPhase) }
-                    if (_imeState.value.tabMode != KeyboardTabMode.VOICE) {
-                        showQuickActionToast("⚠ ${(err.message ?: "AI 回答失败").take(22)}")
-                    }
-                }
-            )
-        }
+        typingController.deleteBackward()
     }
 
     fun openHostApp(tabIndex: Int = AppDestinations.TAB_HOME) {
@@ -1999,7 +785,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
     // Built-in IME Clipboard Manager & Smart Quick-Paste Actions
     // -------------------------------------------------------------------------
 
-    private fun syncSystemClipboardIfNeeded(allowFreshBanner: Boolean) {
+    override fun syncSystemClipboardIfNeeded(allowFreshBanner: Boolean) {
+        if (_imeState.value.isIncognitoMode) return
         val currentSettings = repository.settings.value
         if (!currentSettings.clipboardEnabled) return
 
@@ -2047,21 +834,16 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
     private fun openClipboardPanel() {
         performKeyFeedback(strong = false)
         if (_imeState.value.isFlypyComposing) {
-            flypyEngine.resetComposing()
-            syncFlypyStateToUi()
+            typingController.resetComposing()
         }
-        if (_imeState.value.voicePhase is VoicePhase.Recording) {
-            micPressDownTimeMs = 0L
-            abortActiveStreamingSession()
-            serviceScope.launch {
-                audioRecorder.cancelRecording()
-            }
-        }
+        voiceController.stopRecordingOnTabSwitchOrWindowHidden()
         syncSystemClipboardIfNeeded(allowFreshBanner = false)
         freshClipBannerJob?.cancel()
         _imeState.update { prev ->
             prev.copy(
                 isClipboardOpen = true,
+                isToolPanelOpen = false,
+                isToolPanelHeightExpanded = false,
                 freshClipboardBannerItem = null,
                 voicePhase = if (prev.voicePhase is VoicePhase.Recording) VoicePhase.Idle else prev.voicePhase,
                 isStylePickerExpanded = false,
@@ -2078,8 +860,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
     private fun pasteFromClipboard(text: String) {
         if (text.isEmpty()) return
         if (_imeState.value.isFlypyComposing) {
-            flypyEngine.resetComposing()
-            syncFlypyStateToUi()
+            typingController.resetComposing()
         }
         freshClipBannerJob?.cancel()
         _imeState.update { it.copy(freshClipboardBannerItem = null) }
@@ -2155,7 +936,20 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
     }
 
-    private fun readSelectedTextSafely(): String {
+    override fun currentInputConnection(): InputConnection? = super.getCurrentInputConnection()
+
+    override fun readSystemClipboardText(): String {
+        return runCatching {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            cm?.primaryClip?.takeIf { it.itemCount > 0 }
+                ?.getItemAt(0)
+                ?.coerceToText(this)
+                ?.toString()
+                .orEmpty()
+        }.getOrDefault("")
+    }
+
+    override fun readSelectedTextSafely(): String {
         return try {
             currentInputConnection?.getSelectedText(0)?.toString().orEmpty()
         } catch (_: Exception) {
@@ -2163,7 +957,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
     }
 
-    private fun readSurroundingBeforeCursor(maxChars: Int): String {
+    override fun readSurroundingBeforeCursor(maxChars: Int): String {
         return try {
             currentInputConnection?.getTextBeforeCursor(maxChars, 0)?.toString().orEmpty()
         } catch (_: Exception) {
@@ -2171,7 +965,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
     }
 
-    private fun readFullEditorTextSafely(): String {
+    override fun readFullEditorTextSafely(): String {
         val ic = currentInputConnection ?: return ""
         return try {
             val extracted = ic.getExtractedText(ExtractedTextRequest(), 0)?.text?.toString()
@@ -2188,7 +982,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
     }
 
-    private fun archiveWavForHistory(wavFile: File, retention: HistoryRetention): File {
+    override fun archiveWavForHistory(wavFile: File, retention: HistoryRetention): File {
         if (retention == HistoryRetention.NEVER || !wavFile.exists()) {
             return wavFile
         }
@@ -2206,7 +1000,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
     }
 
-    private fun hasRetryWavFile(): Boolean {
+    override fun getLastRecordingWavFile(): File = WavAudioRecorder.getLastRecordingFile(this)
+
+    override fun hasRetryWavFile(): Boolean {
         return try {
             val f = WavAudioRecorder.getLastRecordingFile(this)
             f.exists() && f.length() > 44L
@@ -2215,7 +1011,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
     }
 
-    private fun performKeyFeedback(strong: Boolean = false) {
+    override fun performKeyFeedback(strong: Boolean) {
         performHaptic(strong = strong)
         playKeyClickSound()
     }
@@ -2229,7 +1025,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService() {
         }
     }
 
-    private fun performHaptic(strong: Boolean = false) {
+    override fun performHaptic(strong: Boolean) {
         if (!repository.settings.value.hapticFeedback) return
         try {
             val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

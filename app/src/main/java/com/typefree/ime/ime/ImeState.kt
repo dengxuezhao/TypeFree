@@ -4,6 +4,7 @@ import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ClipboardEntry
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.flypy.FlypyCandidate
@@ -52,6 +53,12 @@ enum class ShiftKeyState {
     OFF,
     ONCE,
     CAPS_LOCK
+}
+
+enum class LiveWriteUiStatus {
+    INACTIVE,
+    WRITING,
+    FROZEN
 }
 
 data class UndoSnapshot(
@@ -115,14 +122,31 @@ data class ImeUiState(
     val flypyCandidates: List<FlypyCandidate> = emptyList(),
     val isFlypyCandidateSheetExpanded: Boolean = false,
     val isClipboardOpen: Boolean = false,
+    val isToolPanelOpen: Boolean = false,
+    val isToolPanelHeightExpanded: Boolean = false,
     val freshClipboardBannerItem: ClipboardEntry? = null,
     val quickActionToast: String? = null,
-    val streamingPartialPreview: String = ""
+    val streamingPartialPreview: String = "",
+    val liveWriteStatus: LiveWriteUiStatus = LiveWriteUiStatus.INACTIVE,
+    val preeditDisplay: String = "",
+    val hasMoreCandidates: Boolean = false,
+    val activeInputScheme: InputScheme = InputScheme.FLYPY_TABLE,
+    val isRimeDeploying: Boolean = false,
+    val predictionCandidates: List<FlypyCandidate> = emptyList(),
+    val aiCompletionSuggestion: String? = null,
+    val isIncognitoMode: Boolean = false,
+    val activeHeightLevel: Int = KeyboardMetrics.DEFAULT_LEVEL
 ) {
     val isFlypyComposing: Boolean
         get() = tabMode == KeyboardTabMode.QWERTY &&
             isFlypyChineseMode &&
-            flypyComposingCode.isNotEmpty()
+            (flypyComposingCode.isNotEmpty() || preeditDisplay.isNotEmpty())
+
+    val isPredictionBarVisible: Boolean
+        get() = tabMode == KeyboardTabMode.QWERTY &&
+            isFlypyChineseMode &&
+            !isFlypyComposing &&
+            (predictionCandidates.isNotEmpty() || !aiCompletionSuggestion.isNullOrBlank())
     val effectiveSelectedText: String
         get() = if (ignoreSelectionForThisTurn) "" else rawSelectedText
 
@@ -250,6 +274,11 @@ object ImeLogic {
             }
             else -> false
         }
+    }
+
+    fun isIncognitoImeOptions(imeOptions: Int, inputType: Int = 0): Boolean {
+        return (imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0 ||
+            isPasswordEditorInputType(inputType)
     }
 
     /**

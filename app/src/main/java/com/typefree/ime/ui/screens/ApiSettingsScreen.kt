@@ -94,6 +94,7 @@ import com.typefree.ime.data.DictionaryEntry
 import com.typefree.ime.data.DictionarySource
 import com.typefree.ime.data.DiscoveredModelItem
 import com.typefree.ime.data.HistoryRetention
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.LlmConfig
 import com.typefree.ime.data.ModelCapabilitySlot
 import com.typefree.ime.data.ModelProbeResult
@@ -137,6 +138,12 @@ object ApiConfigBackupHelper {
         "pauseMediaWhileRecording",
         "whisperModeEnabled",
         "equalEqualAskAiEnabled",
+        "keyboardHeightLevel",
+        "liveWriteToEditor",
+        "inputScheme",
+        "fixedCandidateOrder",
+        "predictionEnabled",
+        "aiCompletionEnabled",
         "themePreference",
         "appAwareToneEnabled",
         "selectedManualStyleId",
@@ -599,6 +606,21 @@ object ApiConfigBackupHelper {
                 ?.takeIf { it.isNotBlank() }
                 ?: existingSettings.activeTranslateTarget
 
+            val mergedHeightLevel = rootObj.optLong("keyboardHeightLevel")
+                ?.toInt()
+                ?.coerceIn(-2, 2)
+                ?: existingSettings.keyboardHeightLevel
+
+            val mergedInputScheme = rootObj.optString("inputScheme")?.let { rawScheme ->
+                InputScheme.entries.firstOrNull { it.name.equals(rawScheme, ignoreCase = true) }
+            } ?: existingSettings.inputScheme
+
+            val mergedFixedOrder = if (rootObj.has("fixedCandidateOrder")) {
+                rootObj.optBoolean("fixedCandidateOrder")
+            } else {
+                existingSettings.fixedCandidateOrder
+            }
+
             val candidate = existingSettings.copy(
                 pipelineMode = mode,
                 sttConfig = mergedStt,
@@ -612,6 +634,15 @@ object ApiConfigBackupHelper {
                     ?: existingSettings.whisperModeEnabled,
                 equalEqualAskAiEnabled = rootObj.optBoolean("equalEqualAskAiEnabled")
                     ?: existingSettings.equalEqualAskAiEnabled,
+                keyboardHeightLevel = mergedHeightLevel,
+                liveWriteToEditor = rootObj.optBoolean("liveWriteToEditor")
+                    ?: existingSettings.liveWriteToEditor,
+                inputScheme = mergedInputScheme,
+                fixedCandidateOrder = mergedFixedOrder,
+                predictionEnabled = rootObj.optBoolean("predictionEnabled")
+                    ?: existingSettings.predictionEnabled,
+                aiCompletionEnabled = rootObj.optBoolean("aiCompletionEnabled")
+                    ?: existingSettings.aiCompletionEnabled,
                 themePreference = themePref,
                 appAwareToneEnabled = rootObj.optBoolean("appAwareToneEnabled")
                     ?: existingSettings.appAwareToneEnabled,

@@ -57,6 +57,43 @@ enum class ThinkingMode(val label: String, val description: String) {
     ENABLED("开启思考", "显式启用深度推理，适合长文「帮我写」但首字延迟会增加")
 }
 
+enum class InputScheme(
+    val label: String,
+    val shortBadge: String,
+    val usesRime: Boolean,
+    val defaultFixedOrder: Boolean,
+    val rimeSchemaId: String = ""
+) {
+    RIME_PINYIN(
+        label = "全拼（雾凇拼音）",
+        shortBadge = "拼",
+        usesRime = true,
+        defaultFixedOrder = false,
+        rimeSchemaId = "rime_ice"
+    ),
+    RIME_DOUBLE_PINYIN_FLYPY(
+        label = "小鹤双拼（整句）",
+        shortBadge = "拼",
+        usesRime = true,
+        defaultFixedOrder = false,
+        rimeSchemaId = "double_pinyin_flypy"
+    ),
+    FLYPY_TABLE(
+        label = "小鹤音形（四码）",
+        shortBadge = "鹤",
+        usesRime = false,
+        defaultFixedOrder = true,
+        rimeSchemaId = ""
+    ),
+    RIME_CUSTOM(
+        label = "自定义 Rime 方案",
+        shortBadge = "拼",
+        usesRime = true,
+        defaultFixedOrder = false,
+        rimeSchemaId = "custom"
+    )
+}
+
 data class DiscoveredModelItem(
     val id: String,
     val displayName: String = "",
@@ -380,6 +417,12 @@ data class AppSettings(
     val pauseMediaWhileRecording: Boolean = true,
     val whisperModeEnabled: Boolean = false,
     val equalEqualAskAiEnabled: Boolean = true,
+    val keyboardHeightLevel: Int = 0, // -2..+2，0 = 标准 298dp
+    val liveWriteToEditor: Boolean = false, // 实时写入输入框
+    val inputScheme: InputScheme = InputScheme.RIME_PINYIN, // 新用户默认全拼；老用户升级保持 FLYPY_TABLE
+    val fixedCandidateOrder: Boolean? = null, // null = 按方案自动
+    val predictionEnabled: Boolean = true,
+    val aiCompletionEnabled: Boolean = false,
     val providerVault: Map<String, ProviderCredential> = emptyMap(),
     val snippets: List<SnippetEntry> = DefaultPresets.defaultSnippets(),
     val historyRetention: HistoryRetention = HistoryRetention.FOREVER,

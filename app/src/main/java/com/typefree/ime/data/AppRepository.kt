@@ -113,6 +113,37 @@ class AppRepository(private val appContext: Context) {
             } else {
                 true
             }
+            val resolvedKeyboardHeightLevel = if (raw.contains("\"keyboardHeightLevel\"")) {
+                parsed.keyboardHeightLevel.coerceIn(-2, 2)
+            } else {
+                0
+            }
+            val resolvedLiveWriteToEditor = if (raw.contains("\"liveWriteToEditor\"")) {
+                parsed.liveWriteToEditor
+            } else {
+                false
+            }
+            // 新用户默认 Rime 全拼；老用户升级（存在旧 JSON 但无 inputScheme 字段）保持 FLYPY_TABLE
+            val resolvedInputScheme = if (raw.contains("\"inputScheme\"")) {
+                parsed.inputScheme ?: InputScheme.RIME_PINYIN
+            } else {
+                InputScheme.FLYPY_TABLE
+            }
+            val resolvedFixedCandidateOrder = if (raw.contains("\"fixedCandidateOrder\"")) {
+                parsed.fixedCandidateOrder
+            } else {
+                null
+            }
+            val resolvedPredictionEnabled = if (raw.contains("\"predictionEnabled\"")) {
+                parsed.predictionEnabled
+            } else {
+                true
+            }
+            val resolvedAiCompletionEnabled = if (raw.contains("\"aiCompletionEnabled\"")) {
+                parsed.aiCompletionEnabled
+            } else {
+                false
+            }
             val safeSnippets = (parsed.snippets ?: DefaultPresets.defaultSnippets()).map { s ->
                 s.copy(
                     id = s.id.ifBlank { UUID.randomUUID().toString() },
@@ -177,6 +208,12 @@ class AppRepository(private val appContext: Context) {
                 pauseMediaWhileRecording = resolvedPauseMedia,
                 whisperModeEnabled = resolvedWhisperMode,
                 equalEqualAskAiEnabled = resolvedEqualAskAi,
+                keyboardHeightLevel = resolvedKeyboardHeightLevel,
+                liveWriteToEditor = resolvedLiveWriteToEditor,
+                inputScheme = resolvedInputScheme,
+                fixedCandidateOrder = resolvedFixedCandidateOrder,
+                predictionEnabled = resolvedPredictionEnabled,
+                aiCompletionEnabled = resolvedAiCompletionEnabled,
                 providerVault = safeVault,
                 snippets = safeSnippets,
                 historyRetention = parsed.historyRetention ?: HistoryRetention.FOREVER,
