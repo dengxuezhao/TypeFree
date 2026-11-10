@@ -75,7 +75,9 @@ import com.typefree.ime.BuildConfig
 import com.typefree.ime.bubble.TypeFreeBubbleController
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.DefaultPresets
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.ThemePreference
+import com.typefree.ime.ime.KeyboardMetrics
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.components.TypeFreeIcons
@@ -794,7 +796,7 @@ private fun AppearanceAndPreferencesPane(repository: AppRepository) {
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "恒定 298dp 零跳变视口 · 1.17:1 黄金键帽比例 · 顶部独立数字行 · 记忆键盘模式",
+                        text = "恒定帧高 零跳变视口 · 1.17:1 黄金键帽比例 · 顶部独立数字行 · 记忆键盘模式",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -817,6 +819,137 @@ private fun AppearanceAndPreferencesPane(repository: AppRepository) {
                     checked = settings.qwertyShowNumberRow,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(qwertyShowNumberRow = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
+                // Keyboard Height (5 levels: -2..+2)
+                val currentHeightLevel = settings.keyboardHeightLevel.coerceIn(
+                    KeyboardMetrics.MIN_LEVEL,
+                    KeyboardMetrics.MAX_LEVEL
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "键盘高度 · ${KeyboardMetrics.labelForLevel(currentHeightLevel)}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "所有面板同步生效，切换面板高度始终一致",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(
+                            enabled = currentHeightLevel != KeyboardMetrics.DEFAULT_LEVEL,
+                            onClick = {
+                                repository.updateSettings {
+                                    it.copy(keyboardHeightLevel = KeyboardMetrics.DEFAULT_LEVEL)
+                                }
+                            },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text("恢复默认", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        KeyboardMetrics.ALL_LEVELS.forEach { level ->
+                            val selected = level == currentHeightLevel
+                            FilterChip(
+                                selected = selected,
+                                onClick = {
+                                    repository.updateSettings { it.copy(keyboardHeightLevel = level) }
+                                },
+                                label = {
+                                    Text(
+                                        text = KeyboardMetrics.labelForLevel(level),
+                                        fontSize = 12.sp,
+                                        maxLines = 1
+                                    )
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                )
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
+                // Input Scheme (全拼 / 小鹤双拼 / 小鹤音形)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "输入方案 · ${settings.inputScheme.label}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "选择中文打字编码方案（键盘工具面板亦可一键循环切换）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    val schemeOptions = remember {
+                        listOf(
+                            InputScheme.RIME_PINYIN to "全拼",
+                            InputScheme.RIME_DOUBLE_PINYIN_FLYPY to "小鹤双拼",
+                            InputScheme.FLYPY_TABLE to "小鹤音形"
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        schemeOptions.forEach { (scheme, shortTitle) ->
+                            val selected = settings.inputScheme == scheme
+                            FilterChip(
+                                selected = selected,
+                                onClick = {
+                                    repository.updateSettings { it.copy(inputScheme = scheme) }
+                                },
+                                label = {
+                                    Text(
+                                        text = shortTitle,
+                                        fontSize = 12.sp,
+                                        maxLines = 1
+                                    )
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                )
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
+                PreferenceSwitchRow(
+                    title = "AI 整句补全",
+                    subtitle = "停顿后把光标前文字发送到你配置的模型生成续写建议（默认关闭，密码框与无痕模式永不触发）",
+                    checked = settings.aiCompletionEnabled,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(aiCompletionEnabled = enabled) }
                     }
                 )
 
@@ -1044,6 +1177,17 @@ private fun AppearanceAndPreferencesPane(repository: AppRepository) {
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
+
+                PreferenceSwitchRow(
+                    title = "实时写入输入框",
+                    subtitle = "边说边上屏，未确定的部分会自动修正；部分 App 不支持时自动回退",
+                    checked = settings.liveWriteToEditor,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(liveWriteToEditor = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
                 PreferenceSwitchRow(
                     title = "🎵 录音时自动暂停外放媒体",

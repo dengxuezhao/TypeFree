@@ -117,7 +117,12 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             repository.settings.collect { currentSettings ->
                 typingController.updateSnippets(currentSettings.snippets)
                 typingController.setFixedCandidateOrder(currentSettings.fixedCandidateOrder)
-                _imeState.update { it.copy(activeInputScheme = currentSettings.inputScheme) }
+                _imeState.update {
+                    it.copy(
+                        activeInputScheme = currentSettings.inputScheme,
+                        activeHeightLevel = currentSettings.keyboardHeightLevel
+                    )
+                }
                 val prevSetting = lastFlypySetting
                 lastFlypySetting = currentSettings.flypyEnabled
                 if (prevSetting != null && prevSetting != currentSettings.flypyEnabled) {
@@ -439,7 +444,17 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     onClearUnpinnedClipboard = ::clearUnpinnedClipboardEntries,
                     onSaveSelectionToClipboard = ::saveCurrentSelectionToClipboard,
                     onEnableClipboard = ::enableClipboardFromKeyboard,
-                    onOpenClipboardSettings = ::openClipboardPreferencesInHostApp
+                    onOpenClipboardSettings = ::openClipboardPreferencesInHostApp,
+                    onToggleToolPanel = ::toggleToolPanel,
+                    onToggleToolPanelHeight = ::toggleToolPanelHeight,
+                    onSelectKeyboardHeightLevel = ::selectKeyboardHeightLevel,
+                    onCycleInputScheme = ::cycleInputScheme,
+                    onOpenStylePickerFromToolPanel = ::openStylePickerFromToolPanel,
+                    onToggleAiCompletion = ::toggleAiCompletion,
+                    onToggleLiveWrite = ::toggleLiveWrite,
+                    onSelectPredictionCandidate = ::selectPredictionCandidate,
+                    onSelectAiCompletion = ::selectAiCompletion,
+                    onDismissPredictions = ::dismissPredictions
                 )
             }
         }
@@ -933,6 +948,125 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             startActivity(intent)
             requestHideSelf(0)
         } catch (_: Exception) {
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Tool Panel (4x2 Grid) & Prediction / AI Completion Slot Actions
+    // -------------------------------------------------------------------------
+
+    private fun toggleToolPanel() {
+        performKeyFeedback(strong = false)
+        val willOpen = !_imeState.value.isToolPanelOpen
+        if (willOpen) {
+            if (_imeState.value.isFlypyComposing) {
+                typingController.resetComposing()
+            }
+            voiceController.stopRecordingOnTabSwitchOrWindowHidden()
+        }
+        _imeState.update { prev ->
+            prev.copy(
+                isToolPanelOpen = willOpen,
+                isToolPanelHeightExpanded = if (willOpen) prev.isToolPanelHeightExpanded else false,
+                isClipboardOpen = false,
+                voicePhase = if (willOpen && prev.voicePhase is VoicePhase.Recording) VoicePhase.Idle else prev.voicePhase,
+                isStylePickerExpanded = false,
+                isPunctuationStripOpen = false
+            )
+        }
+    }
+
+    private fun toggleToolPanelHeight() {
+        performKeyFeedback(strong = false)
+        _imeState.update { it.copy(isToolPanelHeightExpanded = !it.isToolPanelHeightExpanded) }
+    }
+
+    private fun selectKeyboardHeightLevel(level: Int) {
+        val clamped = level.coerceIn(KeyboardMetrics.MIN_LEVEL, KeyboardMetrics.MAX_LEVEL)
+        performKeyFeedback(strong = false)
+        repository.updateSettings { it.copy(keyboardHeightLevel = clamped) }
+        _imeState.update { it.copy(activeHeightLevel = clamped) }
+    }
+
+    private fun cycleInputScheme() {
+        performKeyFeedback(strong = false)
+        val current = repository.settings.value.inputScheme
+        val next = nextCycledInputScheme(current)
+        typingController.resetComposing()
+        repository.updateSettings { it.copy(inputScheme = next) }
+        _imeState.update { it.copy(activeInputScheme = next) }
+        showQuickActionToast("输入方案：${next.label}")
+    }
+
+    private fun openStylePickerFromToolPanel() {
+        performKeyFeedback(strong = false)
+        _imeState.update {
+            it.copy(
+                isToolPanelOpen = false,
+                isToolPanelHeightExpanded = false,
+                isStylePickerExpanded = true,
+                isPunctuationStripOpen = false,
+                isHistoryDrawerOpen = false
+            )
+        }
+    }
+
+    private fun toggleAiCompletion() {
+        performKeyFeedback(strong = false)
+        val next = !repository.settings.value.aiCompletionEnabled
+        repository.updateSettings { it.copy(aiCompletionEnabled = next) }
+        if (!next) {
+            _imeState.update { it.copy(aiCompletionSuggestion = null) }
+        }
+        showQuickActionToast(if (next) "✦ AI 整句补全已开启" else "AI 整句补全已关闭")
+    }
+
+    private fun toggleLiveWrite() {
+        performKeyFeedback(strong = false)
+        val next = !repository.settings.value.liveWriteToEditor
+        repository.updateSettings { it.copy(liveWriteToEditor = next) }
+        showQuickActionToast(if (next) "✓ 实时写入输入框已开启" else "实时写入输入框已关闭")
+    }
+
+    private fun selectPredictionCandidate(index: Int) {
+        val cand = _imeState.value.predictionCandidates.getOrNull(index) ?: return
+        _imeState.update {
+            it.copy(
+                predictionCandidates = emptyList(),
+                aiCompletionSuggestion = null
+            )
+        }
+        commitDirectText(
+            text = cand.text,
+            recordUndo = true,
+            markManualEdit = true,
+            playFeedback = true
+        )
+    }
+
+    private fun selectAiCompletion(text: String) {
+        if (text.isEmpty()) return
+        _imeState.update {
+            it.copy(
+                predictionCandidates = emptyList(),
+                aiCompletionSuggestion = null
+            )
+        }
+        commitDirectText(
+            text = text,
+            recordUndo = true,
+            markManualEdit = true,
+            playFeedback = true
+        )
+    }
+
+    private fun dismissPredictions() {
+        performKeyFeedback(strong = false)
+        _imeState.update {
+            it.copy(
+                predictionCandidates = emptyList(),
+                aiCompletionSuggestion = null
+            )
         }
     }
 
