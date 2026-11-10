@@ -748,6 +748,77 @@ class AiPipelineEngine(
     }
 
     /**
+     * Lightweight L3 AI sentence continuation (`<= 20` chars) based on the last `<= 200` chars
+     * before cursor, active App [ToneStyle], and personal dictionary hotwords.
+     */
+    suspend fun completeSentence(
+        settings: AppSettings,
+        activeStyle: ToneStyle,
+        contextBeforeCursor: String,
+        targetAppName: String = ""
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val clippedContext = contextBeforeCursor.takeLast(200).trimEnd()
+            if (clippedContext.isEmpty()) {
+                return@withContext Result.success("")
+            }
+            val (sysPrompt, usrPrompt) = PromptBuilder.buildSentenceCompletionPrompts(
+                contextBeforeCursor = clippedContext,
+                style = activeStyle,
+                targetAppName = targetAppName,
+                dictionary = settings.dictionary
+            )
+            val rawOutput: String = when (settings.pipelineMode) {
+                PipelineMode.DUAL_STAGE -> {
+                    val llmCfg = resolveEffectiveLlmConfig(settings).copy(
+                        thinkingMode = ThinkingMode.DISABLED
+                    )
+                    if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
+                        return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
+                    }
+                    executeLlmChatWithDiagnostics(llmCfg, sysPrompt, usrPrompt).text
+                }
+                PipelineMode.MULTIMODAL_DIRECT -> {
+                    val mmCfg = settings.multimodalConfig.copy(
+                        thinkingMode = ThinkingMode.DISABLED
+                    )
+                    if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
+                        return@withContext Result.failure(IllegalStateException("请先填写多模态 API Key"))
+                    }
+                    when (mmCfg.protocol) {
+                        MultimodalProtocol.GEMINI_NATIVE -> {
+                            callGeminiTextOnlyWithDiagnostics(
+                                config = mmCfg,
+                                fullPrompt = "$sysPrompt\n\n$usrPrompt"
+                            ).text
+                        }
+                        MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
+                            callOpenAiChatCompletionWithDiagnostics(
+                                config = LlmConfig(
+                                    baseUrl = mmCfg.baseUrl,
+                                    apiKey = mmCfg.apiKey,
+                                    model = mmCfg.model,
+                                    temperature = mmCfg.temperature,
+                                    thinkingMode = ThinkingMode.DISABLED
+                                ),
+                                systemPrompt = sysPrompt,
+                                userPrompt = usrPrompt
+                            ).text
+                        }
+                    }
+                }
+            }
+            val cleaned = com.typefree.ime.ime.predict.AiSentenceCompleter.cleanCompletionOutput(
+                rawOutput = rawOutput,
+                contextBeforeCursor = clippedContext
+            )
+            Result.success(cleaned)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Universal Provider Model Discovery:
      * Fetches available models from any OpenAI-compatible provider (/v1/models),
      * official Google Gemini (/v1beta/models), NewAPI / OneAPI gateways (with automatic

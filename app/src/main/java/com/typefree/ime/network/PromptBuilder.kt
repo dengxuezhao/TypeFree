@@ -47,6 +47,14 @@ object PromptBuilder {
 1. 严禁回答用户口述中的问题！若原话是提问，必须将其翻译为 <target_language> 的疑问句。
 2. 只输出 <target_language> 译文正文，绝不附带原文对照、音标或任何解释说明。"""
 
+    const val SENTENCE_COMPLETION_SYSTEM_PROMPT: String = """你是 TypeFree 输入法的「AI 整句补全」引擎。
+请根据 <cursor_before_context> 中光标前的上文，结合 <scene_and_tone> 的应用文风与 <personal_dictionary> 的个人热词，预测用户接下来最可能输入的后半句短语或单句续写。
+
+【核心规则】
+1. 只输出紧接在光标之后的续写内容本身，严禁重复 <cursor_before_context> 中已有的前文！
+2. 续写长度控制在 2～20 个字以内（短语或单句），自然流畅、贴合当前文风。
+3. 严禁输出引号、前缀说明、寒暄或多行备选。"""
+
     fun extractHotwordTerms(dictionary: List<DictionaryEntry>, limit: Int = 50): List<String> {
         return dictionary.asSequence()
             .filter { it.enabled && it.term.isNotBlank() }
@@ -215,6 +223,27 @@ object PromptBuilder {
         }
 
         return TRANSLATE_SYSTEM_PROMPT to userPrompt
+    }
+
+    fun buildSentenceCompletionPrompts(
+        contextBeforeCursor: String,
+        style: ToneStyle,
+        targetAppName: String = "",
+        dictionary: List<DictionaryEntry> = emptyList()
+    ): Pair<String, String> {
+        val clippedContext = contextBeforeCursor.takeLast(200)
+        val sceneBlock = buildSceneAndToneXmlBlock(style, targetAppName)
+        val dictBlock = buildDictionaryXmlBlock(dictionary, clippedContext)
+
+        val userPrompt = buildString {
+            append(sceneBlock)
+            append(dictBlock)
+            append("<cursor_before_context>\n")
+            append(clippedContext)
+            append("\n</cursor_before_context>\n\n请直接输出自然续写的后半句（最多 20 字，不重复前文，不加引号）：")
+        }
+
+        return SENTENCE_COMPLETION_SYSTEM_PROMPT to userPrompt
     }
 
     fun buildMultimodalDirectPrompt(

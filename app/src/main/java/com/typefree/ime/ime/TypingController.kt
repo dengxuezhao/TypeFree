@@ -1,8 +1,11 @@
 package com.typefree.ime.ime
 
+import android.content.Context
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
 import com.typefree.ime.data.AppRepository
+import com.typefree.ime.data.AppSettings
+import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.SnippetEntry
@@ -12,6 +15,10 @@ import com.typefree.ime.ime.engine.FlypyInputEngine
 import com.typefree.ime.ime.engine.InputEngine
 import com.typefree.ime.ime.engine.KeyInput
 import com.typefree.ime.ime.flypy.FlypyDictionary
+import com.typefree.ime.ime.predict.AiSentenceCompleter
+import com.typefree.ime.ime.predict.PredictionCoordinator
+import com.typefree.ime.ime.predict.PredictionStore
+import com.typefree.ime.ime.predict.StaticPredictor
 import com.typefree.ime.network.AiPipelineEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,18 +63,61 @@ interface ImeHostCallbacks {
 
 /**
  * Controller encapsulating QWERTY, Xiaohe Yinxing ([FlypyInputEngine]), Rime ([InputEngine]),
- * candidate strip state, punctuation shortcuts, and editor actions.
+ * L1/L2/L3 prediction strip ([PredictionCoordinator]), punctuation shortcuts, and editor actions.
  */
 class TypingController(
     private val host: ImeHostCallbacks,
-    val flypyInputEngine: FlypyInputEngine = FlypyInputEngine()
+    val flypyInputEngine: FlypyInputEngine = FlypyInputEngine(),
+    val predictionStore: PredictionStore = PredictionStore.fromContextOrInMemory { host as? Context },
+    val staticPredictor: StaticPredictor = StaticPredictor(),
+    aiSentenceCompleter: AiSentenceCompleter? = null,
+    predictionIdleDismissMs: Long = PredictionCoordinator.IDLE_DISMISS_MS
 ) {
+    var isIncognitoMode: Boolean = false
+        private set
+
     var rimeInputEngine: InputEngine? = null
+        set(value) {
+            field = value
+            value?.setIncognitoMode(isIncognitoMode)
+        }
+
     var isRimeReady: Boolean = false
+
+    val aiCompleter: AiSentenceCompleter = aiSentenceCompleter ?: AiSentenceCompleter(
+        scope = host.scope,
+        executor = { settings, activeStyle, contextBeforeCursor, targetAppName ->
+            host.aiEngine.completeSentence(
+                settings = settings,
+                activeStyle = activeStyle,
+                contextBeforeCursor = contextBeforeCursor,
+                targetAppName = targetAppName
+            )
+        }
+    )
+
+    val predictionCoordinator: PredictionCoordinator = PredictionCoordinator(
+        scope = host.scope,
+        stateFlow = host.stateFlow,
+        settingsProvider = ::safeSettings,
+        activeStyleResolver = { pkg, inputType ->
+            runCatching { host.repository.resolveActiveStyle(pkg, inputType).first }
+                .getOrElse { DefaultPresets.defaultStyles().first() }
+        },
+        surroundingTextReader = { maxChars -> host.readSurroundingBeforeCursor(maxChars) },
+        predictionStore = predictionStore,
+        staticPredictor = staticPredictor,
+        aiSentenceCompleter = aiCompleter,
+        idleDismissMs = predictionIdleDismissMs
+    )
+
+    private fun safeSettings(): AppSettings {
+        return runCatching { host.repository.settings.value }.getOrDefault(AppSettings())
+    }
 
     val activeEngine: InputEngine
         get() {
-            val scheme = host.repository.settings.value.inputScheme
+            val scheme = safeSettings().inputScheme
             val rime = rimeInputEngine
             return if (scheme.usesRime && isRimeReady && rime != null) {
                 rime
@@ -96,8 +146,10 @@ class TypingController(
     }
 
     fun setIncognitoMode(incognito: Boolean) {
+        isIncognitoMode = incognito
         flypyInputEngine.setIncognitoMode(incognito)
         rimeInputEngine?.setIncognitoMode(incognito)
+        predictionCoordinator.setIncognitoMode(incognito)
     }
 
     fun setFixedCandidateOrder(fixedOrder: Boolean?) {
@@ -108,6 +160,7 @@ class TypingController(
     fun resetComposing() {
         flypyInputEngine.clear()
         rimeInputEngine?.clear()
+        predictionCoordinator.onPanelSwitched()
         syncEngineStateToUi()
     }
 
@@ -115,6 +168,7 @@ class TypingController(
         val wasComposing = isComposing
         if (!wasComposing) return false
         activeEngine.clear()
+        predictionCoordinator.dismissPredictions(resetChain = false)
         syncEngineStateToUi()
         return true
     }
@@ -131,7 +185,7 @@ class TypingController(
         val code = engineState.rawCode
         val preedit = engineState.preedit.ifEmpty { code }
         val cands = engineState.candidates
-        val scheme = host.repository.settings.value.inputScheme
+        val scheme = safeSettings().inputScheme
         host.stateFlow.update { prev ->
             prev.copy(
                 flypyComposingCode = code,
@@ -153,11 +207,22 @@ class TypingController(
         when (result) {
             EngineResult.Consumed -> {
                 syncEngineStateToUi()
+                if (isComposing) {
+                    predictionCoordinator.onComposingStarted()
+                } else {
+                    predictionCoordinator.dismissPredictions(resetChain = false)
+                }
             }
             EngineResult.PassThrough -> {
                 syncEngineStateToUi()
+                if (isComposing) {
+                    predictionCoordinator.onComposingStarted()
+                } else {
+                    predictionCoordinator.dismissPredictions(resetChain = false)
+                }
             }
             is EngineResult.Commit -> {
+                val stillComposing = result.remainComposing || isComposing
                 syncEngineStateToUi()
                 if (result.text.isNotEmpty()) {
                     host.commitDirectText(
@@ -166,6 +231,14 @@ class TypingController(
                         markManualEdit = true,
                         playFeedback = false
                     )
+                    predictionCoordinator.onWordCommitted(
+                        committedText = result.text,
+                        isComposing = stillComposing
+                    )
+                } else if (stillComposing) {
+                    predictionCoordinator.onComposingStarted()
+                } else {
+                    predictionCoordinator.dismissPredictions(resetChain = false)
                 }
             }
         }
@@ -188,17 +261,20 @@ class TypingController(
         } else {
             resetComposing()
         }
+        predictionCoordinator.onPanelSwitched()
         val nextChinese = !wasChinese
         val currentInputType = host.stateFlow.value.currentInputType
         if (!ImeLogic.isPasswordEditorInputType(currentInputType)) {
-            host.repository.updateSettings {
-                it.copy(
-                    lastKeyboardTab = KeyboardTabMode.QWERTY.name,
-                    lastQwertyIsChinese = nextChinese
-                )
+            runCatching {
+                host.repository.updateSettings {
+                    it.copy(
+                        lastKeyboardTab = KeyboardTabMode.QWERTY.name,
+                        lastQwertyIsChinese = nextChinese
+                    )
+                }
             }
         }
-        val scheme = host.repository.settings.value.inputScheme
+        val scheme = safeSettings().inputScheme
         host.stateFlow.update {
             it.copy(
                 isFlypyChineseMode = nextChinese,
@@ -221,6 +297,7 @@ class TypingController(
 
     fun commitQwertyChar(ch: String) {
         if (ch.isEmpty()) return
+        predictionCoordinator.onUserKeyPressed()
         val curr = host.stateFlow.value
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode) {
             if (ch.length == 1) {
@@ -231,22 +308,33 @@ class TypingController(
             } else {
                 val flushed = activeEngine.flush()
                 syncEngineStateToUi()
+                val combined = flushed + ch
                 host.commitDirectText(
-                    text = flushed + ch,
+                    text = combined,
                     recordUndo = true,
                     markManualEdit = true
                 )
+                predictionCoordinator.onWordCommitted(
+                    committedText = combined,
+                    isComposing = false
+                )
                 return
             }
+        }
+        if (PredictionStore.isPunctuationOrSymbolOnly(ch)) {
+            predictionCoordinator.onPunctuationCommitted()
+        } else {
+            predictionCoordinator.dismissPredictions(resetChain = true)
         }
         host.commitDirectText(text = ch, recordUndo = true, markManualEdit = true)
     }
 
     fun handleCommaOrPeriodKey(isComma: Boolean) {
+        predictionCoordinator.onUserKeyPressed()
         val curr = host.stateFlow.value
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode) {
             host.performKeyFeedback(strong = false)
-            val quickSelect = host.repository.settings.value.flypyCommaPeriodQuickSelect
+            val quickSelect = safeSettings().flypyCommaPeriodQuickSelect
             val result = activeEngine.onKey(
                 KeyInput.CommaOrPeriod(
                     isComma = isComma,
@@ -256,6 +344,7 @@ class TypingController(
             handleEngineResult(result)
             return
         }
+        predictionCoordinator.onPunctuationCommitted()
         host.commitDirectText(
             text = if (isComma) "," else ".",
             recordUndo = true,
@@ -264,9 +353,45 @@ class TypingController(
     }
 
     fun selectFlypyCandidate(index: Int) {
+        predictionCoordinator.onUserKeyPressed()
         host.performKeyFeedback(strong = false)
         val result = activeEngine.select(index)
         handleEngineResult(result)
+    }
+
+    fun selectPredictionCandidate(index: Int) {
+        val picked = host.stateFlow.value.predictionCandidates.getOrNull(index)?.text ?: return
+        host.performKeyFeedback(strong = false)
+        host.commitDirectText(
+            text = picked,
+            recordUndo = true,
+            markManualEdit = true,
+            playFeedback = false
+        )
+        predictionCoordinator.onWordCommitted(
+            committedText = picked,
+            isComposing = false
+        )
+    }
+
+    fun selectAiCompletion() {
+        val suggestion = predictionCoordinator.selectAiCompletion() ?: return
+        host.performKeyFeedback(strong = true)
+        host.commitDirectText(
+            text = suggestion,
+            recordUndo = true,
+            markManualEdit = true,
+            playFeedback = false
+        )
+    }
+
+    fun dismissPredictions() {
+        host.performKeyFeedback(strong = false)
+        predictionCoordinator.dismissPredictions(resetChain = false)
+    }
+
+    fun onPanelSwitched() {
+        predictionCoordinator.onPanelSwitched()
     }
 
     fun clearFlypyComposing() {
@@ -284,6 +409,12 @@ class TypingController(
                 markManualEdit = true,
                 playFeedback = false
             )
+            predictionCoordinator.onWordCommitted(
+                committedText = flushed,
+                isComposing = false
+            )
+        } else {
+            predictionCoordinator.dismissPredictions(resetChain = false)
         }
     }
 
@@ -305,6 +436,7 @@ class TypingController(
     }
 
     fun insertSpace() {
+        predictionCoordinator.onUserKeyPressed()
         val curr = host.stateFlow.value
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode && isComposing) {
             host.performKeyFeedback(strong = false)
@@ -312,11 +444,13 @@ class TypingController(
             handleEngineResult(result)
             return
         }
+        predictionCoordinator.dismissPredictions(resetChain = true)
         host.tryAutoLearnFromRecentEdit()
         host.commitDirectText(" ", recordUndo = false, markManualEdit = false)
     }
 
     fun deleteBackward() {
+        predictionCoordinator.onBackspacePressed()
         val curr = host.stateFlow.value
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode) {
             val result = activeEngine.onKey(KeyInput.Backspace())
@@ -343,11 +477,13 @@ class TypingController(
     }
 
     fun performEnterOrNewline(onRunEqualEqualAskAi: (String, String) -> Unit) {
+        predictionCoordinator.onUserKeyPressed()
         val curr = host.stateFlow.value
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode && isComposing) {
             val res = activeEngine.onKey(KeyInput.Enter)
             syncEngineStateToUi()
             if (res is EngineResult.Commit && res.text.isNotEmpty()) {
+                predictionCoordinator.dismissPredictions(resetChain = true)
                 host.commitDirectText(
                     text = res.text,
                     recordUndo = true,
@@ -358,7 +494,9 @@ class TypingController(
             }
         }
 
-        val settingsSnap = host.repository.settings.value
+        predictionCoordinator.dismissPredictions(resetChain = true)
+
+        val settingsSnap = safeSettings()
         if (settingsSnap.equalEqualAskAiEnabled) {
             val fullText = host.readFullEditorTextSafely()
             val directQuery = SnippetMatcher.extractEqualEqualAskAiQuery(fullText)
@@ -434,6 +572,7 @@ class TypingController(
     }
 
     fun insertPairedSymbol(left: String, right: String) {
+        predictionCoordinator.onPunctuationCommitted()
         host.performKeyFeedback(strong = false)
         val ic = host.currentInputConnection() ?: return
         val selected = host.readSelectedTextSafely()
