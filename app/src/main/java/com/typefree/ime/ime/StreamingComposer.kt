@@ -206,8 +206,7 @@ class StreamingComposer(
             return false
         }
 
-        val hasNewFinalized = targetFinal.length > committedFinalText.length &&
-            targetFinal != committedFinalText
+        val hasNewFinalized = targetFinal != committedFinalText
         val now = clockMs()
         val elapsedSinceLastFlush = now - lastFlushAtMs
 
@@ -223,7 +222,7 @@ class StreamingComposer(
 
     /**
      * Removes the stale interim text that the host editor solidified on its own (composing span lost).
-     * Verifies the exact characters before the cursor first so user text is never deleted.
+     * Verifies the characters before the cursor first so user text is never deleted.
      * Must be called inside a batch edit. Returns true if the stale interim was removed.
      */
     private fun purgeStaleInterimIfHostDroppedComposing(): Boolean {
@@ -231,10 +230,10 @@ class StreamingComposer(
         hostDroppedComposing = false
         val stale = currentInterimText
         if (stale.isEmpty()) return false
-        val before = editorBridge.getTextBeforeCursor(stale.length, 0)?.toString()
-        if (before != stale) return false
+        val replaceLen = resolveDraftReplaceLength(stale)
+        if (replaceLen <= 0) return false
         editorBridge.finishComposingText()
-        editorBridge.deleteSurroundingText(stale.length, 0)
+        editorBridge.deleteSurroundingText(replaceLen, 0)
         currentInterimText = ""
         return true
     }
@@ -252,15 +251,34 @@ class StreamingComposer(
             val prevInterim = currentInterimText
             var committedDelta = ""
             var composedInterim = ""
-            val hasNewFinalDelta = targetFinal.length > committedFinalText.length &&
-                targetFinal != committedFinalText
+            val hasNewFinalDelta = targetFinal != committedFinalText
 
             if (hasNewFinalDelta) {
-                val delta = if (targetFinal.startsWith(committedFinalText)) {
-                    targetFinal.substring(committedFinalText.length)
-                } else {
-                    targetFinal.drop(committedFinalText.length.coerceAtMost(targetFinal.length))
+                // Explicitly flatten and remove the previous interim draft before committing finalized text.
+                // This guarantees that even if the host editor (Feishu / Mobile QQ) dropped or split the
+                // composing span mid-sentence (e.g. on spaces, commas, line wrap, or pause), or if the
+                // finalized sentence removed filler words ("我靠,", "就是") and spaces, the raw interim
+                // draft is completely replaced in-place and never left behind as a duplicate prefix.
+                if (currentInterimText.isNotEmpty()) {
+                    editorBridge.finishComposingText()
+                    val interimReplaceLen = resolveDraftReplaceLength(currentInterimText)
+                    if (interimReplaceLen > 0) {
+                        editorBridge.deleteSurroundingText(interimReplaceLen, 0)
+                    }
+                    currentInterimText = ""
                 }
+
+                val commonLen = committedFinalText.commonPrefixWith(targetFinal).length
+                val divergeTail = committedFinalText.substring(commonLen)
+                if (divergeTail.isNotEmpty()) {
+                    editorBridge.finishComposingText()
+                    val divergeReplaceLen = resolveDraftReplaceLength(divergeTail)
+                    if (divergeReplaceLen > 0) {
+                        editorBridge.deleteSurroundingText(divergeReplaceLen, 0)
+                    }
+                }
+
+                val delta = targetFinal.substring(commonLen)
                 if (delta.isNotEmpty()) {
                     editorBridge.commitText(delta, 1)
                     committedDelta = delta
@@ -276,7 +294,13 @@ class StreamingComposer(
                 currentInterimText = targetInterim
             } else {
                 if (!hasNewFinalDelta && currentInterimText.isNotEmpty()) {
-                    editorBridge.setComposingText("", 1)
+                    editorBridge.finishComposingText()
+                    val interimReplaceLen = resolveDraftReplaceLength(currentInterimText)
+                    if (interimReplaceLen > 0) {
+                        editorBridge.deleteSurroundingText(interimReplaceLen, 0)
+                    } else {
+                        editorBridge.setComposingText("", 1)
+                    }
                 }
                 currentInterimText = ""
             }

@@ -1584,12 +1584,7 @@ private fun VoiceMainPanel(
             activeTranslateLabel.isNotBlank()
         val topSubtitle = when (phase) {
             is VoicePhase.SuccessToast -> {
-                val timeTag = if (phase.latencyMs > 0L) {
-                    " · ${String.format(Locale.US, "%.1fs", phase.latencyMs / 1000f)}"
-                } else {
-                    ""
-                }
-                "✓ 已上屏$timeTag"
+                ImeLogic.formatSuccessToastSubtitle(phase.latencyMs)
             }
             is VoicePhase.Recording -> {
                 val timerText = ImeLogic.formatElapsedTimer(elapsedMs)

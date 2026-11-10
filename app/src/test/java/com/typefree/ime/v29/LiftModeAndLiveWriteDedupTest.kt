@@ -3,11 +3,21 @@ package com.typefree.ime.v29
 import androidx.compose.ui.unit.dp
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.KeyboardHeightMode
+import com.typefree.ime.data.SttConfig
+import com.typefree.ime.data.SttProtocol
 import com.typefree.ime.ime.ComposerEditorBridge
+import com.typefree.ime.ime.ImeLogic
 import com.typefree.ime.ime.KeyboardMetrics
 import com.typefree.ime.ime.StreamingComposer
+import com.typefree.ime.network.asr.GeminiLiveTranscribeClient
 import com.typefree.ime.network.asr.LiveTranscript
 import com.typefree.ime.ui.screens.ApiConfigBackupHelper
+import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -314,5 +324,222 @@ class LiftModeAndLiveWriteDedupTest {
         val outcome = composer.applyPolishedResult(polishedText = "润色内容。", fullRawTranscript = "原始内容")
         assertFalse(outcome.appliedToEditor)
         assertEquals("原始内容我改了", editor.text)
+    }
+
+    @Test
+    fun `multi-sentence continuous dictation with mid-recording pause turn finalization and filler word removal never duplicates`() {
+        val editor = QqLikeEditor(initialText = "")
+        val composer = StreamingComposer(editorBridge = editor, minUpdateIntervalMs = 0L)
+        composer.startSession(anchorCursor = 0, smartDirectMode = true)
+
+        var transcript = LiveTranscript()
+        val draft1 = "我靠, 感觉这个问题还是 存在, 就是它好 像是 返回来的一句话, 暂时 没有上屏, 但是存在了 这里。"
+        val final1 = "感觉这个问题还是存在。它好像是返回来的一句话，暂时没有上屏，但是存在了这里。"
+        val draft2 = "一 点击 完成 就 没 了 。"
+        val final2 = "一点击完成就没了。"
+
+        // 00:02 ~ 00:11: Sentence 1 streams as interimInputTranscription with spaces and filler words ("我靠,", "就是")
+        transcript = GeminiLiveTranscribeClient.reduceLiveTranscript(
+            previous = transcript,
+            event = GeminiLiveTranscribeClient.LiveServerEvent.TranscriptionUpdate(
+                interimText = draft1,
+                finalText = null,
+                turnComplete = false
+            )
+        )
+        composer.onTranscriptUpdate(transcript)
+        assertEquals(draft1, editor.text)
+
+        // Simulate Feishu/QQ dropping the composing span on mid-recording pause before turn finalization arrives
+        editor.dropComposingSpan()
+
+        // 00:12: User pauses -> server emits turnComplete + SMART normalized inputTranscription (final1)
+        transcript = GeminiLiveTranscribeClient.reduceLiveTranscript(
+            previous = transcript,
+            event = GeminiLiveTranscribeClient.LiveServerEvent.TranscriptionUpdate(
+                interimText = null,
+                finalText = final1,
+                turnComplete = true
+            )
+        )
+        composer.onTranscriptUpdate(transcript)
+        // Must replace draft1 in-place with final1 (never "[draft1] + [final1]"!)
+        assertEquals(final1, editor.text)
+
+        // 00:15 ~ 00:16: User continues speaking Sentence 2
+        transcript = GeminiLiveTranscribeClient.reduceLiveTranscript(
+            previous = transcript,
+            event = GeminiLiveTranscribeClient.LiveServerEvent.TranscriptionUpdate(
+                interimText = draft2,
+                finalText = null,
+                turnComplete = false
+            )
+        )
+        composer.onTranscriptUpdate(transcript)
+        assertEquals(final1 + draft2, editor.text)
+
+        // Host drops composing span again before Sentence 2 finalizes
+        editor.dropComposingSpan()
+
+        // 00:17: User pauses after Sentence 2 -> server emits normalized final2
+        transcript = GeminiLiveTranscribeClient.reduceLiveTranscript(
+            previous = transcript,
+            event = GeminiLiveTranscribeClient.LiveServerEvent.TranscriptionUpdate(
+                interimText = null,
+                finalText = final2,
+                turnComplete = true
+            )
+        )
+        composer.onTranscriptUpdate(transcript)
+        assertEquals(final1 + final2, editor.text)
+
+        // 00:18: User clicks "✓ 说完轻点完成" -> smooth finish with zero text jump or half-shrink
+        val outcome = composer.onRecordingFinished(
+            finalRawTranscript = final1 + final2,
+            needsPolishing = false
+        )
+        assertTrue(outcome != null && outcome.appliedToEditor)
+        assertEquals(final1 + final2, editor.text)
+    }
+
+    @Test
+    fun `mid-recording finalized revision that shortens text by stripping filler words replaces committed prefix cleanly`() {
+        val editor = QqLikeEditor(initialText = "备注：")
+        val composer = StreamingComposer(editorBridge = editor, minUpdateIntervalMs = 0L)
+        composer.startSession(anchorCursor = editor.cursor, smartDirectMode = true)
+
+        // Suppose an ASR engine initially committed a raw clause with filler words into finalized + interim
+        composer.onTranscriptUpdate(
+            LiveTranscript(
+                finalized = "我靠, 感觉这个问题还是 存在, ",
+                interim = "就是它好 像是 返回来的一句话。",
+                revision = 1
+            )
+        )
+        assertEquals("备注：我靠, 感觉这个问题还是 存在, 就是它好 像是 返回来的一句话。", editor.text)
+
+        // Host drops composing span mid-pause
+        editor.dropComposingSpan()
+
+        // On pause, the engine revises finalized to the shorter normalized sentence without filler words or spaces
+        val normalized = "感觉这个问题还是存在。它好像是返回来的一句话。"
+        composer.onTranscriptUpdate(
+            LiveTranscript(
+                finalized = normalized,
+                interim = "",
+                revision = 2
+            )
+        )
+        assertEquals("备注：$normalized", editor.text)
+    }
+
+    @Test
+    fun `SuccessToast elapsed time calculation and formatting never display 0_0s`() {
+        // 18s streaming recording where post-stop tail wait is 2ms -> displays 18.0s recording duration
+        val resolvedStreamingMs = ImeLogic.resolveSuccessToastElapsedMs(
+            pipelineLatencyMs = 2L,
+            recordingDurationMs = 18_000L
+        )
+        assertEquals(18_000L, resolvedStreamingMs)
+        assertEquals("✓ 已上屏 · 18.0s", ImeLogic.formatSuccessToastSubtitle(resolvedStreamingMs))
+
+        // Stage-2 LLM polish took 680ms after an 18s recording -> displays 0.7s processing time
+        val resolvedPolishMs = ImeLogic.resolveSuccessToastElapsedMs(
+            pipelineLatencyMs = 680L,
+            recordingDurationMs = 18_000L
+        )
+        assertEquals(680L, resolvedPolishMs)
+        assertEquals("✓ 已上屏 · 0.7s", ImeLogic.formatSuccessToastSubtitle(resolvedPolishMs))
+
+        // Sub-100ms positive latency without recording duration clamps to 0.1s (never 0.0s!)
+        val sub100Ms = ImeLogic.resolveSuccessToastElapsedMs(
+            pipelineLatencyMs = 5L,
+            recordingDurationMs = 0L
+        )
+        assertEquals(100L, sub100Ms)
+        assertEquals("✓ 已上屏 · 0.1s", ImeLogic.formatSuccessToastSubtitle(5L))
+        assertEquals("✓ 已上屏", ImeLogic.formatSuccessToastSubtitle(0L))
+    }
+
+    @Test
+    fun `GeminiLiveWsSession WebSocket end-to-end multi-turn session keeps LiveTranscript and finishAndAwaitFinal identical`() = runBlocking {
+        var capturedListener: WebSocketListener? = null
+        var fakeWs: WebSocket? = null
+        val client = GeminiLiveTranscribeClient(
+            httpClient = OkHttpClient(),
+            webSocketFactory = { req, listener ->
+                capturedListener = listener
+                object : WebSocket {
+                    override fun request(): Request = req
+                    override fun queueSize(): Long = 0L
+                    override fun send(text: String): Boolean = true
+                    override fun send(bytes: ByteString): Boolean = true
+                    override fun close(code: Int, reason: String?): Boolean = true
+                    override fun cancel() = Unit
+                }.also { fakeWs = it }
+            }
+        )
+
+        val session = client.openSession(
+            config = SttConfig(
+                protocol = SttProtocol.GEMINI_LIVE_WS,
+                apiKey = "AIzaSyTestKey",
+                model = "gemini-3.5-transcribe-live"
+            ),
+            hotwords = emptyList()
+        )
+        val ws = fakeWs!!
+        val listener = capturedListener!!
+        val editor = QqLikeEditor()
+        val composer = StreamingComposer(editorBridge = editor, minUpdateIntervalMs = 0L)
+        composer.startSession(anchorCursor = 0, smartDirectMode = true)
+
+        listener.onMessage(ws, """{"setupComplete":{}}""")
+
+        val draft1 = "我靠, 感觉这个问题还是 存在, 就是它好 像是 返回来的一句话, 暂时 没有上屏, 但是存在了 这里。"
+        val final1 = "感觉这个问题还是存在。它好像是返回来的一句话，暂时没有上屏，但是存在了这里。"
+        val draft2 = "一 点击 完成 就 没 了 。"
+        val final2 = "一点击完成就没了。"
+
+        // Turn 1 interim + silent PCM frames (must NOT bake draft1 into finalized!)
+        listener.onMessage(ws, """{"serverContent":{"interimInputTranscription":{"text":"$draft1"}}}""")
+        session.sendPcmFrame(ByteArray(3200)) // silent frame 1
+        session.sendPcmFrame(ByteArray(3200)) // silent frame 2
+        session.sendPcmFrame(ByteArray(3200)) // silent frame 3
+        composer.onTranscriptUpdate(session.transcript.value)
+        assertEquals("", session.transcript.value.finalized)
+        assertEquals(draft1, session.transcript.value.interim)
+        assertEquals(draft1, editor.text)
+
+        // Turn 1 finalization on pause
+        editor.dropComposingSpan()
+        listener.onMessage(ws, """{"serverContent":{"inputTranscription":{"text":"$final1"},"turnComplete":true}}""")
+        composer.onTranscriptUpdate(session.transcript.value)
+        assertEquals(final1, session.transcript.value.finalized)
+        assertEquals("", session.transcript.value.interim)
+        assertEquals(final1, editor.text)
+
+        // Turn 2 interim + silent PCM frames
+        listener.onMessage(ws, """{"serverContent":{"interimInputTranscription":{"text":"$draft2"}}}""")
+        session.sendPcmFrame(ByteArray(3200))
+        session.sendPcmFrame(ByteArray(3200))
+        composer.onTranscriptUpdate(session.transcript.value)
+        assertEquals(final1, session.transcript.value.finalized)
+        assertEquals(draft2, session.transcript.value.interim)
+        assertEquals(final1 + draft2, editor.text)
+
+        // Turn 2 finalization on pause
+        editor.dropComposingSpan()
+        listener.onMessage(ws, """{"serverContent":{"inputTranscription":{"text":"$final2"},"turnComplete":true}}""")
+        composer.onTranscriptUpdate(session.transcript.value)
+        assertEquals(final1 + final2, session.transcript.value.finalized)
+        assertEquals("", session.transcript.value.interim)
+        assertEquals(final1 + final2, editor.text)
+
+        // Tap finish -> 0ms return matching editor.text with zero shrink
+        val finalTranscript = session.finishAndAwaitFinal(500L).getOrThrow()
+        assertEquals(final1 + final2, finalTranscript)
+        composer.onRecordingFinished(finalRawTranscript = finalTranscript, needsPolishing = false)
+        assertEquals(final1 + final2, editor.text)
     }
 }

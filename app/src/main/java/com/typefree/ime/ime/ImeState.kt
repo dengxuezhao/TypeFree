@@ -397,6 +397,37 @@ object ImeLogic {
     }
 
     /**
+     * Resolves the elapsed milliseconds shown in [VoicePhase.SuccessToast] (`✓ 已上屏 · X.Xs`):
+     * - When post-stop pipeline processing latency ([pipelineLatencyMs]) is >= 100ms (e.g. Stage-2 LLM polish
+     *   or non-streaming STT), uses [pipelineLatencyMs].
+     * - When [pipelineLatencyMs] is < 100ms (e.g. live streaming ASR that already converged during recording
+     *   so post-stop tail wait is 0~5ms), falls back to [recordingDurationMs] if available so an 18s
+     *   streaming dictation shows `18.0s` instead of `0.0s`.
+     * - Clamps any positive value to at least 100ms (`0.1s`) so formatting with `%.1fs` never displays `0.0s`.
+     */
+    fun resolveSuccessToastElapsedMs(
+        pipelineLatencyMs: Long,
+        recordingDurationMs: Long = 0L
+    ): Long {
+        return when {
+            pipelineLatencyMs >= 100L -> pipelineLatencyMs
+            recordingDurationMs >= 100L -> recordingDurationMs
+            pipelineLatencyMs > 0L || recordingDurationMs > 0L -> 100L
+            else -> 0L
+        }
+    }
+
+    /**
+     * Formats the top subtitle for [VoicePhase.SuccessToast] (`✓ 已上屏 · X.Xs`), guaranteeing
+     * that any positive latency never rounds down to `0.0s`.
+     */
+    fun formatSuccessToastSubtitle(latencyMs: Long): String {
+        if (latencyMs <= 0L) return "✓ 已上屏"
+        val seconds = (latencyMs / 1000f).coerceAtLeast(0.1f)
+        return "✓ 已上屏 · ${String.format(Locale.US, "%.1fs", seconds)}"
+    }
+
+    /**
      * Normalizes internal newlines/whitespace and truncates long selected text cleanly.
      */
     fun formatSelectionPreview(selectedText: String, maxChars: Int = 36): String {

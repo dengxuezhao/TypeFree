@@ -854,6 +854,10 @@ class VoiceController(
         pipelineResult.fold(
             onSuccess = { exec ->
                 val finalOutput = exec.finalOutput
+                val displayLatencyMs = ImeLogic.resolveSuccessToastElapsedMs(
+                    pipelineLatencyMs = exec.latencyMs,
+                    recordingDurationMs = durationMs
+                )
                 val activeComp = activeComposer
                 activeComposer = null
                 if (activeComp != null) {
@@ -861,14 +865,14 @@ class VoiceController(
                         composer = activeComp,
                         finalText = finalOutput,
                         rawTranscript = exec.rawTranscript,
-                        latencyMs = exec.latencyMs
+                        latencyMs = displayLatencyMs
                     )
                 } else {
                     val overwritten = if (isSpeakToEdit) liveSelection else host.readSelectedTextSafely()
                     commitPipelineOutput(
                         finalText = finalOutput,
                         overwrittenSelection = overwritten,
-                        latencyMs = exec.latencyMs
+                        latencyMs = displayLatencyMs
                     )
                 }
                 if (!host.stateFlow.value.isIncognitoMode) {

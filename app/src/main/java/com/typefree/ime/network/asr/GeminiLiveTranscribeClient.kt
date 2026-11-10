@@ -355,12 +355,19 @@ class GeminiLiveTranscribeClient(
                     val now = clockMs()
                     val (liveNow, previewNow) = synchronized(lock) {
                         if (event.interimText != null) {
-                            currentInterim = event.interimText
+                            currentInterim = AiPipelineEngine.cleanRawTranscript(event.interimText)
+                            if (currentInterim.isNotEmpty()) {
+                                hasUnfinalizedSpeechSinceLastFinal = true
+                                sawExplicitFinalOrCompleteAfterFinish = false
+                            }
                             lastTranscriptActivityAtMs = now
                             silentFramesAfterTranscript = 0
                         }
                         if (!event.finalText.isNullOrEmpty()) {
-                            committedSegments.add(event.finalText)
+                            val cleanFinal = AiPipelineEngine.cleanRawTranscript(event.finalText)
+                            if (cleanFinal.isNotEmpty()) {
+                                committedSegments.add(cleanFinal)
+                            }
                             currentInterim = ""
                             hasUnfinalizedSpeechSinceLastFinal = false
                             lastTranscriptActivityAtMs = now
@@ -372,14 +379,22 @@ class GeminiLiveTranscribeClient(
                         if (event.turnComplete) {
                             lastTranscriptActivityAtMs = now
                             silentFramesAfterTranscript = 0
-                            if (finishRequested || !hasUnfinalizedSpeechSinceLastFinal) {
+                            if (finishRequested && !hasUnfinalizedSpeechSinceLastFinal) {
                                 sawExplicitFinalOrCompleteAfterFinish = true
                             }
                         }
-                        val nextLive = reduceLiveTranscript(
-                            previous = _transcript.value,
-                            event = event
-                        )
+                        val nextFinalized = committedSegments.joinToString("")
+                        val nextInterim = currentInterim
+                        val prevLive = _transcript.value
+                        val nextLive = if (nextFinalized != prevLive.finalized || nextInterim != prevLive.interim) {
+                            LiveTranscript(
+                                finalized = nextFinalized,
+                                interim = nextInterim,
+                                revision = prevLive.revision + 1L
+                            )
+                        } else {
+                            prevLive
+                        }
                         nextLive to buildCombinedTranscript()
                     }
                     _transcript.value = liveNow
@@ -399,18 +414,15 @@ class GeminiLiveTranscribeClient(
             if (pcm16Le.isEmpty()) return
             val voiced = isVoicedPcmChunk(pcm16Le)
             var sendNow = false
-            var silenceConvergedTranscript: LiveTranscript? = null
             synchronized(lock) {
                 if (closed || finishRequested) return
                 if (voiced) {
                     hasUnfinalizedSpeechSinceLastFinal = true
+                    sawExplicitFinalOrCompleteAfterFinish = false
                     totalVoicedFramesSent += 1
                     silentFramesAfterTranscript = 0
                 } else if (!hasUnfinalizedSpeechSinceLastFinal && _transcript.value.interim.isNotEmpty()) {
                     silentFramesAfterTranscript += 1
-                    if (silentFramesAfterTranscript >= 2) {
-                        silenceConvergedTranscript = flushInterimOnSilence(_transcript.value)
-                    }
                 }
                 if (setupCompleted) {
                     sendNow = true
@@ -418,7 +430,6 @@ class GeminiLiveTranscribeClient(
                     pendingFrames.addLast(pcm16Le)
                 }
             }
-            silenceConvergedTranscript?.let { _transcript.value = it }
             if (sendNow) {
                 webSocket.send(buildAudioChunkJson(pcm16Le))
             }
@@ -867,19 +878,43 @@ class GeminiLiveTranscribeClient(
         internal fun reduceLiveTranscript(
             previous: LiveTranscript,
             event: LiveServerEvent.TranscriptionUpdate,
-            maxInterimChars: Int = MAX_INTERIM_CHARS,
+            @Suppress("UNUSED_PARAMETER") maxInterimChars: Int = MAX_INTERIM_CHARS,
             silenceConverged: Boolean = false
         ): LiveTranscript {
             val hasFinalChunk = !event.finalText.isNullOrEmpty()
-            return reduceLiveTranscript(
-                current = previous,
-                inputChunk = if (hasFinalChunk) event.finalText else event.interimText,
-                isInterimChunk = !hasFinalChunk && event.interimText != null,
-                turnComplete = event.turnComplete,
-                generationComplete = false,
-                maxInterimChars = maxInterimChars,
-                silenceConverged = silenceConverged
-            )
+            if (hasFinalChunk) {
+                // `inputTranscription` (`finalText`) is the server's finalized utterance for the current turn:
+                // it replaces any provisional `interimInputTranscription` (`previous.interim`) rather than
+                // concatenating onto it, and appends directly to `finalized`.
+                val cleanFinal = AiPipelineEngine.cleanRawTranscript(event.finalText.orEmpty())
+                val nextFinalized = previous.finalized + cleanFinal
+                val nextInterim = if (!event.interimText.isNullOrEmpty()) {
+                    AiPipelineEngine.cleanRawTranscript(event.interimText)
+                } else {
+                    ""
+                }
+                val changed = nextFinalized != previous.finalized || nextInterim != previous.interim
+                return LiveTranscript(
+                    finalized = nextFinalized,
+                    interim = nextInterim,
+                    revision = if (changed) previous.revision + 1L else previous.revision
+                )
+            }
+            if (event.interimText != null) {
+                val cleanInterim = AiPipelineEngine.cleanRawTranscript(event.interimText)
+                val nextFinalized = if (silenceConverged) previous.finalized + cleanInterim else previous.finalized
+                val nextInterim = if (silenceConverged) "" else cleanInterim
+                val changed = nextFinalized != previous.finalized || nextInterim != previous.interim
+                return LiveTranscript(
+                    finalized = nextFinalized,
+                    interim = nextInterim,
+                    revision = if (changed) previous.revision + 1L else previous.revision
+                )
+            }
+            if (silenceConverged && previous.interim.isNotEmpty()) {
+                return flushInterimOnSilence(previous)
+            }
+            return previous
         }
 
         fun reduceLiveTranscript(
