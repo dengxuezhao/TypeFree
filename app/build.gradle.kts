@@ -15,6 +15,10 @@ android {
         versionCode = 12
         versionName = "2.6.1"
 
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
+
         vectorDrawables {
             useSupportLibrary = true
         }
@@ -57,6 +61,9 @@ android {
 
     if (usePrivateDict && privateDictDir.exists()) {
         val stagePrivateFlypyAssets = tasks.register<Sync>("stagePrivateFlypyAssets") {
+            from("src/main/assets") {
+                include("rime/**")
+            }
             from(privateDictDir) {
                 include("flypy_dict.tsv", "flypy_dz.tsv")
             }
@@ -77,6 +84,8 @@ android {
 }
 
 dependencies {
+    implementation(project(":rime"))
+
     val composeBom = platform("androidx.compose:compose-bom:2025.04.01")
     implementation(composeBom)
 

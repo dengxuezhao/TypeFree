@@ -78,8 +78,10 @@ import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.DictionaryEntry
 import com.typefree.ime.data.DictionarySource
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.SnippetEntry
 import com.typefree.ime.data.SnippetMatcher
+import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import com.typefree.ime.TypeFreeApp
@@ -155,11 +157,38 @@ fun DictionaryScreen(repository: AppRepository) {
     var showBatchDeleteConfirm by remember { mutableStateOf(false) }
 
     val flypyDict by TypeFreeApp.instance.flypyDictionary.collectAsState()
+    val rimeDeployState by TypeFreeApp.instance.rimeDataManager.deploymentState.collectAsState()
+    val rimeScope = rememberCoroutineScope()
     val isCustomActive = remember(flypyDict) {
         FlypyDictionary.isCustomDictionaryActive(context)
     }
     var showRimeImportDialog by remember { mutableStateOf(false) }
     var showRestoreConfirmDialog by remember { mutableStateOf(false) }
+
+    val rimeZipPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            rimeScope.launch {
+                try {
+                    val readyState = withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)?.use { stream ->
+                            TypeFreeApp.instance.rimeDataManager.importRimeSchemaZipSync(stream)
+                        } ?: throw IllegalArgumentException("无法读取所选 ZIP 文件")
+                    }
+                    repository.updateSettings { it.copy(inputScheme = InputScheme.RIME_CUSTOM) }
+                    val label = (readyState as? RimeDeploymentState.Ready)?.customSchemaName ?: "自定义 Rime 方案"
+                    Toast.makeText(context, "✓ 已导入并部署「$label」", Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    Toast.makeText(
+                        context,
+                        "导入 Rime 方案包失败: ${e.message ?: "格式错误"}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
 
     val enabledCount = remember(dictionary) { dictionary.count { it.enabled } }
     val autoCount = remember(dictionary) {
@@ -520,6 +549,140 @@ fun DictionaryScreen(repository: AppRepository) {
                                 )
                             }
                         }
+                    }
+
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                    )
+
+                    // Rime Deployment Status & Progress Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        val rimeStatusText = when (val st = rimeDeployState) {
+                            is RimeDeploymentState.Idle -> "Rime 引擎：待部署"
+                            is RimeDeploymentState.Deploying -> st.message
+                            is RimeDeploymentState.Ready -> {
+                                val tier = if (st.hasFullRimeIce) "完整雾凇词库" else "内置精简词库"
+                                val customSuffix = st.customSchemaName?.let { " · $it" }.orEmpty()
+                                "Rime 就绪：$tier (${st.wordCount} 词条)$customSuffix"
+                            }
+                            is RimeDeploymentState.Error -> "Rime 状态：${st.message}"
+                        }
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (rimeDeployState is RimeDeploymentState.Deploying) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                            Text(
+                                text = rimeStatusText,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (rimeDeployState is RimeDeploymentState.Error) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                    }
+
+                    // On-demand full rime-ice download + Rime .zip schema package import
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        val isDeployingRime = rimeDeployState is RimeDeploymentState.Deploying
+                        val hasFullIce = (rimeDeployState as? RimeDeploymentState.Ready)?.hasFullRimeIce == true
+                        FilledTonalButton(
+                            onClick = {
+                                rimeScope.launch {
+                                    try {
+                                        val ready = TypeFreeApp.instance.rimeDataManager.downloadFullRimeIceDictionary()
+                                        val count = (ready as? RimeDeploymentState.Ready)?.wordCount ?: 0
+                                        Toast.makeText(
+                                            context,
+                                            "✓ 完整雾凇拼音词库已部署 ($count 词条)",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    } catch (e: Exception) {
+                                        Toast.makeText(
+                                            context,
+                                            "雾凇词库下载失败: ${e.message ?: "请检查网络"}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            },
+                            enabled = !isDeployingRime,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = if (hasFullIce) "更新雾凇完整词库" else "按需下载雾凇完整词库",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                rimeZipPickerLauncher.launch(
+                                    arrayOf("application/zip", "application/x-zip-compressed", "*/*")
+                                )
+                            },
+                            enabled = !isDeployingRime,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = "导入 Rime 方案包 (.zip)",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+
+                    // 1-Row Advanced Toggle: Fixed Candidate Order (`fixedCandidateOrder`)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "固定候选顺序",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "开启后保持词表静态默认排序，关闭动态调频（适合肌肉记忆打字）。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                lineHeight = 16.sp
+                            )
+                        }
+                        Switch(
+                            checked = settings.fixedCandidateOrder == true,
+                            onCheckedChange = { fixed ->
+                                repository.updateSettings { it.copy(fixedCandidateOrder = fixed) }
+                            }
+                        )
                     }
                 }
             }

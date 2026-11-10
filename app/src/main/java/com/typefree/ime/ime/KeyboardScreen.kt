@@ -78,6 +78,7 @@ import androidx.compose.ui.unit.sp
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ClipboardEntry
 import com.typefree.ime.data.DefaultPresets
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.clipboard.ClipboardSmartExtractor
@@ -136,6 +137,7 @@ fun KeyboardScreen(
     onClearFlypyComposing: () -> Unit,
     onFlushFlypyComposing: () -> Unit,
     onToggleFlypyCandidateSheet: () -> Unit,
+    onRequestMoreCandidates: () -> Unit = {},
     onEditorShortcutAction: (EditorShortcutAction) -> Unit,
     onInsertPairedSymbol: (String, String) -> Unit,
     onHideKeyboard: () -> Unit,
@@ -292,17 +294,21 @@ fun KeyboardScreen(
                             Modifier
                         }
 
-                        // Fixed 34.dp Top Bar Slot: renders Flypy Candidate Strip when composing
+                        // Fixed 34.dp Top Bar Slot: renders CandidateStrip when composing
                         // so QWERTY key positions NEVER shift vertically by even 1px!
                         Box(modifier = Modifier.fillMaxWidth().then(headerSidePadModifier)) {
                             if (uiState.isFlypyComposing) {
-                                FlypyComposingCandidateBar(
+                                CandidateStrip(
                                     composingCode = uiState.flypyComposingCode,
+                                    preeditDisplay = uiState.preeditDisplay,
+                                    inputScheme = uiState.activeInputScheme,
                                     candidates = uiState.flypyCandidates,
+                                    hasMoreCandidates = uiState.hasMoreCandidates,
                                     isSheetExpanded = uiState.isFlypyCandidateSheetExpanded,
                                     onSelectCandidate = onSelectFlypyCandidate,
                                     onToggleSheet = onToggleFlypyCandidateSheet,
-                                    onClearCode = onClearFlypyComposing
+                                    onClearCode = onClearFlypyComposing,
+                                    onRequestMoreCandidates = onRequestMoreCandidates
                                 )
                             } else {
                                 TypeFreeTopBar(
@@ -430,11 +436,13 @@ fun KeyboardScreen(
                                                 .fillMaxSize()
                                                 .padding(horizontal = 5.dp, vertical = 3.dp)
                                         ) {
-                                            FlypyExpandedCandidateGridOverlay(
+                                            CandidateGridOverlay(
                                                 candidates = uiState.flypyCandidates,
+                                                hasMoreCandidates = uiState.hasMoreCandidates,
                                                 onSelectCandidate = onSelectFlypyCandidate,
                                                 onBackspace = onBackspace,
-                                                onCollapse = onToggleFlypyCandidateSheet
+                                                onCollapse = onToggleFlypyCandidateSheet,
+                                                onRequestMoreCandidates = onRequestMoreCandidates
                                             )
                                         }
                                     }
@@ -839,23 +847,45 @@ private fun TopBarUndoIconButton(
 }
 
 /**
- * Zero-jitter 34.dp Xiaohe Yinxing Candidate Strip occupying the exact height of [TypeFreeTopBar]
- * while composing codes so the 26 QWERTY keys stay 100% stationary.
+ * Zero-jitter 34.dp unified Candidate Strip ([CandidateStrip], generalized from [FlypyComposingCandidateBar])
+ * occupying the exact height of [TypeFreeTopBar] while composing so the 26 QWERTY keys stay 100% stationary:
+ * - In [InputScheme.FLYPY_TABLE], displays the monospace 4-code (`uijm` / `ji`` / `;`).
+ * - In Rime Pinyin / Double-Pinyin / Custom schemes, displays the segmented `preeditDisplay`
+ *   (e.g. `ni'hao'shi'jie`), left-truncated (`"…" + preedit.takeLast(18)`) when long so the latest
+ *   typed Pinyin syllables remain visible.
  */
 @Composable
-private fun FlypyComposingCandidateBar(
+fun CandidateStrip(
     composingCode: String,
+    preeditDisplay: String = composingCode,
+    inputScheme: InputScheme = InputScheme.FLYPY_TABLE,
     candidates: List<FlypyCandidate>,
+    hasMoreCandidates: Boolean = false,
     isSheetExpanded: Boolean,
     onSelectCandidate: (Int) -> Unit,
     onToggleSheet: () -> Unit,
-    onClearCode: () -> Unit
+    onClearCode: () -> Unit,
+    onRequestMoreCandidates: () -> Unit = {}
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val scrollState = rememberScrollState()
+    val displayPreedit = remember(preeditDisplay, composingCode, inputScheme) {
+        ImeLogic.formatPreeditDisplay(
+            preedit = preeditDisplay,
+            rawCode = composingCode,
+            scheme = inputScheme,
+            maxVisibleChars = 18
+        )
+    }
 
     LaunchedEffect(composingCode) {
         scrollState.scrollTo(0)
+    }
+
+    LaunchedEffect(scrollState.value, scrollState.maxValue, hasMoreCandidates) {
+        if (hasMoreCandidates && scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue - 48) {
+            onRequestMoreCandidates()
+        }
     }
 
     Row(
@@ -865,7 +895,7 @@ private fun FlypyComposingCandidateBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // 1. Active Composing Code Pill (`uijm` / `ji`` / `;`)
+        // 1. Active Composing Code / Segmented Preedit Pill (`uijm` / `ni'hao'shi'jie`)
         Box(
             modifier = Modifier
                 .height(26.dp)
@@ -875,21 +905,21 @@ private fun FlypyComposingCandidateBar(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = composingCode,
+                text = displayPreedit,
                 color = palette.onPrimaryMic,
                 fontSize = 12.5.sp,
                 fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = if (inputScheme.usesRime) FontFamily.Default else FontFamily.Monospace,
                 maxLines = 1
             )
         }
 
         // 2. Scrollable Candidate List or Wildcard / Empty-Code Guide
         if (candidates.isEmpty()) {
-            val emptyHint = if (composingCode.all { it == '`' }) {
-                "反查：输双拼查形(如 ji`) 或 输双形查音(如 `bo)"
-            } else {
-                "空码 · 第五码或空格自动清屏"
+            val emptyHint = when {
+                composingCode.all { it == '`' } -> "反查：输双拼查形(如 ji`) 或 输双形查音(如 `bo)"
+                inputScheme.usesRime -> "无匹配候选 · 按回车上屏编码或空格清屏"
+                else -> "空码 · 第五码或空格自动清屏"
             }
             Text(
                 text = emptyHint,
@@ -967,7 +997,7 @@ private fun FlypyComposingCandidateBar(
             }
         }
 
-        // 3. Expand All Candidates Grid Toggle (when > 4 candidates, e.g. `` ` `` reverse lookup)
+        // 3. Expand All Candidates Grid Toggle (when > 4 candidates)
         if (candidates.size > 4) {
             Box(
                 modifier = Modifier
@@ -1007,16 +1037,45 @@ private fun FlypyComposingCandidateBar(
     }
 }
 
+@Composable
+fun FlypyComposingCandidateBar(
+    composingCode: String,
+    candidates: List<FlypyCandidate>,
+    isSheetExpanded: Boolean,
+    onSelectCandidate: (Int) -> Unit,
+    onToggleSheet: () -> Unit,
+    onClearCode: () -> Unit
+) {
+    CandidateStrip(
+        composingCode = composingCode,
+        preeditDisplay = composingCode,
+        inputScheme = InputScheme.FLYPY_TABLE,
+        candidates = candidates,
+        isSheetExpanded = isSheetExpanded,
+        onSelectCandidate = onSelectCandidate,
+        onToggleSheet = onToggleSheet,
+        onClearCode = onClearCode
+    )
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun FlypyExpandedCandidateGridOverlay(
+fun CandidateGridOverlay(
     candidates: List<FlypyCandidate>,
+    hasMoreCandidates: Boolean = false,
     onSelectCandidate: (Int) -> Unit,
     onBackspace: () -> Unit,
-    onCollapse: () -> Unit
+    onCollapse: () -> Unit,
+    onRequestMoreCandidates: () -> Unit = {}
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val vScroll = rememberScrollState()
+
+    LaunchedEffect(hasMoreCandidates, vScroll.value, vScroll.maxValue) {
+        if (hasMoreCandidates && (vScroll.maxValue == 0 || vScroll.value >= vScroll.maxValue - 80)) {
+            onRequestMoreCandidates()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -1115,6 +1174,21 @@ private fun FlypyExpandedCandidateGridOverlay(
             }
         }
     }
+}
+
+@Composable
+fun FlypyExpandedCandidateGridOverlay(
+    candidates: List<FlypyCandidate>,
+    onSelectCandidate: (Int) -> Unit,
+    onBackspace: () -> Unit,
+    onCollapse: () -> Unit
+) {
+    CandidateGridOverlay(
+        candidates = candidates,
+        onSelectCandidate = onSelectCandidate,
+        onBackspace = onBackspace,
+        onCollapse = onCollapse
+    )
 }
 
 @Composable
