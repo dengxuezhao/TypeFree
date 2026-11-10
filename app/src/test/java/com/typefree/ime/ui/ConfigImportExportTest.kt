@@ -4,6 +4,7 @@ import com.typefree.ime.data.ApiPresets
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.DictionaryEntry
 import com.typefree.ime.data.HistoryRecord
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.LlmConfig
 import com.typefree.ime.data.MultimodalConfig
 import com.typefree.ime.data.MultimodalProtocol
@@ -47,6 +48,12 @@ class ConfigImportExportTest {
             ),
             hapticFeedback = false,
             useSurroundingContext = false,
+            keyboardHeightLevel = 2,
+            liveWriteToEditor = false,
+            inputScheme = InputScheme.RIME_DOUBLE_PINYIN_FLYPY,
+            fixedCandidateOrder = false,
+            predictionEnabled = false,
+            aiCompletionEnabled = true,
             dictionary = listOf(
                 DictionaryEntry(term = "TypeFree", wrongVariants = "太普利斯", note = "产品名")
             )
@@ -65,6 +72,12 @@ class ConfigImportExportTest {
         assertEquals("AIzaSySecret789", imported.multimodalConfig.apiKey)
         assertFalse(imported.hapticFeedback)
         assertFalse(imported.useSurroundingContext)
+        assertEquals(2, imported.keyboardHeightLevel)
+        assertFalse(imported.liveWriteToEditor)
+        assertEquals(InputScheme.RIME_DOUBLE_PINYIN_FLYPY, imported.inputScheme)
+        assertEquals(false, imported.fixedCandidateOrder)
+        assertFalse(imported.predictionEnabled)
+        assertTrue(imported.aiCompletionEnabled)
         assertEquals(1, imported.dictionary.size)
         assertEquals("TypeFree", imported.dictionary.first().term)
     }

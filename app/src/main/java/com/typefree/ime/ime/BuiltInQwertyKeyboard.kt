@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.LocalTypeFreeKeyboardPalette
 import kotlinx.coroutines.Job
@@ -113,6 +114,7 @@ private val KEY_BOTTOM_RIM = 1.25.dp
 fun BuiltInQwertyKeyboard(
     enterActionInfo: EnterActionInfo,
     isFlypyChineseMode: Boolean,
+    activeInputScheme: InputScheme = InputScheme.FLYPY_TABLE,
     flypyComposingCode: String,
     flypyCandidateCount: Int,
     commaPeriodQuickSelect: Boolean,
@@ -136,6 +138,7 @@ fun BuiltInQwertyKeyboard(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val elementScale = LocalKeyboardMetrics.current.elementScale
 
     var isSymbolLayer by remember { mutableStateOf(false) }
     var isMoreSymbols by remember { mutableStateOf(false) }
@@ -984,6 +987,7 @@ private fun QwertyCharKey(
 @Composable
 private fun QwertySpaceBarKey(
     isFlypyChineseMode: Boolean,
+    activeInputScheme: InputScheme = InputScheme.FLYPY_TABLE,
     hasComposing: Boolean,
     verticalCellPad: Dp = KEY_CELL_VPAD_5ROW,
     onTap: () -> Unit,
@@ -1064,7 +1068,7 @@ private fun QwertySpaceBarKey(
         ) {
             val label = when {
                 hasComposing -> "空格首选"
-                isFlypyChineseMode -> "小鹤音形"
+                isFlypyChineseMode -> shortInputSchemeLabel(activeInputScheme)
                 else -> "English"
             }
             Text(
@@ -1076,7 +1080,7 @@ private fun QwertySpaceBarKey(
                 modifier = Modifier.align(Alignment.Center)
             )
             Text(
-                text = if (isFlypyChineseMode) "EN" else "鹤",
+                text = if (isFlypyChineseMode) "EN" else activeInputScheme.shortBadge,
                 color = palette.keyTextMuted.copy(alpha = 0.52f),
                 fontSize = 8.5.sp,
                 fontWeight = FontWeight.SemiBold,
