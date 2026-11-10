@@ -87,6 +87,8 @@ import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PipelineExecutionResult
 import com.typefree.ime.network.PipelineStage
+import com.typefree.ime.ui.components.ShareCardPreviewDialog
+import com.typefree.ime.ui.components.ShareCardRenderer
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import kotlinx.coroutines.launch
@@ -133,6 +135,7 @@ fun HistoryScreen(
     var activeBusyRecordId by remember { mutableStateOf<String?>(null) }
     var activeBusyLabel by remember { mutableStateOf<String?>(null) }
     var repolishDialogState by remember { mutableStateOf<RepolishDialogState?>(null) }
+    var shareCardRecord by remember { mutableStateOf<HistoryRecord?>(null) }
 
     val dictateCount = remember(history) {
         history.count { resolveRecordIntent(it) == VoiceIntentMode.DICTATE }
@@ -477,13 +480,13 @@ fun HistoryScreen(
                             verticalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             Text(
-                                text = "数据仅存于本机 · 零第三方云端留存",
+                                text = "历史只保存在本机 · 自有接口直连",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "你的语音口述、改写指令与本地缓存录音完全保存在当前手机沙盒中，采用零云端留存架构，任何第三方均无法访问。",
+                                text = "历史只保存在本机；语音与文本仅发送给你配置的服务商。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 lineHeight = 18.sp
@@ -643,6 +646,7 @@ fun HistoryScreen(
                                 )
                             },
                             onRepolish = { triggerTextRepolish(record) },
+                            onShareCard = { shareCardRecord = record },
                             onRetryAudio = { wavFile -> triggerAudioRetry(record, wavFile) },
                             onDelete = {
                                 repository.deleteHistoryItem(record.id)
@@ -745,6 +749,19 @@ fun HistoryScreen(
             onDismiss = { repolishDialogState = null }
         )
     }
+
+    shareCardRecord?.let { targetRecord ->
+        ShareCardPreviewDialog(
+            noteText = targetRecord.polishedText.ifBlank { targetRecord.rawTranscript },
+            timestampLabel = ShareCardRenderer.formatCurrentTimestamp(targetRecord.timestamp),
+            badgeLabel = "TypeFree · ${targetRecord.targetAppName.ifBlank { "语音便签" }}",
+            showWatermark = settings.shareCardShowWatermark,
+            onToggleWatermark = { enabled ->
+                repository.updateSettings { it.copy(shareCardShowWatermark = enabled) }
+            },
+            onDismiss = { shareCardRecord = null }
+        )
+    }
 }
 
 @Composable
@@ -841,6 +858,7 @@ private fun HistoryTimelineCard(
     onCopyPolished: () -> Unit,
     onCopyRaw: () -> Unit,
     onRepolish: () -> Unit,
+    onShareCard: () -> Unit,
     onRetryAudio: (File) -> Unit,
     onDelete: () -> Unit
 ) {
@@ -1141,6 +1159,18 @@ private fun HistoryTimelineCard(
                     Text(
                         text = if (busyLabel != null && localWavFile == null) busyLabel else "重新润色",
                         style = MaterialTheme.typography.labelMedium
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onShareCard,
+                    shape = RoundedCornerShape(9.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = "🖼️ 成图",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
 

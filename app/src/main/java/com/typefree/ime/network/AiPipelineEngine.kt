@@ -218,6 +218,7 @@ class AiPipelineEngine(
         translateTargetLanguage: String = settings.activeTranslateTarget,
         preTranscribedText: String? = null,
         sttTailWaitMs: Long = 0L,
+        chatContextMessages: List<String> = emptyList(),
         onStageChanged: (PipelineStage) -> Unit = {}
     ): Result<PipelineExecutionResult> = withContext(Dispatchers.IO) {
         val startMs = System.currentTimeMillis()
@@ -390,7 +391,8 @@ class AiPipelineEngine(
                                 style = activeStyle,
                                 targetAppName = targetAppName,
                                 dictionary = settings.dictionary,
-                                surroundingBeforeCursor = safeContext
+                                surroundingBeforeCursor = safeContext,
+                                chatContextMessages = chatContextMessages
                             )
                             VoiceIntentMode.TRANSLATE -> PromptBuilder.buildTranslatePrompts(
                                 rawSpeech = rawTranscript,
@@ -450,7 +452,8 @@ class AiPipelineEngine(
                         style = activeStyle,
                         targetAppName = targetAppName,
                         dictionary = settings.dictionary,
-                        surroundingBeforeCursor = safeContext
+                        surroundingBeforeCursor = safeContext,
+                        chatContextMessages = chatContextMessages
                     )
                     val output = when (mmCfg.protocol) {
                         MultimodalProtocol.GEMINI_NATIVE -> {
@@ -661,11 +664,21 @@ class AiPipelineEngine(
         activeStyle: ToneStyle,
         rawOrSelectedText: String,
         explicitInstruction: String? = null,
-        targetAppName: String = ""
+        targetAppName: String = "",
+        chatContextMessages: List<String> = emptyList()
     ): Result<PipelineExecutionResult> = withContext(Dispatchers.IO) {
         val startMs = System.currentTimeMillis()
         try {
-            val (sysPrompt, usrPrompt) = if (!explicitInstruction.isNullOrBlank()) {
+            val (sysPrompt, usrPrompt) = if (chatContextMessages.isNotEmpty()) {
+                PromptBuilder.buildHelpMeWritePrompts(
+                    voiceInstruction = explicitInstruction?.takeIf { it.isNotBlank() } ?: rawOrSelectedText,
+                    style = activeStyle,
+                    targetAppName = targetAppName,
+                    dictionary = settings.dictionary,
+                    surroundingBeforeCursor = "",
+                    chatContextMessages = chatContextMessages
+                )
+            } else if (!explicitInstruction.isNullOrBlank()) {
                 PromptBuilder.buildSpeakToEditPrompts(
                     selectedText = rawOrSelectedText,
                     voiceInstruction = explicitInstruction,

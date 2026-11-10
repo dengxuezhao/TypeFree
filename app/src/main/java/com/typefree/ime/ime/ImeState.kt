@@ -2,6 +2,7 @@ package com.typefree.ime.ime
 
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
+import com.typefree.ime.bubble.CapturedChatContext
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ClipboardEntry
 import com.typefree.ime.data.InputScheme
@@ -135,8 +136,16 @@ data class ImeUiState(
     val predictionCandidates: List<FlypyCandidate> = emptyList(),
     val aiCompletionSuggestion: String? = null,
     val isIncognitoMode: Boolean = false,
-    val activeHeightLevel: Int = KeyboardMetrics.DEFAULT_LEVEL
+    val activeHeightLevel: Int = KeyboardMetrics.DEFAULT_LEVEL,
+    val capturedChatContext: CapturedChatContext = CapturedChatContext(),
+    val ignoreChatContextForThisTurn: Boolean = false,
+    val showChatContextDisclosurePrompt: Boolean = false
 ) {
+    val hasActiveChatContext: Boolean
+        get() = capturedChatContext.hasContext && !ignoreChatContextForThisTurn && !isIncognitoMode
+
+    val effectiveChatContextMessages: List<String>
+        get() = if (hasActiveChatContext) capturedChatContext.formattedMessages else emptyList()
     val isFlypyComposing: Boolean
         get() = tabMode == KeyboardTabMode.QWERTY &&
             isFlypyChineseMode &&
@@ -226,6 +235,24 @@ object ImeLogic {
             id = "weekly_recap",
             label = "📝 起草本周工作简报",
             instruction = "起草一份条理清晰的本周核心成果总结与下周重点计划简报模板"
+        )
+    )
+
+    val smartReplyAttitudePresets: List<HelpWritePromptPreset> = listOf(
+        HelpWritePromptPreset(
+            id = "reply_agree",
+            label = "👍 干练应下",
+            instruction = "结合<chat_context>中对方的最新话语，直接生成一句干练、得体、积极应下或确认落实的回复正文"
+        ),
+        HelpWritePromptPreset(
+            id = "reply_defer",
+            label = "⏳ 委婉顺延",
+            instruction = "结合<chat_context>中对方的最新话语，直接生成一句礼貌说明当前优先级、协商顺延时间或提供折中方案的回复正文"
+        ),
+        HelpWritePromptPreset(
+            id = "reply_clarify",
+            label = "📋 追问细节",
+            instruction = "结合<chat_context>中对方的最新话语，直接生成一句先礼貌接单、再针对关键边界条件或范围细节进行专业确认的回复正文"
         )
     )
 

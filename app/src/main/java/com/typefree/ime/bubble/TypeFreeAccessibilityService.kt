@@ -5,11 +5,13 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.typefree.ime.data.AppSettings
 
 /**
  * Mirrors official `com.typefree.ime.floating.Services.FloatingAccessibilityService`:
@@ -264,9 +266,168 @@ class TypeFreeAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * Strictly on-demand snapshot of visible chat messages in the active window.
+     * Never called from [onAccessibilityEvent]; only invoked when the user explicitly
+     * taps `✍️` (`HELP_ME_WRITE`) and all privacy & package gates pass.
+     */
+    fun captureVisibleChatContextOnDemand(
+        expectedPackage: String,
+        appName: String,
+        settings: AppSettings,
+        isIncognitoMode: Boolean,
+        isPasswordInput: Boolean,
+        ignoreChatContextForTurn: Boolean
+    ): CapturedChatContext {
+        return try {
+            val root = rootInActiveWindow ?: return CapturedChatContext()
+            val activePkg = root.packageName?.toString().orEmpty()
+            if (!ChatScreenContextExtractor.shouldAllowChatContextCapture(
+                    settings = settings,
+                    isIncognitoMode = isIncognitoMode,
+                    isPasswordInput = isPasswordInput,
+                    ignoreChatContextForTurn = ignoreChatContextForTurn,
+                    activeWindowPackage = activePkg,
+                    targetInputPackage = expectedPackage
+                )
+            ) {
+                return CapturedChatContext()
+            }
+
+            val rootBounds = Rect()
+            root.getBoundsInScreen(rootBounds)
+            val dm = resources.displayMetrics
+            val screenWidth = rootBounds.width().takeIf { it > 0 } ?: dm.widthPixels
+            val screenHeight = rootBounds.height().takeIf { it > 0 } ?: dm.heightPixels
+
+            val focusedNode = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            var inputBoxTop = -1
+            if (focusedNode != null && isEditableTarget(focusedNode)) {
+                val editRect = Rect()
+                focusedNode.getBoundsInScreen(editRect)
+                if (editRect.top > 0) {
+                    inputBoxTop = editRect.top
+                }
+            }
+
+            val collectedNodes = ArrayList<RawScreenTextNode>(48)
+            collectVisibleTextNodes(root, collectedNodes, depth = 0)
+            if (inputBoxTop <= 0) {
+                val editableCandidate = collectedNodes.firstOrNull { it.isEditable && it.boundsTop > 0 }
+                if (editableCandidate != null) {
+                    inputBoxTop = editableCandidate.boundsTop
+                }
+            }
+
+            ChatScreenContextExtractor.extractChatContext(
+                nodes = collectedNodes,
+                screenWidth = screenWidth,
+                screenHeight = screenHeight,
+                inputBoxTop = inputBoxTop,
+                packageName = expectedPackage,
+                appName = appName
+            )
+        } catch (_: Exception) {
+            CapturedChatContext()
+        }
+    }
+
+    private fun collectVisibleTextNodes(
+        node: AccessibilityNodeInfo?,
+        out: MutableList<RawScreenTextNode>,
+        depth: Int
+    ) {
+        if (node == null || depth > 28 || out.size >= 160) return
+        if (!node.isVisibleToUser) return
+        if (isPasswordNode(node, node.inputType)) return
+
+        val editable = isEditableTarget(node)
+        val rawText = if (!node.isShowingHintText) {
+            node.text?.toString()?.trim().orEmpty()
+        } else {
+            ""
+        }
+
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        if ((rawText.isNotEmpty() || editable) && rect.width() > 0 && rect.height() > 0) {
+            out.add(
+                RawScreenTextNode(
+                    text = rawText,
+                    boundsTop = rect.top,
+                    boundsBottom = rect.bottom,
+                    boundsLeft = rect.left,
+                    boundsRight = rect.right,
+                    isEditable = editable,
+                    isClickable = node.isClickable,
+                    viewIdResourceName = node.viewIdResourceName.orEmpty(),
+                    className = node.className?.toString().orEmpty()
+                )
+            )
+        }
+
+        val childCount = node.childCount
+        for (i in 0 until childCount) {
+            val child = try {
+                node.getChild(i)
+            } catch (_: Exception) {
+                null
+            }
+            if (child != null) {
+                collectVisibleTextNodes(child, out, depth + 1)
+            }
+        }
+    }
+
     companion object {
         @Volatile
         var activeInstance: TypeFreeAccessibilityService? = null
             private set
+
+        @Volatile
+        var debugSimulatedNodesForTest: Pair<String, List<RawScreenTextNode>>? = null
+
+        fun captureChatContextIfAvailable(
+            expectedPackage: String,
+            appName: String,
+            settings: AppSettings,
+            isIncognitoMode: Boolean,
+            isPasswordInput: Boolean,
+            ignoreChatContextForTurn: Boolean
+        ): CapturedChatContext {
+            val sim = debugSimulatedNodesForTest
+            if (sim != null) {
+                val (simWindowPkg, simNodes) = sim
+                if (!ChatScreenContextExtractor.shouldAllowChatContextCapture(
+                        settings = settings,
+                        isIncognitoMode = isIncognitoMode,
+                        isPasswordInput = isPasswordInput,
+                        ignoreChatContextForTurn = ignoreChatContextForTurn,
+                        activeWindowPackage = simWindowPkg,
+                        targetInputPackage = expectedPackage
+                    )
+                ) {
+                    return CapturedChatContext()
+                }
+                val editableTop = simNodes.firstOrNull { it.isEditable }?.boundsTop ?: -1
+                return ChatScreenContextExtractor.extractChatContext(
+                    nodes = simNodes,
+                    screenWidth = 1080,
+                    screenHeight = 2400,
+                    inputBoxTop = editableTop,
+                    packageName = expectedPackage,
+                    appName = appName
+                )
+            }
+            val instance = activeInstance ?: return CapturedChatContext()
+            return instance.captureVisibleChatContextOnDemand(
+                expectedPackage = expectedPackage,
+                appName = appName,
+                settings = settings,
+                isIncognitoMode = isIncognitoMode,
+                isPasswordInput = isPasswordInput,
+                ignoreChatContextForTurn = ignoreChatContextForTurn
+            )
+        }
     }
 }

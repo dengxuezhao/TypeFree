@@ -109,6 +109,9 @@ import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PipelineStage
 import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.ui.AppDestinations
+import com.typefree.ime.ui.components.QuickNoteAiActionRow
+import com.typefree.ime.ui.components.QuickNotePrompts
+import com.typefree.ime.ui.components.ShareCardPreviewDialog
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
@@ -391,6 +394,40 @@ fun HomeSetupScreen(
     var sandboxError by remember { mutableStateOf<String?>(null) }
     var autoLearnedBanner by remember { mutableStateOf<String?>(null) }
     var copyFeedback by remember { mutableStateOf(false) }
+    var showShareCardDialog by remember { mutableStateOf(false) }
+    var quickNoteTransformLabel by remember { mutableStateOf("") }
+
+    fun runQuickNoteAiTransform(instruction: String, label: String) {
+        val currentText = sandboxValue.text.trim()
+        if (currentText.isEmpty() || quickNoteTransformLabel.isNotEmpty() || processingStage != null) return
+        if (!SetupStatsHelper.isApiConfigured(settings)) {
+            sandboxError = "尚未填写自定义 API Key，请点击右上角前往「自定义 API」完成配置"
+            return
+        }
+        sandboxError = null
+        quickNoteTransformLabel = label
+        coroutineScope.launch {
+            val (resolvedStyle, _) = repository.resolveActiveStyle(context.packageName)
+            val res = aiEngine.runTextTransform(
+                settings = settings,
+                activeStyle = resolvedStyle,
+                rawOrSelectedText = currentText,
+                explicitInstruction = instruction,
+                targetAppName = "TypeFree 闪念工作台"
+            )
+            quickNoteTransformLabel = ""
+            res.onSuccess { exec ->
+                undoSnapshot = sandboxValue
+                sandboxValue = TextFieldValue(
+                    text = exec.finalOutput,
+                    selection = TextRange(exec.finalOutput.length)
+                )
+                lastDictatedBaseline = exec.finalOutput
+            }.onFailure { err ->
+                sandboxError = err.message ?: "AI 整理失败，请检查网络或 API 配置"
+            }
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -577,6 +614,19 @@ fun HomeSetupScreen(
             sandboxError = sandboxError,
             isApiReady = isApiReady,
             sandboxDiff = sandboxDiff,
+            isQuickNoteTransforming = quickNoteTransformLabel.isNotEmpty(),
+            quickNoteTransformingLabel = quickNoteTransformLabel,
+            onExtractTodos = {
+                runQuickNoteAiTransform(QuickNotePrompts.EXTRACT_TODOS_INSTRUCTION, "提炼待办中…")
+            },
+            onFormatMeetingNotes = {
+                runQuickNoteAiTransform(QuickNotePrompts.FORMAT_MEETING_NOTES_INSTRUCTION, "整理纪要中…")
+            },
+            onOpenShareCard = {
+                if (sandboxValue.text.isNotBlank()) {
+                    showShareCardDialog = true
+                }
+            },
             onOpenStyles = { onNavigateToSettingsSubTab(AppDestinations.SUBTAB_STYLES) },
             onOpenApiConfig = { onNavigateToSettingsSubTab(AppDestinations.SUBTAB_API) },
             onOpenDictionary = { onNavigateToTab(AppDestinations.TAB_DICTIONARY) },
@@ -798,6 +848,18 @@ fun HomeSetupScreen(
         )
 
         Spacer(modifier = Modifier.height(10.dp))
+    }
+
+    if (showShareCardDialog) {
+        ShareCardPreviewDialog(
+            noteText = sandboxValue.text,
+            badgeLabel = "TypeFree · 闪念便签",
+            showWatermark = settings.shareCardShowWatermark,
+            onToggleWatermark = { enabled ->
+                repository.updateSettings { it.copy(shareCardShowWatermark = enabled) }
+            },
+            onDismiss = { showShareCardDialog = false }
+        )
     }
 }
 
@@ -1763,6 +1825,11 @@ private fun PlaygroundCard(
     sandboxError: String?,
     isApiReady: Boolean,
     sandboxDiff: SandboxPreviewDiff?,
+    isQuickNoteTransforming: Boolean,
+    quickNoteTransformingLabel: String,
+    onExtractTodos: () -> Unit,
+    onFormatMeetingNotes: () -> Unit,
+    onOpenShareCard: () -> Unit,
     onOpenStyles: () -> Unit,
     onOpenApiConfig: () -> Unit,
     onOpenDictionary: () -> Unit,
@@ -1973,6 +2040,16 @@ private fun PlaygroundCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
                     )
                 }
+            )
+
+            // Quick-Note AI Action & Share Card Studio Bar
+            QuickNoteAiActionRow(
+                hasText = sandboxValue.text.isNotBlank(),
+                isTransforming = isQuickNoteTransforming,
+                transformingLabel = quickNoteTransformingLabel,
+                onExtractTodos = onExtractTodos,
+                onFormatMeetingNotes = onFormatMeetingNotes,
+                onOpenShareCard = onOpenShareCard
             )
 
             // Auto-Learned Dictionary Feedback Banner

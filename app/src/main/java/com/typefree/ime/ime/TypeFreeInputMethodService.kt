@@ -21,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalConfiguration
 import com.typefree.ime.TypeFreeApp
 import com.typefree.ime.audio.WavAudioRecorder
+import com.typefree.ime.bubble.CapturedChatContext
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.ToneStyle
@@ -195,6 +196,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     isToolPanelOpen = false,
                     isToolPanelHeightExpanded = false,
                     voiceSubPanel = VoiceSubPanel.NONE,
+                    capturedChatContext = CapturedChatContext(),
+                    ignoreChatContextForThisTurn = false,
+                    showChatContextDisclosurePrompt = false,
                     isPunctuationStripOpen = false,
                     isStylePickerExpanded = false,
                     flypyComposingCode = "",
@@ -224,6 +228,13 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     override fun onFinishInputView(finishingInput: Boolean) {
         tryAutoLearnFromRecentEdit()
         repository.setImeWindowVisible(false)
+        _imeState.update {
+            it.copy(
+                capturedChatContext = CapturedChatContext(),
+                ignoreChatContextForThisTurn = false,
+                showChatContextDisclosurePrompt = false
+            )
+        }
         super.onFinishInputView(finishingInput)
     }
 
@@ -351,6 +362,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 inputSessionToken = prev.inputSessionToken + 1,
                 voicePhase = if (prev.voicePhase is VoicePhase.Recording) VoicePhase.Idle else prev.voicePhase,
                 voiceSubPanel = VoiceSubPanel.NONE,
+                capturedChatContext = CapturedChatContext(),
+                ignoreChatContextForThisTurn = false,
+                showChatContextDisclosurePrompt = false,
                 isArcTranslateActive = false,
                 arcStartedFromHandsFree = false,
                 isArcCancelHovered = false,
@@ -425,6 +439,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     onSelectTabMode = ::selectTabMode,
                     onOpenHelpMeWrite = voiceController::openOrRestoreVoicePenPanel,
                     onCloseSubPanel = voiceController::closeVoiceSubPanel,
+                    onAcceptChatContextDisclosure = voiceController::acceptChatContextDisclosure,
+                    onDeclineChatContextDisclosure = voiceController::declineChatContextDisclosure,
+                    onToggleIgnoreChatContext = voiceController::toggleIgnoreChatContextForTurn,
                     onDismissSpeakToEdit = voiceController::dismissSpeakToEditForTurn,
                     onSelectTranslateLanguage = voiceController::selectTranslateLanguage,
                     onTogglePunctuationStrip = voiceController::togglePunctuationStrip,
@@ -517,6 +534,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 tabMode = mode,
                 voicePhase = if (prev.voicePhase is VoicePhase.Recording) VoicePhase.Idle else prev.voicePhase,
                 voiceSubPanel = VoiceSubPanel.NONE,
+                capturedChatContext = CapturedChatContext(),
+                ignoreChatContextForThisTurn = false,
+                showChatContextDisclosurePrompt = false,
                 isArcTranslateActive = false,
                 arcStartedFromHandsFree = false,
                 isArcCancelHovered = false,

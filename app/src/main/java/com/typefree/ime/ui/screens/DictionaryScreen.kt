@@ -494,15 +494,18 @@ fun DictionaryScreen(repository: AppRepository) {
 
                         Surface(
                             shape = RoundedCornerShape(50),
-                            color = if (isCustomActive) TypeFreeEmerald.copy(alpha = 0.15f)
+                            color = if (isCustomActive || settings.inputScheme.usesRime) TypeFreeEmerald.copy(alpha = 0.15f)
                             else MaterialTheme.colorScheme.surfaceVariant
                         ) {
                             Text(
-                                text = if (isCustomActive) "自定义码表 (${flypyDict.codeCount} 编码)"
-                                else "内置双拼 (${flypyDict.codeCount} 编码)",
+                                text = when {
+                                    settings.inputScheme.usesRime -> "当前：${settings.inputScheme.label} (音形备选 ${flypyDict.codeCount} 编码)"
+                                    isCustomActive -> "自定义音形 (${flypyDict.codeCount} 编码)"
+                                    else -> "内置四码表 (${flypyDict.codeCount} 编码)"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
-                                color = if (isCustomActive) TypeFreeEmerald
+                                color = if (isCustomActive || settings.inputScheme.usesRime) TypeFreeEmerald
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
                             )
@@ -510,10 +513,14 @@ fun DictionaryScreen(repository: AppRepository) {
                     }
 
                     Text(
-                        text = if (isCustomActive)
-                            "当前已挂载私有音形码表，单字与词组在键盘中优先生效。可随时导入新码表或一键恢复内置词库。"
-                        else
-                            "当前使用开箱即用的纯开源双拼词库。支持导入您个人的 Rime/TSV 码表（如小鹤音形、五笔、虎码等）实现四码定长顶功输入。",
+                        text = when {
+                            settings.inputScheme.usesRime ->
+                                "当前键盘激活「${settings.inputScheme.label}」（由上方原生 librime 1.17.0 引擎驱动）。本卡片管理「小鹤音形（四码）」方案的 TSV 顶功码表，导入后切到小鹤音形即可生效。"
+                            isCustomActive ->
+                                "当前已挂载私有音形码表，单字与词组在键盘中优先生效。可随时导入新码表或一键恢复内置词库。"
+                            else ->
+                                "当前使用内置开源四码词库。支持导入您个人的 TSV 码表（如小鹤音形、五笔、虎码等）实现四码定长顶功输入。"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 18.sp

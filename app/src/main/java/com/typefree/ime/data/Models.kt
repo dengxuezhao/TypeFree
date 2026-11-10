@@ -423,6 +423,10 @@ data class AppSettings(
     val fixedCandidateOrder: Boolean? = null, // null = 按方案自动
     val predictionEnabled: Boolean = true,
     val aiCompletionEnabled: Boolean = false,
+    val chatContextReplyEnabled: Boolean = false, // 读屏上下文「AI 帮回」（默认关闭，需首次披露同意后开启）
+    val chatContextDisclosureAccepted: Boolean = false, // 是否已阅读并同意「AI 帮回」首次显著披露
+    val chatContextDisclosureDismissed: Boolean = false, // 是否已在键盘首次披露卡点过「暂不开启」（避免反复打扰，但不代表已同意披露）
+    val shareCardShowWatermark: Boolean = true, // 排版成图底部是否显示 TypeFree 署名水印
     val providerVault: Map<String, ProviderCredential> = emptyMap(),
     val snippets: List<SnippetEntry> = DefaultPresets.defaultSnippets(),
     val historyRetention: HistoryRetention = HistoryRetention.FOREVER,

@@ -1,4 +1,24 @@
 #!/usr/bin/env bash
+# ==============================================================================
+# TypeFree :rime — Upstream librime 1.17.0 & Dependencies Fetch + Patch Script
+#
+# 1. Fetches pinned upstream commits for librime 1.17.0, glog, leveldb, yaml-cpp,
+#    marisa-trie, OpenCC, snappy, librime-lua, librime-octagram, librime-predict,
+#    and verifies Boost 1.92.0 tarball via SHA-256.
+# 2. Applies 3 targeted source patches after extraction:
+#    - Patch 1 (librime/CMakeLists.txt, librime-octagram/CMakeLists.txt,
+#      librime-predict/CMakeLists.txt): Guards `add_subdirectory(tools)` with
+#      `if(NOT ANDROID)` so desktop CLI executables are not cross-compiled on NDK.
+#    - Patch 2 (librime/src/rime/gear/memory.cc): Checks `ctx->get_option("_incognito")`
+#      at the entry of `Memory::OnCommit`, `Memory::OnDeleteEntry`, and
+#      `Memory::OnUnhandledKey` so incognito/password sessions never write to or
+#      mutate `*.userdb` on disk.
+#    - Patch 3 (librime/src/rime/gear/script_translator.cc): Checks
+#      `!engine_->context()->get_option("fixed_candidate_order")` when computing
+#      `enable_user_dict` in `ScriptTranslator::Query`, allowing the user to
+#      toggle fixed vs dynamic candidate ordering at runtime via `RimeSetOption`
+#      without modifying or redeploying `*.schema.yaml`.
+# ==============================================================================
 set -euo pipefail
 
 CPP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,13 +81,14 @@ ln -sfn "$CPP_DIR/librime-lua-deps" "$CPP_DIR/librime/plugins/librime-lua/thirdp
 
 # Patch Android cross-compile CLI tool subdirectories & runtime _incognito / fixed_candidate_order option checks
 python3 - << 'PYEOF'
-import os
+import os, sys
 
 cpp_dir = os.environ.get("CPP_DIR", ".")
 
 def replace_once(path, old, new):
     if not os.path.exists(path):
-        return
+        sys.stderr.write(f"ERROR: patch target file not found: {path}\n")
+        sys.exit(1)
     with open(path, "r", encoding="utf-8") as f:
         content = f.read()
     if new in content:
@@ -76,6 +97,9 @@ def replace_once(path, old, new):
         content = content.replace(old, new, 1)
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
+        return
+    sys.stderr.write(f"ERROR: patch snippet not found in {path}: {old!r}\n")
+    sys.exit(1)
 
 # 1. Skip desktop CLI tools during Android NDK build
 replace_once(
@@ -99,6 +123,11 @@ replace_once(
     os.path.join(cpp_dir, "librime/src/rime/gear/memory.cc"),
     "void Memory::OnCommit(Context* ctx) {\n  if (!user_dict_ || user_dict_->readonly())\n    return;",
     "void Memory::OnCommit(Context* ctx) {\n  if (!user_dict_ || user_dict_->readonly() || (ctx && ctx->get_option(\"_incognito\")))\n    return;"
+)
+replace_once(
+    os.path.join(cpp_dir, "librime/src/rime/gear/memory.cc"),
+    "void Memory::OnDeleteEntry(Context* ctx) {\n  if (!user_dict_ || user_dict_->readonly() || !ctx || !ctx->HasMenu())\n    return;",
+    "void Memory::OnDeleteEntry(Context* ctx) {\n  if (!user_dict_ || user_dict_->readonly() || !ctx || !ctx->HasMenu() || ctx->get_option(\"_incognito\"))\n    return;"
 )
 replace_once(
     os.path.join(cpp_dir, "librime/src/rime/gear/memory.cc"),

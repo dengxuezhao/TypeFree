@@ -111,6 +111,9 @@ fun KeyboardScreen(
     onSelectTabMode: (KeyboardTabMode) -> Unit,
     onOpenHelpMeWrite: () -> Unit,
     onCloseSubPanel: () -> Unit,
+    onAcceptChatContextDisclosure: () -> Unit = {},
+    onDeclineChatContextDisclosure: () -> Unit = {},
+    onToggleIgnoreChatContext: () -> Unit = {},
     onDismissSpeakToEdit: () -> Unit,
     onSelectTranslateLanguage: (String) -> Unit,
     onTogglePunctuationStrip: () -> Unit,
@@ -259,6 +262,9 @@ fun KeyboardScreen(
                             amplitudes = amplitudes,
                             elapsedMs = elapsedMs,
                             onClose = onCloseSubPanel,
+                            onAcceptChatContextDisclosure = onAcceptChatContextDisclosure,
+                            onDeclineChatContextDisclosure = onDeclineChatContextDisclosure,
+                            onToggleIgnoreChatContext = onToggleIgnoreChatContext,
                             onSwitchToQwerty = { onSelectTabMode(KeyboardTabMode.QWERTY) },
                             onOpenClipboard = onOpenClipboard,
                             onPresetClick = onHelpWritePresetClick,
@@ -2160,6 +2166,9 @@ private fun HelpMeWritePanel(
     amplitudes: List<Float>,
     elapsedMs: Long,
     onClose: () -> Unit,
+    onAcceptChatContextDisclosure: () -> Unit,
+    onDeclineChatContextDisclosure: () -> Unit,
+    onToggleIgnoreChatContext: () -> Unit,
     onSwitchToQwerty: () -> Unit,
     onOpenClipboard: () -> Unit,
     onPresetClick: (HelpWritePromptPreset) -> Unit,
@@ -2178,6 +2187,8 @@ private fun HelpMeWritePanel(
     val s = LocalKeyboardMetrics.current.elementScale
     val phase = uiState.voicePhase
     val isBusy = phase is VoicePhase.Recording || phase is VoicePhase.Processing
+    val hasCapturedContext = uiState.capturedChatContext.hasMessages
+    val isContextActive = uiState.hasActiveChatContext
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -2186,7 +2197,7 @@ private fun HelpMeWritePanel(
                 .padding(bottom = (28f * s).dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Header: Top-Left `Help me write · 帮我写` + Top-Right Direct QWERTY / Clipboard / `×`
+            // Header: Top-Left `Help me write · 帮我写` or `AI 帮回 + 已读 N 条` + Top-Right Bridge
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2197,22 +2208,74 @@ private fun HelpMeWritePanel(
                 Row(
                     modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     Icon(
                         imageVector = TypeFreeIcons.VoicePen,
                         contentDescription = null,
-                        tint = palette.keyTextPrimary,
-                        modifier = Modifier.size(18.dp)
+                        tint = if (isContextActive) TypeFreeEmerald else palette.keyTextPrimary,
+                        modifier = Modifier.size(if (hasCapturedContext) 16.dp else 18.dp)
                     )
-                    Text(
-                        text = "Help me write · 帮我写",
-                        color = palette.keyTextPrimary,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    if (hasCapturedContext) {
+                        Text(
+                            text = "AI 帮回",
+                            color = palette.keyTextPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                        val badgeText = if (uiState.ignoreChatContextForThisTurn) {
+                            "已忽略 · 点此恢复"
+                        } else {
+                            "已读 ${uiState.capturedChatContext.messageCount} 条 · 点此忽略"
+                        }
+                        Box(
+                            modifier = Modifier
+                                .height(22.dp)
+                                .clip(RoundedCornerShape(11.dp))
+                                .background(
+                                    if (!uiState.ignoreChatContextForThisTurn) {
+                                        TypeFreeEmerald.copy(alpha = 0.14f)
+                                    } else {
+                                        palette.keyCapBg
+                                    }
+                                )
+                                .border(
+                                    width = 1.dp,
+                                    color = if (!uiState.ignoreChatContextForThisTurn) {
+                                        TypeFreeEmerald.copy(alpha = 0.48f)
+                                    } else {
+                                        palette.keyBorder
+                                    },
+                                    shape = RoundedCornerShape(11.dp)
+                                )
+                                .clickable(enabled = !isBusy, onClick = onToggleIgnoreChatContext)
+                                .padding(horizontal = 7.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = badgeText,
+                                color = if (!uiState.ignoreChatContextForThisTurn) {
+                                    if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+                                } else {
+                                    palette.keyTextMuted
+                                },
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = "Help me write · 帮我写",
+                            color = palette.keyTextPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
 
                 SubPanelHeaderBridgeBar(
@@ -2234,6 +2297,140 @@ private fun HelpMeWritePanel(
                     onOpenPermissionSetup = { onOpenHostApp(AppDestinations.TAB_HOME) },
                     onDismiss = onDismissError
                 )
+            } else if (uiState.showChatContextDisclosurePrompt) {
+                // First-time in-frame privacy disclosure card when opening ✍️ in a messaging app
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(palette.cardElevatedBg)
+                        .border(1.dp, TypeFreeEmerald.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 10.dp, vertical = (6f * s).dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "💬 开启 AI 帮回读屏上下文？",
+                            color = palette.keyTextPrimary,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(palette.keyCapBg)
+                                    .border(1.dp, palette.keyBorder, RoundedCornerShape(10.dp))
+                                    .clickable(onClick = onDeclineChatContextDisclosure)
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    text = "暂不开启",
+                                    color = palette.keyTextMuted,
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(TypeFreeEmerald)
+                                    .clickable(onClick = onAcceptChatContextDisclosure)
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    text = "同意并启用",
+                                    color = Color.White,
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        text = "仅在你点 ✍️ 时读取当前聊天最近几条消息，发送给你配置的 AI 模型生成回复；不保存、不写入历史。",
+                        color = palette.keyTextMuted,
+                        fontSize = 10.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            } else if (isContextActive) {
+                // Active Contextual Smart Reply: 1-line incoming message quote + 3 attitude pills + presets
+                val latestPreview = uiState.capturedChatContext.latestIncomingMessage
+                    .ifBlank { uiState.capturedChatContext.formattedLines.lastOrNull().orEmpty() }
+                Column(verticalArrangement = Arrangement.spacedBy((5f * s).dp)) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(palette.cardElevatedBg)
+                            .border(1.dp, TypeFreeEmerald.copy(alpha = 0.38f), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 10.dp, vertical = (5f * s).dp)
+                    ) {
+                        Text(
+                            text = "💬 $latestPreview",
+                            color = palette.keyTextPrimary,
+                            fontSize = 11.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        ImeLogic.smartReplyAttitudePresets.forEach { preset ->
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(13.dp))
+                                    .background(TypeFreeEmerald.copy(alpha = 0.12f))
+                                    .border(1.dp, TypeFreeEmerald.copy(alpha = 0.45f), RoundedCornerShape(13.dp))
+                                    .clickable(enabled = !isBusy) { onPresetClick(preset) }
+                                    .padding(horizontal = 10.dp, vertical = (5.5f * s).dp)
+                            ) {
+                                Text(
+                                    text = preset.label,
+                                    color = if (isBusy) {
+                                        palette.keyTextMuted
+                                    } else if (palette.isDark) {
+                                        Color(0xFF6EE7B7)
+                                    } else {
+                                        Color(0xFF047857)
+                                    },
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                        ImeLogic.helpWritePresets.forEach { preset ->
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(13.dp))
+                                    .background(palette.cardElevatedBg)
+                                    .border(1.dp, palette.keyBorder, RoundedCornerShape(13.dp))
+                                    .clickable(enabled = !isBusy) { onPresetClick(preset) }
+                                    .padding(horizontal = 10.dp, vertical = (5.5f * s).dp)
+                            ) {
+                                Text(
+                                    text = preset.label,
+                                    color = if (isBusy) palette.keyTextMuted else palette.keyTextPrimary,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+                }
             } else {
                 // 3 One-Tap Inspiration Example Prompts
                 Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -2274,9 +2471,21 @@ private fun HelpMeWritePanel(
                 phase = phase,
                 amplitudes = amplitudes,
                 elapsedMs = elapsedMs,
-                idleTitle = "Describe what to write · 口述你想写的内容",
-                idleSubtitle = "如：写封邮件约周五下午三点开会",
-                recordingTitle = "Describe what to write · 正在聆听需求",
+                idleTitle = if (isContextActive) {
+                    "Say how to reply · 口述你的回复态度"
+                } else {
+                    "Describe what to write · 口述你想写的内容"
+                },
+                idleSubtitle = if (isContextActive) {
+                    "如：跟他说下午三点没问题，让他先把议程发我"
+                } else {
+                    "如：写封邮件约周五下午三点开会"
+                },
+                recordingTitle = if (isContextActive) {
+                    "Say how to reply · 正在聆听回复意图"
+                } else {
+                    "Describe what to write · 正在聆听需求"
+                },
                 onStartRecording = onStartRecording,
                 onReleaseRecording = onReleaseRecording,
                 onFinishHandsFree = onFinishHandsFree,

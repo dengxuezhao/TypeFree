@@ -1255,6 +1255,58 @@ private fun AppearanceAndPreferencesPane(repository: AppRepository) {
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
+                var showChatContextDisclosureDialog by remember { mutableStateOf(false) }
+
+                PreferenceSwitchRow(
+                    title = "💬 AI 帮回读取屏幕上文",
+                    subtitle = "仅在你点 ✍️ 时读取当前聊天最近几条消息，发送给你配置的 AI 模型服务商生成回复；不保存、不写入历史或词库（无痕模式、密码框与金融支付软件永不读取）",
+                    checked = settings.chatContextReplyEnabled,
+                    onCheckedChange = { enabled ->
+                        if (enabled && !settings.chatContextDisclosureAccepted) {
+                            showChatContextDisclosureDialog = true
+                        } else {
+                            repository.updateSettings {
+                                it.copy(chatContextReplyEnabled = enabled)
+                            }
+                        }
+                    }
+                )
+
+                if (showChatContextDisclosureDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showChatContextDisclosureDialog = false },
+                        title = { Text("开启「💬 AI 帮回读取屏幕上文」说明") },
+                        text = {
+                            Text(
+                                "仅在你点 ✍️ 时读取当前聊天最近几条消息，发送给你配置的 AI 模型生成回复；不保存、不写入历史或词库。\n\n无痕模式、密码输入框与金融支付/认证类软件永不读取，退出面板后内存立即清空。"
+                            )
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    showChatContextDisclosureDialog = false
+                                    repository.updateSettings {
+                                        it.copy(
+                                            chatContextReplyEnabled = true,
+                                            chatContextDisclosureAccepted = true,
+                                            chatContextDisclosureDismissed = false
+                                        )
+                                    }
+                                }
+                            ) {
+                                Text("同意并启用")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showChatContextDisclosureDialog = false }) {
+                                Text("暂不开启")
+                            }
+                        }
+                    )
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
                 PreferenceSwitchRow(
                     title = "自动学习打字改错",
                     subtitle = "口述上屏后若用内置键盘手动修正专有名词，自动收录至个人词典",

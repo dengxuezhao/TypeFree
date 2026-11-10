@@ -2,6 +2,10 @@ package com.typefree.ime.ime
 
 import android.view.inputmethod.ExtractedTextRequest
 import com.typefree.ime.audio.WavAudioRecorder
+import com.typefree.ime.bubble.CapturedChatContext
+import com.typefree.ime.bubble.ChatScreenContextExtractor
+import com.typefree.ime.bubble.TypeFreeAccessibilityService
+import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.HistoryRecord
 import com.typefree.ime.data.PipelineMode
@@ -24,7 +28,15 @@ class VoiceController(
     private val host: ImeHostCallbacks,
     private val audioRecorderProvider: () -> WavAudioRecorder,
     private val onExternalCommitToEngine: (String) -> Unit,
-    private val onResetComposing: () -> Unit
+    private val onResetComposing: () -> Unit,
+    private val chatContextCaptureProvider: (
+        expectedPackage: String,
+        appName: String,
+        settings: AppSettings,
+        isIncognitoMode: Boolean,
+        isPasswordInput: Boolean,
+        ignoreChatContextForTurn: Boolean
+    ) -> CapturedChatContext = TypeFreeAccessibilityService::captureChatContextIfAvailable
 ) {
     private var activePipelineJob: Job? = null
     private var activeStreamingSession: StreamingAsrSession? = null
@@ -53,12 +65,40 @@ class VoiceController(
     fun openOrRestoreVoicePenPanel() {
         host.performKeyFeedback(strong = false)
         onResetComposing()
+        val settingsSnap = host.repository.settings.value
+        val stateSnap = host.stateFlow.value
+        val isPassword = ImeLogic.isPasswordEditorInputType(stateSnap.currentInputType)
+        val accessibilityConnected =
+            TypeFreeAccessibilityService.activeInstance != null || TypeFreeAccessibilityService.debugSimulatedNodesForTest != null
+        val shouldPromptDisclosure = stateSnap.rawSelectedText.isBlank() &&
+            accessibilityConnected &&
+            ChatScreenContextExtractor.shouldPromptFirstTimeDisclosure(
+                settings = settingsSnap,
+                isIncognitoMode = stateSnap.isIncognitoMode,
+                isPasswordInput = isPassword,
+                targetInputPackage = stateSnap.targetPackage
+            )
+        val capturedContext = if (stateSnap.rawSelectedText.isBlank() && !shouldPromptDisclosure) {
+            chatContextCaptureProvider(
+                stateSnap.targetPackage,
+                stateSnap.targetAppName,
+                settingsSnap,
+                stateSnap.isIncognitoMode,
+                isPassword,
+                false
+            )
+        } else {
+            CapturedChatContext()
+        }
         host.stateFlow.update { prev ->
             if (prev.rawSelectedText.isNotBlank()) {
                 prev.copy(
                     tabMode = KeyboardTabMode.VOICE,
                     ignoreSelectionForThisTurn = false,
                     voiceSubPanel = VoiceSubPanel.SPEAK_TO_EDIT,
+                    capturedChatContext = CapturedChatContext(),
+                    ignoreChatContextForThisTurn = false,
+                    showChatContextDisclosurePrompt = false,
                     isClipboardOpen = false,
                     isToolPanelOpen = false,
                     isPunctuationStripOpen = false,
@@ -72,6 +112,9 @@ class VoiceController(
                 prev.copy(
                     tabMode = KeyboardTabMode.VOICE,
                     voiceSubPanel = VoiceSubPanel.HELP_ME_WRITE,
+                    capturedChatContext = capturedContext,
+                    ignoreChatContextForThisTurn = false,
+                    showChatContextDisclosurePrompt = shouldPromptDisclosure,
                     isClipboardOpen = false,
                     isToolPanelOpen = false,
                     isPunctuationStripOpen = false,
@@ -85,6 +128,64 @@ class VoiceController(
         }
     }
 
+    fun acceptChatContextDisclosure() {
+        host.performKeyFeedback(strong = false)
+        val updatedSettings = host.repository.settings.value.copy(
+            chatContextReplyEnabled = true,
+            chatContextDisclosureAccepted = true,
+            chatContextDisclosureDismissed = false
+        )
+        host.repository.updateSettings {
+            it.copy(
+                chatContextReplyEnabled = true,
+                chatContextDisclosureAccepted = true,
+                chatContextDisclosureDismissed = false
+            )
+        }
+        val stateSnap = host.stateFlow.value
+        val isPassword = ImeLogic.isPasswordEditorInputType(stateSnap.currentInputType)
+        val captured = chatContextCaptureProvider(
+            stateSnap.targetPackage,
+            stateSnap.targetAppName,
+            updatedSettings,
+            stateSnap.isIncognitoMode,
+            isPassword,
+            false
+        )
+        host.stateFlow.update {
+            it.copy(
+                capturedChatContext = captured,
+                ignoreChatContextForThisTurn = false,
+                showChatContextDisclosurePrompt = false
+            )
+        }
+    }
+
+    fun declineChatContextDisclosure() {
+        host.performKeyFeedback(strong = false)
+        host.repository.updateSettings {
+            it.copy(
+                chatContextReplyEnabled = false,
+                chatContextDisclosureAccepted = false,
+                chatContextDisclosureDismissed = true
+            )
+        }
+        host.stateFlow.update {
+            it.copy(
+                capturedChatContext = CapturedChatContext(),
+                ignoreChatContextForThisTurn = false,
+                showChatContextDisclosurePrompt = false
+            )
+        }
+    }
+
+    fun toggleIgnoreChatContextForTurn() {
+        host.performKeyFeedback(strong = false)
+        host.stateFlow.update {
+            it.copy(ignoreChatContextForThisTurn = !it.ignoreChatContextForThisTurn)
+        }
+    }
+
     fun closeVoiceSubPanel() {
         host.performKeyFeedback(strong = false)
         if (host.stateFlow.value.voicePhase is VoicePhase.Recording ||
@@ -95,7 +196,10 @@ class VoiceController(
         host.stateFlow.update {
             it.copy(
                 voiceSubPanel = VoiceSubPanel.NONE,
-                activeIntentMode = VoiceIntentMode.DICTATE
+                activeIntentMode = VoiceIntentMode.DICTATE,
+                capturedChatContext = CapturedChatContext(),
+                ignoreChatContextForThisTurn = false,
+                showChatContextDisclosurePrompt = false
             )
         }
     }
@@ -714,6 +818,12 @@ class VoiceController(
             )
         }
 
+        val activeChatContext = if (resolvedIntent == VoiceIntentMode.HELP_ME_WRITE) {
+            snapshot.effectiveChatContextMessages
+        } else {
+            emptyList()
+        }
+
         val pipelineResult = host.aiEngine.processVoiceAudio(
             wavFile = wavFile,
             settings = settings,
@@ -725,6 +835,7 @@ class VoiceController(
             translateTargetLanguage = targetTranslateLang.ifBlank { settings.activeTranslateTarget },
             preTranscribedText = preTranscribedText,
             sttTailWaitMs = sttTailWaitMs,
+            chatContextMessages = activeChatContext,
             onStageChanged = { stage ->
                 host.stateFlow.update { curr ->
                     curr.copy(
@@ -898,15 +1009,20 @@ class VoiceController(
                 it.copy(voicePhase = VoicePhase.Processing(stageText = "正在起草：${preset.label}..."))
             }
 
-            val draftInstruction =
+            val activeChatContext = snapshot.effectiveChatContextMessages
+            val draftInstruction = if (activeChatContext.isNotEmpty()) {
+                preset.instruction
+            } else {
                 "请忽略<selected_text>中的占位文字，直接根据以下写作需求起草完整、自然得体、可直接发送的成稿正文（绝不输出任何寒暄或解释）：${preset.instruction}"
+            }
 
             val transformResult = host.aiEngine.runTextTransform(
                 settings = settings,
                 activeStyle = activeStyle,
                 rawOrSelectedText = preset.label,
                 explicitInstruction = draftInstruction,
-                targetAppName = targetAppName
+                targetAppName = targetAppName,
+                chatContextMessages = activeChatContext
             )
 
             transformResult.fold(
@@ -1020,8 +1136,12 @@ class VoiceController(
             )
         }
 
-        val fullBufferAfterCommit = host.readFullEditorTextSafely().ifBlank { outcome.finalCommittedText }
-        host.onDictationCommittedForAutoLearn(fullBufferAfterCommit)
+        if (host.stateFlow.value.capturedChatContext.hasMessages) {
+            host.clearAutoLearnBaseline()
+        } else {
+            val fullBufferAfterCommit = host.readFullEditorTextSafely().ifBlank { outcome.finalCommittedText }
+            host.onDictationCommittedForAutoLearn(fullBufferAfterCommit)
+        }
 
         host.performHaptic(strong = true)
         if (outcome.finalCommittedText.isNotEmpty()) {
@@ -1037,6 +1157,9 @@ class VoiceController(
                 ),
                 voiceSubPanel = VoiceSubPanel.NONE,
                 activeIntentMode = VoiceIntentMode.DICTATE,
+                capturedChatContext = CapturedChatContext(),
+                ignoreChatContextForThisTurn = false,
+                showChatContextDisclosurePrompt = false,
                 undoSnapshot = host.peekTopUndoSnapshot(),
                 rawSelectedText = "",
                 ignoreSelectionForThisTurn = false,
@@ -1058,8 +1181,12 @@ class VoiceController(
             ic.endBatchEdit()
         }
 
-        val fullBufferAfterCommit = host.readFullEditorTextSafely().ifBlank { finalText }
-        host.onDictationCommittedForAutoLearn(fullBufferAfterCommit)
+        if (host.stateFlow.value.capturedChatContext.hasMessages) {
+            host.clearAutoLearnBaseline()
+        } else {
+            val fullBufferAfterCommit = host.readFullEditorTextSafely().ifBlank { finalText }
+            host.onDictationCommittedForAutoLearn(fullBufferAfterCommit)
+        }
 
         host.performHaptic(strong = true)
         onExternalCommitToEngine(finalText)
@@ -1077,6 +1204,9 @@ class VoiceController(
                 ),
                 voiceSubPanel = VoiceSubPanel.NONE,
                 activeIntentMode = VoiceIntentMode.DICTATE,
+                capturedChatContext = CapturedChatContext(),
+                ignoreChatContextForThisTurn = false,
+                showChatContextDisclosurePrompt = false,
                 undoSnapshot = host.peekTopUndoSnapshot(),
                 rawSelectedText = "",
                 ignoreSelectionForThisTurn = false,

@@ -144,6 +144,26 @@ class AppRepository(private val appContext: Context) {
             } else {
                 false
             }
+            val resolvedChatContextReplyEnabled = if (raw.contains("\"chatContextReplyEnabled\"")) {
+                parsed.chatContextReplyEnabled
+            } else {
+                false
+            }
+            val resolvedChatContextDisclosureAccepted = if (raw.contains("\"chatContextDisclosureAccepted\"")) {
+                parsed.chatContextDisclosureAccepted
+            } else {
+                false
+            }
+            val resolvedChatContextDisclosureDismissed = if (raw.contains("\"chatContextDisclosureDismissed\"")) {
+                parsed.chatContextDisclosureDismissed
+            } else {
+                false
+            }
+            val resolvedShareCardShowWatermark = if (raw.contains("\"shareCardShowWatermark\"")) {
+                parsed.shareCardShowWatermark
+            } else {
+                true
+            }
             val safeSnippets = (parsed.snippets ?: DefaultPresets.defaultSnippets()).map { s ->
                 s.copy(
                     id = s.id.ifBlank { UUID.randomUUID().toString() },
@@ -214,6 +234,10 @@ class AppRepository(private val appContext: Context) {
                 fixedCandidateOrder = resolvedFixedCandidateOrder,
                 predictionEnabled = resolvedPredictionEnabled,
                 aiCompletionEnabled = resolvedAiCompletionEnabled,
+                chatContextReplyEnabled = resolvedChatContextReplyEnabled,
+                chatContextDisclosureAccepted = resolvedChatContextDisclosureAccepted,
+                chatContextDisclosureDismissed = resolvedChatContextDisclosureDismissed,
+                shareCardShowWatermark = resolvedShareCardShowWatermark,
                 providerVault = safeVault,
                 snippets = safeSnippets,
                 historyRetention = parsed.historyRetention ?: HistoryRetention.FOREVER,
