@@ -1,0 +1,22 @@
+# Rime schema: rime_ice (雾凇拼音全拼)
+schema:
+  schema_id: rime_ice
+  name: 雾凇拼音
+  version: "2.7.0"
+  description: |
+    TypeFree 内置雾凇拼音（全拼整句 + 动态调频 + 自造词）
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中文, 英文 ]
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcba
+  delimiter: " '"
+
+translator:
+  dictionary: rime_ice
+  enable_user_dict: true
+  enable_sentence: true
+  enable_completion: true

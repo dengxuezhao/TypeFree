@@ -24,6 +24,7 @@ import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.ToneStyle
+import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.theme.TypeFreeTheme
@@ -105,6 +106,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             )
         }
         TypeFreeApp.instance.ensureFlypyDictionaryLoaded()
+        typingController.rimeInputEngine = TypeFreeApp.instance.rimeInputEngine
+        typingController.isRimeReady = TypeFreeApp.instance.rimeDataManager.isReady
+        TypeFreeApp.instance.ensureRimeDeployed()
         serviceScope.launch {
             TypeFreeApp.instance.flypyDictionary.collect { dict ->
                 if (dict.isLoaded) {
@@ -113,13 +117,34 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             }
         }
         serviceScope.launch {
+            TypeFreeApp.instance.rimeDataManager.deploymentState.collect { deployState ->
+                val ready = deployState is RimeDeploymentState.Ready
+                typingController.isRimeReady = ready
+                _imeState.update { prev ->
+                    prev.copy(
+                        isRimeDeploying = prev.activeInputScheme.usesRime && !ready
+                    )
+                }
+                if (ready && typingController.isComposing) {
+                    typingController.syncEngineStateToUi()
+                }
+            }
+        }
+        serviceScope.launch {
             var lastFlypySetting: Boolean? = null
+            var lastScheme = initialSettings.inputScheme
             repository.settings.collect { currentSettings ->
+                TypeFreeApp.instance.rimeInputEngine.setInputScheme(currentSettings.inputScheme)
                 typingController.updateSnippets(currentSettings.snippets)
                 typingController.setFixedCandidateOrder(currentSettings.fixedCandidateOrder)
+                if (lastScheme != currentSettings.inputScheme) {
+                    lastScheme = currentSettings.inputScheme
+                    typingController.resetComposing()
+                }
                 _imeState.update {
                     it.copy(
                         activeInputScheme = currentSettings.inputScheme,
+                        isRimeDeploying = currentSettings.inputScheme.usesRime && !typingController.isRimeReady,
                         activeHeightLevel = currentSettings.keyboardHeightLevel
                     )
                 }
@@ -427,6 +452,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     onClearFlypyComposing = typingController::clearFlypyComposing,
                     onFlushFlypyComposing = typingController::flushFlypyComposing,
                     onToggleFlypyCandidateSheet = typingController::toggleFlypyCandidateSheet,
+                    onRequestMoreCandidates = typingController::requestMoreCandidates,
                     onEditorShortcutAction = typingController::handleEditorShortcutAction,
                     onInsertPairedSymbol = typingController::insertPairedSymbol,
                     onHideKeyboard = ::hideKeyboardSelf,
@@ -476,6 +502,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         if (prevMode == KeyboardTabMode.QWERTY && mode != KeyboardTabMode.QWERTY) {
             typingController.resetComposing()
             tryAutoLearnFromRecentEdit()
+        } else {
+            typingController.onPanelSwitched()
         }
 
         voiceController.stopRecordingOnTabSwitchOrWindowHidden()
@@ -850,6 +878,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         performKeyFeedback(strong = false)
         if (_imeState.value.isFlypyComposing) {
             typingController.resetComposing()
+        } else {
+            typingController.onPanelSwitched()
         }
         voiceController.stopRecordingOnTabSwitchOrWindowHidden()
         syncSystemClipboardIfNeeded(allowFreshBanner = false)
@@ -961,6 +991,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         if (willOpen) {
             if (_imeState.value.isFlypyComposing) {
                 typingController.resetComposing()
+            } else {
+                typingController.onPanelSwitched()
             }
             voiceController.stopRecordingOnTabSwitchOrWindowHidden()
         }
@@ -1029,45 +1061,15 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     }
 
     private fun selectPredictionCandidate(index: Int) {
-        val cand = _imeState.value.predictionCandidates.getOrNull(index) ?: return
-        _imeState.update {
-            it.copy(
-                predictionCandidates = emptyList(),
-                aiCompletionSuggestion = null
-            )
-        }
-        commitDirectText(
-            text = cand.text,
-            recordUndo = true,
-            markManualEdit = true,
-            playFeedback = true
-        )
+        typingController.selectPredictionCandidate(index)
     }
 
-    private fun selectAiCompletion(text: String) {
-        if (text.isEmpty()) return
-        _imeState.update {
-            it.copy(
-                predictionCandidates = emptyList(),
-                aiCompletionSuggestion = null
-            )
-        }
-        commitDirectText(
-            text = text,
-            recordUndo = true,
-            markManualEdit = true,
-            playFeedback = true
-        )
+    private fun selectAiCompletion(@Suppress("UNUSED_PARAMETER") text: String) {
+        typingController.selectAiCompletion()
     }
 
     private fun dismissPredictions() {
-        performKeyFeedback(strong = false)
-        _imeState.update {
-            it.copy(
-                predictionCandidates = emptyList(),
-                aiCompletionSuggestion = null
-            )
-        }
+        typingController.dismissPredictions()
     }
 
     override fun currentInputConnection(): InputConnection? = super.getCurrentInputConnection()

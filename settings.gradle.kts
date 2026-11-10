@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "TypeFree"
 include(":app")
+include(":rime")

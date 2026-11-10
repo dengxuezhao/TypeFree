@@ -578,6 +578,31 @@ object ImeLogic {
     }
 
     /**
+     * Formats the left preedit badge in [CandidateStrip]:
+     * - For [InputScheme.FLYPY_TABLE], displays the raw 4-code (`rawCode`).
+     * - For Rime Pinyin / Double-Pinyin / Custom schemes, displays the segmented preedit
+     *   (e.g. `ni'hao'shi'jie`) and left-truncates (`"…" + preedit.takeLast(maxVisibleChars)`)
+     *   when longer than [maxVisibleChars] so the latest input remains visible.
+     */
+    fun formatPreeditDisplay(
+        preedit: String,
+        rawCode: String,
+        scheme: InputScheme,
+        maxVisibleChars: Int = 18
+    ): String {
+        if (!scheme.usesRime) {
+            return rawCode.ifEmpty { preedit }
+        }
+        val base = preedit.ifEmpty { rawCode }
+        val limit = maxVisibleChars.coerceAtLeast(4)
+        return if (base.length > limit) {
+            "…" + base.takeLast(limit)
+        } else {
+            base
+        }
+    }
+
+    /**
      * Builds an [UndoSnapshot] for restoring editor state on 1-tap Undo.
      */
     fun createUndoSnapshot(

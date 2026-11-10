@@ -1,0 +1,23 @@
+# Rime schema: double_pinyin_flypy (小鹤双拼整句)
+schema:
+  schema_id: double_pinyin_flypy
+  name: 小鹤双拼
+  version: "2.7.0"
+  description: |
+    TypeFree 内置小鹤双拼（双拼整句 + 动态调频 + 自造词）
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中文, 英文 ]
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcba
+  delimiter: " '"
+
+translator:
+  dictionary: rime_ice
+  prism: double_pinyin_flypy
+  enable_user_dict: true
+  enable_sentence: true
+  enable_completion: true
