@@ -125,6 +125,7 @@ fun KeyboardScreen(
     onOpenHostApp: (Int) -> Unit,
     onQuickEditChipClick: (QuickEditChip) -> Unit,
     onHelpWritePresetClick: (HelpWritePromptPreset) -> Unit,
+    onHelpWriteDirectGenerate: () -> Unit = {},
     onMicPressDown: (VoiceIntentMode) -> Unit,
     onMicPressUp: () -> Unit,
     onEnterArcTranslate: (Boolean) -> Unit,
@@ -263,6 +264,7 @@ fun KeyboardScreen(
                         resolvedSubPanel == VoiceSubPanel.HELP_ME_WRITE -> {
                         HelpMeWritePanel(
                             uiState = uiState,
+                            settings = settings,
                             amplitudes = amplitudes,
                             elapsedMs = elapsedMs,
                             onClose = onCloseSubPanel,
@@ -272,6 +274,7 @@ fun KeyboardScreen(
                             onSwitchToQwerty = { onSelectTabMode(KeyboardTabMode.QWERTY) },
                             onOpenClipboard = onOpenClipboard,
                             onPresetClick = onHelpWritePresetClick,
+                            onDirectGenerate = onHelpWriteDirectGenerate,
                             onStartRecording = { onMicPressDown(VoiceIntentMode.HELP_ME_WRITE) },
                             onReleaseRecording = onMicPressUp,
                             onFinishHandsFree = onFinishHandsFree,
@@ -759,38 +762,79 @@ private fun TypeFreeTopBar(
                 val smart = remember(freshClip.text) {
                     ClipboardSmartExtractor.extractPrimary(freshClip.text)
                 }
-                val (pillLabel, pastePayload) = remember(freshClip.text, smart) {
-                    when {
-                        smart != null && smart.kind == SmartClipKind.OTP_CODE -> {
-                            "🔢 粘贴 ${smart.extractedValue}" to smart.extractedValue
+                val hasDistinctSmartEntity = smart != null && smart.extractedValue != freshClip.text.trim()
+                if (hasDistinctSmartEntity && smart != null) {
+                    val leftLabel = when (smart.kind) {
+                        SmartClipKind.OTP_CODE -> "🔢 ${smart.extractedValue}"
+                        SmartClipKind.PICKUP_CODE -> "📦 ${smart.extractedValue}"
+                        else -> smart.chipLabel
+                    }
+                    Row(
+                        modifier = Modifier.weight(1f, fill = false),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .height(26.dp)
+                                .clip(RoundedCornerShape(13.dp))
+                                .background(TypeFreeEmerald.copy(alpha = 0.15f))
+                                .border(1.dp, TypeFreeEmerald.copy(alpha = 0.48f), RoundedCornerShape(13.dp))
+                                .clickable { onPasteClipboardText(smart.extractedValue) }
+                                .padding(horizontal = 7.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = leftLabel,
+                                color = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
-                        smart != null && smart.extractedValue != freshClip.text.trim() -> {
-                            smart.chipLabel to smart.extractedValue
-                        }
-                        else -> {
-                            "📋 粘贴「${ClipboardSmartExtractor.formatSingleLinePreview(freshClip.text, 7)}」" to freshClip.text
+                        Box(
+                            modifier = Modifier
+                                .height(26.dp)
+                                .clip(RoundedCornerShape(13.dp))
+                                .background(palette.keyCapBg)
+                                .border(1.dp, palette.keyBorder, RoundedCornerShape(13.dp))
+                                .clickable { onPasteClipboardText(freshClip.text) }
+                                .padding(horizontal = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "📋 全文",
+                                color = palette.keyTextPrimary,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
+                            )
                         }
                     }
-                }
-                Box(
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .height(26.dp)
-                        .clip(RoundedCornerShape(13.dp))
-                        .background(TypeFreeEmerald.copy(alpha = 0.15f))
-                        .border(1.dp, TypeFreeEmerald.copy(alpha = 0.48f), RoundedCornerShape(13.dp))
-                        .clickable { onPasteClipboardText(pastePayload) }
-                        .padding(horizontal = 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = pillLabel,
-                        color = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                } else {
+                    val pillLabel = "📋 粘贴「${ClipboardSmartExtractor.formatSingleLinePreview(freshClip.text, 7)}」"
+                    Box(
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .height(26.dp)
+                            .clip(RoundedCornerShape(13.dp))
+                            .background(TypeFreeEmerald.copy(alpha = 0.15f))
+                            .border(1.dp, TypeFreeEmerald.copy(alpha = 0.48f), RoundedCornerShape(13.dp))
+                            .clickable { onPasteClipboardText(freshClip.text) }
+                            .padding(horizontal = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = pillLabel,
+                            color = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             } else {
                 // Compact Clickable Scene Style Badge (elastic width on 320dp–360dp narrow screens)
@@ -2180,6 +2224,7 @@ private fun ArcSideLanguageCapsule(
 @Composable
 private fun HelpMeWritePanel(
     uiState: ImeUiState,
+    settings: AppSettings,
     amplitudes: List<Float>,
     elapsedMs: Long,
     onClose: () -> Unit,
@@ -2189,6 +2234,7 @@ private fun HelpMeWritePanel(
     onSwitchToQwerty: () -> Unit,
     onOpenClipboard: () -> Unit,
     onPresetClick: (HelpWritePromptPreset) -> Unit,
+    onDirectGenerate: () -> Unit = {},
     onStartRecording: () -> Unit,
     onReleaseRecording: () -> Unit,
     onFinishHandsFree: () -> Unit,
@@ -2204,8 +2250,12 @@ private fun HelpMeWritePanel(
     val s = LocalKeyboardMetrics.current.elementScale
     val phase = uiState.voicePhase
     val isBusy = phase is VoicePhase.Recording || phase is VoicePhase.Processing
-    val hasCapturedContext = uiState.capturedChatContext.hasMessages
+    val hasCapturedContext = uiState.capturedChatContext.hasContext
     val isContextActive = uiState.hasActiveChatContext
+    val selectedPreset = uiState.selectedHelpWritePreset
+    val attitudePresets = remember(settings.replyAttitudePresets) {
+        ImeLogic.resolveReplyAttitudePresets(settings)
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -2214,7 +2264,7 @@ private fun HelpMeWritePanel(
                 .padding(bottom = (28f * s).dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Header: Top-Left `Help me write · 帮我写` or `AI 帮回 + 已读 N 条` + Top-Right Bridge
+            // Header: Top-Left `Help me write · 帮我写` or `AI 帮回 + 已截屏识图/已读 N 条` + Top-Right Bridge
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2241,10 +2291,13 @@ private fun HelpMeWritePanel(
                             fontWeight = FontWeight.Bold,
                             maxLines = 1
                         )
-                        val badgeText = if (uiState.ignoreChatContextForThisTurn) {
-                            "已忽略 · 点此恢复"
-                        } else {
-                            "已读 ${uiState.capturedChatContext.messageCount} 条 · 点此忽略"
+                        val msgCount = uiState.capturedChatContext.messageCount
+                        val hasScreen = uiState.capturedChatContext.hasScreenshot
+                        val badgeText = when {
+                            uiState.ignoreChatContextForThisTurn -> "已忽略 · 点此恢复"
+                            hasScreen && msgCount > 0 -> "📸 已识图+${msgCount}条 · 点此忽略"
+                            hasScreen -> "📸 已截屏识图 · 点此忽略"
+                            else -> "已读 $msgCount 条 · 点此忽略"
                         }
                         Box(
                             modifier = Modifier
@@ -2331,7 +2384,7 @@ private fun HelpMeWritePanel(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "💬 开启 AI 帮回读屏上下文？",
+                            text = "📸 开启 AI 帮回读屏与识图上下文？",
                             color = palette.keyTextPrimary,
                             fontSize = 11.5.sp,
                             fontWeight = FontWeight.Bold,
@@ -2372,19 +2425,19 @@ private fun HelpMeWritePanel(
                         }
                     }
                     Text(
-                        text = "仅在你点 ✍️ 时读取当前聊天最近几条消息，发送给你配置的 AI 模型生成回复；不保存、不写入历史。",
+                        text = "仅在你点 ✍️ 时截取当前聊天区画面（自动裁除状态栏与键盘）并提取消息，发给配置的 AI 模型帮回；用完即焚、不落盘。",
                         color = palette.keyTextMuted,
                         fontSize = 10.sp,
                         lineHeight = 13.sp,
-                        // Disclosure must stay fully readable (data destination + no storage): 2 lines.
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
             } else if (isContextActive) {
-                // Active Contextual Smart Reply: 1-line incoming message quote + 3 attitude pills + presets
+                // Active Contextual Smart Reply: 1-line incoming message / vision quote + Attitude Chips + Custom
                 val latestPreview = uiState.capturedChatContext.latestIncomingMessage
                     .ifBlank { uiState.capturedChatContext.formattedLines.lastOrNull().orEmpty() }
+                    .ifBlank { "📸 已截取当前聊天区画面（含气泡文字与图片），AI 将结合画面视觉帮回" }
                 Column(verticalArrangement = Arrangement.spacedBy((5f * s).dp)) {
                     Box(
                         modifier = Modifier
@@ -2395,7 +2448,11 @@ private fun HelpMeWritePanel(
                             .padding(horizontal = 10.dp, vertical = (5f * s).dp)
                     ) {
                         Text(
-                            text = "💬 $latestPreview",
+                            text = if (uiState.capturedChatContext.latestIncomingMessage.isNotBlank()) {
+                                "💬 $latestPreview"
+                            } else {
+                                latestPreview
+                            },
                             color = palette.keyTextPrimary,
                             fontSize = 11.5.sp,
                             maxLines = 1,
@@ -2408,23 +2465,29 @@ private fun HelpMeWritePanel(
                             .horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        ImeLogic.smartReplyAttitudePresets.forEach { preset ->
+                        attitudePresets.forEach { preset ->
+                            val isSelected = selectedPreset?.id == preset.id
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(13.dp))
-                                    .background(TypeFreeEmerald.copy(alpha = 0.12f))
-                                    .border(1.dp, TypeFreeEmerald.copy(alpha = 0.45f), RoundedCornerShape(13.dp))
+                                    .background(
+                                        if (isSelected) TypeFreeEmerald else TypeFreeEmerald.copy(alpha = 0.12f)
+                                    )
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (isSelected) TypeFreeEmerald else TypeFreeEmerald.copy(alpha = 0.45f),
+                                        shape = RoundedCornerShape(13.dp)
+                                    )
                                     .clickable(enabled = !isBusy) { onPresetClick(preset) }
                                     .padding(horizontal = 10.dp, vertical = (5.5f * s).dp)
                             ) {
                                 Text(
-                                    text = preset.label,
-                                    color = if (isBusy) {
-                                        palette.keyTextMuted
-                                    } else if (palette.isDark) {
-                                        Color(0xFF6EE7B7)
-                                    } else {
-                                        Color(0xFF047857)
+                                    text = if (isSelected) "✓ ${preset.label}" else preset.label,
+                                    color = when {
+                                        isBusy -> palette.keyTextMuted
+                                        isSelected -> Color.White
+                                        palette.isDark -> Color(0xFF6EE7B7)
+                                        else -> Color(0xFF047857)
                                     },
                                     fontSize = 11.5.sp,
                                     fontWeight = FontWeight.SemiBold
@@ -2432,31 +2495,65 @@ private fun HelpMeWritePanel(
                             }
                         }
                         ImeLogic.helpWritePresets.forEach { preset ->
+                            val isSelected = selectedPreset?.id == preset.id
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(13.dp))
-                                    .background(palette.cardElevatedBg)
-                                    .border(1.dp, palette.keyBorder, RoundedCornerShape(13.dp))
+                                    .background(if (isSelected) TypeFreeEmerald else palette.cardElevatedBg)
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (isSelected) TypeFreeEmerald else palette.keyBorder,
+                                        shape = RoundedCornerShape(13.dp)
+                                    )
                                     .clickable(enabled = !isBusy) { onPresetClick(preset) }
                                     .padding(horizontal = 10.dp, vertical = (5.5f * s).dp)
                             ) {
                                 Text(
-                                    text = preset.label,
-                                    color = if (isBusy) palette.keyTextMuted else palette.keyTextPrimary,
+                                    text = if (isSelected) "✓ ${preset.label}" else preset.label,
+                                    color = when {
+                                        isBusy -> palette.keyTextMuted
+                                        isSelected -> Color.White
+                                        else -> palette.keyTextPrimary
+                                    },
                                     fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Medium
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
                                 )
                             }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(13.dp))
+                                .background(palette.keyCapBg)
+                                .border(1.dp, palette.keyBorder, RoundedCornerShape(13.dp))
+                                .clickable(enabled = !isBusy) { onOpenHostApp(AppDestinations.TAB_STYLES) }
+                                .padding(horizontal = 10.dp, vertical = (5.5f * s).dp)
+                        ) {
+                            Text(
+                                text = "＋ 自定义",
+                                color = palette.keyTextMuted,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            )
                         }
                     }
                 }
             } else {
-                // 3 One-Tap Inspiration Example Prompts
+                // Attitude + Inspiration Chips (Select attitude first, then speak or tap ⚡ 直接生成)
                 Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Text(
-                        text = "一键灵感示例（或直接口述你的写作需求）：",
-                        color = palette.keyTextMuted,
-                        fontSize = 11.5.sp
+                        text = if (selectedPreset != null) {
+                            "已选态度「${selectedPreset.label}」· 按住下方麦克风补充细节，或点右侧 ⚡ 直接生成："
+                        } else {
+                            "先点选回复态度或灵感（支持选后按住语音补充细节），或直接口述："
+                        },
+                        color = if (selectedPreset != null) {
+                            if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+                        } else {
+                            palette.keyTextMuted
+                        },
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Row(
                         modifier = Modifier
@@ -2464,47 +2561,102 @@ private fun HelpMeWritePanel(
                             .horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        ImeLogic.helpWritePresets.forEach { preset ->
+                        attitudePresets.forEach { preset ->
+                            val isSelected = selectedPreset?.id == preset.id
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(14.dp))
-                                    .background(palette.cardElevatedBg)
-                                    .border(1.dp, palette.keyBorder, RoundedCornerShape(14.dp))
+                                    .background(
+                                        if (isSelected) TypeFreeEmerald else TypeFreeEmerald.copy(alpha = 0.12f)
+                                    )
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (isSelected) TypeFreeEmerald else TypeFreeEmerald.copy(alpha = 0.45f),
+                                        shape = RoundedCornerShape(14.dp)
+                                    )
                                     .clickable(enabled = !isBusy) { onPresetClick(preset) }
-                                    .padding(horizontal = 11.dp, vertical = (7f * s).dp)
+                                    .padding(horizontal = 10.dp, vertical = (6.5f * s).dp)
                             ) {
                                 Text(
-                                    text = preset.label,
-                                    color = if (isBusy) palette.keyTextMuted else palette.keyTextPrimary,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium
+                                    text = if (isSelected) "✓ ${preset.label}" else preset.label,
+                                    color = when {
+                                        isBusy -> palette.keyTextMuted
+                                        isSelected -> Color.White
+                                        palette.isDark -> Color(0xFF6EE7B7)
+                                        else -> Color(0xFF047857)
+                                    },
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold
                                 )
                             }
+                        }
+                        ImeLogic.helpWritePresets.forEach { preset ->
+                            val isSelected = selectedPreset?.id == preset.id
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(if (isSelected) TypeFreeEmerald else palette.cardElevatedBg)
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (isSelected) TypeFreeEmerald else palette.keyBorder,
+                                        shape = RoundedCornerShape(14.dp)
+                                    )
+                                    .clickable(enabled = !isBusy) { onPresetClick(preset) }
+                                    .padding(horizontal = 11.dp, vertical = (6.5f * s).dp)
+                            ) {
+                                Text(
+                                    text = if (isSelected) "✓ ${preset.label}" else preset.label,
+                                    color = when {
+                                        isBusy -> palette.keyTextMuted
+                                        isSelected -> Color.White
+                                        else -> palette.keyTextPrimary
+                                    },
+                                    fontSize = 11.5.sp,
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
+                                )
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(palette.keyCapBg)
+                                .border(1.dp, palette.keyBorder, RoundedCornerShape(14.dp))
+                                .clickable(enabled = !isBusy) { onOpenHostApp(AppDestinations.TAB_STYLES) }
+                                .padding(horizontal = 10.dp, vertical = (6.5f * s).dp)
+                        ) {
+                            Text(
+                                text = "＋ 自定义",
+                                color = palette.keyTextMuted,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            )
                         }
                     }
                 }
             }
 
-            // Bottom-Left Pulsing Circle Button + Prompt Description (`ref_typefree_help_write.png`)
+            // Bottom-Left Pulsing Circle Button + Prompt Description + Optional `⚡ 直接生成`
             SubPanelVoiceTriggerRow(
                 phase = phase,
                 amplitudes = amplitudes,
                 elapsedMs = elapsedMs,
-                idleTitle = if (isContextActive) {
-                    "Say how to reply · 口述你的回复态度"
-                } else {
-                    "Describe what to write · 口述你想写的内容"
+                idleTitle = when {
+                    selectedPreset != null -> "已选「${selectedPreset.label}」· 按住口述补充细节"
+                    isContextActive -> "Say how to reply · 口述你的回复态度"
+                    else -> "Describe what to write · 口述你想写的内容"
                 },
-                idleSubtitle = if (isContextActive) {
-                    "如：跟他说下午三点没问题，让他先把议程发我"
-                } else {
-                    "如：写封邮件约周五下午三点开会"
+                idleSubtitle = when {
+                    selectedPreset != null -> "说具体原因/时间，或点右侧「⚡ 直接生成」直接起草"
+                    isContextActive -> "点上方选态度后可继续语音补充 · 如：跟他说下午三点没问题"
+                    else -> "可先点选上方态度芯片再说话，或直接口述需求"
                 },
-                recordingTitle = if (isContextActive) {
-                    "Say how to reply · 正在聆听回复意图"
-                } else {
-                    "Describe what to write · 正在聆听需求"
+                recordingTitle = when {
+                    selectedPreset != null -> "已选「${selectedPreset.label}」· 正在聆听补充细节"
+                    isContextActive -> "Say how to reply · 正在聆听回复意图"
+                    else -> "Describe what to write · 正在聆听需求"
                 },
+                directActionLabel = if (selectedPreset != null) "⚡ 直接生成" else null,
+                onDirectActionClick = onDirectGenerate,
                 onStartRecording = onStartRecording,
                 onReleaseRecording = onReleaseRecording,
                 onFinishHandsFree = onFinishHandsFree,
@@ -2789,6 +2941,8 @@ private fun SubPanelVoiceTriggerRow(
     idleTitle: String,
     idleSubtitle: String,
     recordingTitle: String,
+    directActionLabel: String? = null,
+    onDirectActionClick: () -> Unit = {},
     onStartRecording: () -> Unit,
     onReleaseRecording: () -> Unit,
     onFinishHandsFree: () -> Unit,
@@ -2937,6 +3091,24 @@ private fun SubPanelVoiceTriggerRow(
                     contentDescription = "取消",
                     tint = palette.keyTextPrimary,
                     modifier = Modifier.size((15f * s).dp)
+                )
+            }
+        } else if (!directActionLabel.isNullOrBlank()) {
+            Box(
+                modifier = Modifier
+                    .height((34f * s).dp)
+                    .clip(RoundedCornerShape(17.dp))
+                    .background(TypeFreeEmerald)
+                    .clickable(onClick = onDirectActionClick)
+                    .padding(horizontal = 11.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = directActionLabel,
+                    color = Color.White,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
                 )
             }
         }

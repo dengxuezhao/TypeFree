@@ -219,6 +219,8 @@ class AiPipelineEngine(
         preTranscribedText: String? = null,
         sttTailWaitMs: Long = 0L,
         chatContextMessages: List<String> = emptyList(),
+        chatContextScreenshotBase64: String = "",
+        attitudeInstruction: String = "",
         onStageChanged: (PipelineStage) -> Unit = {}
     ): Result<PipelineExecutionResult> = withContext(Dispatchers.IO) {
         val startMs = System.currentTimeMillis()
@@ -387,12 +389,16 @@ class AiPipelineEngine(
                                 dictionary = settings.dictionary
                             )
                             VoiceIntentMode.HELP_ME_WRITE -> PromptBuilder.buildHelpMeWritePrompts(
-                                voiceInstruction = rawTranscript,
+                                voiceInstruction = PromptBuilder.combineAttitudeAndVoiceInstruction(
+                                    attitudeInstruction = attitudeInstruction,
+                                    voiceTranscript = rawTranscript
+                                ),
                                 style = activeStyle,
                                 targetAppName = targetAppName,
                                 dictionary = settings.dictionary,
                                 surroundingBeforeCursor = safeContext,
-                                chatContextMessages = chatContextMessages
+                                chatContextMessages = chatContextMessages,
+                                hasChatScreenshot = chatContextScreenshotBase64.isNotBlank()
                             )
                             VoiceIntentMode.TRANSLATE -> PromptBuilder.buildTranslatePrompts(
                                 rawSpeech = rawTranscript,
@@ -408,10 +414,17 @@ class AiPipelineEngine(
                                 surroundingBeforeCursor = safeContext
                             )
                         }
+                        val activeImageB64 = if (effectiveIntent == VoiceIntentMode.HELP_ME_WRITE) {
+                            chatContextScreenshotBase64
+                        } else {
+                            ""
+                        }
                         executeLlmChatWithDiagnostics(
                             config = llmCfg,
                             systemPrompt = sysPrompt,
-                            userPrompt = usrPrompt
+                            userPrompt = usrPrompt,
+                            imageJpegBase64 = activeImageB64,
+                            fallbackGeminiConfig = resolveAvailableGeminiVisionConfig(settings)
                         )
                     }
                     val polished = llmOutcome.text
@@ -445,6 +458,11 @@ class AiPipelineEngine(
                     }
 
                     onStageChanged(PipelineStage.MULTIMODAL_PROCESSING)
+                    val activeImageB64 = if (effectiveIntent == VoiceIntentMode.HELP_ME_WRITE) {
+                        chatContextScreenshotBase64
+                    } else {
+                        ""
+                    }
                     val prompt = PromptBuilder.buildMultimodalDirectPrompt(
                         intentMode = effectiveIntent,
                         selectedText = selectedText,
@@ -453,7 +471,9 @@ class AiPipelineEngine(
                         targetAppName = targetAppName,
                         dictionary = settings.dictionary,
                         surroundingBeforeCursor = safeContext,
-                        chatContextMessages = chatContextMessages
+                        chatContextMessages = chatContextMessages,
+                        hasChatScreenshot = activeImageB64.isNotBlank(),
+                        attitudeInstruction = attitudeInstruction
                     )
                     val output = when (mmCfg.protocol) {
                         MultimodalProtocol.GEMINI_NATIVE -> {
@@ -469,7 +489,8 @@ class AiPipelineEngine(
                                     config = mmCfg,
                                     prompt = prompt,
                                     base64Wav = b64,
-                                    mimeType = uploadMime
+                                    mimeType = uploadMime,
+                                    imageJpegBase64 = activeImageB64
                                 )
                             } finally {
                                 if (compressedM4a != null) {
@@ -633,10 +654,51 @@ class AiPipelineEngine(
         return primary
     }
 
+    private fun resolveAvailableGeminiVisionConfig(settings: AppSettings): MultimodalConfig? {
+        val googleVaultKey = settings.providerVault[UnifiedProviderCatalog.ID_GOOGLE]?.apiKey.orEmpty()
+        val geminiKey = when {
+            settings.multimodalConfig.protocol == MultimodalProtocol.GEMINI_NATIVE && settings.multimodalConfig.apiKey.isNotBlank() ->
+                settings.multimodalConfig.apiKey
+            settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS && settings.sttConfig.apiKey.isNotBlank() ->
+                settings.sttConfig.apiKey
+            googleVaultKey.isNotBlank() -> googleVaultKey
+            else -> ""
+        }
+        if (geminiKey.isBlank()) return null
+        val geminiBase = settings.providerVault[UnifiedProviderCatalog.ID_GOOGLE]?.customBaseUrl
+            ?.takeIf { it.isNotBlank() }
+            ?: settings.sttConfig.baseUrl.takeIf {
+                settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS && it.isNotBlank() && !it.startsWith("wss://", true)
+            }
+            ?: "https://generativelanguage.googleapis.com/v1beta"
+        return MultimodalConfig(
+            presetId = "gemini",
+            protocol = MultimodalProtocol.GEMINI_NATIVE,
+            baseUrl = geminiBase,
+            apiKey = geminiKey,
+            model = "gemini-3.5-flash-lite",
+            temperature = 0.2f,
+            thinkingMode = ThinkingMode.DISABLED
+        )
+    }
+
+    private fun isKnownPureTextModel(model: String): Boolean {
+        val lower = model.trim().lowercase()
+        return lower.startsWith("deepseek-chat") ||
+            lower.startsWith("deepseek-reasoner") ||
+            lower.startsWith("deepseek-v3") ||
+            lower.startsWith("deepseek-r1") ||
+            lower.startsWith("qwen-turbo") ||
+            lower.startsWith("qwen-plus") ||
+            lower.startsWith("qwen2.5-") && !lower.contains("vl")
+    }
+
     private fun executeLlmChatWithDiagnostics(
         config: LlmConfig,
         systemPrompt: String,
-        userPrompt: String
+        userPrompt: String,
+        imageJpegBase64: String = "",
+        fallbackGeminiConfig: MultimodalConfig? = null
     ): ChatCallOutcome {
         if (EndpointResolver.isGeminiNativeHttpUrl(config.baseUrl)) {
             return callGeminiTextOnlyWithDiagnostics(
@@ -649,10 +711,42 @@ class AiPipelineEngine(
                     temperature = config.temperature,
                     thinkingMode = config.thinkingMode
                 ),
-                fullPrompt = "$systemPrompt\n\n$userPrompt"
+                fullPrompt = "$systemPrompt\n\n$userPrompt",
+                imageJpegBase64 = imageJpegBase64
             )
         }
-        return callOpenAiChatCompletionWithDiagnostics(config, systemPrompt, userPrompt)
+        if (imageJpegBase64.isNotBlank()) {
+            if (isKnownPureTextModel(config.model) && fallbackGeminiConfig != null) {
+                val visionAttempt = runCatching {
+                    callGeminiTextOnlyWithDiagnostics(
+                        config = fallbackGeminiConfig,
+                        fullPrompt = "$systemPrompt\n\n$userPrompt",
+                        imageJpegBase64 = imageJpegBase64
+                    )
+                }
+                visionAttempt.getOrNull()?.let { return it }
+            }
+            val openAiVisionAttempt = runCatching {
+                callOpenAiChatCompletionWithDiagnostics(
+                    config = config,
+                    systemPrompt = systemPrompt,
+                    userPrompt = userPrompt,
+                    imageJpegBase64 = imageJpegBase64
+                )
+            }
+            openAiVisionAttempt.getOrNull()?.let { return it }
+            if (fallbackGeminiConfig != null) {
+                val geminiFallback = runCatching {
+                    callGeminiTextOnlyWithDiagnostics(
+                        config = fallbackGeminiConfig,
+                        fullPrompt = "$systemPrompt\n\n$userPrompt",
+                        imageJpegBase64 = imageJpegBase64
+                    )
+                }
+                geminiFallback.getOrNull()?.let { return it }
+            }
+        }
+        return callOpenAiChatCompletionWithDiagnostics(config, systemPrompt, userPrompt, imageJpegBase64 = "")
     }
 
     /**
@@ -665,18 +759,21 @@ class AiPipelineEngine(
         rawOrSelectedText: String,
         explicitInstruction: String? = null,
         targetAppName: String = "",
-        chatContextMessages: List<String> = emptyList()
+        chatContextMessages: List<String> = emptyList(),
+        chatContextScreenshotBase64: String = ""
     ): Result<PipelineExecutionResult> = withContext(Dispatchers.IO) {
         val startMs = System.currentTimeMillis()
         try {
-            val (sysPrompt, usrPrompt) = if (chatContextMessages.isNotEmpty()) {
+            val isContextualReply = chatContextMessages.isNotEmpty() || chatContextScreenshotBase64.isNotBlank()
+            val (sysPrompt, usrPrompt) = if (isContextualReply) {
                 PromptBuilder.buildHelpMeWritePrompts(
                     voiceInstruction = explicitInstruction?.takeIf { it.isNotBlank() } ?: rawOrSelectedText,
                     style = activeStyle,
                     targetAppName = targetAppName,
                     dictionary = settings.dictionary,
                     surroundingBeforeCursor = "",
-                    chatContextMessages = chatContextMessages
+                    chatContextMessages = chatContextMessages,
+                    hasChatScreenshot = chatContextScreenshotBase64.isNotBlank()
                 )
             } else if (!explicitInstruction.isNullOrBlank()) {
                 PromptBuilder.buildSpeakToEditPrompts(
@@ -705,7 +802,13 @@ class AiPipelineEngine(
                     if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
                         return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
                     }
-                    val outcome = executeLlmChatWithDiagnostics(llmCfg, sysPrompt, usrPrompt)
+                    val outcome = executeLlmChatWithDiagnostics(
+                        config = llmCfg,
+                        systemPrompt = sysPrompt,
+                        userPrompt = usrPrompt,
+                        imageJpegBase64 = chatContextScreenshotBase64,
+                        fallbackGeminiConfig = resolveAvailableGeminiVisionConfig(settings)
+                    )
                     output = outcome.text
                     diagLog = outcome.diagnosticLog
                     modelLabel = llmCfg.model
@@ -719,13 +822,14 @@ class AiPipelineEngine(
                         MultimodalProtocol.GEMINI_NATIVE -> {
                             val outcome = callGeminiTextOnlyWithDiagnostics(
                                 config = mmCfg,
-                                fullPrompt = "$sysPrompt\n\n$usrPrompt"
+                                fullPrompt = "$sysPrompt\n\n$usrPrompt",
+                                imageJpegBase64 = chatContextScreenshotBase64
                             )
                             output = outcome.text
                             diagLog = outcome.diagnosticLog
                         }
                         MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
-                            val outcome = callOpenAiChatCompletionWithDiagnostics(
+                            val outcome = executeLlmChatWithDiagnostics(
                                 config = LlmConfig(
                                     baseUrl = mmCfg.baseUrl,
                                     apiKey = mmCfg.apiKey,
@@ -734,7 +838,9 @@ class AiPipelineEngine(
                                     thinkingMode = mmCfg.thinkingMode
                                 ),
                                 systemPrompt = sysPrompt,
-                                userPrompt = usrPrompt
+                                userPrompt = usrPrompt,
+                                imageJpegBase64 = chatContextScreenshotBase64,
+                                fallbackGeminiConfig = resolveAvailableGeminiVisionConfig(settings)
                             )
                             output = outcome.text
                             diagLog = outcome.diagnosticLog
@@ -1309,7 +1415,8 @@ class AiPipelineEngine(
     internal fun callOpenAiChatCompletionWithDiagnostics(
         config: LlmConfig,
         systemPrompt: String,
-        userPrompt: String
+        userPrompt: String,
+        imageJpegBase64: String = ""
     ): ChatCallOutcome {
         val url = EndpointResolver.resolveChatEndpoint(config.baseUrl)
         val includeTemp = !isSamplingTemperatureDeprecated(config.model)
@@ -1362,7 +1469,23 @@ class AiPipelineEngine(
                     })
                     add(JsonObject().apply {
                         addProperty("role", "user")
-                        addProperty("content", userPrompt)
+                        if (imageJpegBase64.isNotBlank()) {
+                            val parts = JsonArray().apply {
+                                add(JsonObject().apply {
+                                    addProperty("type", "text")
+                                    addProperty("text", userPrompt)
+                                })
+                                add(JsonObject().apply {
+                                    addProperty("type", "image_url")
+                                    add("image_url", JsonObject().apply {
+                                        addProperty("url", "data:image/jpeg;base64,$imageJpegBase64")
+                                    })
+                                })
+                            }
+                            add("content", parts)
+                        } else {
+                            addProperty("content", userPrompt)
+                        }
                     })
                 }
                 add("messages", messages)
@@ -1463,12 +1586,21 @@ class AiPipelineEngine(
         config: MultimodalConfig,
         prompt: String,
         base64Wav: String,
-        mimeType: String = "audio/wav"
+        mimeType: String = "audio/wav",
+        imageJpegBase64: String = ""
     ): String {
         val parts = JsonArray().apply {
             add(JsonObject().apply {
                 addProperty("text", prompt)
             })
+            if (imageJpegBase64.isNotBlank()) {
+                add(JsonObject().apply {
+                    add("inline_data", JsonObject().apply {
+                        addProperty("mime_type", "image/jpeg")
+                        addProperty("data", imageJpegBase64)
+                    })
+                })
+            }
             add(JsonObject().apply {
                 add("inline_data", JsonObject().apply {
                     addProperty("mime_type", mimeType)
@@ -1486,12 +1618,21 @@ class AiPipelineEngine(
 
     internal fun callGeminiTextOnlyWithDiagnostics(
         config: MultimodalConfig,
-        fullPrompt: String
+        fullPrompt: String,
+        imageJpegBase64: String = ""
     ): ChatCallOutcome {
         val parts = JsonArray().apply {
             add(JsonObject().apply {
                 addProperty("text", fullPrompt)
             })
+            if (imageJpegBase64.isNotBlank()) {
+                add(JsonObject().apply {
+                    add("inline_data", JsonObject().apply {
+                        addProperty("mime_type", "image/jpeg")
+                        addProperty("data", imageJpegBase64)
+                    })
+                })
+            }
         }
         return executeGeminiGenerateContentWithDiagnostics(config, parts)
     }

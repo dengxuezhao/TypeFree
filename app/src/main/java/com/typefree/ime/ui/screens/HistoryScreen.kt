@@ -87,8 +87,6 @@ import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PipelineExecutionResult
 import com.typefree.ime.network.PipelineStage
-import com.typefree.ime.ui.components.ShareCardPreviewDialog
-import com.typefree.ime.ui.components.ShareCardRenderer
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import kotlinx.coroutines.launch
@@ -135,7 +133,6 @@ fun HistoryScreen(
     var activeBusyRecordId by remember { mutableStateOf<String?>(null) }
     var activeBusyLabel by remember { mutableStateOf<String?>(null) }
     var repolishDialogState by remember { mutableStateOf<RepolishDialogState?>(null) }
-    var shareCardRecord by remember { mutableStateOf<HistoryRecord?>(null) }
 
     val dictateCount = remember(history) {
         history.count { resolveRecordIntent(it) == VoiceIntentMode.DICTATE }
@@ -646,7 +643,6 @@ fun HistoryScreen(
                                 )
                             },
                             onRepolish = { triggerTextRepolish(record) },
-                            onShareCard = { shareCardRecord = record },
                             onRetryAudio = { wavFile -> triggerAudioRetry(record, wavFile) },
                             onDelete = {
                                 repository.deleteHistoryItem(record.id)
@@ -749,19 +745,6 @@ fun HistoryScreen(
             onDismiss = { repolishDialogState = null }
         )
     }
-
-    shareCardRecord?.let { targetRecord ->
-        ShareCardPreviewDialog(
-            noteText = targetRecord.polishedText.ifBlank { targetRecord.rawTranscript },
-            timestampLabel = ShareCardRenderer.formatCurrentTimestamp(targetRecord.timestamp),
-            badgeLabel = "TypeFree · ${targetRecord.targetAppName.ifBlank { "语音便签" }}",
-            showWatermark = settings.shareCardShowWatermark,
-            onToggleWatermark = { enabled ->
-                repository.updateSettings { it.copy(shareCardShowWatermark = enabled) }
-            },
-            onDismiss = { shareCardRecord = null }
-        )
-    }
 }
 
 @Composable
@@ -858,7 +841,6 @@ private fun HistoryTimelineCard(
     onCopyPolished: () -> Unit,
     onCopyRaw: () -> Unit,
     onRepolish: () -> Unit,
-    onShareCard: () -> Unit,
     onRetryAudio: (File) -> Unit,
     onDelete: () -> Unit
 ) {
@@ -1159,18 +1141,6 @@ private fun HistoryTimelineCard(
                     Text(
                         text = if (busyLabel != null && localWavFile == null) busyLabel else "重新润色",
                         style = MaterialTheme.typography.labelMedium
-                    )
-                }
-
-                OutlinedButton(
-                    onClick = onShareCard,
-                    shape = RoundedCornerShape(9.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                ) {
-                    Text(
-                        text = "🖼️ 成图",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold
                     )
                 }
 

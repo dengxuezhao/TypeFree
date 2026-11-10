@@ -5,6 +5,7 @@ import android.view.inputmethod.EditorInfo
 import com.typefree.ime.bubble.CapturedChatContext
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ClipboardEntry
+import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
@@ -142,13 +143,18 @@ data class ImeUiState(
     val activeLiftLevel: Int = KeyboardMetrics.DEFAULT_LIFT_LEVEL,
     val capturedChatContext: CapturedChatContext = CapturedChatContext(),
     val ignoreChatContextForThisTurn: Boolean = false,
-    val showChatContextDisclosurePrompt: Boolean = false
+    val showChatContextDisclosurePrompt: Boolean = false,
+    val selectedHelpWritePreset: HelpWritePromptPreset? = null,
+    val bigBangClipboardItem: ClipboardEntry? = null
 ) {
     val hasActiveChatContext: Boolean
         get() = capturedChatContext.hasContext && !ignoreChatContextForThisTurn && !isIncognitoMode
 
     val effectiveChatContextMessages: List<String>
         get() = if (hasActiveChatContext) capturedChatContext.formattedMessages else emptyList()
+
+    val effectiveChatScreenshotBase64: String
+        get() = if (hasActiveChatContext) capturedChatContext.screenshotJpegBase64 else ""
     val isFlypyComposing: Boolean
         get() = tabMode == KeyboardTabMode.QWERTY &&
             isFlypyChineseMode &&
@@ -241,23 +247,25 @@ object ImeLogic {
         )
     )
 
-    val smartReplyAttitudePresets: List<HelpWritePromptPreset> = listOf(
-        HelpWritePromptPreset(
-            id = "reply_agree",
-            label = "👍 干练应下",
-            instruction = "结合<chat_context>中对方的最新话语，直接生成一句干练、得体、积极应下或确认落实的回复正文"
-        ),
-        HelpWritePromptPreset(
-            id = "reply_defer",
-            label = "⏳ 委婉顺延",
-            instruction = "结合<chat_context>中对方的最新话语，直接生成一句礼貌说明当前优先级、协商顺延时间或提供折中方案的回复正文"
-        ),
-        HelpWritePromptPreset(
-            id = "reply_clarify",
-            label = "📋 追问细节",
-            instruction = "结合<chat_context>中对方的最新话语，直接生成一句先礼貌接单、再针对关键边界条件或范围细节进行专业确认的回复正文"
-        )
-    )
+    val smartReplyAttitudePresets: List<HelpWritePromptPreset> =
+        DefaultPresets.defaultReplyAttitudes().map { preset ->
+            HelpWritePromptPreset(
+                id = preset.id,
+                label = preset.label,
+                instruction = preset.instruction
+            )
+        }
+
+    fun resolveReplyAttitudePresets(settings: AppSettings): List<HelpWritePromptPreset> {
+        val source = settings.replyAttitudePresets.ifEmpty { DefaultPresets.defaultReplyAttitudes() }
+        return source.map { preset ->
+            HelpWritePromptPreset(
+                id = preset.id,
+                label = preset.label,
+                instruction = preset.instruction
+            )
+        }
+    }
 
     val quickPunctuationItems: List<String> = listOf(
         "@", "，", "。", "？", "！", "、", ".", ",", "“”"

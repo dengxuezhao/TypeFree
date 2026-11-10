@@ -36,9 +36,17 @@ class VoiceController(
         isIncognitoMode: Boolean,
         isPasswordInput: Boolean,
         ignoreChatContextForTurn: Boolean
-    ) -> CapturedChatContext = TypeFreeAccessibilityService::captureChatContextIfAvailable
+    ) -> CapturedChatContext = TypeFreeAccessibilityService::captureChatContextIfAvailable,
+    private val chatScreenshotCaptureProvider: suspend (
+        expectedPackage: String,
+        settings: AppSettings,
+        isIncognitoMode: Boolean,
+        isPasswordInput: Boolean,
+        ignoreChatContextForTurn: Boolean
+    ) -> Triple<String, Int, Int>? = TypeFreeAccessibilityService::captureChatScreenshotIfAvailable
 ) {
     private var activePipelineJob: Job? = null
+    private var chatScreenshotJob: Job? = null
     private var activeStreamingSession: StreamingAsrSession? = null
     private var streamingPreviewJob: Job? = null
     private var handsFreeSilenceJob: Job? = null
@@ -99,6 +107,8 @@ class VoiceController(
                     capturedChatContext = CapturedChatContext(),
                     ignoreChatContextForThisTurn = false,
                     showChatContextDisclosurePrompt = false,
+                    selectedHelpWritePreset = null,
+                    bigBangClipboardItem = null,
                     isClipboardOpen = false,
                     isToolPanelOpen = false,
                     isPunctuationStripOpen = false,
@@ -115,6 +125,8 @@ class VoiceController(
                     capturedChatContext = capturedContext,
                     ignoreChatContextForThisTurn = false,
                     showChatContextDisclosurePrompt = shouldPromptDisclosure,
+                    selectedHelpWritePreset = null,
+                    bigBangClipboardItem = null,
                     isClipboardOpen = false,
                     isToolPanelOpen = false,
                     isPunctuationStripOpen = false,
@@ -124,6 +136,54 @@ class VoiceController(
                     flypyCandidates = emptyList(),
                     isFlypyCandidateSheetExpanded = false
                 )
+            }
+        }
+        if (stateSnap.rawSelectedText.isBlank() && !shouldPromptDisclosure) {
+            triggerChatViewportScreenshotCapture(
+                expectedPackage = stateSnap.targetPackage,
+                appName = stateSnap.targetAppName,
+                settings = settingsSnap,
+                isIncognitoMode = stateSnap.isIncognitoMode,
+                isPasswordInput = isPassword
+            )
+        }
+    }
+
+    private fun triggerChatViewportScreenshotCapture(
+        expectedPackage: String,
+        appName: String,
+        settings: AppSettings,
+        isIncognitoMode: Boolean,
+        isPasswordInput: Boolean
+    ) {
+        chatScreenshotJob?.cancel()
+        chatScreenshotJob = host.scope.launch {
+            val capturedShot = runCatching {
+                chatScreenshotCaptureProvider(
+                    expectedPackage,
+                    settings,
+                    isIncognitoMode,
+                    isPasswordInput,
+                    false
+                )
+            }.getOrNull()
+            if (capturedShot != null && capturedShot.first.isNotBlank()) {
+                host.stateFlow.update { curr ->
+                    if (curr.voiceSubPanel == VoiceSubPanel.HELP_ME_WRITE) {
+                        val baseCtx = curr.capturedChatContext
+                        curr.copy(
+                            capturedChatContext = baseCtx.copy(
+                                packageName = baseCtx.packageName.ifBlank { expectedPackage },
+                                appName = baseCtx.appName.ifBlank { appName },
+                                screenshotJpegBase64 = capturedShot.first,
+                                screenshotWidth = capturedShot.second,
+                                screenshotHeight = capturedShot.third
+                            )
+                        )
+                    } else {
+                        curr
+                    }
+                }
             }
         }
     }
@@ -159,10 +219,18 @@ class VoiceController(
                 showChatContextDisclosurePrompt = false
             )
         }
+        triggerChatViewportScreenshotCapture(
+            expectedPackage = stateSnap.targetPackage,
+            appName = stateSnap.targetAppName,
+            settings = updatedSettings,
+            isIncognitoMode = stateSnap.isIncognitoMode,
+            isPasswordInput = isPassword
+        )
     }
 
     fun declineChatContextDisclosure() {
         host.performKeyFeedback(strong = false)
+        chatScreenshotJob?.cancel()
         host.repository.updateSettings {
             it.copy(
                 chatContextReplyEnabled = false,
@@ -186,8 +254,24 @@ class VoiceController(
         }
     }
 
+    fun toggleHelpWritePreset(preset: HelpWritePromptPreset) {
+        val currPhase = host.stateFlow.value.voicePhase
+        if (currPhase is VoicePhase.Recording || currPhase is VoicePhase.Processing) return
+        host.performKeyFeedback(strong = false)
+        host.stateFlow.update { curr ->
+            val nextSelected = if (curr.selectedHelpWritePreset?.id == preset.id) null else preset
+            curr.copy(selectedHelpWritePreset = nextSelected)
+        }
+    }
+
+    fun runSelectedHelpWritePresetDirect() {
+        val selected = host.stateFlow.value.selectedHelpWritePreset ?: return
+        runHelpWritePreset(selected)
+    }
+
     fun closeVoiceSubPanel() {
         host.performKeyFeedback(strong = false)
+        chatScreenshotJob?.cancel()
         if (host.stateFlow.value.voicePhase is VoicePhase.Recording ||
             host.stateFlow.value.voicePhase is VoicePhase.Processing
         ) {
@@ -199,7 +283,8 @@ class VoiceController(
                 activeIntentMode = VoiceIntentMode.DICTATE,
                 capturedChatContext = CapturedChatContext(),
                 ignoreChatContextForThisTurn = false,
-                showChatContextDisclosurePrompt = false
+                showChatContextDisclosurePrompt = false,
+                selectedHelpWritePreset = null
             )
         }
     }
@@ -823,6 +908,16 @@ class VoiceController(
         } else {
             emptyList()
         }
+        val activeChatScreenshot = if (resolvedIntent == VoiceIntentMode.HELP_ME_WRITE) {
+            snapshot.effectiveChatScreenshotBase64
+        } else {
+            ""
+        }
+        val activeAttitudeInstruction = if (resolvedIntent == VoiceIntentMode.HELP_ME_WRITE) {
+            snapshot.selectedHelpWritePreset?.instruction.orEmpty()
+        } else {
+            ""
+        }
 
         val pipelineResult = host.aiEngine.processVoiceAudio(
             wavFile = wavFile,
@@ -836,6 +931,8 @@ class VoiceController(
             preTranscribedText = preTranscribedText,
             sttTailWaitMs = sttTailWaitMs,
             chatContextMessages = activeChatContext,
+            chatContextScreenshotBase64 = activeChatScreenshot,
+            attitudeInstruction = activeAttitudeInstruction,
             onStageChanged = { stage ->
                 host.stateFlow.update { curr ->
                     curr.copy(
@@ -1014,7 +1111,8 @@ class VoiceController(
             }
 
             val activeChatContext = snapshot.effectiveChatContextMessages
-            val draftInstruction = if (activeChatContext.isNotEmpty()) {
+            val activeChatScreenshot = snapshot.effectiveChatScreenshotBase64
+            val draftInstruction = if (activeChatContext.isNotEmpty() || activeChatScreenshot.isNotBlank()) {
                 preset.instruction
             } else {
                 "请忽略<selected_text>中的占位文字，直接根据以下写作需求起草完整、自然得体、可直接发送的成稿正文（绝不输出任何寒暄或解释）：${preset.instruction}"
@@ -1026,7 +1124,8 @@ class VoiceController(
                 rawOrSelectedText = preset.label,
                 explicitInstruction = draftInstruction,
                 targetAppName = targetAppName,
-                chatContextMessages = activeChatContext
+                chatContextMessages = activeChatContext,
+                chatContextScreenshotBase64 = activeChatScreenshot
             )
 
             transformResult.fold(
@@ -1140,7 +1239,7 @@ class VoiceController(
             )
         }
 
-        if (host.stateFlow.value.capturedChatContext.hasMessages) {
+        if (host.stateFlow.value.capturedChatContext.hasContext) {
             host.clearAutoLearnBaseline()
         } else {
             val fullBufferAfterCommit = host.readFullEditorTextSafely().ifBlank { outcome.finalCommittedText }
@@ -1164,6 +1263,7 @@ class VoiceController(
                 capturedChatContext = CapturedChatContext(),
                 ignoreChatContextForThisTurn = false,
                 showChatContextDisclosurePrompt = false,
+                selectedHelpWritePreset = null,
                 undoSnapshot = host.peekTopUndoSnapshot(),
                 rawSelectedText = "",
                 ignoreSelectionForThisTurn = false,
@@ -1185,7 +1285,7 @@ class VoiceController(
             ic.endBatchEdit()
         }
 
-        if (host.stateFlow.value.capturedChatContext.hasMessages) {
+        if (host.stateFlow.value.capturedChatContext.hasContext) {
             host.clearAutoLearnBaseline()
         } else {
             val fullBufferAfterCommit = host.readFullEditorTextSafely().ifBlank { finalText }
@@ -1211,6 +1311,7 @@ class VoiceController(
                 capturedChatContext = CapturedChatContext(),
                 ignoreChatContextForThisTurn = false,
                 showChatContextDisclosurePrompt = false,
+                selectedHelpWritePreset = null,
                 undoSnapshot = host.peekTopUndoSnapshot(),
                 rawSelectedText = "",
                 ignoreSelectionForThisTurn = false,
@@ -1410,6 +1511,8 @@ class VoiceController(
         micPressDownTimeMs = 0L
         handsFreeSilenceJob?.cancel()
         handsFreeSilenceJob = null
+        chatScreenshotJob?.cancel()
+        chatScreenshotJob = null
         activeComposer?.cancelSession(rollbackWrittenText = false)
         activeComposer = null
         abortActiveStreamingSession()

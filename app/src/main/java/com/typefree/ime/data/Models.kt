@@ -168,6 +168,12 @@ data class SnippetEntry(
     val enabled: Boolean = true
 )
 
+data class ReplyAttitudePreset(
+    val id: String = UUID.randomUUID().toString(),
+    val label: String,
+    val instruction: String
+)
+
 data class ApiPreset(
     val id: String,
     val name: String,
@@ -430,7 +436,7 @@ data class AppSettings(
     val keyboardHeightLevel: Int = 0, // -2..+2，0 = 标准 298dp
     val keyboardHeightMode: KeyboardHeightMode = KeyboardHeightMode.STRETCH, // 拉伸（缩放按键）/ 垫高（按键不变，底部留白托起）
     val keyboardLiftLevel: Int = 0, // 垫高档位 0..4 → 0 / 8 / 16 / 24 / 32dp
-    val liveWriteToEditor: Boolean = false, // 实时写入输入框
+    val liveWriteToEditor: Boolean = true, // 实时写入输入框（v3.0 默认开启）
     val inputScheme: InputScheme = if (com.typefree.ime.BuildConfig.USE_PRIVATE_DICT) InputScheme.FLYPY_TABLE else InputScheme.RIME_PINYIN, // 音形专享版或老用户升级默认 FLYPY_TABLE；标准版新装默认 RIME_PINYIN (真实 librime 1.17.0)
     val fixedCandidateOrder: Boolean? = null, // null = 按方案自动
     val predictionEnabled: Boolean = true,
@@ -438,7 +444,7 @@ data class AppSettings(
     val chatContextReplyEnabled: Boolean = false, // 读屏上下文「AI 帮回」（默认关闭，需首次披露同意后开启）
     val chatContextDisclosureAccepted: Boolean = false, // 是否已阅读并同意「AI 帮回」首次显著披露
     val chatContextDisclosureDismissed: Boolean = false, // 是否已在键盘首次披露卡点过「暂不开启」（避免反复打扰，但不代表已同意披露）
-    val shareCardShowWatermark: Boolean = true, // 排版成图底部是否显示 TypeFree 署名水印
+    val replyAttitudePresets: List<ReplyAttitudePreset> = DefaultPresets.defaultReplyAttitudes(),
     val providerVault: Map<String, ProviderCredential> = emptyMap(),
     val snippets: List<SnippetEntry> = DefaultPresets.defaultSnippets(),
     val historyRetention: HistoryRetention = HistoryRetention.FOREVER,
@@ -604,6 +610,39 @@ object DefaultPresets {
             flypyCode = ";dz",
             content = "请在此修改为您的常用收货地址与联系电话",
             enabled = false
+        )
+    )
+
+    fun defaultReplyAttitudes(): List<ReplyAttitudePreset> = listOf(
+        ReplyAttitudePreset(
+            id = "reply_ok",
+            label = "👌 行 / 好的",
+            instruction = "结合聊天画面或<chat_context>中对方的最新话语，用自然简短、平辈日常的语气痛快答应（如“好”、“行，没问题”、“可以的”），不客套、不卑微"
+        ),
+        ReplyAttitudePreset(
+            id = "reply_decline",
+            label = "🙅 算了 / 婉拒",
+            instruction = "结合聊天画面或<chat_context>中对方的最新话语，用自然得体、不卑不亢的语气直接拒绝或推掉，简短干脆，不要编造冗长借口或过度道歉"
+        ),
+        ReplyAttitudePreset(
+            id = "reply_ask",
+            label = "🤔 啥情况 / 追问",
+            instruction = "结合聊天画面或<chat_context>中对方的最新消息或图片内容，用自然直接的日常口吻追问核心情况、具体细节或目前进展，简短接地气"
+        ),
+        ReplyAttitudePreset(
+            id = "reply_humor",
+            label = "😂 接梗 / 调侃",
+            instruction = "结合聊天画面或<chat_context>中的群聊氛围，用轻松幽默、朋友闲聊的语气顺着对方的话接梗、调侃或有趣地附和一句，自然好玩、绝不说教"
+        ),
+        ReplyAttitudePreset(
+            id = "reply_firm",
+            label = "⚡ 硬气回怼 / 催办",
+            instruction = "针对聊天画面或<chat_context>中对方的推诿、敷衍、不合理要求或维权场景（如催物业管家、催客服、群内据理力争），用态度鲜明、逻辑硬朗、不惯着的语气有理有据地回击或要求给出明确解决时间"
+        ),
+        ReplyAttitudePreset(
+            id = "reply_pro",
+            label = "💼 正式得体",
+            instruction = "结合聊天画面或<chat_context>中对方的最新话语，用平等、专业、干脆利落的工作沟通语气回复重点与结论，不卑微、不废话"
         )
     )
 }

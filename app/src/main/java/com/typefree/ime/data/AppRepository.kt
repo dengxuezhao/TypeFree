@@ -130,10 +130,14 @@ class AppRepository(private val appContext: Context) {
             } else {
                 0
             }
-            val resolvedLiveWriteToEditor = if (raw.contains("\"liveWriteToEditor\"")) {
+            val migratedV30LiveWrite = prefs.getBoolean(KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT, false)
+            val resolvedLiveWriteToEditor = if (!migratedV30LiveWrite) {
+                prefs.edit().putBoolean(KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT, true).apply()
+                true
+            } else if (raw.contains("\"liveWriteToEditor\"")) {
                 parsed.liveWriteToEditor
             } else {
-                false
+                true
             }
             // 新用户默认 Rime 全拼 (真实 librime 1.17.0)；老用户升级（存在旧 JSON 但无 inputScheme 字段）保持 FLYPY_TABLE
             val resolvedInputScheme = if (raw.contains("\"inputScheme\"")) {
@@ -171,11 +175,21 @@ class AppRepository(private val appContext: Context) {
             } else {
                 false
             }
-            val resolvedShareCardShowWatermark = if (raw.contains("\"shareCardShowWatermark\"")) {
-                parsed.shareCardShowWatermark
-            } else {
-                true
-            }
+            val safeReplyAttitudes = (parsed.replyAttitudePresets ?: emptyList())
+                .mapNotNull { item ->
+                    val lbl = (item.label ?: "").trim()
+                    val inst = (item.instruction ?: "").trim()
+                    if (lbl.isEmpty() || inst.isEmpty()) {
+                        null
+                    } else {
+                        ReplyAttitudePreset(
+                            id = (item.id ?: "").trim().ifEmpty { UUID.randomUUID().toString() },
+                            label = lbl,
+                            instruction = inst
+                        )
+                    }
+                }
+                .ifEmpty { DefaultPresets.defaultReplyAttitudes() }
             val safeSnippets = (parsed.snippets ?: DefaultPresets.defaultSnippets()).map { s ->
                 s.copy(
                     id = s.id.ifBlank { UUID.randomUUID().toString() },
@@ -251,7 +265,7 @@ class AppRepository(private val appContext: Context) {
                 chatContextReplyEnabled = resolvedChatContextReplyEnabled,
                 chatContextDisclosureAccepted = resolvedChatContextDisclosureAccepted,
                 chatContextDisclosureDismissed = resolvedChatContextDisclosureDismissed,
-                shareCardShowWatermark = resolvedShareCardShowWatermark,
+                replyAttitudePresets = safeReplyAttitudes,
                 providerVault = safeVault,
                 snippets = safeSnippets,
                 historyRetention = parsed.historyRetention ?: HistoryRetention.FOREVER,
@@ -521,6 +535,7 @@ class AppRepository(private val appContext: Context) {
         private const val KEY_SETTINGS = "settings_v1"
         private const val KEY_HISTORY = "history_v1"
         private const val KEY_CLIPBOARD = "clipboard_v1"
+        private const val KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT = "migrated_v30_live_write_default"
         private const val MAX_HISTORY_ITEMS = 200
         private const val MAX_CLIPBOARD_UNPINNED = 40
         private const val MAX_CLIP_CHARS = 4000

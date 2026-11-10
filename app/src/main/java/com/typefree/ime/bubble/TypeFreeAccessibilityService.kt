@@ -5,13 +5,23 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.typefree.ime.data.AppSettings
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.ByteArrayOutputStream
+import java.util.Base64
+import kotlin.coroutines.resume
+import kotlin.math.roundToInt
 
 /**
  * Mirrors official `com.typefree.ime.floating.Services.FloatingAccessibilityService`:
@@ -21,6 +31,8 @@ import com.typefree.ime.data.AppSettings
  * 4. Injects AI-polished text directly at the cursor via Android 13+ (`API 33+`)
  *    `AccessibilityInputConnection` (`FLAG_INPUT_METHOD_EDITOR`), falling back cleanly
  *    to `ACTION_SET_TEXT` selection splicing or `ACTION_PASTE`.
+ * 5. On-demand chat context capture (`captureVisibleChatContextOnDemand` + Android 11+ `takeScreenshot`
+ *    cropped to the chat viewport above the keyboard) for "AI 帮回".
  */
 class TypeFreeAccessibilityService : AccessibilityService() {
 
@@ -310,7 +322,7 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                 }
             }
 
-            val collectedNodes = ArrayList<RawScreenTextNode>(48)
+            val collectedNodes = ArrayList<RawScreenTextNode>(64)
             collectVisibleTextNodes(root, collectedNodes, depth = 0)
             if (inputBoxTop <= 0) {
                 val editableCandidate = collectedNodes.firstOrNull { it.isEditable && it.boundsTop > 0 }
@@ -318,6 +330,7 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     inputBoxTop = editableCandidate.boundsTop
                 }
             }
+            lastKnownInputBoxTopPx = inputBoxTop
 
             ChatScreenContextExtractor.extractChatContext(
                 nodes = collectedNodes,
@@ -332,6 +345,120 @@ class TypeFreeAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * Android 11+ (`API 30+`) on-demand screenshot capture of the chat region above the keyboard.
+     * Bypasses WeChat `MMNeat7extView` / QQ NT custom `Canvas` text hiding and captures inline chat images.
+     * Strictly memory-only; never written to disk.
+     */
+    suspend fun captureChatViewportScreenshotBase64OnDemand(
+        expectedPackage: String,
+        settings: AppSettings,
+        isIncognitoMode: Boolean,
+        isPasswordInput: Boolean,
+        ignoreChatContextForTurn: Boolean
+    ): Triple<String, Int, Int>? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val root = try {
+            rootInActiveWindow
+        } catch (_: Exception) {
+            null
+        } ?: return null
+        val activePkg = root.packageName?.toString().orEmpty()
+        if (!ChatScreenContextExtractor.shouldAllowChatContextCapture(
+                settings = settings,
+                isIncognitoMode = isIncognitoMode,
+                isPasswordInput = isPasswordInput,
+                ignoreChatContextForTurn = ignoreChatContextForTurn,
+                activeWindowPackage = activePkg,
+                targetInputPackage = expectedPackage
+            )
+        ) {
+            return null
+        }
+
+        val inputTopHint = lastKnownInputBoxTopPx
+        val rawBitmap = withTimeoutOrNull(950L) {
+            suspendCancellableCoroutine<Bitmap?> { cont ->
+                try {
+                    takeScreenshot(
+                        Display.DEFAULT_DISPLAY,
+                        mainExecutor,
+                        object : TakeScreenshotCallback {
+                            override fun onSuccess(screenshot: ScreenshotResult) {
+                                val hwBuffer = screenshot.hardwareBuffer
+                                val bitmap = try {
+                                    val wrapped = Bitmap.wrapHardwareBuffer(hwBuffer, screenshot.colorSpace)
+                                    wrapped?.copy(Bitmap.Config.ARGB_8888, false).also {
+                                        wrapped?.recycle()
+                                    }
+                                } catch (_: Throwable) {
+                                    null
+                                } finally {
+                                    try {
+                                        hwBuffer.close()
+                                    } catch (_: Throwable) {
+                                    }
+                                }
+                                if (cont.isActive) cont.resume(bitmap) else bitmap?.recycle()
+                            }
+
+                            override fun onFailure(errorCode: Int) {
+                                if (cont.isActive) cont.resume(null)
+                            }
+                        }
+                    )
+                } catch (_: Throwable) {
+                    if (cont.isActive) cont.resume(null)
+                }
+            }
+        } ?: return null
+
+        return withContext(Dispatchers.Default) {
+            try {
+                val cropRect = ChatScreenContextExtractor.computeChatRegionCropRect(
+                    bitmapWidth = rawBitmap.width,
+                    bitmapHeight = rawBitmap.height,
+                    inputBoxTop = inputTopHint
+                )
+                val cropX = cropRect[0]
+                val cropY = cropRect[1]
+                val cropW = cropRect[2]
+                val cropH = cropRect[3]
+                if (cropW <= 0 || cropH <= 0) return@withContext null
+
+                val cropped = Bitmap.createBitmap(rawBitmap, cropX, cropY, cropW, cropH)
+                val maxTargetWidth = 720
+                val finalBitmap = if (cropped.width > maxTargetWidth) {
+                    val ratio = maxTargetWidth.toFloat() / cropped.width.toFloat()
+                    val targetH = (cropped.height * ratio).roundToInt().coerceAtLeast(1)
+                    Bitmap.createScaledBitmap(cropped, maxTargetWidth, targetH, true).also {
+                        if (it !== cropped) cropped.recycle()
+                    }
+                } else {
+                    cropped
+                }
+
+                val outWidth = finalBitmap.width
+                val outHeight = finalBitmap.height
+                val baos = ByteArrayOutputStream(36 * 1024)
+                finalBitmap.compress(Bitmap.CompressFormat.JPEG, 74, baos)
+                finalBitmap.recycle()
+
+                val bytes = baos.toByteArray()
+                if (bytes.isEmpty()) return@withContext null
+                val b64 = Base64.getEncoder().encodeToString(bytes)
+                Triple(b64, outWidth, outHeight)
+            } catch (_: Throwable) {
+                null
+            } finally {
+                try {
+                    if (!rawBitmap.isRecycled) rawBitmap.recycle()
+                } catch (_: Throwable) {
+                }
+            }
+        }
+    }
+
     private fun collectVisibleTextNodes(
         node: AccessibilityNodeInfo?,
         out: MutableList<RawScreenTextNode>,
@@ -343,7 +470,12 @@ class TypeFreeAccessibilityService : AccessibilityService() {
 
         val editable = isEditableTarget(node)
         val rawText = if (!node.isShowingHintText) {
-            node.text?.toString()?.trim().orEmpty()
+            val primary = node.text?.toString()?.trim().orEmpty()
+            if (primary.isNotEmpty()) {
+                primary
+            } else {
+                node.contentDescription?.toString()?.trim().orEmpty()
+            }
         } else {
             ""
         }
@@ -385,7 +517,13 @@ class TypeFreeAccessibilityService : AccessibilityService() {
             private set
 
         @Volatile
+        private var lastKnownInputBoxTopPx: Int = -1
+
+        @Volatile
         var debugSimulatedNodesForTest: Pair<String, List<RawScreenTextNode>>? = null
+
+        @Volatile
+        var debugSimulatedScreenshotBase64ForTest: String? = null
 
         fun captureChatContextIfAvailable(
             expectedPackage: String,
@@ -410,7 +548,7 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     return CapturedChatContext()
                 }
                 val editableTop = simNodes.firstOrNull { it.isEditable }?.boundsTop ?: -1
-                return ChatScreenContextExtractor.extractChatContext(
+                val baseCtx = ChatScreenContextExtractor.extractChatContext(
                     nodes = simNodes,
                     screenWidth = 1080,
                     screenHeight = 2400,
@@ -418,11 +556,55 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     packageName = expectedPackage,
                     appName = appName
                 )
+                val simShot = debugSimulatedScreenshotBase64ForTest.orEmpty()
+                return if (simShot.isNotBlank()) {
+                    baseCtx.copy(
+                        screenshotJpegBase64 = simShot,
+                        screenshotWidth = 720,
+                        screenshotHeight = 960,
+                        latestMessagePreview = baseCtx.latestMessagePreview.ifBlank { "📸 已截屏捕获聊天画面与图片" }
+                    )
+                } else {
+                    baseCtx
+                }
             }
             val instance = activeInstance ?: return CapturedChatContext()
             return instance.captureVisibleChatContextOnDemand(
                 expectedPackage = expectedPackage,
                 appName = appName,
+                settings = settings,
+                isIncognitoMode = isIncognitoMode,
+                isPasswordInput = isPasswordInput,
+                ignoreChatContextForTurn = ignoreChatContextForTurn
+            )
+        }
+
+        suspend fun captureChatScreenshotIfAvailable(
+            expectedPackage: String,
+            settings: AppSettings,
+            isIncognitoMode: Boolean,
+            isPasswordInput: Boolean,
+            ignoreChatContextForTurn: Boolean
+        ): Triple<String, Int, Int>? {
+            val simShot = debugSimulatedScreenshotBase64ForTest
+            if (!simShot.isNullOrBlank()) {
+                val simPkg = debugSimulatedNodesForTest?.first ?: expectedPackage
+                if (!ChatScreenContextExtractor.shouldAllowChatContextCapture(
+                        settings = settings,
+                        isIncognitoMode = isIncognitoMode,
+                        isPasswordInput = isPasswordInput,
+                        ignoreChatContextForTurn = ignoreChatContextForTurn,
+                        activeWindowPackage = simPkg,
+                        targetInputPackage = expectedPackage
+                    )
+                ) {
+                    return null
+                }
+                return Triple(simShot, 720, 960)
+            }
+            val instance = activeInstance ?: return null
+            return instance.captureChatViewportScreenshotBase64OnDemand(
+                expectedPackage = expectedPackage,
                 settings = settings,
                 isIncognitoMode = isIncognitoMode,
                 isPasswordInput = isPasswordInput,

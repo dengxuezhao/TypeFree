@@ -37,10 +37,20 @@ data class CapturedChatContext(
     val appName: String = "",
     val messages: List<ExtractedChatMessage> = emptyList(),
     val latestMessagePreview: String = "",
+    /**
+     * In-memory cropped JPEG Base64 of the chat area above the keyboard (Android 11+ `takeScreenshot`).
+     * Never persisted to disk, history, or preferences; cleared immediately on panel close.
+     */
+    val screenshotJpegBase64: String = "",
+    val screenshotWidth: Int = 0,
+    val screenshotHeight: Int = 0,
     val capturedAtMs: Long = 0L
 ) {
+    val hasScreenshot: Boolean
+        get() = screenshotJpegBase64.isNotBlank()
+
     val hasContext: Boolean
-        get() = messages.isNotEmpty()
+        get() = messages.isNotEmpty() || hasScreenshot
 
     val hasMessages: Boolean
         get() = messages.isNotEmpty()
@@ -59,8 +69,8 @@ data class CapturedChatContext(
 }
 
 /**
- * Pure geometric heuristic extractor and privacy gatekeeper for on-demand "AI 帮回"
- * (`VoiceSubPanel.HELP_ME_WRITE`).
+ * Pure geometric heuristic extractor, screenshot crop calculator, and privacy gatekeeper
+ * for on-demand "AI 帮回" (`VoiceSubPanel.HELP_ME_WRITE`).
  *
  * Security & privacy guarantees:
  * 1. Never runs in background accessibility event streams; invoked strictly on-demand when
@@ -167,6 +177,25 @@ object ChatScreenContextExtractor {
         "以上是打招呼的内容",
         "对方正在输入...",
         "正在输入...",
+        // Group chat role badges & generic accessibility labels
+        "管理员",
+        "群主",
+        "群管理员",
+        "活跃",
+        "龙王",
+        "学霸",
+        "翰林",
+        "潜水",
+        "冒泡",
+        "头像",
+        "图片",
+        "视频",
+        "语音",
+        "语音消息",
+        "小程序",
+        "个人名片",
+        "群公告",
+        "置顶",
         "Send",
         "Message",
         "Write a message...",
@@ -190,6 +219,27 @@ object ChatScreenContextExtractor {
 
     private val UNREAD_BADGE_REGEX = Regex(
         """^(?:\d{1,4}|\d{1,3}\+|99\+|·)$"""
+    )
+
+    /**
+     * Matches standalone property/community room number nicknames such as `2-102`, `3-602`, `12-1-301`, `5栋202`.
+     */
+    private val BUILDING_UNIT_NICKNAME_REGEX = Regex(
+        """^\d{1,3}\s*[-—–栋号单元]\s*(?:\d{1,3}\s*[-—–单元]\s*)?\d{2,4}[A-Za-z]?$"""
+    )
+
+    /**
+     * Matches top-bar group chat titles with member counts such as `未成年成长交流群(16)` or `金泰和序-【真】业主群(435)`.
+     */
+    private val GROUP_TITLE_MEMBER_COUNT_REGEX = Regex(
+        """^.{1,30}[(（]\d{1,5}[)）]$"""
+    )
+
+    /**
+     * Matches level/badge tags in QQ/forum groups such as `LV.12`, `Lv8`, `VIP3`.
+     */
+    private val LEVEL_BADGE_REGEX = Regex(
+        """^(?:LV|Lv|lv|VIP|vip)\.?\s*\d{1,3}$"""
     )
 
     private val TAG_ESCAPE_REGEX = Regex(
@@ -270,7 +320,7 @@ object ChatScreenContextExtractor {
         // Full-width banner or symmetrically centered system hint -> UNKNOWN
         if (width >= screenWidth * 0.86) return ChatSpeaker.UNKNOWN
         if (abs(centerX - midX) <= screenWidth * 0.035 &&
-            abs(leftMargin - rightMargin) <= screenWidth * 0.06
+            abs(leftMargin - rightMargin) <= screenWidth * 0.025
         ) {
             return ChatSpeaker.UNKNOWN
         }
@@ -284,7 +334,7 @@ object ChatScreenContextExtractor {
 
         // Left-aligned bubble -> OTHER ([对方])
         if (centerX <= screenWidth * 0.475 ||
-            (leftMargin + screenWidth * 0.05 < rightMargin && right <= screenWidth * 0.88)
+            (leftMargin < rightMargin && right <= screenWidth * 0.88)
         ) {
             return ChatSpeaker.OTHER
         }
@@ -300,7 +350,33 @@ object ChatScreenContextExtractor {
         if (PURE_TIME_OR_DATE_REGEX.matches(trimmed)) return true
         if (FULL_DATE_HEADER_REGEX.matches(trimmed)) return true
         if (SENDER_AND_TIME_HEADER_REGEX.matches(trimmed)) return true
+        if (BUILDING_UNIT_NICKNAME_REGEX.matches(trimmed)) return true
+        if (GROUP_TITLE_MEMBER_COUNT_REGEX.matches(trimmed)) return true
+        if (LEVEL_BADGE_REGEX.matches(trimmed)) return true
         return false
+    }
+
+    /**
+     * Computes the crop rectangle `[left, top, width, height]` of the chat message viewport
+     * above the input box / soft keyboard, excluding the top status/app bar and the bottom keyboard.
+     */
+    fun computeChatRegionCropRect(
+        bitmapWidth: Int,
+        bitmapHeight: Int,
+        inputBoxTop: Int = -1
+    ): IntArray {
+        if (bitmapWidth <= 0 || bitmapHeight <= 0) {
+            return intArrayOf(0, 0, 0, 0)
+        }
+        val cropTop = (bitmapHeight * 0.088f).toInt().coerceIn(0, bitmapHeight - 1)
+        val defaultBottom = (bitmapHeight * 0.58f).toInt().coerceIn(cropTop + 1, bitmapHeight)
+        val cropBottom = if (inputBoxTop in (cropTop + 100)..bitmapHeight) {
+            inputBoxTop
+        } else {
+            defaultBottom
+        }
+        val cropHeight = (cropBottom - cropTop).coerceAtLeast(1)
+        return intArrayOf(0, cropTop, bitmapWidth, cropHeight)
     }
 
     fun extractChatContext(
@@ -326,7 +402,7 @@ object ChatScreenContextExtractor {
             bottomFallbackThreshold
         }
 
-        val candidates = nodes
+        val rawCandidates = nodes
             .asSequence()
             .filter { node ->
                 !node.isEditable &&
@@ -342,16 +418,45 @@ object ChatScreenContextExtractor {
                 if (isNoiseText(clean)) {
                     null
                 } else {
-                    val speaker = classifySpeaker(node, screenWidth)
-                    ExtractedChatMessage(
-                        speaker = speaker,
-                        text = sanitizeChatContextTagEscape(clean),
-                        boundsTop = node.boundsTop
-                    )
+                    node.copy(text = sanitizeChatContextTagEscape(clean))
                 }
             }
             .sortedBy { it.boundsTop }
             .toList()
+
+        if (rawCandidates.isEmpty()) {
+            return CapturedChatContext(packageName = packageName, appName = appName, capturedAtMs = nowMs)
+        }
+
+        // Filter out standalone sender nickname headers that sit immediately above a message bubble
+        // (e.g. small height label `玩不起玩不起` 4..36px above the actual bubble `我找到了蓝猫台词的音频`)
+        val filteredNodes = mutableListOf<RawScreenTextNode>()
+        for (i in rawCandidates.indices) {
+            val curr = rawCandidates[i]
+            val next = rawCandidates.getOrNull(i + 1)
+            val currHeight = curr.boundsBottom - curr.boundsTop
+            if (next != null) {
+                val nextHeight = next.boundsBottom - next.boundsTop
+                val verticalGap = next.boundsTop - curr.boundsBottom
+                val sameSide = abs(curr.boundsLeft - next.boundsLeft) <= (screenWidth * 0.15).toInt()
+                val looksLikeShortNickname = curr.text.length <= 14 &&
+                    !curr.text.any { it in "，。？！：；,.?!" } &&
+                    currHeight <= 56 &&
+                    nextHeight >= (currHeight * 1.35).toInt()
+                if (verticalGap in -6..36 && sameSide && looksLikeShortNickname) {
+                    continue
+                }
+            }
+            filteredNodes.add(curr)
+        }
+
+        val candidates = filteredNodes.map { node ->
+            ExtractedChatMessage(
+                speaker = classifySpeaker(node, screenWidth),
+                text = node.text,
+                boundsTop = node.boundsTop
+            )
+        }
 
         if (candidates.isEmpty()) {
             return CapturedChatContext(packageName = packageName, appName = appName, capturedAtMs = nowMs)
