@@ -2,15 +2,19 @@ package com.typefree.ime.ime.jev
 
 import com.google.gson.JsonParser
 import com.typefree.ime.privacy.RedactionSession
+import kotlin.math.roundToInt
 
 /**
  * 3-Tier Anti-Fragile Parser (`JevResponseParser`) for `✦ Jev 军师`:
- * 1. Tier 1 (Primary): `<jev><lv>1-9</lv><tag>...</tag><subtext>...</subtext><opt label="...">...</opt></jev>`
- *    XML tags — 100% immune to unescaped quotes inside Chinese dialogue.
+ * 1. Tier 1 (Primary): `<jev><lv>1-9</lv><tag>...</tag><subtext>...</subtext><opt label="..." prob="...">...</opt></jev>`
+ *    XML tags — non-crossing inner `<opt>` matcher + hard residual tag stripping, 100% immune to
+ *    unescaped quotes or nested `<opt><opt label="...">` hallucinations.
  * 2. Tier 2 (Secondary): First `{...}` JSON object fallback (compatible with `lv`/`level`,
- *    `tag`/`category`, `subtext`/`analysis`, `options`/`strategies`).
+ *    `tag`/`category`, `subtext`/`analysis`, `options`/`strategies`, `prob`/`probability`/`weight`).
  * 3. Tier 3 (Tertiary): Numbered / line-split plain text fallback with default `Lv.4 局势分析`,
  *    guaranteeing 1–3 selectable strategy cards on any custom API or small local `Ollama` model.
+ * 4. Mathematical probability normalization (`sum == 100%`, sharpening uncalibrated high scores
+ *    like `95/90/85`, fallback `56/28/16`) and descending sort so Card 1 is always the top pick.
  */
 object JevResponseParser {
 
@@ -20,8 +24,33 @@ object JevResponseParser {
     private val LV_TAG_REGEX = Regex("<lv>\\s*(?:lv\\.?\\s*)?([1-9])\\s*</lv>", RegexOption.IGNORE_CASE)
     private val TAG_ELEM_REGEX = Regex("<tag>([\\s\\S]*?)</tag>", RegexOption.IGNORE_CASE)
     private val SUBTEXT_ELEM_REGEX = Regex("<subtext>([\\s\\S]*?)</subtext>", RegexOption.IGNORE_CASE)
+
+    /**
+     * Non-crossing inner `<opt>` matcher: forbids crossing any nested `<opt` or `</opt` boundary
+     * so `<opt><opt label="主动承接">正文</opt></opt>` always matches the innermost `<opt>` cleanly.
+     */
     private val OPT_ELEM_REGEX = Regex(
-        """<opt(?:\s+label\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?\s*>([\s\S]*?)</opt>""",
+        """<opt\b([^>]*)>((?:(?!</?opt\b)[\s\S])*?)</opt>""",
+        RegexOption.IGNORE_CASE
+    )
+
+    private val PRECEDING_OPEN_OPT_REGEX = Regex(
+        """<opt\b([^>]*)>\s*$""",
+        RegexOption.IGNORE_CASE
+    )
+
+    private val LABEL_ATTR_REGEX = Regex(
+        """\blabel\s*=\s*(?:"([^"]*)"|'([^']*)'|“([^”]*)”|‘([^’]*)’|「([^」]*)」|([^\s"'“”‘’「」>]+))""",
+        RegexOption.IGNORE_CASE
+    )
+
+    private val PROB_ATTR_REGEX = Regex(
+        """\b(?:prob|probability|weight)\s*=\s*(?:"([^"]*)"|'([^']*)'|“([^”]*)”|‘([^’]*)’|([^\s"'“”‘’>]+))""",
+        RegexOption.IGNORE_CASE
+    )
+
+    private val RESIDUAL_JEV_XML_TAG_REGEX = Regex(
+        """</?\s*(?:opt|jev|lv|tag|subtext)\b[^>]*>?""",
         RegexOption.IGNORE_CASE
     )
 
@@ -31,6 +60,8 @@ object JevResponseParser {
     private val BRACKET_PREFIX_REGEX = Regex("""^\s*[\[【]([^\]】]{1,10})[\]】]\s*[:：]?\s*(.+)$""")
 
     private val DEFAULT_FALLBACK_LABELS = listOf("稳妥顺接", "温和设限", "高维反客")
+    private val DEFAULT_PROB_3 = listOf(56, 28, 16)
+    private val DEFAULT_PROB_2 = listOf(64, 36)
 
     fun parse(
         rawModelOutput: String,
@@ -44,30 +75,139 @@ object JevResponseParser {
             ?: parseJsonTier2(cleaned)
             ?: parsePlainTextTier3(cleaned)
 
-        val finalOptions = rawResult.options.take(3).mapIndexed { index, opt ->
-            val cleanLabel = opt.label.trim().ifEmpty {
-                DEFAULT_FALLBACK_LABELS.getOrElse(index) { "策略 ${index + 1}" }
-            }.take(8)
+        val cleanedOptions = rawResult.options.take(3).mapIndexed { index, opt ->
+            val cleanLabel = opt.label
+                .replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
+                .trim()
+                .removeSurrounding("\"")
+                .removeSurrounding("“", "”")
+                .removeSurrounding("'")
+                .trim()
+                .ifEmpty {
+                    DEFAULT_FALLBACK_LABELS.getOrElse(index) { "策略 ${index + 1}" }
+                }
+                .take(8)
             val cleanReply = cleanOptionText(opt.replyText)
             val restoredReply = if (redactionSession != null) {
-                redactionSession.restoreSafePlaceholders(cleanReply)
+                cleanOptionText(redactionSession.restoreSafePlaceholders(cleanReply))
             } else {
                 cleanReply
             }
             JevStrategyOption(
                 label = cleanLabel,
-                replyText = restoredReply
+                replyText = restoredReply,
+                probability = opt.probability
             )
         }
 
+        val finalOptions = normalizeAndSortOptions(cleanedOptions)
+
         return rawResult.copy(
             level = rawResult.level.coerceIn(1, 9),
-            tag = rawResult.tag.trim().ifEmpty { "局势分析" }.take(10),
-            subtext = rawResult.subtext.trim().ifEmpty { "已结合当前上下文提炼高筹码回复方案" }.take(46),
+            tag = rawResult.tag.replace(RESIDUAL_JEV_XML_TAG_REGEX, "").trim().ifEmpty { "局势分析" }.take(10),
+            subtext = rawResult.subtext.replace(RESIDUAL_JEV_XML_TAG_REGEX, "").trim().ifEmpty { "已结合当前上下文提炼高筹码回复方案" }.take(46),
             options = finalOptions,
             usedVision = usedVision,
             redactionCount = redactionCount
         )
+    }
+
+    /**
+     * Normalizes strategy recommendation weights so the returned options sum strictly to `100%`
+     * and sorts them in descending order of [JevStrategyOption.probability]:
+     * - When all weights are `<= 0` (omitted or Tier 3 fallback), assigns calibrated defaults
+     *   (`56 / 28 / 16` for 3 options, `64 / 36` for 2 options, `100` for 1 option).
+     * - When unnormalized high scores with flat spread are detected (`sum > 140 && maxW - minW <= 15`,
+     *   e.g. `95 / 90 / 85`), sharpens via `(w_i - minW + 8)` before normalizing so the top card
+     *   retains a clear decision gradient instead of collapsing to `35% / 33% / 32%`.
+     * - Compensates rounding remainder on the highest-weight option so `sum == 100`.
+     */
+    fun normalizeAndSortOptions(options: List<JevStrategyOption>): List<JevStrategyOption> {
+        val capped = options.take(3)
+        if (capped.isEmpty()) return emptyList()
+        if (capped.size == 1) {
+            return listOf(capped[0].copy(probability = 100))
+        }
+
+        val defaults = if (capped.size == 2) DEFAULT_PROB_2 else DEFAULT_PROB_3
+        val rawWeights = capped.map { it.probability.coerceAtLeast(0) }
+
+        val effectiveWeights: List<Int> = when {
+            rawWeights.all { it <= 0 } -> defaults
+            rawWeights.any { it <= 0 } -> {
+                val knownSum = rawWeights.filter { it > 0 }.sum()
+                val missingIndices = rawWeights.indices.filter { rawWeights[it] <= 0 }
+                val missingDefaultSum = missingIndices.sumOf { defaults.getOrElse(it) { 20 } }.coerceAtLeast(1)
+                val remainingBudget = (100 - knownSum).coerceAtLeast(missingIndices.size * 12)
+                rawWeights.mapIndexed { idx, w ->
+                    if (w > 0) {
+                        w
+                    } else {
+                        val slotDef = defaults.getOrElse(idx) { 20 }
+                        ((remainingBudget.toDouble() * slotDef) / missingDefaultSum).roundToInt().coerceAtLeast(1)
+                    }
+                }
+            }
+            else -> {
+                val sum = rawWeights.sum()
+                val maxW = rawWeights.maxOrNull() ?: 0
+                val minW = rawWeights.minOrNull() ?: 0
+                if (maxW == minW) {
+                    defaults
+                } else if (sum > 140 && (maxW - minW) <= 15) {
+                    rawWeights.map { w -> (w - minW + 8).coerceAtLeast(1) }
+                } else {
+                    rawWeights
+                }
+            }
+        }
+
+        val weightSum = effectiveWeights.sum().coerceAtLeast(1)
+        val normalized = effectiveWeights.map { w ->
+            ((w * 100.0) / weightSum).roundToInt().coerceAtLeast(1)
+        }.toMutableList()
+
+        val diff = 100 - normalized.sum()
+        if (diff != 0) {
+            val maxIdx = effectiveWeights.indices.maxByOrNull { effectiveWeights[it] } ?: 0
+            normalized[maxIdx] = (normalized[maxIdx] + diff).coerceAtLeast(1)
+        }
+
+        return capped.mapIndexed { idx, opt ->
+            opt.copy(probability = normalized[idx])
+        }.sortedByDescending { it.probability }
+    }
+
+    private fun extractLabelFromAttrs(attrs: String): String? {
+        if (attrs.isBlank()) return null
+        val m = LABEL_ATTR_REGEX.find(attrs) ?: return null
+        val raw = m.groups[1]?.value
+            ?: m.groups[2]?.value
+            ?: m.groups[3]?.value
+            ?: m.groups[4]?.value
+            ?: m.groups[5]?.value
+            ?: m.groups[6]?.value
+        return raw
+            ?.replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
+            ?.trim()
+            ?.removeSurrounding("“", "”")
+            ?.removeSurrounding("\"")
+            ?.removeSurrounding("'")
+            ?.trim()
+            ?.ifEmpty { null }
+    }
+
+    private fun extractProbFromAttrs(attrs: String): Int {
+        if (attrs.isBlank()) return 0
+        val m = PROB_ATTR_REGEX.find(attrs) ?: return 0
+        val raw = m.groups[1]?.value
+            ?: m.groups[2]?.value
+            ?: m.groups[3]?.value
+            ?: m.groups[4]?.value
+            ?: m.groups[5]?.value
+            ?: return 0
+        val numStr = Regex("""(\d{1,3}(?:\.\d+)?)""").find(raw)?.groupValues?.getOrNull(1) ?: return 0
+        return numStr.toDoubleOrNull()?.roundToInt()?.coerceAtLeast(0) ?: 0
     }
 
     private fun sanitizeRawOutput(raw: String): String {
@@ -97,12 +237,21 @@ object JevResponseParser {
             .ifEmpty { "已拆解对方潜台词并生成差异化应对策略" }
 
         val options = optMatches.mapIndexedNotNull { idx, m ->
-            val label = (m.groups[1]?.value ?: m.groups[2]?.value ?: m.groups[3]?.value)
-                ?.trim()
-                ?.ifEmpty { null }
+            val innerAttrs = m.groupValues[1]
+            val prefixBeforeMatch = if (m.range.first > 0) text.substring(0, m.range.first) else ""
+            val outerAttrs = PRECEDING_OPEN_OPT_REGEX.find(prefixBeforeMatch)?.groupValues?.getOrNull(1).orEmpty()
+
+            val label = extractLabelFromAttrs(innerAttrs)
+                ?: extractLabelFromAttrs(outerAttrs)
                 ?: DEFAULT_FALLBACK_LABELS.getOrElse(idx) { "策略 ${idx + 1}" }
-            val body = cleanOptionText(m.groups[4]?.value.orEmpty())
-            if (body.isBlank()) null else JevStrategyOption(label = label, replyText = body)
+            val prob = extractProbFromAttrs(innerAttrs).takeIf { it > 0 }
+                ?: extractProbFromAttrs(outerAttrs)
+            val body = cleanOptionText(m.groupValues[2])
+            if (body.isBlank()) {
+                null
+            } else {
+                JevStrategyOption(label = label, replyText = body, probability = prob)
+            }
         }
 
         if (options.isEmpty()) return null
@@ -160,8 +309,18 @@ object JevResponseParser {
                         ?: itemObj.get("replyText")
                         ?: itemObj.get("content"))
                         ?.takeIf { it.isJsonPrimitive }?.asString?.let(::cleanOptionText).orEmpty()
+                    val rawProb = itemObj.get("prob") ?: itemObj.get("probability") ?: itemObj.get("weight")
+                    val prob = when {
+                        rawProb == null || rawProb.isJsonNull -> 0
+                        rawProb.isJsonPrimitive && rawProb.asJsonPrimitive.isNumber ->
+                            rawProb.asDouble.roundToInt().coerceAtLeast(0)
+                        rawProb.isJsonPrimitive ->
+                            Regex("""(\d{1,3}(?:\.\d+)?)""").find(rawProb.asString)
+                                ?.groupValues?.getOrNull(1)?.toDoubleOrNull()?.roundToInt()?.coerceAtLeast(0) ?: 0
+                        else -> 0
+                    }
                     if (reply.isNotBlank()) {
-                        options.add(JevStrategyOption(label = label, replyText = reply))
+                        options.add(JevStrategyOption(label = label, replyText = reply, probability = prob))
                     }
                 } else if (elem.isJsonPrimitive) {
                     val rawLine = cleanOptionText(elem.asString)
@@ -259,11 +418,14 @@ object JevResponseParser {
         )
     }
 
-    private fun cleanOptionText(raw: String): String {
-        return raw.trim()
+    internal fun cleanOptionText(raw: String): String {
+        return raw
+            .replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
+            .trim()
             .removeSurrounding("\"")
             .removeSurrounding("“", "”")
             .removeSurrounding("「", "」")
+            .replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
             .trim()
     }
 }

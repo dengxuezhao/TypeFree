@@ -331,6 +331,34 @@ object LocalPiiRedactor {
     }
 
     /**
+     * Redacts a list of formatted or plain chat messages along with combined accessibility + OCR
+     * [sourceNodes], returning `(redactedMessages, redactionSession)`.
+     */
+    fun redactMessages(
+        messages: List<String>,
+        context: Context? = null,
+        sourceNodes: List<RawScreenTextNode> = emptyList()
+    ): Pair<List<String>, RedactionSession> {
+        if (messages.isEmpty()) {
+            val session = redactText("", context = context, sourceNodes = sourceNodes)
+            return emptyList<String>() to session
+        }
+        val joined = messages.joinToString("\n")
+        val session = redactText(
+            rawText = joined,
+            context = context,
+            sourceNodes = sourceNodes
+        )
+        val redactedLines = if (session.redactionCount > 0) {
+            val split = session.redactedText.split("\n")
+            messages.mapIndexed { idx, orig -> split.getOrElse(idx) { orig } }
+        } else {
+            messages
+        }
+        return redactedLines to session
+    }
+
+    /**
      * Checks whether [text] contains any high-risk credential (`!category.restorable`).
      */
     fun containsHighRiskCredentials(text: String, context: Context? = null): Boolean {

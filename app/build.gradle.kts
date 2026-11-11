@@ -15,8 +15,8 @@ android {
         applicationId = "com.typefree.ime"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "3.2.0"
+        versionCode = 20
+        versionName = "3.2.1"
         buildConfigField("boolean", "USE_PRIVATE_DICT", usePrivateDict.toString())
 
         ndk {
@@ -108,6 +108,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.11.0")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 
     testImplementation("junit:junit:4.13.2")
 }

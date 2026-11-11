@@ -5,6 +5,7 @@ import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.bubble.CapturedChatContext
 import com.typefree.ime.bubble.ChatScreenContextExtractor
 import com.typefree.ime.bubble.TypeFreeAccessibilityService
+import com.typefree.ime.bubble.ViewportCaptureOutcome
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.HistoryRecord
@@ -330,26 +331,30 @@ class VoiceController(
                     ignoreChatContextForTurn = false,
                     forJevCopilot = true
                 )
-                val fullScreenShot = if (settingsSnap.chatContextSendScreenshot) {
+                val fullScreenOutcome = if (
+                    settingsSnap.chatContextSendScreenshot ||
+                    fullScreenCtx.messageCount < 2
+                ) {
                     runCatching {
-                        TypeFreeAccessibilityService.captureChatScreenshotIfAvailable(
+                        TypeFreeAccessibilityService.captureChatViewportOutcomeIfAvailable(
                             expectedPackage = curr.targetPackage,
                             settings = settingsSnap,
                             isIncognitoMode = curr.isIncognitoMode,
                             isPasswordInput = isPassword,
                             ignoreChatContextForTurn = false,
                             forJevCopilot = true,
+                            existingMessages = fullScreenCtx.formattedMessages,
                             redactionSession = fullScreenCtx.redactionSession
                         )
                     }.getOrNull()
                 } else {
                     null
                 }
-                val mergedCtx = if (fullScreenShot != null && fullScreenShot.first.isNotBlank()) {
-                    fullScreenCtx.copy(
-                        screenshotJpegBase64 = fullScreenShot.first,
-                        screenshotWidth = fullScreenShot.second,
-                        screenshotHeight = fullScreenShot.third
+                val mergedCtx = if (fullScreenOutcome != null) {
+                    fullScreenCtx.withViewportOutcome(
+                        outcome = fullScreenOutcome,
+                        fallbackPackage = curr.targetPackage,
+                        fallbackAppName = curr.targetAppName
                     )
                 } else {
                     fullScreenCtx
@@ -411,31 +416,33 @@ class VoiceController(
             )
         }
 
-        if (initialSnap.capturedChatContext.screenshotJpegBase64.isBlank() &&
-            !initialSnap.ignoreChatContextForThisTurn &&
-            settingsSnap.chatContextSendScreenshot
-        ) {
-            val capturedShot = runCatching {
-                TypeFreeAccessibilityService.captureChatScreenshotIfAvailable(
+        val needsViewportCaptureOrOcr = !initialSnap.ignoreChatContextForThisTurn &&
+            !initialSnap.showChatContextDisclosurePrompt &&
+            (
+                (settingsSnap.chatContextSendScreenshot && initialSnap.capturedChatContext.screenshotJpegBase64.isBlank()) ||
+                    initialSnap.capturedChatContext.messageCount < 2
+                )
+        if (needsViewportCaptureOrOcr) {
+            val capturedOutcome = runCatching {
+                TypeFreeAccessibilityService.captureChatViewportOutcomeIfAvailable(
                     expectedPackage = initialSnap.targetPackage,
                     settings = settingsSnap,
                     isIncognitoMode = initialSnap.isIncognitoMode,
                     isPasswordInput = isPassword,
                     ignoreChatContextForTurn = initialSnap.ignoreChatContextForThisTurn,
                     forJevCopilot = true,
+                    existingMessages = initialSnap.capturedChatContext.formattedMessages,
                     redactionSession = initialSnap.capturedChatContext.redactionSession
                 )
             }.getOrNull()
-            if (capturedShot != null && capturedShot.first.isNotBlank()) {
+            if (capturedOutcome != null) {
                 host.stateFlow.update { curr ->
                     val base = curr.capturedChatContext
                     curr.copy(
-                        capturedChatContext = base.copy(
-                            packageName = base.packageName.ifBlank { initialSnap.targetPackage },
-                            appName = base.appName.ifBlank { initialSnap.targetAppName },
-                            screenshotJpegBase64 = capturedShot.first,
-                            screenshotWidth = capturedShot.second,
-                            screenshotHeight = capturedShot.third
+                        capturedChatContext = base.withViewportOutcome(
+                            outcome = capturedOutcome,
+                            fallbackPackage = initialSnap.targetPackage,
+                            fallbackAppName = initialSnap.targetAppName
                         )
                     )
                 }
@@ -558,26 +565,48 @@ class VoiceController(
     ) {
         chatScreenshotJob?.cancel()
         chatScreenshotJob = host.scope.launch {
-            val capturedShot = runCatching {
-                chatScreenshotCaptureProvider(
+            val baseSnap = host.stateFlow.value.capturedChatContext
+            val outcome = runCatching {
+                TypeFreeAccessibilityService.captureChatViewportOutcomeIfAvailable(
+                    expectedPackage = expectedPackage,
+                    settings = settings,
+                    isIncognitoMode = isIncognitoMode,
+                    isPasswordInput = isPasswordInput,
+                    ignoreChatContextForTurn = false,
+                    forJevCopilot = false,
+                    existingMessages = baseSnap.formattedMessages,
+                    redactionSession = baseSnap.redactionSession
+                )
+            }.getOrNull() ?: runCatching {
+                val legacyShot = chatScreenshotCaptureProvider(
                     expectedPackage,
                     settings,
                     isIncognitoMode,
                     isPasswordInput,
                     false
                 )
+                if (legacyShot != null && legacyShot.first.isNotBlank()) {
+                    ViewportCaptureOutcome(
+                        screenshotJpegBase64 = legacyShot.first,
+                        width = legacyShot.second,
+                        height = legacyShot.third,
+                        mergedMessages = baseSnap.formattedMessages,
+                        redactionSession = baseSnap.redactionSession
+                    )
+                } else {
+                    null
+                }
             }.getOrNull()
-            if (capturedShot != null && capturedShot.first.isNotBlank()) {
+
+            if (outcome != null && (outcome.screenshotJpegBase64.isNotBlank() || outcome.mergedMessages.isNotEmpty())) {
                 host.stateFlow.update { curr ->
                     if (curr.voiceSubPanel == VoiceSubPanel.HELP_ME_WRITE) {
                         val baseCtx = curr.capturedChatContext
                         curr.copy(
-                            capturedChatContext = baseCtx.copy(
-                                packageName = baseCtx.packageName.ifBlank { expectedPackage },
-                                appName = baseCtx.appName.ifBlank { appName },
-                                screenshotJpegBase64 = capturedShot.first,
-                                screenshotWidth = capturedShot.second,
-                                screenshotHeight = capturedShot.third
+                            capturedChatContext = baseCtx.withViewportOutcome(
+                                outcome = outcome,
+                                fallbackPackage = expectedPackage,
+                                fallbackAppName = appName
                             )
                         )
                     } else {

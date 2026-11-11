@@ -405,27 +405,30 @@ class TypeFreeAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Android 11+ (`API 30+`) on-demand screenshot capture of the chat region above the keyboard.
-     * Bypasses WeChat `MMNeat7extView` / QQ NT custom `Canvas` text hiding and captures inline chat images.
-     * Protected by `ImagePrivacyGuard`:
-     * - Automatically drops screenshot when `settings.chatContextSendScreenshot == false` or when
-     *   any high-risk credential (`PASSWORD_SECRET`, `OTP_CODE`, `ID_CARD`, `BANK_CARD`, `API_KEY`)
-     *   or password node is present on screen.
-     * - Paints opaque `#18181B` charcoal blackout rectangles over any reversible contact PII nodes
-     *   (`PHONE`, `EMAIL`, `ADDRESS`, `PICKUP_CODE`) with a `4px` safety margin prior to JPEG encoding.
-     * Strictly memory-only; never written to disk.
+     * Android 11+ (`API 30+`) on-demand viewport capture + offline Chinese OCR + privacy guard:
+     * 1. Bypasses WeChat `MMNeat7extView` / Mobile QQ NT custom `Canvas` text hiding via bundled
+     *    on-device ML Kit Chinese OCR ([ViewportOcrExtractor]) even when `chatContextSendScreenshot == false`
+     *    or when using pure-text models (whenever accessibility extracted `< 2` messages).
+     * 2. Merges and deduplicates accessibility + OCR messages ([ChatScreenContextExtractor.mergeAccessibilityAndOcrMessages]),
+     *    then runs [LocalPiiRedactor.redactMessages] across all combined nodes.
+     * 3. Circuit-breaker: if any high-risk credential (`PASSWORD_SECRET`, `OTP_CODE`, `ID_CARD`, `BANK_CARD`, `API_KEY`)
+     *    is detected by accessibility OR OCR, immediately drops the screenshot (`screenshotJpegBase64 = ""`)
+     *    while preserving the redacted text messages.
+     * 4. When `settings.chatContextSendScreenshot == true` and no high-risk credentials exist, paints opaque
+     *    `#18181B` charcoal blackout rectangles over all reversible contact PII bounds (including OCR coordinates)
+     *    before JPEG Base64 encoding. Strictly memory-only; `Bitmap` is recycled immediately.
      */
-    suspend fun captureChatViewportScreenshotBase64OnDemand(
+    suspend fun captureChatViewportOutcomeOnDemand(
         expectedPackage: String,
         settings: AppSettings,
         isIncognitoMode: Boolean,
         isPasswordInput: Boolean,
         ignoreChatContextForTurn: Boolean,
         forJevCopilot: Boolean = false,
+        existingMessages: List<String> = emptyList(),
         redactionSession: RedactionSession? = null
-    ): Triple<String, Int, Int>? {
+    ): ViewportCaptureOutcome? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
-        if (!settings.chatContextSendScreenshot) return null
         val root = try {
             rootInActiveWindow
         } catch (_: Exception) {
@@ -454,28 +457,46 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                 hasVisiblePasswordNode = hasPasswordNode
             )
         }
-        if (!gateAllowed) {
-            return null
-        }
-
-        val effectiveRedactionSession = redactionSession ?: run {
-            val nodes = ArrayList<RawScreenTextNode>(64)
-            collectVisibleTextNodes(root, nodes, depth = 0)
-            LocalPiiRedactor.redactText("", context = this, sourceNodes = nodes)
-        }
-
-        if (ImagePrivacyGuard.shouldDropScreenshot(
-                chatContextSendScreenshot = settings.chatContextSendScreenshot,
-                hasHighRiskCredentials = effectiveRedactionSession.hasHighRiskCredentials,
-                hasPasswordNode = hasPasswordNode,
-                isIncognito = isIncognitoMode || settings.manualIncognitoMode,
-                isBlacklistedPackage = ChatScreenContextExtractor.isSensitiveBlacklistedPackage(expectedPackage)
-            )
+        if (!gateAllowed ||
+            hasPasswordNode ||
+            isIncognitoMode ||
+            settings.manualIncognitoMode ||
+            ChatScreenContextExtractor.isSensitiveBlacklistedPackage(expectedPackage)
         ) {
             return null
         }
 
+        val rootBounds = Rect()
+        root.getBoundsInScreen(rootBounds)
+        val dm = resources.displayMetrics
+        val screenWidth = rootBounds.width().takeIf { it > 0 } ?: dm.widthPixels
+        val screenHeight = rootBounds.height().takeIf { it > 0 } ?: dm.heightPixels
         val inputTopHint = resolveInputBoxTopHintForPackage(expectedPackage)
+
+        val a11yNodes = ArrayList<RawScreenTextNode>(64)
+        collectVisibleTextNodes(root, a11yNodes, depth = 0)
+        val unredactedA11yCtx = ChatScreenContextExtractor.extractChatContext(
+            nodes = a11yNodes,
+            screenWidth = screenWidth,
+            screenHeight = screenHeight,
+            inputBoxTop = inputTopHint,
+            packageName = expectedPackage,
+            redactPii = false
+        )
+        val baseA11yMessages = if (unredactedA11yCtx.formattedMessages.isNotEmpty()) {
+            unredactedA11yCtx.formattedMessages
+        } else {
+            existingMessages
+        }
+        val needsOcrForCustomCanvas = baseA11yMessages.size < 2
+
+        if (!settings.chatContextSendScreenshot && !needsOcrForCustomCanvas) {
+            return null
+        }
+        if (redactionSession?.hasHighRiskCredentials == true && !needsOcrForCustomCanvas) {
+            return null
+        }
+
         val rawBitmap = withTimeoutOrNull(950L) {
             suspendCancellableCoroutine<Bitmap?> { cont ->
                 try {
@@ -513,6 +534,7 @@ class TypeFreeAccessibilityService : AccessibilityService() {
         } ?: return null
 
         return withContext(Dispatchers.Default) {
+            var scaledBitmap: Bitmap? = null
             try {
                 val cropRect = ChatScreenContextExtractor.computeChatRegionCropRect(
                     bitmapWidth = rawBitmap.width,
@@ -527,18 +549,71 @@ class TypeFreeAccessibilityService : AccessibilityService() {
 
                 val cropped = Bitmap.createBitmap(rawBitmap, cropX, cropY, cropW, cropH)
                 val maxTargetWidth = 720
-                val scaledBitmap = if (cropped.width > maxTargetWidth) {
-                    val ratio = maxTargetWidth.toFloat() / cropped.width.toFloat()
-                    val targetH = (cropped.height * ratio).roundToInt().coerceAtLeast(1)
+                val scaleRatio: Float
+                scaledBitmap = if (cropped.width > maxTargetWidth) {
+                    scaleRatio = maxTargetWidth.toFloat() / cropped.width.toFloat()
+                    val targetH = (cropped.height * scaleRatio).roundToInt().coerceAtLeast(1)
                     Bitmap.createScaledBitmap(cropped, maxTargetWidth, targetH, true).also {
                         if (it !== cropped) cropped.recycle()
                     }
                 } else {
+                    scaleRatio = 1.0f
                     cropped
                 }
 
+                val ocrNodes = ViewportOcrExtractor.recognizeViewportNodes(
+                    bitmap = scaledBitmap,
+                    cropX = cropX,
+                    cropY = cropY,
+                    scaleRatio = scaleRatio,
+                    timeoutMs = 750L
+                )
+                val ocrExtracted = if (ocrNodes.isNotEmpty()) {
+                    ChatScreenContextExtractor.extractChatContext(
+                        nodes = ocrNodes,
+                        screenWidth = rawBitmap.width,
+                        screenHeight = rawBitmap.height,
+                        inputBoxTop = inputTopHint,
+                        packageName = expectedPackage,
+                        maxMessages = 10,
+                        maxTotalChars = 800,
+                        redactPii = false
+                    )
+                } else {
+                    CapturedChatContext.EMPTY
+                }
+
+                val rawMergedMessages = ChatScreenContextExtractor.mergeAccessibilityAndOcrMessages(
+                    a11yMessages = baseA11yMessages,
+                    ocrMessages = ocrExtracted.formattedMessages,
+                    maxMessages = 10
+                )
+                val combinedNodes = if (ocrNodes.isNotEmpty()) a11yNodes + ocrNodes else a11yNodes
+                val (redactedMergedMessages, mergedRedactionSession) = LocalPiiRedactor.redactMessages(
+                    messages = rawMergedMessages,
+                    context = this@TypeFreeAccessibilityService,
+                    sourceNodes = combinedNodes
+                )
+
+                val shouldDrop = ImagePrivacyGuard.shouldDropScreenshot(
+                    chatContextSendScreenshot = settings.chatContextSendScreenshot,
+                    hasHighRiskCredentials = mergedRedactionSession.hasHighRiskCredentials,
+                    hasPasswordNode = hasPasswordNode,
+                    isIncognito = isIncognitoMode || settings.manualIncognitoMode,
+                    isBlacklistedPackage = ChatScreenContextExtractor.isSensitiveBlacklistedPackage(expectedPackage)
+                )
+                if (shouldDrop) {
+                    return@withContext ViewportCaptureOutcome(
+                        screenshotJpegBase64 = "",
+                        width = 0,
+                        height = 0,
+                        mergedMessages = redactedMergedMessages,
+                        redactionSession = mergedRedactionSession
+                    )
+                }
+
                 val maskedRects = ImagePrivacyGuard.computeMaskedRectsOnCroppedBitmap(
-                    rawScreenRects = effectiveRedactionSession.redactedNodeBounds,
+                    rawScreenRects = mergedRedactionSession.redactedNodeBounds,
                     cropTopPx = cropY,
                     cropHeightPx = cropH,
                     sourceWidthPx = rawBitmap.width,
@@ -550,20 +625,33 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     source = scaledBitmap,
                     maskedBitmapRects = maskedRects
                 )
+                if (finalBitmap !== scaledBitmap) {
+                    scaledBitmap = finalBitmap
+                }
 
                 val outWidth = finalBitmap.width
                 val outHeight = finalBitmap.height
                 val baos = ByteArrayOutputStream(36 * 1024)
                 finalBitmap.compress(Bitmap.CompressFormat.JPEG, 74, baos)
-                finalBitmap.recycle()
 
                 val bytes = baos.toByteArray()
-                if (bytes.isEmpty()) return@withContext null
-                val b64 = Base64.getEncoder().encodeToString(bytes)
-                Triple(b64, outWidth, outHeight)
+                val b64 = if (bytes.isNotEmpty()) Base64.getEncoder().encodeToString(bytes) else ""
+                ViewportCaptureOutcome(
+                    screenshotJpegBase64 = b64,
+                    width = if (b64.isNotBlank()) outWidth else 0,
+                    height = if (b64.isNotBlank()) outHeight else 0,
+                    mergedMessages = redactedMergedMessages,
+                    redactionSession = mergedRedactionSession
+                )
             } catch (_: Throwable) {
                 null
             } finally {
+                try {
+                    if (scaledBitmap != null && !scaledBitmap.isRecycled) {
+                        scaledBitmap.recycle()
+                    }
+                } catch (_: Throwable) {
+                }
                 try {
                     if (!rawBitmap.isRecycled) rawBitmap.recycle()
                 } catch (_: Throwable) {
@@ -572,30 +660,67 @@ class TypeFreeAccessibilityService : AccessibilityService() {
         }
     }
 
+    suspend fun captureChatViewportScreenshotBase64OnDemand(
+        expectedPackage: String,
+        settings: AppSettings,
+        isIncognitoMode: Boolean,
+        isPasswordInput: Boolean,
+        ignoreChatContextForTurn: Boolean,
+        forJevCopilot: Boolean = false,
+        redactionSession: RedactionSession? = null
+    ): Triple<String, Int, Int>? {
+        val outcome = captureChatViewportOutcomeOnDemand(
+            expectedPackage = expectedPackage,
+            settings = settings,
+            isIncognitoMode = isIncognitoMode,
+            isPasswordInput = isPasswordInput,
+            ignoreChatContextForTurn = ignoreChatContextForTurn,
+            forJevCopilot = forJevCopilot,
+            redactionSession = redactionSession
+        ) ?: return null
+        if (outcome.screenshotJpegBase64.isBlank()) return null
+        return Triple(outcome.screenshotJpegBase64, outcome.width, outcome.height)
+    }
+
     private fun collectVisibleTextNodes(
         node: AccessibilityNodeInfo?,
         out: MutableList<RawScreenTextNode>,
         depth: Int
     ) {
-        if (node == null || depth > 28 || out.size >= 160) return
+        if (node == null || depth > 28 || out.size >= 260) return
         if (!node.isVisibleToUser) return
         if (isPasswordNode(node, node.inputType)) return
 
         val editable = isEditableTarget(node)
-        val rawText = if (!node.isShowingHintText) {
-            val primary = node.text?.toString()?.trim().orEmpty()
-            if (primary.isNotEmpty()) {
-                primary
-            } else {
-                node.contentDescription?.toString()?.trim().orEmpty()
-            }
+        val clsName = node.className?.toString().orEmpty()
+        val primaryText = if (!node.isShowingHintText) {
+            node.text?.toString()?.trim().orEmpty()
         } else {
             ""
         }
+        val descText = if (!node.isShowingHintText && primaryText.isEmpty()) {
+            node.contentDescription?.toString()?.trim().orEmpty()
+        } else {
+            ""
+        }
+        val rawText = primaryText.ifEmpty { descText }
 
         val rect = Rect()
         node.getBoundsInScreen(rect)
-        if ((rawText.isNotEmpty() || editable) && rect.width() > 0 && rect.height() > 0) {
+        val width = rect.width()
+        val height = rect.height()
+        val screenW = runCatching { resources.displayMetrics.widthPixels }.getOrDefault(1080)
+        val isDescOnlyImage = primaryText.isEmpty() &&
+            descText.isNotEmpty() &&
+            clsName.contains("Image", ignoreCase = true)
+        val isSquareEdgeAvatar = width in 24..180 &&
+            height in 24..180 &&
+            kotlin.math.abs(width - height) <= 24 &&
+            (rect.left <= (screenW * 0.22).toInt().coerceAtLeast(180) || rect.right >= (screenW * 0.78).toInt())
+        val skipAsAvatarOrNoiseImage = isDescOnlyImage &&
+            (ChatScreenContextExtractor.isNoiseText(descText) || isSquareEdgeAvatar)
+
+        if ((rawText.isNotEmpty() || editable) && width > 0 && height > 0 && !skipAsAvatarOrNoiseImage) {
             out.add(
                 RawScreenTextNode(
                     text = rawText,
@@ -606,7 +731,7 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     isEditable = editable,
                     isClickable = node.isClickable,
                     viewIdResourceName = node.viewIdResourceName.orEmpty(),
-                    className = node.className?.toString().orEmpty(),
+                    className = clsName,
                     isPassword = false,
                     isVisibleToUser = true
                 )
@@ -779,17 +904,19 @@ class TypeFreeAccessibilityService : AccessibilityService() {
             )
         }
 
-        suspend fun captureChatScreenshotIfAvailable(
+        suspend fun captureChatViewportOutcomeIfAvailable(
             expectedPackage: String,
             settings: AppSettings,
             isIncognitoMode: Boolean,
             isPasswordInput: Boolean,
             ignoreChatContextForTurn: Boolean,
             forJevCopilot: Boolean = false,
+            existingMessages: List<String> = emptyList(),
             redactionSession: RedactionSession? = null
-        ): Triple<String, Int, Int>? {
+        ): ViewportCaptureOutcome? {
             val simShot = debugSimulatedScreenshotBase64ForTest
-            if (!simShot.isNullOrBlank()) {
+            val simOcrNodes = ViewportOcrExtractor.debugSimulatedOcrNodesForTest
+            if (!simShot.isNullOrBlank() || !simOcrNodes.isNullOrEmpty()) {
                 val simPkg = debugSimulatedNodesForTest?.first ?: expectedPackage
                 val simNodes = debugSimulatedNodesForTest?.second.orEmpty()
                 val hasPasswordNode = ChatScreenContextExtractor.hasAnyVisiblePasswordNode(simNodes)
@@ -817,22 +944,85 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                 if (!gateAllowed) {
                     return null
                 }
-                val effectiveHighRisk = redactionSession?.hasHighRiskCredentials
-                    ?: simNodes.any { LocalPiiRedactor.containsHighRiskCredentials(it.text) }
-                if (ImagePrivacyGuard.shouldDropScreenshot(
-                        chatContextSendScreenshot = settings.chatContextSendScreenshot,
-                        hasHighRiskCredentials = effectiveHighRisk,
-                        hasPasswordNode = hasPasswordNode,
-                        isIncognito = isIncognitoMode || settings.manualIncognitoMode,
-                        isBlacklistedPackage = ChatScreenContextExtractor.isSensitiveBlacklistedPackage(expectedPackage)
-                    )
-                ) {
-                    return null
+                val editableTop = simNodes.firstOrNull { it.isEditable }?.boundsTop ?: -1
+                val unredactedA11y = if (simNodes.isNotEmpty()) {
+                    ChatScreenContextExtractor.extractChatContext(
+                        nodes = simNodes,
+                        screenWidth = 1080,
+                        screenHeight = 2400,
+                        inputBoxTop = editableTop,
+                        packageName = expectedPackage,
+                        redactPii = false
+                    ).formattedMessages
+                } else {
+                    existingMessages
                 }
-                return Triple(simShot, 720, 960)
+                val ocrExtracted = if (!simOcrNodes.isNullOrEmpty()) {
+                    ChatScreenContextExtractor.extractChatContext(
+                        nodes = simOcrNodes,
+                        screenWidth = 1080,
+                        screenHeight = 2400,
+                        inputBoxTop = editableTop,
+                        packageName = expectedPackage,
+                        maxMessages = 10,
+                        maxTotalChars = 800,
+                        redactPii = false
+                    ).formattedMessages
+                } else {
+                    emptyList()
+                }
+                val rawMerged = ChatScreenContextExtractor.mergeAccessibilityAndOcrMessages(
+                    a11yMessages = unredactedA11y,
+                    ocrMessages = ocrExtracted,
+                    maxMessages = 10
+                )
+                val combinedNodes = simNodes + simOcrNodes.orEmpty()
+                val (redactedMerged, mergedSession) = LocalPiiRedactor.redactMessages(
+                    messages = rawMerged,
+                    context = null,
+                    sourceNodes = combinedNodes
+                )
+                val effectiveHighRisk = mergedSession.hasHighRiskCredentials ||
+                    redactionSession?.hasHighRiskCredentials == true
+                val dropShot = ImagePrivacyGuard.shouldDropScreenshot(
+                    chatContextSendScreenshot = settings.chatContextSendScreenshot,
+                    hasHighRiskCredentials = effectiveHighRisk,
+                    hasPasswordNode = hasPasswordNode,
+                    isIncognito = isIncognitoMode || settings.manualIncognitoMode,
+                    isBlacklistedPackage = ChatScreenContextExtractor.isSensitiveBlacklistedPackage(expectedPackage)
+                )
+                val finalShot = if (!dropShot && !simShot.isNullOrBlank()) simShot else ""
+                return ViewportCaptureOutcome(
+                    screenshotJpegBase64 = finalShot,
+                    width = if (finalShot.isNotBlank()) 720 else 0,
+                    height = if (finalShot.isNotBlank()) 960 else 0,
+                    mergedMessages = redactedMerged,
+                    redactionSession = mergedSession.copy(hasHighRiskCredentials = effectiveHighRisk)
+                )
             }
             val instance = activeInstance ?: return null
-            return instance.captureChatViewportScreenshotBase64OnDemand(
+            return instance.captureChatViewportOutcomeOnDemand(
+                expectedPackage = expectedPackage,
+                settings = settings,
+                isIncognitoMode = isIncognitoMode,
+                isPasswordInput = isPasswordInput,
+                ignoreChatContextForTurn = ignoreChatContextForTurn,
+                forJevCopilot = forJevCopilot,
+                existingMessages = existingMessages,
+                redactionSession = redactionSession
+            )
+        }
+
+        suspend fun captureChatScreenshotIfAvailable(
+            expectedPackage: String,
+            settings: AppSettings,
+            isIncognitoMode: Boolean,
+            isPasswordInput: Boolean,
+            ignoreChatContextForTurn: Boolean,
+            forJevCopilot: Boolean = false,
+            redactionSession: RedactionSession? = null
+        ): Triple<String, Int, Int>? {
+            val outcome = captureChatViewportOutcomeIfAvailable(
                 expectedPackage = expectedPackage,
                 settings = settings,
                 isIncognitoMode = isIncognitoMode,
@@ -840,7 +1030,9 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                 ignoreChatContextForTurn = ignoreChatContextForTurn,
                 forJevCopilot = forJevCopilot,
                 redactionSession = redactionSession
-            )
+            ) ?: return null
+            if (outcome.screenshotJpegBase64.isBlank()) return null
+            return Triple(outcome.screenshotJpegBase64, outcome.width, outcome.height)
         }
     }
 }

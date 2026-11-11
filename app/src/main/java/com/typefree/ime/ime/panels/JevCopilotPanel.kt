@@ -261,6 +261,7 @@ fun JevCopilotPanel(
                     } else {
                         options.take(3).forEachIndexed { index, option ->
                             JevStrategyKeycapCard(
+                                rankIndex = index,
                                 option = option,
                                 isSelected = uiState.selectedJevStrategyIndex == index,
                                 enabled = !isProcessing,
@@ -376,15 +377,37 @@ private fun JevSubtextRadarBar(
 
 @Composable
 private fun JevStrategyKeycapCard(
+    rankIndex: Int,
     option: JevStrategyOption,
     isSelected: Boolean,
     enabled: Boolean,
     onClick: () -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val isTopPick = rankIndex == 0
     val bgColor = if (isSelected) palette.capsuleSelectedBg else palette.keyCapBg
     val borderColor = if (isSelected) palette.primaryMicSolid else palette.keyBorder
     val borderWidth = if (isSelected) 1.5.dp else 1.dp
+    val badgeText = when {
+        option.probability <= 0 -> option.label
+        isTopPick -> "★ ${option.probability}% ${option.label}"
+        else -> "${option.probability}% ${option.label}"
+    }
+    val pillBorderWidth = when {
+        isSelected -> 0.dp
+        isTopPick -> 1.25.dp
+        else -> 1.dp
+    }
+    val pillBorderColor = when {
+        isSelected -> Color.Transparent
+        isTopPick -> palette.keyTextPrimary.copy(alpha = 0.36f)
+        else -> palette.keyBorder
+    }
+    val pillTextColor = when {
+        isSelected -> palette.onPrimaryMic
+        isTopPick -> palette.keyTextPrimary
+        else -> palette.keyTextMuted
+    }
 
     Row(
         modifier = Modifier
@@ -397,24 +420,24 @@ private fun JevStrategyKeycapCard(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(7.dp)
     ) {
-        // Left Strategy Tag Pill
+        // Left Strategy Tag + Normalized Probability Pill
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(5.dp))
                 .background(if (isSelected) palette.primaryMicSolid else palette.capsuleTrackBg)
                 .border(
-                    width = if (isSelected) 0.dp else 1.dp,
-                    color = if (isSelected) Color.Transparent else palette.keyBorder,
+                    width = pillBorderWidth,
+                    color = pillBorderColor,
                     shape = RoundedCornerShape(5.dp)
                 )
                 .padding(horizontal = 5.5.dp, vertical = 2.dp),
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = option.label,
-                color = if (isSelected) palette.onPrimaryMic else palette.keyTextMuted,
+                text = badgeText,
+                color = pillTextColor,
                 fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
+                fontWeight = if (isTopPick || isSelected) FontWeight.ExtraBold else FontWeight.Bold,
                 maxLines = 1
             )
         }

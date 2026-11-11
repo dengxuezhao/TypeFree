@@ -18,10 +18,12 @@ enum class JevTensionTier(val label: String) {
  *
  * @property label Short 2–6 character tactical tag (e.g. `太极推挡`, `锚定底价`, `神评造梗`)
  * @property replyText Pure reply draft ready to be previewed/injected into the input field
+ * @property probability Normalized recommendation weight percentage (`0..100`, 3 options sum to `100`)
  */
 data class JevStrategyOption(
     val label: String,
-    val replyText: String
+    val replyText: String,
+    val probability: Int = 0
 )
 
 /**
@@ -83,6 +85,8 @@ enum class JevDomainProfile(
             "com.ss.android.lark",
             "com.larksuite.suite",
             "com.alibaba.android.rimet",
+            "com.alibaba.aliding",
+            "com.alibaba.work",
             "com.tencent.wework",
             "org.telegram.messenger",
             "org.telegram.messenger.web",
@@ -149,7 +153,10 @@ enum class JevDomainProfile(
             if (clean.isEmpty()) return FORMAL_WORKFLOW
             val lower = clean.lowercase()
             return when {
-                clean in IM_PACKAGES || lower in IM_PACKAGES -> IM_CHAT
+                clean in IM_PACKAGES || lower in IM_PACKAGES ||
+                    lower.contains("dingtalk") || lower.contains("aliding") ||
+                    lower.contains("rimet") || lower.contains("wework") ||
+                    lower.contains("lark") || lower.contains("feishu") -> IM_CHAT
                 clean in COMMERCE_PACKAGES || lower in COMMERCE_PACKAGES ||
                     lower.contains("idlefish") || lower.contains("zhuanzhuan") ||
                     lower.contains("pinduoduo") || lower.contains("taobao") ||
