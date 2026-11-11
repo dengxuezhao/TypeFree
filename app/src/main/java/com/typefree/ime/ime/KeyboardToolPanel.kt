@@ -67,6 +67,7 @@ fun KeyboardToolPanel(
     onToggleLiveWrite: () -> Unit,
     onToggleWhisperMode: () -> Unit = {},
     onOpenHelpMeWrite: () -> Unit = {},
+    onOpenJevCopilot: () -> Unit = {},
     onToggleManualIncognito: () -> Unit = {},
     onOpenDictionary: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -207,23 +208,52 @@ fun KeyboardToolPanel(
                         .background(palette.capsuleTrackBg)
                         .border(1.dp, palette.keyBorder, RoundedCornerShape(9.dp))
                         .clickable(onClick = onOpenHelpMeWrite)
-                        .padding(horizontal = 9.dp),
+                        .padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(3.5.dp)
                 ) {
                     Icon(
                         imageVector = TypeFreeIcons.VoicePen,
                         contentDescription = null,
                         tint = palette.keyTextPrimary,
-                        modifier = Modifier.size(12.5.dp)
+                        modifier = Modifier.size(12.dp)
                     )
                     Text(
-                        text = "AI 帮写",
+                        text = "帮写",
                         color = palette.keyTextPrimary,
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1
                     )
+                }
+
+                // 4. Direct Jev Copilot Pill (`TypeFreeIcons.CopilotStar`)
+                if (settings.jevCopilotEnabled) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(palette.capsuleTrackBg)
+                            .border(1.dp, palette.keyBorder, RoundedCornerShape(9.dp))
+                            .clickable(onClick = onOpenJevCopilot)
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                    ) {
+                        Icon(
+                            imageVector = TypeFreeIcons.CopilotStar,
+                            contentDescription = "Jev 军师",
+                            tint = palette.keyTextPrimary,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = "军师",
+                            color = palette.keyTextPrimary,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
                 }
             }
         }

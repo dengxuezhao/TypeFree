@@ -79,6 +79,7 @@ fun VoiceMainPanel(
     didPauseMedia: Boolean,
     onSwipeToTab: (KeyboardTabMode) -> Unit,
     onVoicePenClick: () -> Unit,
+    onOpenJevCopilot: () -> Unit = {},
     onMicPressDown: () -> Unit,
     onMicPressUp: () -> Unit,
     onEnterArcTranslate: (Boolean) -> Unit,
@@ -438,12 +439,42 @@ fun VoiceMainPanel(
                 )
             }
 
-            // Bottom-Left Circular White Key (`46.dp`, `TypeFreeIcons.VoicePen`)
-            Box(
+            // Bottom-Left Vertically Stacked `[CopilotStar 军师]` capsule + Circular White Key (`46.dp`, `VoicePen`)
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(bottom = (33f * s).dp)
+                    .padding(bottom = (33f * s).dp),
+                verticalArrangement = Arrangement.spacedBy((8f * s).dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                if (settings.jevCopilotEnabled) {
+                    Row(
+                        modifier = Modifier
+                            .height((26f * s).dp)
+                            .clip(RoundedCornerShape((13f * s).dp))
+                            .background(palette.keyCapBg)
+                            .border(1.dp, palette.keyBorder, RoundedCornerShape((13f * s).dp))
+                            .clickable(onClick = onOpenJevCopilot)
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Icon(
+                            imageVector = TypeFreeIcons.CopilotStar,
+                            contentDescription = "Jev 军师",
+                            tint = palette.keyTextPrimary,
+                            modifier = Modifier.size((11.5f * s).dp)
+                        )
+                        Text(
+                            text = "军师",
+                            color = palette.keyTextPrimary,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
+                }
+
                 CircleFloatingKey(
                     size = (46f * s).dp,
                     highlighted = uiState.hasIgnoredSelection,

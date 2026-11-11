@@ -1283,8 +1283,19 @@ private fun AppearanceAndPreferencesPane(repository: AppRepository) {
                 var showChatContextDisclosureDialog by remember { mutableStateOf(false) }
 
                 PreferenceSwitchRow(
-                    title = "💬 AI 帮回读取屏幕上文",
-                    subtitle = "仅在你点 ✍️ 时读取当前聊天最近几条消息，发送给你配置的 AI 模型服务商生成回复；不保存、不写入历史或词库（无痕模式、密码框与金融支付软件永不读取）",
+                    title = "✦ 启用 Jev 军师模式",
+                    subtitle = "在键盘顶栏、语音面板与帮写顶栏启用潜台词雷达（Lv.1–9）与 3 张高筹码策略键帽草稿",
+                    checked = settings.jevCopilotEnabled,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(jevCopilotEnabled = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
+                PreferenceSwitchRow(
+                    title = "💬 AI 帮回与军师读取屏幕上文",
+                    subtitle = "仅在你主动点 ✍️ 或 ✦ 军师时按需读取当前窗口上文，端侧脱敏后发给你配置的 AI 模型；密码框、全屏含可见密码节点、无痕模式与金融支付类软件一票否决永不读取",
                     checked = settings.chatContextReplyEnabled,
                     onCheckedChange = { enabled ->
                         if (enabled && !settings.chatContextDisclosureAccepted) {
@@ -1294,6 +1305,17 @@ private fun AppearanceAndPreferencesPane(repository: AppRepository) {
                                 it.copy(chatContextReplyEnabled = enabled)
                             }
                         }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
+                PreferenceSwitchRow(
+                    title = "🖼️ 读屏时允许附带脱敏视口截图",
+                    subtitle = "开启后多模态模型可识别表情包与图片上下文（端侧自动 #18181B 涂黑联系信息，检测到验证码/密码/身份证/银行卡/密钥时自动弃图）；关闭则仅发送脱敏纯文本",
+                    checked = settings.chatContextSendScreenshot,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(chatContextSendScreenshot = enabled) }
                     }
                 )
 

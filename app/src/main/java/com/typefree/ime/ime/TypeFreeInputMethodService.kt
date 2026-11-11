@@ -204,6 +204,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         val latestHeightMode = repository.settings.value.keyboardHeightMode
         val latestLiftLevel = repository.settings.value.keyboardLiftLevel
         if (!restarting) {
+            voiceController.finalizeJevDraftAndClearMemory(clearContext = true)
             typingController.resetComposing()
             _imeState.update {
                 it.copy(
@@ -214,6 +215,12 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     capturedChatContext = CapturedChatContext(),
                     ignoreChatContextForThisTurn = false,
                     showChatContextDisclosurePrompt = false,
+                    jevCopilotResult = null,
+                    selectedJevStrategyIndex = -1,
+                    isJevLoading = false,
+                    jevUserBottomLine = "",
+                    jevExcludedReplies = emptyList(),
+                    isFullScreenPeekCapturing = false,
                     isPunctuationStripOpen = false,
                     isStylePickerExpanded = false,
                     flypyComposingCode = "",
@@ -250,15 +257,45 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
 
     override fun onFinishInputView(finishingInput: Boolean) {
         tryAutoLearnFromRecentEdit()
+        voiceController.finalizeJevDraftAndClearMemory(clearContext = true)
         repository.setImeWindowVisible(false)
         _imeState.update {
             it.copy(
                 capturedChatContext = CapturedChatContext(),
                 ignoreChatContextForThisTurn = false,
-                showChatContextDisclosurePrompt = false
+                showChatContextDisclosurePrompt = false,
+                jevCopilotResult = null,
+                selectedJevStrategyIndex = -1,
+                isJevLoading = false,
+                jevUserBottomLine = "",
+                jevExcludedReplies = emptyList(),
+                isFullScreenPeekCapturing = false
             )
         }
         super.onFinishInputView(finishingInput)
+    }
+
+    override fun onComputeInsets(outInsets: Insets?) {
+        super.onComputeInsets(outInsets)
+        if (outInsets == null) return
+        if (_imeState.value.isFullScreenPeekCapturing) {
+            val decorHeight = window?.window?.decorView?.height ?: 0
+            if (decorHeight > 0) {
+                outInsets.contentTopInsets = decorHeight
+                outInsets.visibleTopInsets = decorHeight
+                outInsets.touchableInsets = Insets.TOUCHABLE_INSETS_FRAME
+                outInsets.touchableRegion.setEmpty()
+            }
+        }
+    }
+
+    private fun requestRefreshImeInsets() {
+        runCatching {
+            window?.window?.decorView?.let { decor ->
+                decor.requestLayout()
+                decor.invalidate()
+            }
+        }
     }
 
     private fun syncEditorMetadata(info: EditorInfo?, restarting: Boolean) {
@@ -494,9 +531,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             ImeUiAction.OpenStylePickerFromToolPanel -> openStylePickerFromToolPanel()
             ImeUiAction.TogglePunctuationStrip -> voiceController.togglePunctuationStrip()
             is ImeUiAction.OpenHostApp -> openHostApp(action.tabIndex)
-            ImeUiAction.OpenJevCopilot -> {
-                // Reserved for v3.2.0 Jev Copilot mode
-            }
+            ImeUiAction.OpenJevCopilot -> voiceController.openJevCopilotPanel()
+            is ImeUiAction.SelectJevStrategyCard -> voiceController.selectJevStrategyCard(action.index)
+            ImeUiAction.RefreshJevStrategies -> voiceController.refreshJevStrategies()
+            ImeUiAction.TriggerFullScreenPeekCapture ->
+                voiceController.triggerFullScreenPeekCapture(::requestRefreshImeInsets)
 
             ImeUiAction.StartVoiceRecording -> voiceController.handleMicPressDown(VoiceIntentMode.DICTATE)
             ImeUiAction.StopVoiceRecording -> voiceController.handleMicPressUp()

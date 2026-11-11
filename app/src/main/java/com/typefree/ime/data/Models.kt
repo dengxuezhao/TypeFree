@@ -29,7 +29,8 @@ enum class VoiceIntentMode(val label: String) {
     DICTATE("口述净写"),
     HELP_ME_WRITE("帮我写"),
     SPEAK_TO_EDIT("语音编辑"),
-    TRANSLATE("实时快译")
+    TRANSLATE("实时快译"),
+    JEV_COPILOT("Jev 军师")
 }
 
 enum class HistoryRetention(val label: String, val maxAgeMs: Long?) {
@@ -444,6 +445,8 @@ data class AppSettings(
     val chatContextReplyEnabled: Boolean = false, // 读屏上下文「AI 帮回」（默认关闭，需首次披露同意后开启）
     val chatContextDisclosureAccepted: Boolean = false, // 是否已阅读并同意「AI 帮回」首次显著披露
     val chatContextDisclosureDismissed: Boolean = false, // 是否已在键盘首次披露卡点过「暂不开启」（避免反复打扰，但不代表已同意披露）
+    val jevCopilotEnabled: Boolean = true, // 启用「✦ Jev 军师」模式（默认开启）
+    val chatContextSendScreenshot: Boolean = true, // 读屏时允许附带脱敏视口截图（关闭或遇高危机密时仅传脱敏纯文本）
     val manualIncognitoMode: Boolean = false, // 手动无痕模式开关（开启后强制阻断个人词库/预测/剪贴板/历史音频/AI读屏）
     val replyAttitudePresets: List<ReplyAttitudePreset> = DefaultPresets.defaultReplyAttitudes(),
     val providerVault: Map<String, ProviderCredential> = emptyMap(),

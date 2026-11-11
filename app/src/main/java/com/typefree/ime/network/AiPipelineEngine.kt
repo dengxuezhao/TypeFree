@@ -20,6 +20,10 @@ import com.typefree.ime.data.ThinkingMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.UnifiedProviderCatalog
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.ime.jev.JevCopilotResult
+import com.typefree.ime.ime.jev.JevDomainProfile
+import com.typefree.ime.ime.jev.JevResponseParser
+import com.typefree.ime.privacy.RedactionSession
 import com.typefree.ime.network.asr.AsrSessionLimits
 import com.typefree.ime.network.asr.DashScopeStreamingAsrClient
 import com.typefree.ime.network.asr.GeminiLiveTranscribeClient
@@ -411,6 +415,16 @@ class AiPipelineEngine(
                                 chatContextMessages = chatContextMessages,
                                 hasChatScreenshot = activeImageB64.isNotBlank()
                             )
+                            VoiceIntentMode.JEV_COPILOT -> PromptBuilder.buildJevCopilotPrompts(
+                                domainProfile = JevDomainProfile.FORMAL_WORKFLOW,
+                                targetAppName = targetAppName,
+                                chatContextMessages = chatContextMessages,
+                                hasChatScreenshot = activeImageB64.isNotBlank(),
+                                userBottomLine = rawTranscript,
+                                surroundingBeforeCursor = safeContext,
+                                style = activeStyle,
+                                dictionary = settings.dictionary
+                            )
                             VoiceIntentMode.TRANSLATE -> PromptBuilder.buildTranslatePrompts(
                                 rawSpeech = rawTranscript,
                                 targetLanguage = translateTargetLanguage,
@@ -525,6 +539,7 @@ class AiPipelineEngine(
                     val rawSummary = when (effectiveIntent) {
                         VoiceIntentMode.SPEAK_TO_EDIT -> "[多模态语音改写指令]"
                         VoiceIntentMode.HELP_ME_WRITE -> "[多模态帮我写需求]"
+                        VoiceIntentMode.JEV_COPILOT -> "[多模态军师底牌]"
                         VoiceIntentMode.TRANSLATE -> "[多模态直译 → $translateTargetLanguage]"
                         VoiceIntentMode.DICTATE -> "[多模态音频一步直出]"
                     }
@@ -897,6 +912,144 @@ class AiPipelineEngine(
                     diagnosticLog = diagLog
                 )
             )
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Executes `✦ Jev 军师` (Subtext Radar & 3-Strategy Copilot):
+     * - Supports zero-audio direct generation (`userBottomLine = ""`, `wavFile = null`) as well as
+     *   `[↻ 换一批]` (`excludedPreviousReplies`) and voice bottom-line supplement (`userBottomLine` or `wavFile`).
+     * - Automatically routes desensitive viewport screenshots when [canRouteVisionScreenshot] is true
+     *   and strips `<chat_screen_vision_guide>` transparently for pure-text models (DeepSeek, Qwen, Groq, Ollama).
+     * - Parses model output via 3-tier anti-fragile [JevResponseParser] and restores reversible
+     *   contact placeholders via [redactionSession].
+     */
+    suspend fun runJevCopilot(
+        settings: AppSettings,
+        activeStyle: ToneStyle,
+        domainProfile: JevDomainProfile,
+        targetAppName: String = "",
+        chatContextMessages: List<String> = emptyList(),
+        chatContextScreenshotBase64: String = "",
+        userBottomLine: String = "",
+        excludedPreviousReplies: List<String> = emptyList(),
+        surroundingBeforeCursor: String = "",
+        redactionSession: RedactionSession? = null,
+        wavFile: File? = null,
+        preTranscribedBottomLine: String? = null
+    ): Result<Pair<JevCopilotResult, String>> = withContext(Dispatchers.IO) {
+        try {
+            val resolvedBottomLine = when {
+                !preTranscribedBottomLine.isNullOrBlank() -> cleanRawTranscript(preTranscribedBottomLine)
+                wavFile != null && wavFile.exists() && wavFile.length() > 44L -> {
+                    val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
+                    val bias = PromptBuilder.buildSttBiasPrompt(settings.dictionary)
+                    if (settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS) {
+                        transcribeGeminiWavWithFastFallback(wavFile, settings.sttConfig, hotwords)
+                    } else {
+                        transcribeWithOpenAiStt(wavFile, settings.sttConfig, bias)
+                    }
+                }
+                userBottomLine.isNotBlank() -> userBottomLine.trim()
+                else -> ""
+            }
+
+            val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
+            val canSendVision = when (settings.pipelineMode) {
+                PipelineMode.DUAL_STAGE -> {
+                    val llmCfg = resolveEffectiveLlmConfig(settings)
+                    canRouteVisionScreenshot(
+                        primaryBaseUrl = llmCfg.baseUrl,
+                        primaryModel = llmCfg.model,
+                        fallbackGeminiConfig = fallbackGeminiCfg
+                    )
+                }
+                PipelineMode.MULTIMODAL_DIRECT -> {
+                    val mmCfg = settings.multimodalConfig
+                    when (mmCfg.protocol) {
+                        MultimodalProtocol.GEMINI_NATIVE -> true
+                        MultimodalProtocol.OPENAI_AUDIO_CHAT ->
+                            canRouteVisionScreenshot(
+                                primaryBaseUrl = mmCfg.baseUrl,
+                                primaryModel = mmCfg.model,
+                                fallbackGeminiConfig = fallbackGeminiCfg
+                            )
+                    }
+                }
+            }
+
+            val allowScreenshot = canSendVision &&
+                settings.chatContextSendScreenshot &&
+                redactionSession?.hasHighRiskCredentials != true
+            val effectiveScreenshotB64 = if (allowScreenshot) chatContextScreenshotBase64 else ""
+
+            val (sysPrompt, usrPrompt) = PromptBuilder.buildJevCopilotPrompts(
+                domainProfile = domainProfile,
+                targetAppName = targetAppName,
+                chatContextMessages = chatContextMessages,
+                hasChatScreenshot = effectiveScreenshotB64.isNotBlank(),
+                userBottomLine = resolvedBottomLine,
+                excludedPreviousReplies = excludedPreviousReplies,
+                surroundingBeforeCursor = surroundingBeforeCursor,
+                style = activeStyle,
+                dictionary = settings.dictionary
+            )
+
+            val rawOutput: String = when (settings.pipelineMode) {
+                PipelineMode.DUAL_STAGE -> {
+                    val llmCfg = resolveEffectiveLlmConfig(settings)
+                    if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
+                        return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
+                    }
+                    executeLlmChatWithDiagnostics(
+                        config = llmCfg,
+                        systemPrompt = sysPrompt,
+                        userPrompt = usrPrompt,
+                        imageJpegBase64 = effectiveScreenshotB64,
+                        fallbackGeminiConfig = fallbackGeminiCfg
+                    ).text
+                }
+                PipelineMode.MULTIMODAL_DIRECT -> {
+                    val mmCfg = settings.multimodalConfig
+                    if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
+                        return@withContext Result.failure(IllegalStateException("请先填写多模态 API Key"))
+                    }
+                    when (mmCfg.protocol) {
+                        MultimodalProtocol.GEMINI_NATIVE -> {
+                            callGeminiTextOnlyWithDiagnostics(
+                                config = mmCfg,
+                                fullPrompt = "$sysPrompt\n\n$usrPrompt",
+                                imageJpegBase64 = effectiveScreenshotB64
+                            ).text
+                        }
+                        MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
+                            executeLlmChatWithDiagnostics(
+                                config = LlmConfig(
+                                    baseUrl = mmCfg.baseUrl,
+                                    apiKey = mmCfg.apiKey,
+                                    model = mmCfg.model,
+                                    temperature = mmCfg.temperature,
+                                    thinkingMode = mmCfg.thinkingMode
+                                ),
+                                systemPrompt = sysPrompt,
+                                userPrompt = usrPrompt,
+                                imageJpegBase64 = effectiveScreenshotB64,
+                                fallbackGeminiConfig = fallbackGeminiCfg
+                            ).text
+                        }
+                    }
+                }
+            }
+
+            val parsed = JevResponseParser.parse(
+                rawModelOutput = rawOutput,
+                redactionSession = redactionSession,
+                usedVision = effectiveScreenshotB64.isNotBlank(),
+                redactionCount = redactionSession?.redactionCount ?: 0
+            )
+            Result.success(parsed to resolvedBottomLine)
         } catch (e: Exception) {
             Result.failure(e)
         }

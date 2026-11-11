@@ -53,15 +53,17 @@ data class TopBarLeftSlotState(
     val showUndoButton: Boolean,
     val showClipboardQuickPaste: Boolean,
     val showVoicePenPill: Boolean,
-    val voicePenLabel: String
+    val voicePenLabel: String,
+    val showJevCopilotPill: Boolean = false
 )
 
 /**
- * Pure policy for TypeFree v3.1.0 Top Bar left-area slot priority:
+ * Pure policy for TypeFree v3.1.0+ Top Bar left-area slot priority:
  * 1. When [hasUndoSnapshot] is true, [TopBarUndoIconButton] is ALWAYS kept visible so a fresh
  *    clipboard banner never swallows the 1-tap Undo safety net.
- * 2. When in [KeyboardTabMode.QWERTY] idle state (not composing), a compact monochrome
- *    `[VoicePen 帮写/改写]` pill is exposed so typing users can jump to HelpMeWrite in 1 tap.
+ * 2. When in [KeyboardTabMode.QWERTY] idle state (not composing), compact monochrome
+ *    `[VoicePen 帮写/改写]` and `[CopilotStar 军师]` pills are exposed so typing users can jump
+ *    to HelpMeWrite or Jev Copilot in 1 tap.
  */
 object TopBarSlotPolicy {
     fun resolveLeftSlots(
@@ -69,23 +71,28 @@ object TopBarSlotPolicy {
         isComposing: Boolean,
         hasUndoSnapshot: Boolean,
         hasFreshClipboardBanner: Boolean,
-        hasActiveSelection: Boolean
+        hasActiveSelection: Boolean,
+        jevCopilotEnabled: Boolean = true
     ): TopBarLeftSlotState {
         if (isComposing) {
             return TopBarLeftSlotState(
                 showUndoButton = false,
                 showClipboardQuickPaste = false,
                 showVoicePenPill = false,
-                voicePenLabel = if (hasActiveSelection) "改写" else "帮写"
+                voicePenLabel = if (hasActiveSelection) "改写" else "帮写",
+                showJevCopilotPill = false
             )
         }
         val showVoicePen = activeTab == KeyboardTabMode.QWERTY ||
             (activeTab != KeyboardTabMode.VOICE && hasActiveSelection)
+        val showJevPill = jevCopilotEnabled &&
+            (activeTab == KeyboardTabMode.QWERTY || activeTab == KeyboardTabMode.VOICE)
         return TopBarLeftSlotState(
             showUndoButton = hasUndoSnapshot,
             showClipboardQuickPaste = hasFreshClipboardBanner,
             showVoicePenPill = showVoicePen,
-            voicePenLabel = if (hasActiveSelection) "改写" else "帮写"
+            voicePenLabel = if (hasActiveSelection) "改写" else "帮写",
+            showJevCopilotPill = showJevPill
         )
     }
 }
@@ -131,7 +138,8 @@ fun TypeFreeTopBar(
     onToggleStylePicker: () -> Unit,
     onPerformUndo: () -> Unit,
     onPasteClipboardText: (String) -> Unit,
-    onToggleManualIncognito: () -> Unit = {}
+    onToggleManualIncognito: () -> Unit = {},
+    onOpenJevCopilot: () -> Unit = {}
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val metrics = LocalKeyboardMetrics.current
@@ -150,14 +158,16 @@ fun TypeFreeTopBar(
         uiState.isFlypyComposing,
         uiState.undoSnapshot,
         freshClip,
-        uiState.rawSelectedText
+        uiState.rawSelectedText,
+        settings.jevCopilotEnabled
     ) {
         TopBarSlotPolicy.resolveLeftSlots(
             activeTab = uiState.tabMode,
             isComposing = uiState.isFlypyComposing,
             hasUndoSnapshot = uiState.undoSnapshot != null,
             hasFreshClipboardBanner = freshClip != null,
-            hasActiveSelection = uiState.rawSelectedText.isNotBlank()
+            hasActiveSelection = uiState.rawSelectedText.isNotBlank(),
+            jevCopilotEnabled = settings.jevCopilotEnabled
         )
     }
 
@@ -233,6 +243,39 @@ fun TypeFreeTopBar(
                     Text(
                         text = slotState.voicePenLabel,
                         color = if (isSelectionRewrite) palette.onPrimaryMic else palette.keyTextPrimary,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+            }
+
+            // 2b. Compact monochrome Jev Copilot pill (`[CopilotStar 军师]`)
+            if (slotState.showJevCopilotPill) {
+                Row(
+                    modifier = Modifier
+                        .height(26.dp)
+                        .clip(RoundedCornerShape(13.dp))
+                        .background(palette.keyCapBg)
+                        .border(
+                            width = 1.dp,
+                            color = palette.keyBorder,
+                            shape = RoundedCornerShape(13.dp)
+                        )
+                        .clickable(onClick = onOpenJevCopilot)
+                        .padding(horizontal = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Icon(
+                        imageVector = TypeFreeIcons.CopilotStar,
+                        contentDescription = "军师",
+                        tint = palette.keyTextPrimary,
+                        modifier = Modifier.size(11.dp)
+                    )
+                    Text(
+                        text = "军师",
+                        color = palette.keyTextPrimary,
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1

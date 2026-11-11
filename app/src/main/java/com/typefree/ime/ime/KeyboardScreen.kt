@@ -43,6 +43,7 @@ import com.typefree.ime.ime.chrome.InlineStyleSelectorStrip
 import com.typefree.ime.ime.chrome.TypeFreeTopBar
 import com.typefree.ime.ime.panels.ArcTranslateFullPanel
 import com.typefree.ime.ime.panels.HelpMeWritePanel
+import com.typefree.ime.ime.panels.JevCopilotPanel
 import com.typefree.ime.ime.panels.RealtimeTranslatePanel
 import com.typefree.ime.ime.panels.SpeakToEditPanel
 import com.typefree.ime.ime.panels.VoiceMainPanel
@@ -162,7 +163,8 @@ fun KeyboardScreen(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(palette.keyboardCanvas)
+            .alpha(if (uiState.isFullScreenPeekCapturing) 0f else 1f)
+            .background(if (uiState.isFullScreenPeekCapturing) androidx.compose.ui.graphics.Color.Transparent else palette.keyboardCanvas)
             .navigationBarsPadding()
             .height(metrics.frameHeight)
     ) {
@@ -218,6 +220,15 @@ fun KeyboardScreen(
                     }
 
                     uiState.tabMode == KeyboardTabMode.VOICE &&
+                        resolvedSubPanel == VoiceSubPanel.JEV_COPILOT -> {
+                        JevCopilotPanel(
+                            uiState = uiState,
+                            settings = settings,
+                            onAction = onAction
+                        )
+                    }
+
+                    uiState.tabMode == KeyboardTabMode.VOICE &&
                         resolvedSubPanel == VoiceSubPanel.HELP_ME_WRITE -> {
                         HelpMeWritePanel(
                             uiState = uiState,
@@ -226,6 +237,7 @@ fun KeyboardScreen(
                             amplitudes = amplitudes,
                             elapsedMs = elapsedMs,
                             onClose = onCloseSubPanel,
+                            onOpenJevCopilot = { onAction(ImeUiAction.OpenJevCopilot) },
                             onAcceptChatContextDisclosure = onAcceptChatContextDisclosure,
                             onDeclineChatContextDisclosure = onDeclineChatContextDisclosure,
                             onToggleIgnoreChatContext = onToggleIgnoreChatContext,
@@ -320,7 +332,8 @@ fun KeyboardScreen(
                                         onToggleStylePicker = onToggleStylePicker,
                                         onPerformUndo = onPerformUndo,
                                         onPasteClipboardText = onPasteClipboardText,
-                                        onToggleManualIncognito = onToggleManualIncognito
+                                        onToggleManualIncognito = onToggleManualIncognito,
+                                        onOpenJevCopilot = { onAction(ImeUiAction.OpenJevCopilot) }
                                     )
                                 }
                             }
@@ -357,6 +370,7 @@ fun KeyboardScreen(
                                         onToggleLiveWrite = onToggleLiveWrite,
                                         onToggleWhisperMode = onToggleWhisperMode,
                                         onOpenHelpMeWrite = onOpenHelpMeWrite,
+                                        onOpenJevCopilot = { onAction(ImeUiAction.OpenJevCopilot) },
                                         onToggleManualIncognito = onToggleManualIncognito,
                                         onOpenDictionary = { onOpenHostApp(AppDestinations.TAB_DICTIONARY) },
                                         onOpenSettings = { onOpenHostApp(AppDestinations.TAB_SETTINGS) }
@@ -373,6 +387,7 @@ fun KeyboardScreen(
                                         didPauseMedia = didPauseMedia,
                                         onSwipeToTab = onSelectTabMode,
                                         onVoicePenClick = onOpenHelpMeWrite,
+                                        onOpenJevCopilot = { onAction(ImeUiAction.OpenJevCopilot) },
                                         onMicPressDown = { onMicPressDown(VoiceIntentMode.DICTATE) },
                                         onMicPressUp = onMicPressUp,
                                         onEnterArcTranslate = onEnterArcTranslate,

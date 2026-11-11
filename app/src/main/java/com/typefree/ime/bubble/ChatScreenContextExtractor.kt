@@ -1,8 +1,12 @@
 package com.typefree.ime.bubble
 
+import android.content.Context
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.AppToneRule
 import com.typefree.ime.data.DefaultPresets
+import com.typefree.ime.ime.jev.JevDomainProfile
+import com.typefree.ime.privacy.LocalPiiRedactor
+import com.typefree.ime.privacy.RedactionSession
 import kotlin.math.abs
 
 enum class ChatSpeaker(val tag: String) {
@@ -20,7 +24,9 @@ data class RawScreenTextNode(
     val isEditable: Boolean = false,
     val isClickable: Boolean = false,
     val viewIdResourceName: String = "",
-    val className: String = ""
+    val className: String = "",
+    val isPassword: Boolean = false,
+    val isVisibleToUser: Boolean = true
 )
 
 data class ExtractedChatMessage(
@@ -44,7 +50,11 @@ data class CapturedChatContext(
     val screenshotJpegBase64: String = "",
     val screenshotWidth: Int = 0,
     val screenshotHeight: Int = 0,
-    val capturedAtMs: Long = 0L
+    val capturedAtMs: Long = 0L,
+    val redactionSession: RedactionSession = RedactionSession.EMPTY,
+    val redactionCount: Int = redactionSession.redactionCount,
+    val hasHighRiskRedaction: Boolean = redactionSession.hasHighRiskCredentials,
+    val domainProfile: JevDomainProfile = JevDomainProfile.fromPackage(packageName)
 ) {
     val hasScreenshot: Boolean
         get() = screenshotJpegBase64.isNotBlank()
@@ -66,6 +76,10 @@ data class CapturedChatContext(
 
     val latestIncomingMessage: String
         get() = (messages.lastOrNull { it.speaker == ChatSpeaker.OTHER } ?: messages.lastOrNull())?.text.orEmpty()
+
+    companion object {
+        val EMPTY = CapturedChatContext()
+    }
 }
 
 /**
@@ -243,7 +257,7 @@ object ChatScreenContextExtractor {
     )
 
     private val TAG_ESCAPE_REGEX = Regex(
-        """<(/?\s*(?:chat_context|writing_request|system|user|assistant|cursor_before_context|personal_dictionary|app_and_tone)\b[^>]*)>""",
+        """<(/?\s*(?:chat_context|writing_request|system|user|assistant|cursor_before_context|personal_dictionary|app_and_tone|jev|domain_profile|user_bottom_line|excluded_previous_replies|opt|subtext|lv|tag)\b[^>]*)>""",
         RegexOption.IGNORE_CASE
     )
 
@@ -266,14 +280,19 @@ object ChatScreenContextExtractor {
         return matchedRule != null && matchedRule.styleId in MESSAGING_STYLE_IDS
     }
 
+    fun hasAnyVisiblePasswordNode(nodes: List<RawScreenTextNode>): Boolean {
+        return nodes.any { it.isVisibleToUser && it.isPassword }
+    }
+
     fun shouldPromptFirstTimeDisclosure(
         settings: AppSettings,
         isIncognitoMode: Boolean,
         isPasswordInput: Boolean,
-        targetInputPackage: String
+        targetInputPackage: String,
+        hasVisiblePasswordNode: Boolean = false
     ): Boolean {
         if (settings.chatContextDisclosureAccepted || settings.chatContextDisclosureDismissed) return false
-        if (isIncognitoMode || isPasswordInput) return false
+        if (isIncognitoMode || settings.manualIncognitoMode || isPasswordInput || hasVisiblePasswordNode) return false
         if (isSensitiveBlacklistedPackage(targetInputPackage)) return false
         return isSupportedMessagingApp(targetInputPackage, settings.appRules)
     }
@@ -284,15 +303,61 @@ object ChatScreenContextExtractor {
         isPasswordInput: Boolean,
         ignoreChatContextForTurn: Boolean,
         activeWindowPackage: String,
-        targetInputPackage: String
+        targetInputPackage: String,
+        hasVisiblePasswordNode: Boolean = false
     ): Boolean {
         if (!settings.chatContextReplyEnabled || !settings.chatContextDisclosureAccepted) return false
-        if (isIncognitoMode || isPasswordInput || ignoreChatContextForTurn) return false
+        if (isIncognitoMode || settings.manualIncognitoMode || isPasswordInput || hasVisiblePasswordNode || ignoreChatContextForTurn) return false
         val activePkg = activeWindowPackage.trim()
         val targetPkg = targetInputPackage.trim()
         if (activePkg.isEmpty() || targetPkg.isEmpty() || activePkg != targetPkg) return false
         if (isSensitiveBlacklistedPackage(targetPkg)) return false
         return isSupportedMessagingApp(targetPkg, settings.appRules)
+    }
+
+    /**
+     * All-Scene Jev Copilot first-time disclosure gate: unlocked across all non-blacklisted apps
+     * (IM, Xianyu/Commerce, BossZhipin/Career, Xiaohongshu/Social, Mail/Docs/Web) when `✦ Jev 军师`
+     * is enabled and not in incognito/password state.
+     */
+    fun shouldPromptJevFirstTimeDisclosure(
+        settings: AppSettings,
+        isIncognitoMode: Boolean,
+        isPasswordInput: Boolean,
+        targetInputPackage: String,
+        hasVisiblePasswordNode: Boolean = false
+    ): Boolean {
+        if (!settings.jevCopilotEnabled) return false
+        if (settings.chatContextDisclosureAccepted || settings.chatContextDisclosureDismissed) return false
+        if (isIncognitoMode || settings.manualIncognitoMode || isPasswordInput || hasVisiblePasswordNode) return false
+        val pkg = targetInputPackage.trim()
+        if (pkg.isEmpty() || isSensitiveBlacklistedPackage(pkg)) return false
+        return true
+    }
+
+    /**
+     * All-Scene Jev Copilot context capture gate: allows on-demand screen reading in ANY non-blacklisted
+     * host app once the user has accepted first-time disclosure, while enforcing hard circuit-breakers
+     * on password inputs, visible password nodes anywhere on screen, incognito mode, and sensitive
+     * finance/payment/authenticator/password-manager apps.
+     */
+    fun shouldAllowJevContextCapture(
+        settings: AppSettings,
+        isIncognitoMode: Boolean,
+        isPasswordInput: Boolean,
+        ignoreChatContextForTurn: Boolean,
+        activeWindowPackage: String,
+        targetInputPackage: String,
+        hasVisiblePasswordNode: Boolean = false
+    ): Boolean {
+        if (!settings.jevCopilotEnabled) return false
+        if (!settings.chatContextReplyEnabled || !settings.chatContextDisclosureAccepted) return false
+        if (isIncognitoMode || settings.manualIncognitoMode || isPasswordInput || hasVisiblePasswordNode || ignoreChatContextForTurn) return false
+        val activePkg = activeWindowPackage.trim()
+        val targetPkg = targetInputPackage.trim()
+        if (activePkg.isEmpty() || targetPkg.isEmpty() || activePkg != targetPkg) return false
+        if (isSensitiveBlacklistedPackage(targetPkg)) return false
+        return true
     }
 
     fun sanitizeChatContextTagEscape(text: String): String {
@@ -395,9 +460,17 @@ object ChatScreenContextExtractor {
         appName: String = "",
         maxMessages: Int = 5,
         maxTotalChars: Int = 500,
-        nowMs: Long = System.currentTimeMillis()
+        nowMs: Long = System.currentTimeMillis(),
+        redactPii: Boolean = true,
+        context: Context? = null
     ): CapturedChatContext {
         if (nodes.isEmpty()) {
+            return CapturedChatContext(packageName = packageName, appName = appName, capturedAtMs = nowMs)
+        }
+        // Wall 2 Hard Circuit-Breaker: Any visible password node on screen or blacklisted app aborts immediately
+        if (hasAnyVisiblePasswordNode(nodes) ||
+            (packageName.isNotBlank() && isSensitiveBlacklistedPackage(packageName))
+        ) {
             return CapturedChatContext(packageName = packageName, appName = appName, capturedAtMs = nowMs)
         }
 
@@ -412,7 +485,9 @@ object ChatScreenContextExtractor {
         val rawCandidates = nodes
             .asSequence()
             .filter { node ->
-                !node.isEditable &&
+                node.isVisibleToUser &&
+                    !node.isEditable &&
+                    !node.isPassword &&
                     node.boundsBottom > topBarThreshold &&
                     node.boundsTop < effectiveBottomLimit &&
                     node.boundsBottom > node.boundsTop &&
@@ -432,7 +507,17 @@ object ChatScreenContextExtractor {
             .toList()
 
         if (rawCandidates.isEmpty()) {
-            return CapturedChatContext(packageName = packageName, appName = appName, capturedAtMs = nowMs)
+            val emptyNodeSession = if (redactPii) {
+                LocalPiiRedactor.redactText("", context = context, sourceNodes = nodes)
+            } else {
+                RedactionSession.EMPTY
+            }
+            return CapturedChatContext(
+                packageName = packageName,
+                appName = appName,
+                capturedAtMs = nowMs,
+                redactionSession = emptyNodeSession
+            )
         }
 
         // Filter out standalone sender nickname headers that sit immediately above a message bubble
@@ -502,7 +587,29 @@ object ChatScreenContextExtractor {
             charCount += clippedText.length
         }
 
-        val finalMessages = selectedReversed.asReversed()
+        val rawFinalMessages = selectedReversed.asReversed()
+        val redactionSession = if (redactPii && rawFinalMessages.isNotEmpty()) {
+            val joinedText = rawFinalMessages.joinToString("\n") { it.text }
+            LocalPiiRedactor.redactText(
+                rawText = joinedText,
+                context = context,
+                sourceNodes = nodes
+            )
+        } else if (redactPii) {
+            LocalPiiRedactor.redactText("", context = context, sourceNodes = nodes)
+        } else {
+            RedactionSession.EMPTY
+        }
+
+        val finalMessages = if (redactPii && redactionSession.redactionCount > 0) {
+            val redactedLines = redactionSession.redactedText.split("\n")
+            rawFinalMessages.mapIndexed { idx, msg ->
+                msg.copy(text = redactedLines.getOrElse(idx) { msg.text })
+            }
+        } else {
+            rawFinalMessages
+        }
+
         val previewTarget = finalMessages.lastOrNull { it.speaker == ChatSpeaker.OTHER }
             ?: finalMessages.lastOrNull()
 
@@ -522,7 +629,8 @@ object ChatScreenContextExtractor {
             appName = appName,
             messages = finalMessages,
             latestMessagePreview = previewText,
-            capturedAtMs = nowMs
+            capturedAtMs = nowMs,
+            redactionSession = redactionSession
         )
     }
 }

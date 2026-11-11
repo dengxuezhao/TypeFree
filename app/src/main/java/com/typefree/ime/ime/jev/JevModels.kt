@@ -1,0 +1,169 @@
+package com.typefree.ime.ime.jev
+
+/**
+ * Semantic tension tier mapped from the `Lv.1` .. `Lv.9` subtext radar score.
+ * Rendered ONLY on the `6.dp` status dot inside the `25.dp` radar bar:
+ * - `Lv.1–3` -> [SAFE_GREEN] (`#10B981` Emerald)
+ * - `Lv.4–6` -> [PROBE_AMBER] (`#F59E0B` Amber)
+ * - `Lv.7–9` -> [DANGER_ROSE] (`#F43F5E` Rose)
+ */
+enum class JevTensionTier(val label: String) {
+    SAFE_GREEN("安全顺风"),
+    PROBE_AMBER("拉扯试探"),
+    DANGER_ROSE("高危防御")
+}
+
+/**
+ * A single selectable strategy option card in `✦ Jev 军师`.
+ *
+ * @property label Short 2–6 character tactical tag (e.g. `太极推挡`, `锚定底价`, `神评造梗`)
+ * @property replyText Pure reply draft ready to be previewed/injected into the input field
+ */
+data class JevStrategyOption(
+    val label: String,
+    val replyText: String
+)
+
+/**
+ * Structured output of a `✦ Jev 军师` tactical analysis and 3-strategy generation run.
+ */
+data class JevCopilotResult(
+    val level: Int,
+    val tag: String,
+    val subtext: String,
+    val options: List<JevStrategyOption>,
+    val usedVision: Boolean = false,
+    val redactionCount: Int = 0
+) {
+    val clampedLevel: Int
+        get() = level.coerceIn(1, 9)
+
+    val tensionTier: JevTensionTier
+        get() = when {
+            clampedLevel <= 3 -> JevTensionTier.SAFE_GREEN
+            clampedLevel <= 6 -> JevTensionTier.PROBE_AMBER
+            else -> JevTensionTier.DANGER_ROSE
+        }
+}
+
+/**
+ * 5 All-Scene Tactical Domain Profiles automatically matched from the host app package name.
+ */
+enum class JevDomainProfile(
+    val badgeTitle: String,
+    val promptDirective: String
+) {
+    IM_CHAT(
+        badgeTitle = "私聊社交",
+        promptDirective = "场景：熟人/职场/情感私聊。重点识别潜台词、情绪温度与责任边界；提供顺水推舟、温和设限、太极留白三类差异化话术。"
+    ),
+    COMMERCE_BARGAIN(
+        badgeTitle = "交易博弈",
+        promptDirective = "场景：二手闲鱼/电商砍价或售后维权。重点识别探底压价、到手刀、推卸运费或售后拖延；提供锚定底价、条件置换、礼貌送客/维权施压三类高筹码话术。"
+    ),
+    CAREER_NEGOTIATION(
+        badgeTitle = "职场谈薪",
+        promptDirective = "场景：招聘求职与职场晋升谈薪（BOSS直聘/脉脉/猎聘）。重点识别压薪试探、画饼预期、离职原因盘问；提供价值锚定、区间博弈、体面缓兵三类专业话术。"
+    ),
+    SOCIAL_COMMENT(
+        badgeTitle = "高赞互动",
+        promptDirective = "场景：小红书/抖音/知乎/微博/B站公开评论区或私信互动。重点识别网感梗点、争议杠精或种草咨询；提供神评造梗、高情商共情、体面控评/反击三类高赞回复。"
+    ),
+    FORMAL_WORKFLOW(
+        badgeTitle = "商务协同",
+        promptDirective = "场景：邮件往来、协同文档或通用办公沟通。重点识别权责归属、排期推进与跨部门协作；提供严谨确认、委婉驳回、推进闭环三类得体回复。"
+    );
+
+    companion object {
+        private val IM_PACKAGES = setOf(
+            "com.tencent.mm",
+            "com.tencent.mobileqq",
+            "com.tencent.tim",
+            "com.tencent.qqlite",
+            "com.ss.android.lark",
+            "com.larksuite.suite",
+            "com.alibaba.android.rimet",
+            "com.tencent.wework",
+            "org.telegram.messenger",
+            "org.telegram.messenger.web",
+            "org.thunderdog.challegram",
+            "com.whatsapp",
+            "com.whatsapp.w4b",
+            "com.discord",
+            "com.Slack",
+            "jp.naver.line.android",
+            "com.facebook.orca",
+            "com.android.mms",
+            "com.google.android.apps.messaging",
+            "com.samsung.android.messaging"
+        )
+
+        private val COMMERCE_PACKAGES = setOf(
+            "com.taobao.idlefish",
+            "com.wuba.zhuanzhuan",
+            "com.taobao.taobao",
+            "com.tmall.wireless",
+            "com.xunmeng.pinduoduo",
+            "com.jingdong.app.mall",
+            "com.shizhuang.duapp",
+            "com.sankuai.meituan",
+            "me.ele",
+            "com.achievo.vipshop",
+            "com.alibaba.wireless"
+        )
+
+        private val CAREER_PACKAGES = setOf(
+            "com.hpbr.bosszhipin",
+            "com.taou.maimai",
+            "com.lietou.mishu",
+            "com.job.android",
+            "com.zhaopin.social",
+            "com.linkedin.android",
+            "com.kanzhun.kzapp",
+            "com.lagou.lagou2"
+        )
+
+        private val SOCIAL_PACKAGES = setOf(
+            "com.xingin.xhs",
+            "com.ss.android.ugc.aweme",
+            "com.ss.android.ugc.aweme.lite",
+            "com.smile.gifmaker",
+            "com.kuaishou.nebula",
+            "com.sina.weibo",
+            "com.weico.international",
+            "com.zhihu.android",
+            "tv.danmaku.bili",
+            "com.bilibili.app.in",
+            "com.twitter.android",
+            "com.instagram.android",
+            "com.instagram.barcelona",
+            "com.douban.frodo",
+            "com.coolapk.market",
+            "com.hupu.games",
+            "com.tieba.baidu",
+            "com.baidu.tieba"
+        )
+
+        fun fromPackage(packageName: String): JevDomainProfile {
+            val clean = packageName.trim()
+            if (clean.isEmpty()) return FORMAL_WORKFLOW
+            val lower = clean.lowercase()
+            return when {
+                clean in IM_PACKAGES || lower in IM_PACKAGES -> IM_CHAT
+                clean in COMMERCE_PACKAGES || lower in COMMERCE_PACKAGES ||
+                    lower.contains("idlefish") || lower.contains("zhuanzhuan") ||
+                    lower.contains("pinduoduo") || lower.contains("taobao") ||
+                    lower.contains("jingdong") -> COMMERCE_BARGAIN
+                clean in CAREER_PACKAGES || lower in CAREER_PACKAGES ||
+                    lower.contains("bosszhipin") || lower.contains("maimai") ||
+                    lower.contains("lietou") || lower.contains("zhaopin") ||
+                    lower.contains("linkedin") -> CAREER_NEGOTIATION
+                clean in SOCIAL_PACKAGES || lower in SOCIAL_PACKAGES ||
+                    lower.contains("xingin.xhs") || lower.contains("aweme") ||
+                    lower.contains("gifmaker") || lower.contains("weibo") ||
+                    lower.contains("zhihu") || lower.contains("danmaku.bili") -> SOCIAL_COMMENT
+                else -> FORMAL_WORKFLOW
+            }
+        }
+    }
+}

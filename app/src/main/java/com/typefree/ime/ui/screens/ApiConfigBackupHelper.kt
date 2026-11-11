@@ -52,6 +52,8 @@ object ApiConfigBackupHelper {
         "fixedCandidateOrder",
         "predictionEnabled",
         "aiCompletionEnabled",
+        "jevCopilotEnabled",
+        "chatContextSendScreenshot",
         "themePreference",
         "appAwareToneEnabled",
         "selectedManualStyleId",
@@ -562,6 +564,10 @@ object ApiConfigBackupHelper {
                     ?: existingSettings.predictionEnabled,
                 aiCompletionEnabled = rootObj.optBoolean("aiCompletionEnabled")
                     ?: existingSettings.aiCompletionEnabled,
+                jevCopilotEnabled = rootObj.optBoolean("jevCopilotEnabled")
+                    ?: existingSettings.jevCopilotEnabled,
+                chatContextSendScreenshot = rootObj.optBoolean("chatContextSendScreenshot")
+                    ?: existingSettings.chatContextSendScreenshot,
                 themePreference = themePref,
                 appAwareToneEnabled = rootObj.optBoolean("appAwareToneEnabled")
                     ?: existingSettings.appAwareToneEnabled,

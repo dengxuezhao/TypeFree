@@ -187,6 +187,16 @@ class AppRepository(
             } else {
                 false
             }
+            val resolvedJevCopilotEnabled = if (raw.contains("\"jevCopilotEnabled\"")) {
+                parsed.jevCopilotEnabled
+            } else {
+                true
+            }
+            val resolvedChatContextSendScreenshot = if (raw.contains("\"chatContextSendScreenshot\"")) {
+                parsed.chatContextSendScreenshot
+            } else {
+                true
+            }
             val resolvedManualIncognitoMode = if (raw.contains("\"manualIncognitoMode\"")) {
                 parsed.manualIncognitoMode
             } else {
@@ -282,6 +292,8 @@ class AppRepository(
                 chatContextReplyEnabled = resolvedChatContextReplyEnabled,
                 chatContextDisclosureAccepted = resolvedChatContextDisclosureAccepted,
                 chatContextDisclosureDismissed = resolvedChatContextDisclosureDismissed,
+                jevCopilotEnabled = resolvedJevCopilotEnabled,
+                chatContextSendScreenshot = resolvedChatContextSendScreenshot,
                 manualIncognitoMode = resolvedManualIncognitoMode,
                 replyAttitudePresets = safeReplyAttitudes,
                 providerVault = safeVault,

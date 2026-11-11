@@ -141,6 +141,110 @@ fun SubPanelHeaderBridgeBar(
     }
 }
 
+/**
+ * Monochrome `28.dp` segmented mode switcher `[ 帮写 | ✦ 军师 ]` for top-left of
+ * `HelpMeWritePanel` and `JevCopilotPanel`.
+ */
+@Composable
+fun SubPanelModeSwitchTrack(
+    isJevActive: Boolean,
+    jevEnabled: Boolean,
+    onSelectHelpMeWrite: () -> Unit,
+    onSelectJevCopilot: () -> Unit
+) {
+    val palette = LocalTypeFreeKeyboardPalette.current
+    if (!jevEnabled) {
+        Row(
+            modifier = Modifier
+                .height(28.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(palette.primaryMicSolid)
+                .padding(horizontal = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+        ) {
+            Icon(
+                imageVector = TypeFreeIcons.VoicePen,
+                contentDescription = "帮写",
+                tint = palette.onPrimaryMic,
+                modifier = Modifier.size(11.dp)
+            )
+            Text(
+                text = "帮写",
+                color = palette.onPrimaryMic,
+                fontSize = 10.5.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+        }
+        return
+    }
+
+    Row(
+        modifier = Modifier
+            .height(28.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(palette.capsuleTrackBg)
+            .border(1.dp, palette.keyBorder, RoundedCornerShape(14.dp))
+            .padding(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        // Segment 1: 帮写
+        val writeActive = !isJevActive
+        Row(
+            modifier = Modifier
+                .height(24.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(if (writeActive) palette.primaryMicSolid else Color.Transparent)
+                .clickable(onClick = onSelectHelpMeWrite)
+                .padding(horizontal = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Icon(
+                imageVector = TypeFreeIcons.VoicePen,
+                contentDescription = "帮写",
+                tint = if (writeActive) palette.onPrimaryMic else palette.keyTextMuted,
+                modifier = Modifier.size(11.dp)
+            )
+            Text(
+                text = "帮写",
+                color = if (writeActive) palette.onPrimaryMic else palette.keyTextMuted,
+                fontSize = 10.5.sp,
+                fontWeight = if (writeActive) FontWeight.Bold else FontWeight.SemiBold,
+                maxLines = 1
+            )
+        }
+
+        // Segment 2: ✦ 军师
+        Row(
+            modifier = Modifier
+                .height(24.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(if (isJevActive) palette.primaryMicSolid else Color.Transparent)
+                .clickable(onClick = onSelectJevCopilot)
+                .padding(horizontal = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Icon(
+                imageVector = TypeFreeIcons.CopilotStar,
+                contentDescription = "军师",
+                tint = if (isJevActive) palette.onPrimaryMic else palette.keyTextMuted,
+                modifier = Modifier.size(11.dp)
+            )
+            Text(
+                text = "军师",
+                color = if (isJevActive) palette.onPrimaryMic else palette.keyTextMuted,
+                fontSize = 10.5.sp,
+                fontWeight = if (isJevActive) FontWeight.Bold else FontWeight.SemiBold,
+                maxLines = 1
+            )
+        }
+    }
+}
+
 @Composable
 fun SubPanelVoiceTriggerRow(
     phase: VoicePhase,

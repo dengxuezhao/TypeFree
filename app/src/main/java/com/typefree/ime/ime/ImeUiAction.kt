@@ -24,8 +24,11 @@ sealed interface ImeUiAction {
     data object TogglePunctuationStrip : ImeUiAction
     data class OpenHostApp(val tabIndex: Int) : ImeUiAction
 
-    // Reserved for v3.2.0 Jev Copilot mode
+    // v3.2.0 Jev Copilot mode actions
     data object OpenJevCopilot : ImeUiAction
+    data class SelectJevStrategyCard(val index: Int) : ImeUiAction
+    data object RefreshJevStrategies : ImeUiAction
+    data object TriggerFullScreenPeekCapture : ImeUiAction
 
     // Voice recording & Arc Translate
     data object StartVoiceRecording : ImeUiAction

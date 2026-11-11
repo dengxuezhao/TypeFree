@@ -685,6 +685,7 @@ private fun SandboxVoiceCapsule(
                                 text = when (effectiveIntent) {
                                     VoiceIntentMode.SPEAK_TO_EDIT -> "正在聆听选区改写指令..."
                                     VoiceIntentMode.HELP_ME_WRITE -> "正在聆听写作需求..."
+                                    VoiceIntentMode.JEV_COPILOT -> "正在聆听军师底牌..."
                                     VoiceIntentMode.TRANSLATE -> "正在聆听并准备译为 $translateTarget..."
                                     VoiceIntentMode.DICTATE -> "正在聆听口述语音..."
                                 },
@@ -795,6 +796,7 @@ private fun SandboxVoiceCapsule(
                 Icon(
                     imageVector = when (effectiveIntent) {
                         VoiceIntentMode.HELP_ME_WRITE, VoiceIntentMode.SPEAK_TO_EDIT -> TypeFreeIcons.VoicePen
+                        VoiceIntentMode.JEV_COPILOT -> TypeFreeIcons.CopilotStar
                         VoiceIntentMode.TRANSLATE -> TypeFreeIcons.Translate
                         VoiceIntentMode.DICTATE -> TypeFreeIcons.VoiceWaveform
                     },
@@ -806,6 +808,7 @@ private fun SandboxVoiceCapsule(
                     text = when (effectiveIntent) {
                         VoiceIntentMode.SPEAK_TO_EDIT -> "点击录音 · 对选中文字下达语音编辑指令"
                         VoiceIntentMode.HELP_ME_WRITE -> "点击录音 · 说出写作主题直接生成草稿"
+                        VoiceIntentMode.JEV_COPILOT -> "点击录音 · 补充军师底牌生成策略"
                         VoiceIntentMode.TRANSLATE -> "点击录音 · 说中文直接快译为 $translateTarget"
                         VoiceIntentMode.DICTATE -> "点击内置麦克风实测口述净写"
                     },

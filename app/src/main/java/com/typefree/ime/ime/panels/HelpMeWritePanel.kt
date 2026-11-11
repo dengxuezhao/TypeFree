@@ -145,6 +145,7 @@ fun HelpMeWritePanel(
     amplitudes: List<Float> = emptyList(),
     elapsedMs: Long,
     onClose: () -> Unit,
+    onOpenJevCopilot: () -> Unit = {},
     onAcceptChatContextDisclosure: () -> Unit,
     onDeclineChatContextDisclosure: () -> Unit,
     onToggleIgnoreChatContext: () -> Unit,
@@ -201,20 +202,13 @@ fun HelpMeWritePanel(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
-                    Icon(
-                        imageVector = TypeFreeIcons.VoicePen,
-                        contentDescription = null,
-                        tint = if (isContextActive) TypeFreeEmerald else palette.keyTextPrimary,
-                        modifier = Modifier.size(if (hasCapturedContext) 16.dp else 18.dp)
+                    com.typefree.ime.ime.chrome.SubPanelModeSwitchTrack(
+                        isJevActive = false,
+                        jevEnabled = settings.jevCopilotEnabled,
+                        onSelectHelpMeWrite = {},
+                        onSelectJevCopilot = onOpenJevCopilot
                     )
                     if (hasCapturedContext) {
-                        Text(
-                            text = "AI 帮回",
-                            color = palette.keyTextPrimary,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1
-                        )
                         val msgCount = uiState.capturedChatContext.messageCount
                         val hasScreen = uiState.capturedChatContext.hasScreenshot
                         val badgeText = when {
@@ -270,7 +264,7 @@ fun HelpMeWritePanel(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
-                    } else {
+                    } else if (!settings.jevCopilotEnabled) {
                         Text(
                             text = "Help me write · 帮我写",
                             color = palette.keyTextPrimary,

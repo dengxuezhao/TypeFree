@@ -11,6 +11,7 @@ import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.flypy.FlypyCandidate
+import com.typefree.ime.ime.jev.JevCopilotResult
 import com.typefree.ime.network.PipelineStage
 import java.util.Locale
 import kotlin.math.abs
@@ -49,7 +50,8 @@ enum class KeyboardTabMode {
 enum class VoiceSubPanel {
     NONE,
     HELP_ME_WRITE,
-    SPEAK_TO_EDIT
+    SPEAK_TO_EDIT,
+    JEV_COPILOT
 }
 
 enum class ShiftKeyState {
@@ -145,7 +147,14 @@ data class ImeUiState(
     val ignoreChatContextForThisTurn: Boolean = false,
     val showChatContextDisclosurePrompt: Boolean = false,
     val selectedHelpWritePreset: HelpWritePromptPreset? = null,
-    val bigBangClipboardItem: ClipboardEntry? = null
+    val bigBangClipboardItem: ClipboardEntry? = null,
+    val jevCopilotResult: JevCopilotResult? = null,
+    val isJevLoading: Boolean = false,
+    val jevErrorMessage: String? = null,
+    val selectedJevStrategyIndex: Int = -1,
+    val jevUserBottomLine: String = "",
+    val jevExcludedReplies: List<String> = emptyList(),
+    val isFullScreenPeekCapturing: Boolean = false
 ) {
     val hasActiveChatContext: Boolean
         get() = capturedChatContext.hasContext && !ignoreChatContextForThisTurn && !isIncognitoMode
@@ -183,6 +192,7 @@ data class ImeUiState(
 
     val resolvedVoiceSubPanel: VoiceSubPanel
         get() = when {
+            voiceSubPanel == VoiceSubPanel.JEV_COPILOT -> VoiceSubPanel.JEV_COPILOT
             isSpeakToEditActive -> VoiceSubPanel.SPEAK_TO_EDIT
             voiceSubPanel == VoiceSubPanel.SPEAK_TO_EDIT -> VoiceSubPanel.NONE
             else -> voiceSubPanel
@@ -487,6 +497,11 @@ object ImeLogic {
                 PipelineStage.TRANSCRIBING_STT -> "1/2 识别写作需求中..."
                 PipelineStage.POLISHING_LLM -> "2/2 AI 正在起草..."
                 PipelineStage.MULTIMODAL_PROCESSING -> "多模态起草中..."
+            }
+            VoiceIntentMode.JEV_COPILOT -> when (stage) {
+                PipelineStage.TRANSCRIBING_STT -> "1/2 识别军师底牌中..."
+                PipelineStage.POLISHING_LLM -> "2/2 军师正在推演三策..."
+                PipelineStage.MULTIMODAL_PROCESSING -> "多模态推演三策中..."
             }
             VoiceIntentMode.TRANSLATE -> {
                 val lang = targetLanguage.ifBlank { "目标语言" }

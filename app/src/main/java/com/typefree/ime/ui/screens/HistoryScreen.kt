@@ -854,6 +854,7 @@ private fun HistoryTimelineCard(
             VoiceIntentMode.DICTATE -> "口述净写"
             VoiceIntentMode.HELP_ME_WRITE -> "✍️ 帮我写"
             VoiceIntentMode.SPEAK_TO_EDIT -> "✨ 语音编辑"
+            VoiceIntentMode.JEV_COPILOT -> "✦ Jev 军师"
             VoiceIntentMode.TRANSLATE -> {
                 val lang = record.translateTargetLanguage.ifBlank { fallbackTranslateLang }
                 "🌐 快译 → $lang"
@@ -1010,6 +1011,7 @@ private fun HistoryTimelineCard(
                                 text = when (resolvedIntent) {
                                     VoiceIntentMode.SPEAK_TO_EDIT -> "选区原文 & 语音改写指令"
                                     VoiceIntentMode.HELP_ME_WRITE -> "语音写作指令原稿"
+                                    VoiceIntentMode.JEV_COPILOT -> "军师底牌指令原稿"
                                     VoiceIntentMode.TRANSLATE -> "翻译前原始语音识别"
                                     VoiceIntentMode.DICTATE -> "原始转写初稿对比"
                                 },
