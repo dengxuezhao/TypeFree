@@ -26,6 +26,7 @@ import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
+import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.ui.AppDestinations
@@ -468,78 +469,96 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     settings = settings,
                     activeStyle = activeStyle,
                     isAutoMatched = isAutoMatched,
+                    amplitudeProvider = { audioRecorder.amplitudes.value.lastOrNull() ?: 0f },
                     amplitudes = amplitudes,
                     elapsedMs = elapsedMs,
                     didPauseMedia = didPauseMedia,
-                    onToggleWhisperMode = voiceController::toggleWhisperMode,
-                    onSelectTabMode = ::selectTabMode,
-                    onOpenHelpMeWrite = voiceController::openOrRestoreVoicePenPanel,
-                    onCloseSubPanel = voiceController::closeVoiceSubPanel,
-                    onAcceptChatContextDisclosure = voiceController::acceptChatContextDisclosure,
-                    onDeclineChatContextDisclosure = voiceController::declineChatContextDisclosure,
-                    onToggleIgnoreChatContext = voiceController::toggleIgnoreChatContextForTurn,
-                    onDismissSpeakToEdit = voiceController::dismissSpeakToEditForTurn,
-                    onSelectTranslateLanguage = voiceController::selectTranslateLanguage,
-                    onTogglePunctuationStrip = voiceController::togglePunctuationStrip,
-                    onToggleStylePicker = ::toggleStylePicker,
-                    onSelectAutoStyle = ::selectAutoStyle,
-                    onSelectManualStyle = ::selectManualStyle,
-                    onPerformUndo = ::performUndo,
-                    onOpenHostApp = ::openHostApp,
-                    onQuickEditChipClick = voiceController::runQuickEditChip,
-                    onHelpWritePresetClick = voiceController::toggleHelpWritePreset,
-                    onHelpWriteDirectGenerate = voiceController::runSelectedHelpWritePresetDirect,
-                    onMicPressDown = voiceController::handleMicPressDown,
-                    onMicPressUp = voiceController::handleMicPressUp,
-                    onEnterArcTranslate = voiceController::enterArcTranslateMode,
-                    onUpdateArcTranslate = voiceController::updateArcTranslateSelection,
-                    onReleaseArcTranslate = voiceController::releaseArcTranslate,
-                    onFinishHandsFree = voiceController::finishHandsFreeRecording,
-                    onCancelRecording = voiceController::cancelRecordingOrProcessing,
-                    onRetryLastAudio = voiceController::retryLastAudio,
-                    onDismissError = voiceController::dismissErrorBanner,
-                    onCommitText = { text -> commitDirectText(text, recordUndo = true, markManualEdit = true) },
-                    onCommitQwertyChar = typingController::commitQwertyChar,
-                    onCommaOrPeriodKey = typingController::handleCommaOrPeriodKey,
-                    onToggleFlypyLanguageMode = typingController::toggleFlypyLanguageMode,
-                    onSelectFlypyCandidate = typingController::selectFlypyCandidate,
-                    onClearFlypyComposing = typingController::clearFlypyComposing,
-                    onFlushFlypyComposing = typingController::flushFlypyComposing,
-                    onToggleFlypyCandidateSheet = typingController::toggleFlypyCandidateSheet,
-                    onRequestMoreCandidates = typingController::requestMoreCandidates,
-                    onEditorShortcutAction = typingController::handleEditorShortcutAction,
-                    onInsertPairedSymbol = typingController::insertPairedSymbol,
-                    onHideKeyboard = ::hideKeyboardSelf,
-                    onSwitchKeyboard = ::switchKeyboard,
-                    onShowImePicker = ::showImePicker,
-                    onInsertSpace = typingController::insertSpace,
-                    onBackspace = typingController::deleteBackward,
-                    onEnterOrNewline = ::performEnterOrNewline,
                     clipboardItems = clipboardItems,
-                    onOpenClipboard = ::openClipboardPanel,
-                    onCloseClipboard = ::closeClipboardPanel,
-                    onPasteClipboardText = ::pasteFromClipboard,
-                    onTogglePinClipboardItem = ::togglePinClipboardEntry,
-                    onDeleteClipboardItem = ::deleteClipboardEntry,
-                    onClearUnpinnedClipboard = ::clearUnpinnedClipboardEntries,
-                    onSaveSelectionToClipboard = ::saveCurrentSelectionToClipboard,
-                    onEnableClipboard = ::enableClipboardFromKeyboard,
-                    onOpenClipboardSettings = ::openClipboardPreferencesInHostApp,
-                    onToggleToolPanel = ::toggleToolPanel,
-                    onToggleToolPanelHeight = ::toggleToolPanelHeight,
-                    onSelectKeyboardHeightLevel = ::selectKeyboardHeightLevel,
-                    onSelectKeyboardHeightMode = ::selectKeyboardHeightMode,
-                    onSelectKeyboardLiftLevel = ::selectKeyboardLiftLevel,
-                    onCycleInputScheme = ::cycleInputScheme,
-                    onOpenStylePickerFromToolPanel = ::openStylePickerFromToolPanel,
-                    onToggleAiCompletion = ::toggleAiCompletion,
-                    onToggleLiveWrite = ::toggleLiveWrite,
-                    onToggleManualIncognito = ::toggleManualIncognito,
-                    onSelectPredictionCandidate = ::selectPredictionCandidate,
-                    onSelectAiCompletion = ::selectAiCompletion,
-                    onDismissPredictions = ::dismissPredictions
+                    onAction = ::handleImeUiAction
                 )
             }
+        }
+    }
+
+    private fun handleImeUiAction(action: ImeUiAction) {
+        when (action) {
+            is ImeUiAction.SelectTab -> selectTabMode(action.tab)
+            ImeUiAction.ToggleToolPanel -> toggleToolPanel()
+            ImeUiAction.ToggleToolPanelHeight -> toggleToolPanelHeight()
+            ImeUiAction.OpenHelpMeWrite -> voiceController.openOrRestoreVoicePenPanel()
+            ImeUiAction.CloseSubPanel -> voiceController.closeVoiceSubPanel()
+            ImeUiAction.DismissSpeakToEdit -> voiceController.dismissSpeakToEditForTurn()
+            ImeUiAction.OpenClipboard -> openClipboardPanel()
+            ImeUiAction.CloseClipboard -> closeClipboardPanel()
+            ImeUiAction.ToggleStylePicker -> toggleStylePicker()
+            ImeUiAction.OpenStylePickerFromToolPanel -> openStylePickerFromToolPanel()
+            ImeUiAction.TogglePunctuationStrip -> voiceController.togglePunctuationStrip()
+            is ImeUiAction.OpenHostApp -> openHostApp(action.tabIndex)
+            ImeUiAction.OpenJevCopilot -> {
+                // Reserved for v3.2.0 Jev Copilot mode
+            }
+
+            ImeUiAction.StartVoiceRecording -> voiceController.handleMicPressDown(VoiceIntentMode.DICTATE)
+            ImeUiAction.StopVoiceRecording -> voiceController.handleMicPressUp()
+            is ImeUiAction.MicPressDown -> voiceController.handleMicPressDown(action.mode)
+            ImeUiAction.MicPressUp -> voiceController.handleMicPressUp()
+            ImeUiAction.FinishHandsFree -> voiceController.finishHandsFreeRecording()
+            ImeUiAction.CancelVoiceRecording -> voiceController.cancelRecordingOrProcessing()
+            ImeUiAction.RetryLastAudio -> voiceController.retryLastAudio()
+            ImeUiAction.DismissError -> voiceController.dismissErrorBanner()
+            is ImeUiAction.EnterArcTranslate -> voiceController.enterArcTranslateMode(action.startedFromHandsFree)
+            is ImeUiAction.UpdateArcTranslate ->
+                voiceController.updateArcTranslateSelection(action.selectedLanguage, action.cancelHovered)
+            ImeUiAction.ReleaseArcTranslate -> voiceController.releaseArcTranslate()
+            is ImeUiAction.SelectTranslateLanguage -> voiceController.selectTranslateLanguage(action.language)
+
+            is ImeUiAction.SelectQuickEditChip -> voiceController.runQuickEditChip(action.chip)
+            is ImeUiAction.SelectHelpWritePreset -> voiceController.toggleHelpWritePreset(action.preset)
+            ImeUiAction.DirectGenerateHelpWrite -> voiceController.runSelectedHelpWritePresetDirect()
+            ImeUiAction.AcceptChatContextDisclosure -> voiceController.acceptChatContextDisclosure()
+            ImeUiAction.DeclineChatContextDisclosure -> voiceController.declineChatContextDisclosure()
+            ImeUiAction.ToggleIgnoreChatContext -> voiceController.toggleIgnoreChatContextForTurn()
+
+            ImeUiAction.SelectAutoStyle -> selectAutoStyle()
+            is ImeUiAction.SelectManualStyle -> selectManualStyle(action.style)
+            ImeUiAction.ToggleWhisperMode -> voiceController.toggleWhisperMode()
+            ImeUiAction.ToggleManualIncognito -> toggleManualIncognito()
+            ImeUiAction.ToggleAiCompletion -> toggleAiCompletion()
+            ImeUiAction.ToggleLiveWrite -> toggleLiveWrite()
+            ImeUiAction.CycleInputScheme -> cycleInputScheme()
+            is ImeUiAction.SelectKeyboardHeightLevel -> selectKeyboardHeightLevel(action.level)
+            is ImeUiAction.SelectKeyboardHeightMode -> selectKeyboardHeightMode(action.mode)
+            is ImeUiAction.SelectKeyboardLiftLevel -> selectKeyboardLiftLevel(action.liftLevel)
+
+            ImeUiAction.TriggerUndo -> performUndo()
+            is ImeUiAction.CommitText -> commitDirectText(action.text, recordUndo = true, markManualEdit = true)
+            is ImeUiAction.CommitQwertyChar -> typingController.commitQwertyChar(action.char)
+            is ImeUiAction.CommaOrPeriodKey -> typingController.handleCommaOrPeriodKey(action.isComma)
+            ImeUiAction.ToggleFlypyLanguageMode -> typingController.toggleFlypyLanguageMode()
+            is ImeUiAction.SelectFlypyCandidate -> typingController.selectFlypyCandidate(action.index)
+            ImeUiAction.ClearFlypyComposing -> typingController.clearFlypyComposing()
+            ImeUiAction.FlushFlypyComposing -> typingController.flushFlypyComposing()
+            ImeUiAction.ToggleFlypyCandidateSheet -> typingController.toggleFlypyCandidateSheet()
+            ImeUiAction.RequestMoreCandidates -> typingController.requestMoreCandidates()
+            is ImeUiAction.SelectPredictionCandidate -> selectPredictionCandidate(action.index)
+            is ImeUiAction.SelectAiCompletion -> selectAiCompletion(action.text)
+            ImeUiAction.DismissPredictions -> dismissPredictions()
+            is ImeUiAction.RunEditorShortcut -> typingController.handleEditorShortcutAction(action.action)
+            is ImeUiAction.InsertPairedSymbol -> typingController.insertPairedSymbol(action.left, action.right)
+            ImeUiAction.InsertSpace -> typingController.insertSpace()
+            ImeUiAction.Backspace -> typingController.deleteBackward()
+            ImeUiAction.EnterOrNewline -> performEnterOrNewline()
+            ImeUiAction.HideKeyboard -> hideKeyboardSelf()
+            ImeUiAction.SwitchKeyboard -> switchKeyboard()
+            ImeUiAction.ShowImePicker -> showImePicker()
+
+            is ImeUiAction.PasteClipboardText -> pasteFromClipboard(action.text)
+            is ImeUiAction.TogglePinClipboardItem -> togglePinClipboardEntry(action.id)
+            is ImeUiAction.DeleteClipboardItem -> deleteClipboardEntry(action.id)
+            ImeUiAction.ClearUnpinnedClipboard -> clearUnpinnedClipboardEntries()
+            ImeUiAction.SaveSelectionToClipboard -> saveCurrentSelectionToClipboard()
+            ImeUiAction.EnableClipboard -> enableClipboardFromKeyboard()
+            ImeUiAction.OpenClipboardSettings -> openClipboardPreferencesInHostApp()
         }
     }
 

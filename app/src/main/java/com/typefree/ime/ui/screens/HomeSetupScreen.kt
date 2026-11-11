@@ -85,6 +85,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -110,13 +111,15 @@ import com.typefree.ime.network.PipelineStage
 import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.components.TypeFreeIcons
+import com.typefree.ime.ui.screens.home.PlaygroundBottomSheet
+import com.typefree.ime.ui.screens.home.PlaygroundEntryCard
+import com.typefree.ime.ui.screens.home.SandboxPreviewDiff
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import com.typefree.ime.ui.theme.TypeFreeRose
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -276,15 +279,6 @@ object SetupStatsHelper {
     }
 }
 
-private data class SandboxPreviewDiff(
-    val intentMode: VoiceIntentMode,
-    val originalSelection: String,
-    val rawTranscript: String,
-    val polishedOutput: String,
-    val latencyMs: Long,
-    val modeSummary: String
-)
-
 private const val SAMPLE_PLAYGROUND_TEXT =
     "王总，明天下午三点那个项目评审会我可能赶不过去了，因为客户那边临时加了个 deep seek 接口联调需求，咱们能不能推迟到周四上午十点？"
 
@@ -298,6 +292,7 @@ fun HomeSetupScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val windowInfo = LocalWindowInfo.current
     val coroutineScope = rememberCoroutineScope()
 
     val settings by repository.settings.collectAsState()
@@ -309,7 +304,7 @@ fun HomeSetupScreen(
     val a11yLiveConnected by TypeFreeBubbleController.isAccessibilityConnected.collectAsState()
     val forcePreviewVisible by TypeFreeBubbleController.forcePreviewVisible.collectAsState()
 
-    // System & Bubble Permissions State
+    // System & Bubble Permissions State (Lifecycle ON_RESUME + WindowFocus event-driven, no 1s polling loop)
     var hasMicPermission by remember {
         mutableStateOf(TypeFreeBubbleController.hasRecordAudioPermission(context))
     }
@@ -322,9 +317,9 @@ fun HomeSetupScreen(
     var isImeEnabled by remember { mutableStateOf(checkImeEnabled(context)) }
     var isImeSelected by remember { mutableStateOf(checkImeSelected(context)) }
     var permissionDeniedOnce by remember { mutableStateOf(false) }
+    var isPlaygroundSheetOpen by rememberSaveable { mutableStateOf(false) }
 
     val isApiReady = remember(settings) { SetupStatsHelper.isApiConfigured(settings) }
-    val isKeyboardAllReady = hasMicPermission && isImeEnabled && isImeSelected
     val isA11yReady = isAccessibilityEnabled || a11yLiveConnected
 
     fun refreshSystemReadiness() {
@@ -350,10 +345,10 @@ fun HomeSetupScreen(
         }
     }
 
-    LaunchedEffect(isKeyboardAllReady, hasOverlayPermission, isA11yReady) {
-        while (isActive) {
+    // Refresh immediately whenever the host window regains focus (e.g. after system IME picker dialog closes)
+    LaunchedEffect(windowInfo.isWindowFocused) {
+        if (windowInfo.isWindowFocused) {
             refreshSystemReadiness()
-            delay(if (isKeyboardAllReady && hasOverlayPermission && isA11yReady) 2500L else 1000L)
         }
     }
 
@@ -453,7 +448,36 @@ fun HomeSetupScreen(
             onClickViewHistory = { onNavigateToTab(AppDestinations.TAB_HISTORY) }
         )
 
-        // 3. V2.10 Flagship Card: TypeFree Floating Voice Bubble (No Keyboard Switch Needed!)
+        // 3. Keyboard Setup Wizard (Auto-collapses to 1-line emerald banner when IME enabled + selected + API ready)
+        KeyboardSetupWizardCard(
+            hasMicPermission = hasMicPermission,
+            permissionDeniedOnce = permissionDeniedOnce,
+            isImeEnabled = isImeEnabled,
+            isImeSelected = isImeSelected,
+            isApiReady = isApiReady,
+            onRequestMic = {
+                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            },
+            onOpenAppSettings = {
+                openAppPermissionSettings(context)
+            },
+            onOpenImeSettings = {
+                openSystemImeSettings(context)
+            },
+            onShowImePicker = {
+                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                if (!isImeEnabled) {
+                    openSystemImeSettings(context)
+                } else {
+                    imm?.showInputMethodPicker()
+                }
+            },
+            onOpenApiConfig = {
+                onNavigateToSettingsSubTab(AppDestinations.SUBTAB_API)
+            }
+        )
+
+        // 4. TypeFree Floating Voice Bubble (Compact when disabled, expandable permission guide when enabled)
         FloatingBubbleHeroCard(
             bubbleEnabled = settings.bubbleEnabled,
             forcePreviewVisible = forcePreviewVisible,
@@ -508,32 +532,7 @@ fun HomeSetupScreen(
             }
         )
 
-        // 4. 3-Step Keyboard Setup Wizard (Auto-collapses to 1-line green strip when all 3 ready!)
-        KeyboardSetupWizardCard(
-            hasMicPermission = hasMicPermission,
-            permissionDeniedOnce = permissionDeniedOnce,
-            isImeEnabled = isImeEnabled,
-            isImeSelected = isImeSelected,
-            onRequestMic = {
-                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            },
-            onOpenAppSettings = {
-                openAppPermissionSettings(context)
-            },
-            onOpenImeSettings = {
-                openSystemImeSettings(context)
-            },
-            onShowImePicker = {
-                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-                if (!isImeEnabled) {
-                    openSystemImeSettings(context)
-                } else {
-                    imm?.showInputMethodPicker()
-                }
-            }
-        )
-
-        // 5. Official Personalization Report Card (Aligned with personalization_report.webp)
+        // 5. Official Personalization Report Card
         PersonalizationReportCard(
             usageStats = usageStats,
             dictionarySize = settings.dictionary.size,
@@ -545,19 +544,28 @@ fun HomeSetupScreen(
             }
         )
 
-        // 6. Full-Featured Interactive Playground
-        PlaygroundCard(
+        // 6. Compact Playground Entry Card -> Opens ModalBottomSheet on demand (R5.1)
+        val activeStyleBadge = "${activeStyle.emoji} ${activeStyle.name}" + if (isAutoStyle) " · 自动" else ""
+        PlaygroundEntryCard(
+            activeStyleLabel = activeStyleBadge,
+            onOpenPlayground = { isPlaygroundSheetOpen = true }
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+    }
+
+    if (isPlaygroundSheetOpen) {
+        PlaygroundBottomSheet(
             sandboxValue = sandboxValue,
             onSandboxValueChange = { updatedValue ->
                 val prevText = sandboxValue.text
                 sandboxValue = updatedValue
-                // Live Auto-Learn Dictionary Hook when manually editing freshly dictated/sample text!
                 val baseline = lastDictatedBaseline
                 if (baseline != null && updatedValue.text != prevText && updatedValue.text != baseline) {
                     val learned = repository.learnCorrectionFromDiff(baseline, updatedValue.text)
                     if (learned != null) {
                         lastDictatedBaseline = updatedValue.text
-                        autoLearnedBanner = "📖 已自动学习改错词条：「${learned.term}」已加入个人词典！"
+                        autoLearnedBanner = "已自动学习改错词条：「${learned.term}」已加入个人词典！"
                     }
                 }
             },
@@ -577,9 +585,18 @@ fun HomeSetupScreen(
             sandboxError = sandboxError,
             isApiReady = isApiReady,
             sandboxDiff = sandboxDiff,
-            onOpenStyles = { onNavigateToSettingsSubTab(AppDestinations.SUBTAB_STYLES) },
-            onOpenApiConfig = { onNavigateToSettingsSubTab(AppDestinations.SUBTAB_API) },
-            onOpenDictionary = { onNavigateToTab(AppDestinations.TAB_DICTIONARY) },
+            onOpenStyles = {
+                isPlaygroundSheetOpen = false
+                onNavigateToSettingsSubTab(AppDestinations.SUBTAB_STYLES)
+            },
+            onOpenApiConfig = {
+                isPlaygroundSheetOpen = false
+                onNavigateToSettingsSubTab(AppDestinations.SUBTAB_API)
+            },
+            onOpenDictionary = {
+                isPlaygroundSheetOpen = false
+                onNavigateToTab(AppDestinations.TAB_DICTIONARY)
+            },
             onSelectSamplePhrase = {
                 undoSnapshot = sandboxValue
                 val text = sandboxValue.text.ifBlank { SAMPLE_PLAYGROUND_TEXT }
@@ -635,11 +652,11 @@ fun HomeSetupScreen(
                 if (!recorder.hasRecordPermission()) {
                     permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     sandboxError = "请先授予麦克风录音权限后再试"
-                    return@PlaygroundCard
+                    return@PlaygroundBottomSheet
                 }
                 if (!SetupStatsHelper.isApiConfigured(settings)) {
                     sandboxError = "尚未填写自定义 API Key，请点击右上角前往「自定义 API」完成配置"
-                    return@PlaygroundCard
+                    return@PlaygroundBottomSheet
                 }
                 sandboxStreamSession?.cancel()
                 val liveSession = aiEngine.openLiveStreamingSession(settings)
@@ -794,10 +811,9 @@ fun HomeSetupScreen(
                         sandboxError = err.message ?: "语音处理请求失败，请检查网络或 API 配置"
                     }
                 }
-            }
+            },
+            onDismiss = { isPlaygroundSheetOpen = false }
         )
-
-        Spacer(modifier = Modifier.height(10.dp))
     }
 }
 
@@ -1073,6 +1089,9 @@ private fun FloatingBubbleHeroCard(
     onGrantOverlay: () -> Unit,
     onOpenAccessibility: () -> Unit
 ) {
+    var manualExpanded by rememberSaveable { mutableStateOf(false) }
+    val showDetails = bubbleEnabled || manualExpanded
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
@@ -1094,9 +1113,11 @@ private fun FloatingBubbleHeroCard(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Top Header with Authentic Miniature TypeFree Soundwave Orb Preview + Master Switch
+            // Top Header with Miniature TypeFree Soundwave Orb Preview + Master Switch
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { manualExpanded = !manualExpanded },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -1105,7 +1126,6 @@ private fun FloatingBubbleHeroCard(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    // Authentic `ref_typefree_bubble.png` Soundwave Orb Miniature
                     Box(
                         modifier = Modifier
                             .size(48.dp)
@@ -1155,7 +1175,11 @@ private fun FloatingBubbleHeroCard(
                             }
                         }
                         Text(
-                            text = "保留 Gboard / 搜狗等日常输入法，输入框聚焦时自动浮现极简纯黑声波球，轻点说话直插光标！",
+                            text = if (bubbleEnabled) {
+                                "已开启跨应用悬浮球 · 输入框聚焦时自动浮现"
+                            } else {
+                                "可选特性：保留第三方键盘，输入框旁浮现声波球（点击展开权限说明）"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 18.sp
@@ -1170,74 +1194,79 @@ private fun FloatingBubbleHeroCard(
                 )
             }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
-
-            // 3 Real-Time Permission Status & 1-Tap Grant Rows
-            BubblePermissionRow(
-                stepLabel = "1",
-                title = "麦克风录音权限",
-                subtitle = if (hasMicPermission) "已授权 16kHz 清晰语音采集" else "采集跨应用语音输入必需权限",
-                isGranted = hasMicPermission,
-                actionText = "去授权",
-                onClickAction = onGrantMic
-            )
-
-            BubblePermissionRow(
-                stepLabel = "2",
-                title = "悬浮窗显示权限",
-                subtitle = if (hasOverlayPermission) "允许在其他应用上方展示声波圆球" else "开启后方可在微信/飞书等应用旁浮现声波球",
-                isGranted = hasOverlayPermission,
-                actionText = "开启悬浮窗",
-                onClickAction = onGrantOverlay
-            )
-
-            BubblePermissionRow(
-                stepLabel = "3",
-                title = "无障碍光标直插服务",
-                subtitle = if (isAccessibilityReady) {
-                    "已连接 · 自动感知焦点并将润色结果直插光标"
-                } else {
-                    "识别输入框焦点并直接填入光标（未开启时自动回退剪贴板）"
-                },
-                isGranted = isAccessibilityReady,
-                actionText = "开启服务",
-                onClickAction = onOpenAccessibility
-            )
-
-            // Quick On-Screen Preview Switch (`TypeFreeBubbleController.forcePreviewVisible`)
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(13.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+            AnimatedVisibility(visible = showDetails) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(end = 10.dp)
-                    ) {
-                        Text(
-                            text = "在屏幕上预览悬浮球",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "无视输入框焦点立即在屏幕边缘显示悬浮声波球，可拖拽吸边并点击实测",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = forcePreviewVisible,
-                        onCheckedChange = onToggleForcePreview
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
+                    BubblePermissionRow(
+                        stepLabel = "1",
+                        title = "麦克风录音权限",
+                        subtitle = if (hasMicPermission) "已授权 16kHz 清晰语音采集" else "采集跨应用语音输入必需权限",
+                        isGranted = hasMicPermission,
+                        actionText = "去授权",
+                        onClickAction = onGrantMic
                     )
+
+                    BubblePermissionRow(
+                        stepLabel = "2",
+                        title = "悬浮窗显示权限",
+                        subtitle = if (hasOverlayPermission) "允许在其他应用上方展示声波圆球" else "开启后方可在微信/飞书等应用旁浮现声波球",
+                        isGranted = hasOverlayPermission,
+                        actionText = "开启悬浮窗",
+                        onClickAction = onGrantOverlay
+                    )
+
+                    BubblePermissionRow(
+                        stepLabel = "3",
+                        title = "无障碍光标直插服务",
+                        subtitle = if (isAccessibilityReady) {
+                            "已连接 · 自动感知焦点并将润色结果直插光标"
+                        } else {
+                            "识别输入框焦点并直接填入光标（未开启时自动回退剪贴板）"
+                        },
+                        isGranted = isAccessibilityReady,
+                        actionText = "开启服务",
+                        onClickAction = onOpenAccessibility
+                    )
+
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(13.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 10.dp)
+                            ) {
+                                Text(
+                                    text = "在屏幕上预览悬浮球",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "无视输入框焦点立即在屏幕边缘显示悬浮声波球，可拖拽吸边并点击实测",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = forcePreviewVisible,
+                                onCheckedChange = onToggleForcePreview
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1322,8 +1351,8 @@ private fun BubblePermissionRow(
 }
 
 /**
- * 3-Step Built-in Keyboard Setup Wizard:
- * Automatically collapses into a clean 1-line green status strip once all 3 steps are ready!
+ * Keyboard Setup Wizard:
+ * Automatically collapses into a clean 1-line emerald status strip once IME enabled + selected + API ready!
  */
 @Composable
 private fun KeyboardSetupWizardCard(
@@ -1331,17 +1360,19 @@ private fun KeyboardSetupWizardCard(
     permissionDeniedOnce: Boolean,
     isImeEnabled: Boolean,
     isImeSelected: Boolean,
+    isApiReady: Boolean = true,
     onRequestMic: () -> Unit,
     onOpenAppSettings: () -> Unit,
     onOpenImeSettings: () -> Unit,
-    onShowImePicker: () -> Unit
+    onShowImePicker: () -> Unit,
+    onOpenApiConfig: () -> Unit = {}
 ) {
-    val completedCount = listOf(hasMicPermission, isImeEnabled, isImeSelected).count { it }
-    val allReady = completedCount == 3
+    val completedCount = listOf(isImeEnabled, isImeSelected, isApiReady).count { it }
+    val allReady = isImeEnabled && isImeSelected && isApiReady && hasMicPermission
     var manualExpanded by rememberSaveable { mutableStateOf(false) }
 
     if (allReady && !manualExpanded) {
-        // Sleek 1-Line Green Status Strip
+        // Sleek 1-Line Emerald Ready Banner (R5.1)
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1378,7 +1409,7 @@ private fun KeyboardSetupWizardCard(
                         )
                     }
                     Text(
-                        text = "灵言 TypeFree 专属语音键盘已就绪 (3/3)",
+                        text = "灵言 TypeFree 语音键盘已就绪 (3/3) · 点击展开",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
@@ -1436,7 +1467,7 @@ private fun KeyboardSetupWizardCard(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "解锁左下角语音笔、长按弧形快译与内置 EN 键盘改错学习",
+                        text = "完成输入法启用、默认切换与 API 配置后将自动收起为单行就绪条",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1479,17 +1510,19 @@ private fun KeyboardSetupWizardCard(
                 trackColor = MaterialTheme.colorScheme.surfaceVariant
             )
 
-            WizardStepItem(
-                stepNumber = 1,
-                title = "授予麦克风权限",
-                subtitle = if (hasMicPermission) "已授权录音" else "用于键盘语音采集",
-                isDone = hasMicPermission,
-                buttonLabel = if (permissionDeniedOnce && !hasMicPermission) "系统设置" else "授予权限",
-                onClick = if (permissionDeniedOnce && !hasMicPermission) onOpenAppSettings else onRequestMic
-            )
+            if (!hasMicPermission) {
+                WizardStepItem(
+                    stepNumber = 0,
+                    title = "授予麦克风录音权限",
+                    subtitle = "用于键盘语音采集",
+                    isDone = false,
+                    buttonLabel = if (permissionDeniedOnce) "系统设置" else "授予权限",
+                    onClick = if (permissionDeniedOnce) onOpenAppSettings else onRequestMic
+                )
+            }
 
             WizardStepItem(
-                stepNumber = 2,
+                stepNumber = 1,
                 title = "在系统输入法列表中勾选「灵言 TypeFree」",
                 subtitle = if (isImeEnabled) "已在系统虚拟键盘管理中启用" else "进入系统设置开启灵言键盘开关",
                 isDone = isImeEnabled,
@@ -1498,13 +1531,23 @@ private fun KeyboardSetupWizardCard(
             )
 
             WizardStepItem(
-                stepNumber = 3,
+                stepNumber = 2,
                 title = "切换默认输入法为「灵言 TypeFree」",
                 subtitle = if (isImeSelected) "当前默认输入法已就绪" else "调出输入法选择器切换键盘",
                 isDone = isImeSelected,
                 buttonLabel = if (isImeSelected) "重选键盘" else "切换键盘",
                 keepClickableWhenDone = true,
                 onClick = onShowImePicker
+            )
+
+            WizardStepItem(
+                stepNumber = 3,
+                title = "配置语音识别与润色 API",
+                subtitle = if (isApiReady) "API 密钥与模型端点已就绪" else "配置云端或本地 API 密钥",
+                isDone = isApiReady,
+                buttonLabel = if (isApiReady) "修改配置" else "去配置",
+                keepClickableWhenDone = true,
+                onClick = onOpenApiConfig
             )
         }
     }
@@ -1738,634 +1781,6 @@ private fun PersonalizationReportCard(
                     Text("个人词典 ($dictionarySize) ›", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                 }
             }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
-@Composable
-private fun PlaygroundCard(
-    sandboxValue: TextFieldValue,
-    onSandboxValueChange: (TextFieldValue) -> Unit,
-    effectiveIntent: VoiceIntentMode,
-    manualIntent: VoiceIntentMode,
-    onSelectManualIntent: (VoiceIntentMode) -> Unit,
-    translateTarget: String,
-    activeStyleLabel: String,
-    selectedLength: Int,
-    undoAvailable: Boolean,
-    copyFeedback: Boolean,
-    autoLearnedBanner: String?,
-    isRecording: Boolean,
-    processingStage: PipelineStage?,
-    amplitudes: List<Float>,
-    elapsedMs: Long,
-    sandboxError: String?,
-    isApiReady: Boolean,
-    sandboxDiff: SandboxPreviewDiff?,
-    onOpenStyles: () -> Unit,
-    onOpenApiConfig: () -> Unit,
-    onOpenDictionary: () -> Unit,
-    onSelectSamplePhrase: () -> Unit,
-    onResetSample: () -> Unit,
-    onUndo: () -> Unit,
-    onCopy: () -> Unit,
-    onClear: () -> Unit,
-    onStartRecording: () -> Unit,
-    onCancelRecording: () -> Unit,
-    onStopAndProcess: () -> Unit
-) {
-    val isSpeakToEdit = effectiveIntent == VoiceIntentMode.SPEAK_TO_EDIT
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.58f))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            // Header
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "全功能实测沙盒 (Playground)",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "预置真实文本，一站体验五大核心语音交互黑科技",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Surface(
-                    onClick = onOpenStyles,
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Text(
-                        text = activeStyleLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                    )
-                }
-            }
-
-            // 5-Feature Guided Prompt Strip
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.52f)
-            ) {
-                Column(
-                    modifier = Modifier.padding(11.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = "💡 推荐直接点击下方输入框依次体验：",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = "① 口述净写（去口癖与改口自纠） · ② 左下角语音笔 Help me write · ③ 选中文字 Speak to edit · ④ 长按上滑弧形快译 · ⑤ EN 内置键盘改错自动入词典（试试把下方 deep seek 改成 DeepSeek！）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        lineHeight = 17.sp
-                    )
-                }
-            }
-
-            // Built-in Mode Switcher when no text is selected
-            if (!isSpeakToEdit) {
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(3.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        PlaygroundIntentPill(
-                            label = "🎙️ 口述净写",
-                            selected = manualIntent == VoiceIntentMode.DICTATE,
-                            onClick = { onSelectManualIntent(VoiceIntentMode.DICTATE) },
-                            modifier = Modifier.weight(1f)
-                        )
-                        PlaygroundIntentPill(
-                            label = "✍️ 帮我写",
-                            selected = manualIntent == VoiceIntentMode.HELP_ME_WRITE,
-                            onClick = { onSelectManualIntent(VoiceIntentMode.HELP_ME_WRITE) },
-                            modifier = Modifier.weight(1f)
-                        )
-                        PlaygroundIntentPill(
-                            label = "🌐 快译 ($translateTarget)",
-                            selected = manualIntent == VoiceIntentMode.TRANSLATE,
-                            onClick = { onSelectManualIntent(VoiceIntentMode.TRANSLATE) },
-                            modifier = Modifier.weight(1.25f)
-                        )
-                    }
-                }
-            } else {
-                val editBg by animateColorAsState(
-                    targetValue = TypeFreeEmerald.copy(alpha = 0.12f),
-                    label = "editBannerBg"
-                )
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    color = editBg,
-                    border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.45f))
-                ) {
-                    Text(
-                        text = "✨ 已激活「选中文字 Speak to edit」（已选 $selectedLength 字）：点击下方录音说出修改指令，如「改成更礼貌简短的商务语气」或「翻译成日文」！",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = TypeFreeEmerald,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp)
-                    )
-                }
-            }
-
-            // Utility Chips Row
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                AssistChip(
-                    onClick = onSelectSamplePhrase,
-                    label = { Text("一键选中句子测 Speak to edit", style = MaterialTheme.typography.labelMedium) }
-                )
-
-                AssistChip(
-                    onClick = onResetSample,
-                    label = { Text("恢复示例文本", style = MaterialTheme.typography.labelMedium) }
-                )
-
-                if (undoAvailable) {
-                    AssistChip(
-                        onClick = onUndo,
-                        leadingIcon = {
-                            Icon(
-                                imageVector = TypeFreeIcons.Undo,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        },
-                        label = { Text("撤销", style = MaterialTheme.typography.labelMedium) }
-                    )
-                }
-
-                if (sandboxValue.text.isNotEmpty()) {
-                    AssistChip(
-                        onClick = onCopy,
-                        leadingIcon = {
-                            Icon(
-                                imageVector = TypeFreeIcons.Copy,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        },
-                        label = {
-                            Text(
-                                if (copyFeedback) "已复制" else "复制",
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                        }
-                    )
-
-                    AssistChip(
-                        onClick = onClear,
-                        label = { Text("清空", style = MaterialTheme.typography.labelMedium) }
-                    )
-                }
-            }
-
-            // Multi-line Pre-populated Playground Editor
-            OutlinedTextField(
-                value = sandboxValue,
-                onValueChange = onSandboxValueChange,
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 4,
-                maxLines = 8,
-                shape = RoundedCornerShape(14.dp),
-                placeholder = {
-                    Text(
-                        text = "点击此处唤起灵言语音键盘或悬浮声波球，也可直接点击下方内置录音按钮实测...",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
-                    )
-                }
-            )
-
-            // Auto-Learned Dictionary Feedback Banner
-            AnimatedVisibility(visible = autoLearnedBanner != null) {
-                autoLearnedBanner?.let { msg ->
-                    Surface(
-                        onClick = onOpenDictionary,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp),
-                        color = TypeFreeEmerald.copy(alpha = 0.12f),
-                        border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.45f))
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = msg,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = TypeFreeEmerald,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Text(
-                                text = "查看词典 ›",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TypeFreeEmerald
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Built-in Voice Recorder Capsule
-            SandboxVoiceCapsule(
-                isRecording = isRecording,
-                processingStage = processingStage,
-                effectiveIntent = effectiveIntent,
-                translateTarget = translateTarget,
-                amplitudes = amplitudes,
-                elapsedMs = elapsedMs,
-                onStartRecording = onStartRecording,
-                onCancelRecording = onCancelRecording,
-                onStopAndProcess = onStopAndProcess
-            )
-
-            // Error Diagnostic Banner
-            AnimatedVisibility(visible = sandboxError != null) {
-                sandboxError?.let { errMsg ->
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = TypeFreeRose.copy(alpha = 0.10f),
-                        border = BorderStroke(1.dp, TypeFreeRose.copy(alpha = 0.45f))
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = errMsg,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TypeFreeRose,
-                                modifier = Modifier.weight(1f)
-                            )
-                            if (!isApiReady || errMsg.contains("API")) {
-                                TextButton(
-                                    onClick = onOpenApiConfig,
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                                ) {
-                                    Text("去配置 ›", style = MaterialTheme.typography.labelMedium)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Live Raw vs Polished Diff Preview
-            AnimatedVisibility(visible = sandboxDiff != null) {
-                sandboxDiff?.let { diff ->
-                    SandboxDiffPreviewCard(diff = diff)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PlaygroundIntentPill(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(8.dp),
-        color = if (selected) MaterialTheme.colorScheme.surface else Color.Transparent,
-        shadowElevation = if (selected) 1.dp else 0.dp
-    ) {
-        Box(
-            modifier = Modifier.padding(vertical = 7.dp, horizontal = 6.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                color = if (selected) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
-@Composable
-private fun SandboxVoiceCapsule(
-    isRecording: Boolean,
-    processingStage: PipelineStage?,
-    effectiveIntent: VoiceIntentMode,
-    translateTarget: String,
-    amplitudes: List<Float>,
-    elapsedMs: Long,
-    onStartRecording: () -> Unit,
-    onCancelRecording: () -> Unit,
-    onStopAndProcess: () -> Unit
-) {
-    val isSpeakToEdit = effectiveIntent == VoiceIntentMode.SPEAK_TO_EDIT
-
-    when {
-        processingStage != null -> {
-            val stageLabel = when (processingStage) {
-                PipelineStage.TRANSCRIBING_STT -> "正在通过 STT 接口识别语音初稿..."
-                PipelineStage.POLISHING_LLM -> "正在调用大模型执行${effectiveIntent.label}..."
-                PipelineStage.MULTIMODAL_PROCESSING -> "多模态大模型正在听音理解直出..."
-            }
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.2.dp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = stageLabel,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-        }
-
-        isRecording -> {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(9.dp)
-                                    .clip(CircleShape)
-                                    .background(TypeFreeRose)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = when (effectiveIntent) {
-                                    VoiceIntentMode.SPEAK_TO_EDIT -> "正在聆听选区改写指令..."
-                                    VoiceIntentMode.HELP_ME_WRITE -> "正在聆听写作需求..."
-                                    VoiceIntentMode.TRANSLATE -> "正在聆听并准备译为 $translateTarget..."
-                                    VoiceIntentMode.DICTATE -> "正在聆听口述语音..."
-                                },
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                        Text(
-                            text = formatDurationSec(elapsedMs),
-                            style = MaterialTheme.typography.labelMedium.copy(
-                                fontFamily = FontFamily.Monospace
-                            ),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    val waveColor = MaterialTheme.colorScheme.primary
-                    Canvas(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp)
-                    ) {
-                        val bars = amplitudes.ifEmpty { List(WavAudioRecorder.BAR_COUNT) { 0.1f } }
-                        val count = bars.size
-                        val gapPx = 4.dp.toPx()
-                        val totalGap = gapPx * (count - 1).coerceAtLeast(0)
-                        val barWidth = ((size.width - totalGap) / count.coerceAtLeast(1)).coerceAtLeast(2f)
-
-                        bars.forEachIndexed { index, amp ->
-                            val clamped = amp.coerceIn(0.08f, 1.0f)
-                            val barHeight = (size.height * clamped).coerceAtLeast(4.dp.toPx())
-                            val x = index * (barWidth + gapPx)
-                            val y = (size.height - barHeight) / 2f
-                            drawRoundRect(
-                                color = if (isSpeakToEdit) TypeFreeEmerald else waveColor,
-                                topLeft = Offset(x, y),
-                                size = Size(barWidth, barHeight),
-                                cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f)
-                            )
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = onCancelRecording,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("取消")
-                        }
-                        Button(
-                            onClick = onStopAndProcess,
-                            modifier = Modifier.weight(1.7f),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isSpeakToEdit) {
-                                    TypeFreeEmerald
-                                } else {
-                                    MaterialTheme.colorScheme.primary
-                                },
-                                contentColor = if (isSpeakToEdit) {
-                                    Color.White
-                                } else {
-                                    MaterialTheme.colorScheme.onPrimary
-                                }
-                            )
-                        ) {
-                            Icon(
-                                imageVector = TypeFreeIcons.Sparkles,
-                                contentDescription = null,
-                                modifier = Modifier.size(17.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "说完了 · 立即生成",
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        else -> {
-            Button(
-                onClick = onStartRecording,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isSpeakToEdit) {
-                        TypeFreeEmerald
-                    } else {
-                        MaterialTheme.colorScheme.primary
-                    },
-                    contentColor = if (isSpeakToEdit) {
-                        Color.White
-                    } else {
-                        MaterialTheme.colorScheme.onPrimary
-                    }
-                )
-            ) {
-                Icon(
-                    imageVector = when (effectiveIntent) {
-                        VoiceIntentMode.HELP_ME_WRITE, VoiceIntentMode.SPEAK_TO_EDIT -> TypeFreeIcons.VoicePen
-                        VoiceIntentMode.TRANSLATE -> TypeFreeIcons.Translate
-                        VoiceIntentMode.DICTATE -> TypeFreeIcons.VoiceWaveform
-                    },
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = when (effectiveIntent) {
-                        VoiceIntentMode.SPEAK_TO_EDIT -> "点击录音 · 对选中文字下达语音编辑指令"
-                        VoiceIntentMode.HELP_ME_WRITE -> "点击录音 · 说出写作主题直接生成草稿"
-                        VoiceIntentMode.TRANSLATE -> "点击录音 · 说中文直接快译为 $translateTarget"
-                        VoiceIntentMode.DICTATE -> "点击内置麦克风实测口述净写"
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun SandboxDiffPreviewCard(diff: SandboxPreviewDiff) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = "✓ ${diff.intentMode.label}完成对比",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = TypeFreeEmerald
-                )
-                Text(
-                    text = "${diff.modeSummary} · ${diff.latencyMs} ms",
-                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            if (diff.originalSelection.isNotBlank()) {
-                Text(
-                    text = "选区原文：${diff.originalSelection}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Text(
-                text = "语音初稿：${diff.rawTranscript}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Text(
-                text = "上屏结果：${diff.polishedOutput}",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
         }
     }
 }

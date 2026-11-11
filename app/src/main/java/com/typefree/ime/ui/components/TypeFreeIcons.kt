@@ -629,4 +629,205 @@ object TypeFreeIcons {
             }
         }.build()
     }
+
+    /** Four-point sparkle star with micro companion star for AI Copilot / Smart Actions. */
+    val CopilotStar: ImageVector by lazy {
+        ImageVector.Builder("CopilotStar", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(11f, 3.5f)
+                lineTo(13.1f, 8.9f)
+                lineTo(18.5f, 11f)
+                lineTo(13.1f, 13.1f)
+                lineTo(11f, 18.5f)
+                lineTo(8.9f, 13.1f)
+                lineTo(3.5f, 11f)
+                lineTo(8.9f, 8.9f)
+                close()
+                // Companion mini star
+                moveTo(18.5f, 15.5f)
+                lineTo(18.5f, 20.5f)
+                moveTo(16f, 18f)
+                lineTo(21f, 18f)
+            }
+        }.build()
+    }
+
+    /** Monochrome incognito mask/glasses icon replacing 🕵️ emoji. */
+    val IncognitoMask: ImageVector by lazy {
+        ImageVector.Builder("IncognitoMask", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                // Hat brim
+                moveTo(3f, 10.5f)
+                lineTo(21f, 10.5f)
+                // Hat crown
+                moveTo(6.5f, 10.5f)
+                lineTo(8.2f, 5f)
+                lineTo(15.8f, 5f)
+                lineTo(17.5f, 10.5f)
+                // Left lens
+                moveTo(9.5f, 16f)
+                curveTo(9.5f, 17.66f, 8.16f, 19f, 6.5f, 19f)
+                curveTo(4.84f, 19f, 3.5f, 17.66f, 3.5f, 16f)
+                curveTo(3.5f, 14.34f, 4.84f, 13f, 6.5f, 13f)
+                curveTo(8.16f, 13f, 9.5f, 14.34f, 9.5f, 16f)
+                // Right lens
+                moveTo(20.5f, 16f)
+                curveTo(20.5f, 17.66f, 19.16f, 19f, 17.5f, 19f)
+                curveTo(15.84f, 19f, 14.5f, 17.66f, 14.5f, 16f)
+                curveTo(14.5f, 14.34f, 15.84f, 13f, 17.5f, 13f)
+                curveTo(19.16f, 13f, 20.5f, 14.34f, 20.5f, 16f)
+                // Bridge
+                moveTo(9.5f, 15.6f)
+                lineTo(14.5f, 15.6f)
+            }
+        }.build()
+    }
+
+    /** Monochrome screen context viewfinder frame replacing 📸 emoji. */
+    val ScreenContext: ImageVector by lazy {
+        ImageVector.Builder("ScreenContext", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                // Top-left corner
+                moveTo(4f, 8.5f)
+                lineTo(4f, 5.5f)
+                curveTo(4f, 4.67f, 4.67f, 4f, 5.5f, 4f)
+                lineTo(8.5f, 4f)
+                // Top-right corner
+                moveTo(15.5f, 4f)
+                lineTo(18.5f, 4f)
+                curveTo(19.33f, 4f, 20f, 4.67f, 20f, 5.5f)
+                lineTo(20f, 8.5f)
+                // Bottom-right corner
+                moveTo(20f, 15.5f)
+                lineTo(20f, 18.5f)
+                curveTo(20f, 19.33f, 19.33f, 20f, 18.5f, 20f)
+                lineTo(15.5f, 20f)
+                // Bottom-left corner
+                moveTo(8.5f, 20f)
+                lineTo(5.5f, 20f)
+                curveTo(4.67f, 20f, 4f, 19.33f, 4f, 18.5f)
+                lineTo(4f, 15.5f)
+                // Center context lines
+                moveTo(8.5f, 10f)
+                lineTo(15.5f, 10f)
+                moveTo(8.5f, 14f)
+                lineTo(13f, 14f)
+            }
+        }.build()
+    }
+
+    /** Monochrome low-amplitude whisper acoustic wave replacing 🤫 emoji. */
+    val WhisperWave: ImageVector by lazy {
+        ImageVector.Builder("WhisperWave", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                // Soft wave bars
+                moveTo(4.5f, 11f)
+                lineTo(4.5f, 13f)
+                moveTo(8.2f, 8.5f)
+                lineTo(8.2f, 15.5f)
+                moveTo(12f, 6.5f)
+                lineTo(12f, 17.5f)
+                moveTo(15.8f, 9f)
+                lineTo(15.8f, 15f)
+                moveTo(19.5f, 11f)
+                lineTo(19.5f, 13f)
+            }
+        }.build()
+    }
+
+    /** Monochrome token segmentation / word split icon replacing 💥 emoji. */
+    val SplitWord: ImageVector by lazy {
+        ImageVector.Builder("SplitWord", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                // Left chip
+                moveTo(9.5f, 7f)
+                lineTo(5f, 7f)
+                curveTo(4.17f, 7f, 3.5f, 7.67f, 3.5f, 8.5f)
+                lineTo(3.5f, 15.5f)
+                curveTo(3.5f, 16.33f, 4.17f, 17f, 5f, 17f)
+                lineTo(9.5f, 17f)
+                // Right chip
+                moveTo(14.5f, 7f)
+                lineTo(19f, 7f)
+                curveTo(19.83f, 7f, 20.5f, 7.67f, 20.5f, 8.5f)
+                lineTo(20.5f, 15.5f)
+                curveTo(20.5f, 16.33f, 19.83f, 17f, 19f, 17f)
+                lineTo(14.5f, 17f)
+                // Center split divider
+                moveTo(12f, 4.5f)
+                lineTo(12f, 19.5f)
+            }
+        }.build()
+    }
+
+    /** Monochrome hash / verification code icon replacing 🔢 emoji. */
+    val HashCode: ImageVector by lazy {
+        ImageVector.Builder("HashCode", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(5f, 9f)
+                lineTo(19f, 9f)
+                moveTo(5f, 15f)
+                lineTo(19f, 15f)
+                moveTo(10f, 4.5f)
+                lineTo(8.5f, 19.5f)
+                moveTo(15.5f, 4.5f)
+                lineTo(14f, 19.5f)
+            }
+        }.build()
+    }
+
+    /** Monochrome parcel / tracking code box icon replacing 📦 emoji. */
+    val PackageBox: ImageVector by lazy {
+        ImageVector.Builder("PackageBox", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(12f, 3.5f)
+                lineTo(20f, 8f)
+                lineTo(20f, 16f)
+                lineTo(12f, 20.5f)
+                lineTo(4f, 16f)
+                lineTo(4f, 8f)
+                close()
+                moveTo(4f, 8f)
+                lineTo(12f, 12.5f)
+                lineTo(20f, 8f)
+                moveTo(12f, 12.5f)
+                lineTo(12f, 20.5f)
+            }
+        }.build()
+    }
 }

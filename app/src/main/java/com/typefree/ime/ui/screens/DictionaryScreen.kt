@@ -139,7 +139,7 @@ fun DictionaryScreen(repository: AppRepository) {
     val dictionary = settings.dictionary
     val snippets = settings.snippets
 
-    // 0 = 专属热词库, 1 = 口令短语展开 (Snippets)
+    // 0 = 语音热词, 1 = 编码短语 ;xx, 2 = 小鹤/Rime 词库
     var primarySectionTab by rememberSaveable { mutableIntStateOf(0) }
     var showSnippetDialog by remember { mutableStateOf(false) }
     var editingSnippet by remember { mutableStateOf<SnippetEntry?>(null) }
@@ -248,7 +248,11 @@ fun DictionaryScreen(repository: AppRepository) {
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = if (primarySectionTab == 0) "个人词典" else "口令短语展开",
+                                text = when (primarySectionTab) {
+                                    0 -> "语音热词"
+                                    1 -> "编码短语 ;xx"
+                                    else -> "小鹤/Rime 词库"
+                                },
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.ExtraBold
                             )
@@ -256,10 +260,10 @@ fun DictionaryScreen(repository: AppRepository) {
                                 shape = RoundedCornerShape(50),
                                 color = MaterialTheme.colorScheme.surfaceVariant
                             ) {
-                                val badgeText = if (primarySectionTab == 0) {
-                                    "已启用 $enabledCount"
-                                } else {
-                                    "已启用 ${snippets.count { it.enabled }}"
+                                val badgeText = when (primarySectionTab) {
+                                    0 -> "已启用 $enabledCount"
+                                    1 -> "已启用 ${snippets.count { it.enabled }}"
+                                    else -> "${flypyDict.codeCount} 编码"
                                 }
                                 Text(
                                     text = badgeText,
@@ -271,10 +275,10 @@ fun DictionaryScreen(repository: AppRepository) {
                             }
                         }
                         Text(
-                            text = if (primarySectionTab == 0) {
-                                "人名、品牌、技术术语声学热词偏置与自动改错学习"
-                            } else {
-                                "说出口令或敲小鹤 ;xx 快捷码，0ms 瞬时展开邮箱、地址与常用长文"
+                            text = when (primarySectionTab) {
+                                0 -> "人名、品牌、技术术语声学热词偏置与自动改错学习"
+                                1 -> "说出口令或敲小鹤 ;xx 快捷码，0ms 瞬时展开邮箱、地址与常用长文"
+                                else -> "小鹤音形四码 TSV 码表、雾凇拼音完整词库与 Rime 自定义方案包管理"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -301,7 +305,7 @@ fun DictionaryScreen(repository: AppRepository) {
                     }
                 }
 
-                // 2-Mode Primary Switcher: 专属热词库 | 口令短语展开
+                // 3-Segment Primary Switcher: 语音热词 | 编码短语 ;xx | 小鹤/Rime 词库 (R5.2)
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(13.dp),
@@ -315,16 +319,25 @@ fun DictionaryScreen(repository: AppRepository) {
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         DictPrimaryModePill(
-                            title = "📖 专属热词库 (${dictionary.size})",
+                            title = "语音热词 (${dictionary.size})",
                             selected = primarySectionTab == 0,
                             onClick = { primarySectionTab = 0 },
                             modifier = Modifier.weight(1f)
                         )
                         DictPrimaryModePill(
-                            title = "⚡ 口令短语展开 (${snippets.size})",
+                            title = "编码短语 ;xx (${snippets.size})",
                             selected = primarySectionTab == 1,
                             onClick = {
                                 primarySectionTab = 1
+                                isBatchMode = false
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                        DictPrimaryModePill(
+                            title = "小鹤/Rime 词库",
+                            selected = primarySectionTab == 2,
+                            onClick = {
+                                primarySectionTab = 2
                                 isBatchMode = false
                             },
                             modifier = Modifier.weight(1f)
@@ -348,6 +361,20 @@ fun DictionaryScreen(repository: AppRepository) {
                             .padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            color = TypeFreeEmerald.copy(alpha = 0.10f),
+                            border = BorderStroke(0.8.dp, TypeFreeEmerald.copy(alpha = 0.40f))
+                        ) {
+                            Text(
+                                text = "用于键盘打字输入 `;` + 缩写码秒出长句；若需点击卡片直接粘贴，请使用键盘剪贴板置顶常用语",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = TypeFreeEmerald,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp)
+                            )
+                        }
                         Text(
                             text = "双通道瞬时展开（0ms 免经过大模型）",
                             style = MaterialTheme.typography.titleSmall,
@@ -452,9 +479,9 @@ fun DictionaryScreen(repository: AppRepository) {
                     )
                 }
             }
-        } else {
+        } else if (primarySectionTab == 2) {
 
-        // 1.5 Custom Rime / Yinxing IME Engine Table Card
+        // 1.5 Custom Rime / Yinxing IME Engine Table Card (Dedicated Segment 2)
         item(key = "dict_rime_custom_card") {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -695,6 +722,7 @@ fun DictionaryScreen(repository: AppRepository) {
                 }
             }
         }
+        } else {
 
         // 2. V2.9 Flagship Feature: Auto-Learn Corrections Switch Card
         item(key = "dict_auto_learn_card") {

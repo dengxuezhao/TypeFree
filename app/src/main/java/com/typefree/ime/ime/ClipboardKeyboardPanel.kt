@@ -152,8 +152,14 @@ fun ClipboardKeyboardPanel(
                             maxLines = 1
                         )
                     }
+                    Icon(
+                        imageVector = TypeFreeIcons.SplitWord,
+                        contentDescription = null,
+                        tint = TypeFreeEmerald,
+                        modifier = Modifier.size(13.dp)
+                    )
                     Text(
-                        text = "💥 大爆炸拆词 · 点选词块自由组合粘贴",
+                        text = "大爆炸拆词 · 点选词块自由组合粘贴",
                         color = palette.keyTextPrimary,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
@@ -162,7 +168,7 @@ fun ClipboardKeyboardPanel(
                     )
                 }
             } else {
-                // Segmented Filter Track (`全部` | `📌 常用` | `✨ 提取`)
+                // Segmented Filter Track (`全部` | `常用` | `提取`)
                 Row(
                     modifier = Modifier
                         .height(32.dp)
@@ -179,12 +185,14 @@ fun ClipboardKeyboardPanel(
                         onClick = { activeTab = ClipboardFilterTab.ALL }
                     )
                     ClipboardFilterPill(
-                        label = if (pinnedCount > 0) "📌 常用 $pinnedCount" else "📌 常用",
+                        label = if (pinnedCount > 0) "常用 $pinnedCount" else "常用",
+                        leadingIcon = TypeFreeIcons.Pin,
                         selected = activeTab == ClipboardFilterTab.PINNED,
                         onClick = { activeTab = ClipboardFilterTab.PINNED }
                     )
                     ClipboardFilterPill(
-                        label = if (smartCount > 0) "✨ 提取 $smartCount" else "✨ 提取",
+                        label = if (smartCount > 0) "提取 $smartCount" else "提取",
+                        leadingIcon = TypeFreeIcons.CopilotStar,
                         selected = activeTab == ClipboardFilterTab.SMART,
                         onClick = { activeTab = ClipboardFilterTab.SMART }
                     )
@@ -460,7 +468,7 @@ fun ClipboardKeyboardPanel(
                 }
 
                 Text(
-                    text = if (bigBangEntry != null) "点选词块组合 · 点「✓ 粘贴已选」上屏" else "点卡片粘贴 · 💥 拆词 · 📌 置顶",
+                    text = if (bigBangEntry != null) "点选词块组合 · 点「粘贴已选」上屏" else "点卡片粘贴 · 拆词 · 置顶",
                     color = palette.keyTextMuted,
                     fontSize = 10.5.sp,
                     maxLines = 1,
@@ -681,19 +689,29 @@ private fun ClipboardBigBangSubPanel(
 @Composable
 private fun ClipboardFilterPill(
     label: String,
+    leadingIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     selected: Boolean,
     onClick: () -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
-    Box(
+    Row(
         modifier = Modifier
             .fillMaxHeight()
             .clip(RoundedCornerShape(13.dp))
             .background(if (selected) palette.capsuleSelectedBg else Color.Transparent)
             .clickable(onClick = onClick)
             .padding(horizontal = 9.dp),
-        contentAlignment = Alignment.Center
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
     ) {
+        if (leadingIcon != null) {
+            Icon(
+                imageVector = leadingIcon,
+                contentDescription = null,
+                tint = if (selected) palette.keyTextPrimary else palette.keyTextMuted,
+                modifier = Modifier.size(11.dp)
+            )
+        }
         Text(
             text = label,
             color = if (selected) palette.keyTextPrimary else palette.keyTextMuted,
@@ -789,7 +807,7 @@ private fun ClipboardItemCard(
                         Text(
                             text = "置顶",
                             color = if (palette.isDark) Color(0xFFFCD34D) else Color(0xFFB45309),
-                            fontSize = 9.5.sp,
+                            fontSize = 10.5.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1
                         )
@@ -804,7 +822,7 @@ private fun ClipboardItemCard(
                         Text(
                             text = primarySmart.kind.badgePrefix,
                             color = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
-                            fontSize = 9.5.sp,
+                            fontSize = 10.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1
                         )
@@ -813,7 +831,7 @@ private fun ClipboardItemCard(
                 Text(
                     text = displayTime,
                     color = palette.keyTextMuted,
-                    fontSize = 10.sp,
+                    fontSize = 10.5.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -823,19 +841,26 @@ private fun ClipboardItemCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                // BigBang Word Splitter (`💥`) Trigger
-                Box(
+                // BigBang Word Splitter Trigger
+                Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(6.dp))
                         .background(palette.cardElevatedBg)
                         .clickable(onClick = onOpenBigBang)
-                        .padding(horizontal = 4.dp, vertical = 2.dp),
-                    contentAlignment = Alignment.Center
+                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
+                    Icon(
+                        imageVector = TypeFreeIcons.SplitWord,
+                        contentDescription = "拆词",
+                        tint = palette.keyTextMuted,
+                        modifier = Modifier.size(11.dp)
+                    )
                     Text(
-                        text = "💥拆词",
+                        text = "拆词",
                         color = palette.keyTextMuted,
-                        fontSize = 9.sp,
+                        fontSize = 10.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1
                     )

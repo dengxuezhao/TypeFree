@@ -46,6 +46,7 @@ import com.typefree.ime.ui.theme.TypeFreeEmerald
 /**
  * 4x2 Quick Tool Panel rendered inside the key area while keeping the 34.dp Top Bar stationary.
  *
+ * Top Strip: 无痕模式 · 轻声耳语模式 · AI 帮写直达 (or Inline Height Adjust Strip when expanded)
  * Row 1: 剪贴板 · 键盘高度 · 输入方案 · 文风
  * Row 2: AI 补全 · 实时写入 · 词库 · 设置
  */
@@ -64,6 +65,8 @@ fun KeyboardToolPanel(
     onOpenStylePicker: () -> Unit,
     onToggleAiCompletion: () -> Unit,
     onToggleLiveWrite: () -> Unit,
+    onToggleWhisperMode: () -> Unit = {},
+    onOpenHelpMeWrite: () -> Unit = {},
     onToggleManualIncognito: () -> Unit = {},
     onOpenDictionary: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -78,7 +81,7 @@ fun KeyboardToolPanel(
         verticalArrangement = Arrangement.spacedBy((5f * s).dp)
     ) {
         // Inline 5-Level Height Adjustment Strip when "键盘高度" is expanded,
-        // or Compact Privacy / Manual Incognito Toggle Bar otherwise
+        // or Compact Privacy / Whisper / HelpMeWrite Quick Strip otherwise
         AnimatedVisibility(
             visible = uiState.isToolPanelHeightExpanded,
             enter = fadeIn(tween(120)) + expandVertically(tween(140)),
@@ -97,58 +100,131 @@ fun KeyboardToolPanel(
         if (!uiState.isToolPanelHeightExpanded) {
             val isManualIncognito = settings.manualIncognitoMode
             val isEffectiveIncognito = uiState.isIncognitoMode || isManualIncognito
-            val barBg = if (isEffectiveIncognito) {
-                TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.16f else 0.12f)
-            } else {
-                palette.capsuleTrackBg
-            }
-            val barBorder = if (isEffectiveIncognito) {
-                TypeFreeEmerald.copy(alpha = 0.65f)
-            } else {
-                palette.keyBorder
-            }
+            val whisperEnabled = settings.whisperModeEnabled
+            val activeAccent = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(28.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(barBg)
-                    .border(1.dp, barBorder, RoundedCornerShape(9.dp))
-                    .clickable(onClick = onToggleManualIncognito)
-                    .padding(horizontal = 10.dp),
+                    .height(28.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Text(
-                    text = if (isManualIncognito) {
-                        "🕵️ 无痕模式 · 已手动开启（不记历史/词频/剪贴板/读屏）"
-                    } else if (uiState.isIncognitoMode) {
-                        "🕵️ 无痕模式 · 宿主输入框自动受保护（点此锁定手动无痕）"
-                    } else {
-                        "🕵️ 无痕模式 · 已关闭（点击一键开启隐私无痕输入）"
-                    },
-                    color = if (isEffectiveIncognito) {
-                        if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
-                    } else {
-                        palette.keyTextMuted
-                    },
-                    fontSize = 10.5.sp,
-                    fontWeight = if (isEffectiveIncognito) FontWeight.SemiBold else FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    text = if (isManualIncognito) "关闭" else "开启",
-                    color = if (isManualIncognito) {
-                        if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
-                    } else {
-                        palette.keyTextPrimary
-                    },
-                    fontSize = 10.5.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1
-                )
+                // 1. Incognito Mode Pill (`TypeFreeIcons.IncognitoMask`)
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(
+                            if (isEffectiveIncognito) {
+                                TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.16f else 0.12f)
+                            } else {
+                                palette.capsuleTrackBg
+                            }
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = if (isEffectiveIncognito) {
+                                TypeFreeEmerald.copy(alpha = 0.65f)
+                            } else {
+                                palette.keyBorder
+                            },
+                            shape = RoundedCornerShape(9.dp)
+                        )
+                        .clickable(onClick = onToggleManualIncognito)
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = TypeFreeIcons.IncognitoMask,
+                        contentDescription = null,
+                        tint = if (isEffectiveIncognito) activeAccent else palette.keyTextMuted,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Text(
+                        text = when {
+                            isManualIncognito -> "无痕已开启"
+                            uiState.isIncognitoMode -> "输入框自动无痕"
+                            else -> "无痕模式"
+                        },
+                        color = if (isEffectiveIncognito) activeAccent else palette.keyTextMuted,
+                        fontSize = 10.5.sp,
+                        fontWeight = if (isEffectiveIncognito) FontWeight.SemiBold else FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                // 2. Whisper Mode Toggle Pill (`TypeFreeIcons.WhisperWave`)
+                Row(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(
+                            if (whisperEnabled) {
+                                TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.16f else 0.12f)
+                            } else {
+                                palette.capsuleTrackBg
+                            }
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = if (whisperEnabled) {
+                                TypeFreeEmerald.copy(alpha = 0.65f)
+                            } else {
+                                palette.keyBorder
+                            },
+                            shape = RoundedCornerShape(9.dp)
+                        )
+                        .clickable(onClick = onToggleWhisperMode)
+                        .padding(horizontal = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = TypeFreeIcons.WhisperWave,
+                        contentDescription = null,
+                        tint = if (whisperEnabled) activeAccent else palette.keyTextMuted,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Text(
+                        text = if (whisperEnabled) "轻声开" else "轻声模式",
+                        color = if (whisperEnabled) activeAccent else palette.keyTextMuted,
+                        fontSize = 10.5.sp,
+                        fontWeight = if (whisperEnabled) FontWeight.SemiBold else FontWeight.Medium,
+                        maxLines = 1
+                    )
+                }
+
+                // 3. Direct AI Help-Me-Write Pill (`TypeFreeIcons.VoicePen`)
+                Row(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(palette.capsuleTrackBg)
+                        .border(1.dp, palette.keyBorder, RoundedCornerShape(9.dp))
+                        .clickable(onClick = onOpenHelpMeWrite)
+                        .padding(horizontal = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = TypeFreeIcons.VoicePen,
+                        contentDescription = null,
+                        tint = palette.keyTextPrimary,
+                        modifier = Modifier.size(12.5.dp)
+                    )
+                    Text(
+                        text = "AI 帮写",
+                        color = palette.keyTextPrimary,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
             }
         }
 
@@ -276,7 +352,7 @@ private fun ToolPanelHeightAdjustStrip(
     }
     val levels = if (isLift) KeyboardMetrics.ALL_LIFT_LEVELS else KeyboardMetrics.ALL_LEVELS
 
-    // Single 34.dp row: [拉伸 | 垫高] mode switch + 5 levels + reset (no extra rows added)
+    // Single 34.dp row: [拉伸 | 垫高] mode switch + 5 levels + reset
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -452,7 +528,7 @@ private fun ToolPanelTile(
             Text(
                 text = subtitle,
                 color = subtitleColor,
-                fontSize = 10.sp,
+                fontSize = 10.5.sp,
                 fontWeight = if (isToggleEnabled) FontWeight.SemiBold else FontWeight.Normal,
                 textAlign = TextAlign.Center,
                 maxLines = 1,
