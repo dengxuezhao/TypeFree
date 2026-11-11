@@ -370,8 +370,8 @@ class ChatScreenContextExtractorTest {
         )
 
         val gradleKts = File(root, "app/build.gradle.kts").readText()
-        assertTrue(gradleKts.contains("versionCode = 20"))
-        assertTrue(gradleKts.contains("versionName = \"3.2.1\""))
+        assertTrue(gradleKts.contains("versionCode = 21"))
+        assertTrue(gradleKts.contains("versionName = \"3.3.0\""))
         assertTrue(gradleKts.contains("com.google.mlkit:text-recognition-chinese:16.0.1"))
 
         assertEquals(JevDomainProfile.IM_CHAT, JevDomainProfile.fromPackage("com.alibaba.aliding"))
@@ -395,11 +395,11 @@ class PromptBuilderTest {
         assertFalse("System prompt must not contain ×3 shorthand", sysPrompt.contains("×3"))
         assertFalse("User prompt must not contain ×3 shorthand", userPrompt.contains("×3"))
 
-        // Explicit 3-line <opt label="..." prob="..."> template in both system and user prompts
+        // Explicit 3-line <opt label="..."> template + post-hoc <weights>W1,W2,W3</weights> in both prompts
         assertEquals(3, Regex("""<opt\s+label=""").findAll(sysPrompt).count())
         assertEquals(3, Regex("""<opt\s+label=""").findAll(userPrompt).count())
-        assertTrue(sysPrompt.contains("prob="))
-        assertTrue(userPrompt.contains("prob="))
+        assertTrue(sysPrompt.contains("<weights>W1,W2,W3</weights>"))
+        assertTrue(userPrompt.contains("<weights>W1,W2,W3</weights>"))
         assertTrue(sysPrompt.contains("相加严格等于 100"))
 
         // Dual-state differentiation iron law

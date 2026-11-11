@@ -77,6 +77,7 @@ import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
+import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.ThemePreference
 import com.typefree.ime.ime.KeyboardMetrics
 import com.typefree.ime.network.AiPipelineEngine
@@ -212,7 +213,10 @@ fun AccountSettingsScreen(
                 }
 
                 AppDestinations.SUBTAB_PREFERENCES -> {
-                    AppearanceAndPreferencesPane(repository = repository)
+                    AppearanceAndPreferencesPane(
+                        repository = repository,
+                        onJumpToApiSubTab = { selectSubTab(AppDestinations.SUBTAB_API) }
+                    )
                 }
             }
         }
@@ -700,7 +704,10 @@ private fun AddTranslationLanguageDialog(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AppearanceAndPreferencesPane(repository: AppRepository) {
+private fun AppearanceAndPreferencesPane(
+    repository: AppRepository,
+    onJumpToApiSubTab: () -> Unit = {}
+) {
     val context = LocalContext.current
     val settings by repository.settings.collectAsState()
     val clipboardItems by repository.clipboardItems.collectAsState()
@@ -1290,6 +1297,52 @@ private fun AppearanceAndPreferencesPane(repository: AppRepository) {
                         repository.updateSettings { it.copy(jevCopilotEnabled = enabled) }
                     }
                 )
+
+                if (settings.jevCopilotEnabled) {
+                    val activeJevSummary = if (settings.jevUseDedicatedModel) {
+                        "独立模型 · ${settings.jevLlmConfig.model.substringAfterLast('/')}"
+                    } else {
+                        val fallbackModel = if (settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT) {
+                            settings.multimodalConfig.model.substringAfterLast('/')
+                        } else {
+                            settings.llmConfig.model.substringAfterLast('/')
+                        }
+                        "跟随默认 · $fallbackModel"
+                    }
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.50f)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "当前军师推理引擎：$activeJevSummary",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            TextButton(
+                                onClick = onJumpToApiSubTab,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) {
+                                Text(
+                                    text = "去指定模型 →",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 

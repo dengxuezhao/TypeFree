@@ -192,6 +192,11 @@ class AppRepository(
             } else {
                 true
             }
+            val resolvedJevUseDedicatedModel = if (raw.contains("\"jevUseDedicatedModel\"")) {
+                parsed.jevUseDedicatedModel
+            } else {
+                false
+            }
             val resolvedChatContextSendScreenshot = if (raw.contains("\"chatContextSendScreenshot\"")) {
                 parsed.chatContextSendScreenshot
             } else {
@@ -264,10 +269,26 @@ class AppRepository(
                 model = rawMm.model ?: "gemini-3.5-flash-lite",
                 thinkingMode = rawMm.thinkingMode ?: ThinkingMode.DISABLED
             )
+            val defaultJevLlm = AppSettings().jevLlmConfig
+            val rawJevLlm = parsed.jevLlmConfig ?: defaultJevLlm
+            val safeJevLlm = rawJevLlm.copy(
+                presetId = (rawJevLlm.presetId ?: "").ifBlank { defaultJevLlm.presetId },
+                baseUrl = (rawJevLlm.baseUrl ?: "").ifBlank { defaultJevLlm.baseUrl },
+                apiKey = rawJevLlm.apiKey ?: "",
+                model = (rawJevLlm.model ?: "").ifBlank { defaultJevLlm.model },
+                temperature = if (raw.contains("\"jevLlmConfig\"")) {
+                    rawJevLlm.temperature.coerceIn(0.0f, 1.0f)
+                } else {
+                    defaultJevLlm.temperature
+                },
+                thinkingMode = rawJevLlm.thinkingMode ?: defaultJevLlm.thinkingMode
+            )
             val preliminary = parsed.copy(
                 sttConfig = safeStt,
                 llmConfig = safeLlm,
                 multimodalConfig = safeMm,
+                jevUseDedicatedModel = resolvedJevUseDedicatedModel,
+                jevLlmConfig = safeJevLlm,
                 themePreference = parsed.themePreference ?: ThemePreference.LIGHT,
                 flypyEnabled = resolvedFlypyEnabled,
                 flypyCommaPeriodQuickSelect = resolvedCommaPeriodQuickSelect,

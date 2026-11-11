@@ -53,6 +53,8 @@ object ApiConfigBackupHelper {
         "predictionEnabled",
         "aiCompletionEnabled",
         "jevCopilotEnabled",
+        "jevUseDedicatedModel",
+        "jevLlmConfig",
         "chatContextSendScreenshot",
         "themePreference",
         "appAwareToneEnabled",
@@ -313,6 +315,9 @@ object ApiConfigBackupHelper {
                 multimodalConfig = settings.multimodalConfig.copy(
                     apiKey = if (settings.multimodalConfig.apiKey.isNotBlank()) REDACTED_SECRET else ""
                 ),
+                jevLlmConfig = settings.jevLlmConfig.copy(
+                    apiKey = if (settings.jevLlmConfig.apiKey.isNotBlank()) REDACTED_SECRET else ""
+                ),
                 providerVault = redactedVault
             )
         }
@@ -431,6 +436,26 @@ object ApiConfigBackupHelper {
                 )
             } else {
                 existingSettings.multimodalConfig
+            }
+
+            val jevLlmObj = rootObj.optObject("jevLlmConfig")
+            val mergedJevLlm = if (jevLlmObj != null) {
+                val importedKey = jevLlmObj.optString("apiKey")
+                val importedThinking = jevLlmObj.optString("thinkingMode")?.let { raw ->
+                    ThinkingMode.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
+                }
+                existingSettings.jevLlmConfig.copy(
+                    enabled = jevLlmObj.optBoolean("enabled") ?: existingSettings.jevLlmConfig.enabled,
+                    presetId = jevLlmObj.optString("presetId") ?: existingSettings.jevLlmConfig.presetId,
+                    baseUrl = jevLlmObj.optString("baseUrl")?.trim() ?: existingSettings.jevLlmConfig.baseUrl,
+                    apiKey = resolveImportedSecret(importedKey, existingSettings.jevLlmConfig.apiKey),
+                    model = jevLlmObj.optString("model")?.trim() ?: existingSettings.jevLlmConfig.model,
+                    temperature = (jevLlmObj.optFloat("temperature") ?: existingSettings.jevLlmConfig.temperature)
+                        .coerceIn(0.0f, 1.0f),
+                    thinkingMode = importedThinking ?: existingSettings.jevLlmConfig.thinkingMode
+                )
+            } else {
+                existingSettings.jevLlmConfig
             }
 
             val mergedVault = rootObj.optObject("providerVault")?.let { vaultObj ->
@@ -566,6 +591,9 @@ object ApiConfigBackupHelper {
                     ?: existingSettings.aiCompletionEnabled,
                 jevCopilotEnabled = rootObj.optBoolean("jevCopilotEnabled")
                     ?: existingSettings.jevCopilotEnabled,
+                jevUseDedicatedModel = rootObj.optBoolean("jevUseDedicatedModel")
+                    ?: existingSettings.jevUseDedicatedModel,
+                jevLlmConfig = mergedJevLlm,
                 chatContextSendScreenshot = rootObj.optBoolean("chatContextSendScreenshot")
                     ?: existingSettings.chatContextSendScreenshot,
                 themePreference = themePref,

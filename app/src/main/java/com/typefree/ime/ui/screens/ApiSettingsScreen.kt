@@ -198,6 +198,16 @@ fun ApiSettingsScreen(
                 settings.multimodalConfig.apiKey,
                 settings.multimodalConfig.protocol
             )
+            ModelCapabilitySlot.JEV_COPILOT -> {
+                val effJev = aiEngine.resolveEffectiveJevLlmConfig(
+                    settings.copy(jevUseDedicatedModel = true)
+                ) ?: settings.jevLlmConfig
+                Triple(
+                    effJev.baseUrl,
+                    effJev.apiKey,
+                    MultimodalProtocol.OPENAI_AUDIO_CHAT
+                )
+            }
         }
         coroutineScope.launch {
             fetchingSlot = slot
@@ -250,6 +260,16 @@ fun ApiSettingsScreen(
                 activeProtocol = settings.multimodalConfig.protocol
                 activeThinkingMode = settings.multimodalConfig.thinkingMode
             }
+            ModelCapabilitySlot.JEV_COPILOT -> {
+                val effJev = aiEngine.resolveEffectiveJevLlmConfig(
+                    settings.copy(jevUseDedicatedModel = true)
+                ) ?: settings.jevLlmConfig
+                activeBaseUrl = effJev.baseUrl
+                activeApiKey = effJev.apiKey
+                currentModel = settings.jevLlmConfig.model
+                activeProtocol = MultimodalProtocol.OPENAI_AUDIO_CHAT
+                activeThinkingMode = settings.jevLlmConfig.thinkingMode
+            }
         }
         ProviderModelPickerDialog(
             slot = activeSlot,
@@ -273,6 +293,9 @@ fun ApiSettingsScreen(
                     }
                     ModelCapabilitySlot.MULTIMODAL -> repository.updateSettings {
                         it.copy(multimodalConfig = it.multimodalConfig.copy(model = chosenId))
+                    }
+                    ModelCapabilitySlot.JEV_COPILOT -> repository.updateSettings {
+                        it.copy(jevLlmConfig = it.jevLlmConfig.copy(model = chosenId))
                     }
                 }
                 pickerDialogSlot = null
@@ -362,6 +385,8 @@ fun ApiSettingsScreen(
             activePrimaryProviderId = activePrimaryProviderId,
             activeLlmProviderId = UnifiedProviderCatalog.inferLlmProviderId(settings.llmConfig),
             isLlmEnabled = settings.llmConfig.enabled,
+            activeJevProviderId = UnifiedProviderCatalog.inferLlmProviderId(settings.jevLlmConfig),
+            isJevDedicatedEnabled = settings.jevUseDedicatedModel,
             onSelectProvider = { selectedVaultProviderId = it },
             onUpdateCredential = { updatedCred ->
                 repository.updateSettings { curr ->
@@ -411,9 +436,17 @@ fun ApiSettingsScreen(
                 selectedVaultProviderId = pid
                 repository.updateSettings { UnifiedProviderCatalog.selectMultimodalProvider(it, pid) }
             },
+            onToggleJevDedicated = { enabled ->
+                repository.updateSettings { it.copy(jevUseDedicatedModel = enabled) }
+            },
+            onSelectJevProvider = { pid ->
+                selectedVaultProviderId = pid
+                repository.updateSettings { UnifiedProviderCatalog.selectJevProvider(it, pid) }
+            },
             onUpdateStt = { updated -> repository.updateSettings { it.copy(sttConfig = updated) } },
             onUpdateLlm = { updated -> repository.updateSettings { it.copy(llmConfig = updated) } },
             onUpdateMultimodal = { updated -> repository.updateSettings { it.copy(multimodalConfig = updated) } },
+            onUpdateJev = { updated -> repository.updateSettings { it.copy(jevLlmConfig = updated) } },
             onFetchModels = ::triggerModelDiscovery
         )
 
@@ -428,7 +461,8 @@ fun ApiSettingsScreen(
                 settings = settings,
                 onUpdateStt = { updated -> repository.updateSettings { it.copy(sttConfig = updated) } },
                 onUpdateLlm = { updated -> repository.updateSettings { it.copy(llmConfig = updated) } },
-                onUpdateMultimodal = { updated -> repository.updateSettings { it.copy(multimodalConfig = updated) } }
+                onUpdateMultimodal = { updated -> repository.updateSettings { it.copy(multimodalConfig = updated) } },
+                onUpdateJev = { updated -> repository.updateSettings { it.copy(jevLlmConfig = updated) } }
             )
         }
 
@@ -557,6 +591,8 @@ private fun UnifiedProviderVaultCard(
     activePrimaryProviderId: String,
     activeLlmProviderId: String,
     isLlmEnabled: Boolean,
+    activeJevProviderId: String,
+    isJevDedicatedEnabled: Boolean,
     onSelectProvider: (String) -> Unit,
     onUpdateCredential: (ProviderCredential) -> Unit,
     onApplyQuickSetup: (String) -> Unit,
@@ -624,7 +660,8 @@ private fun UnifiedProviderVaultCard(
                         val ready = UnifiedProviderCatalog.isCredentialReady(spec.id, cred)
                         val isSelected = spec.id == selectedSpec.id
                         val isActiveRole = spec.id == activePrimaryProviderId ||
-                            (isLlmEnabled && spec.id == activeLlmProviderId)
+                            (isLlmEnabled && spec.id == activeLlmProviderId) ||
+                            (isJevDedicatedEnabled && spec.id == activeJevProviderId)
 
                         ProviderVaultTile(
                             spec = spec,
@@ -869,9 +906,12 @@ private fun UnifiedWorkflowRoutingCard(
     onSelectSttProvider: (String) -> Unit,
     onSelectLlmProvider: (String) -> Unit,
     onSelectMultimodalProvider: (String) -> Unit,
+    onToggleJevDedicated: (Boolean) -> Unit,
+    onSelectJevProvider: (String) -> Unit,
     onUpdateStt: (SttConfig) -> Unit,
     onUpdateLlm: (LlmConfig) -> Unit,
     onUpdateMultimodal: (MultimodalConfig) -> Unit,
+    onUpdateJev: (LlmConfig) -> Unit,
     onFetchModels: (ModelCapabilitySlot) -> Unit
 ) {
     val activeSttPid = remember(settings.sttConfig) {
@@ -882,6 +922,9 @@ private fun UnifiedWorkflowRoutingCard(
     }
     val activeMmPid = remember(settings.multimodalConfig) {
         UnifiedProviderCatalog.inferMultimodalProviderId(settings.multimodalConfig)
+    }
+    val activeJevPid = remember(settings.jevLlmConfig) {
+        UnifiedProviderCatalog.inferLlmProviderId(settings.jevLlmConfig)
     }
 
     Card(
@@ -1150,6 +1193,98 @@ private fun UnifiedWorkflowRoutingCard(
                     }
                 }
             }
+
+            // Role C: Optional Dedicated Jev Copilot Model (Visible in both DUAL_STAGE and MULTIMODAL_DIRECT)
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (settings.jevUseDedicatedModel) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                    } else {
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.32f)
+                    }
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp)
+                        ) {
+                            Text(
+                                text = "✦ Jev 军师专用模型（高情商/多模态独立路由）",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = if (settings.jevUseDedicatedModel) {
+                                    "已开启：点按『✦ 军师』时固定调用下方高智商模型（日常语音仍走极速通道）"
+                                } else {
+                                    "默认关闭：跟随当前润色或多模态模型；开启后可单独指定旗舰模型做局势深算"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = settings.jevUseDedicatedModel,
+                            onCheckedChange = onToggleJevDedicated
+                        )
+                    }
+
+                    AnimatedVisibility(visible = settings.jevUseDedicatedModel) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            val llmProviders = remember {
+                                UnifiedProviderCatalog.providers.filter { it.supportsLlm }
+                            }
+                            RoleProviderChipsRow(
+                                specs = llmProviders,
+                                selectedId = activeJevPid,
+                                vault = vault,
+                                onSelect = onSelectJevProvider
+                            )
+
+                            val jevSuggestions = UnifiedProviderCatalog.jevSuggestedModelsByProvider[activeJevPid]
+                                ?: UnifiedProviderCatalog.llmSuggestedModelsByProvider[activeJevPid]
+                                ?: ApiConfigBackupHelper.llmModelSuggestions(settings.jevLlmConfig.presetId)
+
+                            ProviderModelFieldSection(
+                                externalModel = settings.jevLlmConfig.model,
+                                onModelCommit = { m -> onUpdateJev(settings.jevLlmConfig.copy(model = m)) },
+                                label = "Jev 军师专用模型 (Model)",
+                                placeholder = "gemini-3.8-flash / deepseek-chat",
+                                suggestions = jevSuggestions,
+                                isFetching = fetchingSlot == ModelCapabilitySlot.JEV_COPILOT,
+                                fetchError = modelFetchErrors[ModelCapabilitySlot.JEV_COPILOT],
+                                onFetchModels = { onFetchModels(ModelCapabilitySlot.JEV_COPILOT) }
+                            )
+
+                            ThinkingModeSelectorSection(
+                                thinkingMode = settings.jevLlmConfig.thinkingMode,
+                                onSelectMode = { mode ->
+                                    onUpdateJev(settings.jevLlmConfig.copy(thinkingMode = mode))
+                                }
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1259,7 +1394,8 @@ private fun AdvancedParametersDrawerContent(
     settings: AppSettings,
     onUpdateStt: (SttConfig) -> Unit,
     onUpdateLlm: (LlmConfig) -> Unit,
-    onUpdateMultimodal: (MultimodalConfig) -> Unit
+    onUpdateMultimodal: (MultimodalConfig) -> Unit,
+    onUpdateJev: (LlmConfig) -> Unit
 ) {
     val languageOptions = listOf(
         "" to "自动识别",
@@ -1420,6 +1556,40 @@ private fun AdvancedParametersDrawerContent(
             model = settings.multimodalConfig.model,
             onTemperatureChange = { temp ->
                 onUpdateMultimodal(settings.multimodalConfig.copy(temperature = temp))
+            }
+        )
+    }
+
+    if (settings.jevUseDedicatedModel) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            SyncedOutlinedField(
+                externalValue = settings.jevLlmConfig.baseUrl,
+                onValueCommit = { onUpdateJev(settings.jevLlmConfig.copy(baseUrl = it.trim())) },
+                label = "✦ Jev 军师端点覆盖 (Base URL)",
+                placeholder = "https://generativelanguage.googleapis.com/v1beta"
+            )
+            EndpointPreviewCaption(
+                endpoint = if (EndpointResolver.isGeminiNativeHttpUrl(settings.jevLlmConfig.baseUrl) ||
+                    settings.jevLlmConfig.presetId == "gemini_llm"
+                ) {
+                    EndpointResolver.resolveGeminiEndpoint(
+                        settings.jevLlmConfig.baseUrl,
+                        settings.jevLlmConfig.model,
+                        "***"
+                    )
+                } else {
+                    EndpointResolver.resolveChatEndpoint(settings.jevLlmConfig.baseUrl)
+                }
+            )
+        }
+
+        TemperatureSliderSection(
+            temperature = settings.jevLlmConfig.temperature,
+            model = settings.jevLlmConfig.model,
+            onTemperatureChange = { temp ->
+                onUpdateJev(settings.jevLlmConfig.copy(temperature = temp))
             }
         )
     }

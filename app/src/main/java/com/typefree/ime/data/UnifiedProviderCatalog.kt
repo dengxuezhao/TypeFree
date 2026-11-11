@@ -143,6 +143,24 @@ object UnifiedProviderCatalog {
         ID_CUSTOM to listOf("gpt-4o-mini-audio-preview", "google/gemini-3.5-flash-lite")
     )
 
+    val jevSuggestedModelsByProvider: Map<String, List<String>> = mapOf(
+        ID_GOOGLE to listOf("gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-pro", "gemini-2.5-flash"),
+        ID_VOLCENGINE to listOf(
+            "doubao-seed-2-1-pro-260915",
+            "doubao-seed-2-0-pro-260215",
+            "doubao-seed-1-6-250615",
+            "doubao-seed-2-1-lite-260915"
+        ),
+        ID_ALIYUN to listOf("qwen-max-latest", "qwen-plus-latest", "qwen-vl-max-latest"),
+        ID_DEEPSEEK to listOf("deepseek-chat", "deepseek-reasoner"),
+        ID_SILICONFLOW to listOf(
+            "deepseek-ai/DeepSeek-V3",
+            "Qwen/Qwen2.5-72B-Instruct",
+            "Qwen/Qwen2.5-VL-72B-Instruct"
+        ),
+        ID_CUSTOM to listOf("gemini-3.8-flash", "claude-sonnet-4-5", "gpt-4o", "deepseek-chat")
+    )
+
     fun specFor(providerId: String): UnifiedProviderSpec {
         return providers.firstOrNull { it.id == providerId } ?: providers.last()
     }
@@ -265,12 +283,29 @@ object UnifiedProviderCatalog {
             merged[sttProvider] = sttCurr.copy(apiKey = nextKey, customBaseUrl = nextUrl)
         }
 
+        // 4. Absorb Jev dedicated LLM config
+        val jevProvider = inferLlmProviderId(settings.jevLlmConfig)
+        val jevCurr = merged[jevProvider] ?: ProviderCredential(jevProvider)
+        if (settings.jevLlmConfig.apiKey.isNotBlank() || (settings.jevUseDedicatedModel && jevProvider == ID_CUSTOM)) {
+            val nextKey = jevCurr.apiKey.ifBlank { settings.jevLlmConfig.apiKey }
+            val nextCustomUrl = if (
+                jevCurr.customBaseUrl.isBlank() &&
+                settings.jevLlmConfig.baseUrl.isNotBlank() &&
+                settings.jevLlmConfig.baseUrl != specFor(jevProvider).defaultBaseUrl
+            ) {
+                settings.jevLlmConfig.baseUrl
+            } else {
+                jevCurr.customBaseUrl
+            }
+            merged[jevProvider] = jevCurr.copy(apiKey = nextKey, customBaseUrl = nextCustomUrl)
+        }
+
         return merged
     }
 
     /**
      * Updates a provider's credential in the unified vault and immediately syncs active
-     * STT / LLM / Multimodal configs that point to this provider.
+     * STT / LLM / Multimodal / Jev configs that point to this provider.
      */
     fun updateProviderCredential(
         settings: AppSettings,
@@ -300,11 +335,19 @@ object UnifiedProviderCatalog {
             settings.multimodalConfig
         }
 
+        val activeJevProvider = inferLlmProviderId(settings.jevLlmConfig)
+        val nextJev = if (activeJevProvider == updated.providerId) {
+            syncLlmWithVault(settings.jevLlmConfig, updated.providerId, updated)
+        } else {
+            settings.jevLlmConfig
+        }
+
         return settings.copy(
             providerVault = vault,
             sttConfig = nextStt,
             llmConfig = nextLlm,
-            multimodalConfig = nextMm
+            multimodalConfig = nextMm,
+            jevLlmConfig = nextJev
         )
     }
 
@@ -565,6 +608,46 @@ object UnifiedProviderCatalog {
             model = spec.defaultMultimodalModel
         )
         return settings.copy(providerVault = vault, multimodalConfig = nextMm)
+    }
+
+    fun selectJevProvider(settings: AppSettings, providerId: String): AppSettings {
+        val vault = hydrateVaultFromSettings(settings)
+        val cred = vault[providerId] ?: ProviderCredential(providerId)
+        val spec = specFor(providerId)
+        val presetId = when (providerId) {
+            ID_GOOGLE -> "gemini_llm"
+            ID_ALIYUN -> "aliyun_bailian"
+            ID_VOLCENGINE -> "doubao"
+            ID_SILICONFLOW -> "siliconflow_llm"
+            ID_DEEPSEEK -> "deepseek"
+            else -> "openai_llm"
+        }
+        val baseUrl = if (spec.supportsCustomBaseUrl && cred.customBaseUrl.isNotBlank()) {
+            cred.customBaseUrl
+        } else {
+            spec.defaultBaseUrl
+        }
+        val key = if (providerId == ID_VOLCENGINE) {
+            cred.apiKey.ifBlank { cred.sttApiKey }
+        } else {
+            cred.apiKey
+        }
+        val defaultJevModel = jevSuggestedModelsByProvider[providerId]?.firstOrNull()
+            ?: spec.defaultLlmModel.ifBlank { "gemini-3.8-flash" }
+        val nextJev = settings.jevLlmConfig.copy(
+            enabled = true,
+            presetId = presetId,
+            baseUrl = baseUrl,
+            apiKey = key,
+            model = defaultJevModel,
+            temperature = 0.35f,
+            thinkingMode = ThinkingMode.AUTO
+        )
+        return settings.copy(
+            providerVault = vault,
+            jevUseDedicatedModel = true,
+            jevLlmConfig = nextJev
+        )
     }
 
     private fun syncSttWithVault(

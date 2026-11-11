@@ -250,6 +250,7 @@ class SecretVault(
         updates[KEY_STT_API_KEY] = encodeOrNull(settings.sttConfig.apiKey)
         updates[KEY_LLM_API_KEY] = encodeOrNull(settings.llmConfig.apiKey)
         updates[KEY_MM_API_KEY] = encodeOrNull(settings.multimodalConfig.apiKey)
+        updates[KEY_JEV_API_KEY] = encodeOrNull(settings.jevLlmConfig.apiKey)
 
         // Track existing vault secret keys so removed provider entries are also cleaned up
         val activeVaultSecretKeys = HashSet<String>()
@@ -277,6 +278,7 @@ class SecretVault(
         val sttKey = settings.sttConfig.apiKey.ifBlank { getSecret(KEY_STT_API_KEY) }
         val llmKey = settings.llmConfig.apiKey.ifBlank { getSecret(KEY_LLM_API_KEY) }
         val mmKey = settings.multimodalConfig.apiKey.ifBlank { getSecret(KEY_MM_API_KEY) }
+        val jevKey = settings.jevLlmConfig.apiKey.ifBlank { getSecret(KEY_JEV_API_KEY) }
 
         val mergedVault = LinkedHashMap<String, ProviderCredential>()
         for ((providerId, cred) in settings.providerVault) {
@@ -318,6 +320,7 @@ class SecretVault(
             sttConfig = settings.sttConfig.copy(apiKey = sttKey),
             llmConfig = settings.llmConfig.copy(apiKey = llmKey),
             multimodalConfig = settings.multimodalConfig.copy(apiKey = mmKey),
+            jevLlmConfig = settings.jevLlmConfig.copy(apiKey = jevKey),
             providerVault = mergedVault
         )
         return withVault.copy(
@@ -333,6 +336,7 @@ class SecretVault(
             sttConfig = settings.sttConfig.copy(apiKey = ""),
             llmConfig = settings.llmConfig.copy(apiKey = ""),
             multimodalConfig = settings.multimodalConfig.copy(apiKey = ""),
+            jevLlmConfig = settings.jevLlmConfig.copy(apiKey = ""),
             providerVault = sanitizedVault
         )
     }
@@ -344,6 +348,7 @@ class SecretVault(
         const val KEY_STT_API_KEY = "sec_stt_api_key"
         const val KEY_LLM_API_KEY = "sec_llm_api_key"
         const val KEY_MM_API_KEY = "sec_mm_api_key"
+        const val KEY_JEV_API_KEY = "sec_jev_api_key"
 
         private const val PREFIX_VAULT_SECRET = "sec_vault_"
         private const val SUFFIX_API_KEY = "_api_key"
@@ -377,6 +382,7 @@ class SecretVault(
             if (settings.sttConfig.apiKey.isNotBlank()) return true
             if (settings.llmConfig.apiKey.isNotBlank()) return true
             if (settings.multimodalConfig.apiKey.isNotBlank()) return true
+            if (settings.jevLlmConfig.apiKey.isNotBlank()) return true
             return settings.providerVault.values.any {
                 it.apiKey.isNotBlank() || it.sttApiKey.isNotBlank()
             }

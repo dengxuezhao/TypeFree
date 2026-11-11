@@ -114,6 +114,11 @@ class AiPipelineEngine(
                     }
                 }
             }
+            if (settings.jevCopilotEnabled && settings.jevUseDedicatedModel) {
+                resolveEffectiveJevLlmConfig(settings)?.baseUrl?.takeIf {
+                    it.isNotBlank() && !isLocalEndpoint(it)
+                }?.let { add(it) }
+            }
         }
 
         val now = System.currentTimeMillis()
@@ -706,6 +711,31 @@ class AiPipelineEngine(
         )
     }
 
+    internal fun resolveEffectiveJevLlmConfig(settings: AppSettings): LlmConfig? {
+        if (!settings.jevUseDedicatedModel) return null
+        val cfg = settings.jevLlmConfig
+        if (cfg.apiKey.isNotBlank() || isLocalEndpoint(cfg.baseUrl)) {
+            return cfg
+        }
+        val providerId = UnifiedProviderCatalog.inferLlmProviderId(cfg)
+        val vault = UnifiedProviderCatalog.hydrateVaultFromSettings(settings)
+        val cred = vault[providerId]
+        val fallbackKey = when (providerId) {
+            UnifiedProviderCatalog.ID_VOLCENGINE -> cred?.apiKey?.ifBlank { cred.sttApiKey }.orEmpty()
+            UnifiedProviderCatalog.ID_GOOGLE ->
+                cred?.apiKey?.ifBlank { resolveAvailableGeminiVisionConfig(settings)?.apiKey.orEmpty() }.orEmpty()
+            else -> cred?.apiKey.orEmpty()
+        }
+        val fallbackBaseUrl = cfg.baseUrl.ifBlank {
+            cred?.customBaseUrl?.ifBlank { null }
+                ?: UnifiedProviderCatalog.specFor(providerId).defaultBaseUrl
+        }
+        return cfg.copy(
+            baseUrl = fallbackBaseUrl,
+            apiKey = fallbackKey
+        )
+    }
+
     private fun executeLlmChatWithDiagnostics(
         config: LlmConfig,
         systemPrompt: String,
@@ -957,25 +987,34 @@ class AiPipelineEngine(
             }
 
             val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
-            val canSendVision = when (settings.pipelineMode) {
-                PipelineMode.DUAL_STAGE -> {
-                    val llmCfg = resolveEffectiveLlmConfig(settings)
-                    canRouteVisionScreenshot(
-                        primaryBaseUrl = llmCfg.baseUrl,
-                        primaryModel = llmCfg.model,
-                        fallbackGeminiConfig = fallbackGeminiCfg
-                    )
-                }
-                PipelineMode.MULTIMODAL_DIRECT -> {
-                    val mmCfg = settings.multimodalConfig
-                    when (mmCfg.protocol) {
-                        MultimodalProtocol.GEMINI_NATIVE -> true
-                        MultimodalProtocol.OPENAI_AUDIO_CHAT ->
-                            canRouteVisionScreenshot(
-                                primaryBaseUrl = mmCfg.baseUrl,
-                                primaryModel = mmCfg.model,
-                                fallbackGeminiConfig = fallbackGeminiCfg
-                            )
+            val dedicatedCfg = resolveEffectiveJevLlmConfig(settings)
+            val canSendVision = if (dedicatedCfg != null) {
+                canRouteVisionScreenshot(
+                    primaryBaseUrl = dedicatedCfg.baseUrl,
+                    primaryModel = dedicatedCfg.model,
+                    fallbackGeminiConfig = null
+                )
+            } else {
+                when (settings.pipelineMode) {
+                    PipelineMode.DUAL_STAGE -> {
+                        val llmCfg = resolveEffectiveLlmConfig(settings)
+                        canRouteVisionScreenshot(
+                            primaryBaseUrl = llmCfg.baseUrl,
+                            primaryModel = llmCfg.model,
+                            fallbackGeminiConfig = fallbackGeminiCfg
+                        )
+                    }
+                    PipelineMode.MULTIMODAL_DIRECT -> {
+                        val mmCfg = settings.multimodalConfig
+                        when (mmCfg.protocol) {
+                            MultimodalProtocol.GEMINI_NATIVE -> true
+                            MultimodalProtocol.OPENAI_AUDIO_CHAT ->
+                                canRouteVisionScreenshot(
+                                    primaryBaseUrl = mmCfg.baseUrl,
+                                    primaryModel = mmCfg.model,
+                                    fallbackGeminiConfig = fallbackGeminiCfg
+                                )
+                        }
                     }
                 }
             }
@@ -997,47 +1036,62 @@ class AiPipelineEngine(
                 dictionary = settings.dictionary
             )
 
-            val rawOutput: String = when (settings.pipelineMode) {
-                PipelineMode.DUAL_STAGE -> {
-                    val llmCfg = resolveEffectiveLlmConfig(settings)
-                    if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
-                        return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
-                    }
-                    executeLlmChatWithDiagnostics(
-                        config = llmCfg,
-                        systemPrompt = sysPrompt,
-                        userPrompt = usrPrompt,
-                        imageJpegBase64 = effectiveScreenshotB64,
-                        fallbackGeminiConfig = fallbackGeminiCfg
-                    ).text
+            val rawOutput: String = if (dedicatedCfg != null) {
+                if (dedicatedCfg.apiKey.isBlank() && !isLocalEndpoint(dedicatedCfg.baseUrl)) {
+                    return@withContext Result.failure(
+                        IllegalStateException("请先在「API 配置」中填写 Jev 军师专用模型 API Key")
+                    )
                 }
-                PipelineMode.MULTIMODAL_DIRECT -> {
-                    val mmCfg = settings.multimodalConfig
-                    if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
-                        return@withContext Result.failure(IllegalStateException("请先填写多模态 API Key"))
-                    }
-                    when (mmCfg.protocol) {
-                        MultimodalProtocol.GEMINI_NATIVE -> {
-                            callGeminiTextOnlyWithDiagnostics(
-                                config = mmCfg,
-                                fullPrompt = "$sysPrompt\n\n$usrPrompt",
-                                imageJpegBase64 = effectiveScreenshotB64
-                            ).text
+                executeLlmChatWithDiagnostics(
+                    config = dedicatedCfg,
+                    systemPrompt = sysPrompt,
+                    userPrompt = usrPrompt,
+                    imageJpegBase64 = effectiveScreenshotB64,
+                    fallbackGeminiConfig = null
+                ).text
+            } else {
+                when (settings.pipelineMode) {
+                    PipelineMode.DUAL_STAGE -> {
+                        val llmCfg = resolveEffectiveLlmConfig(settings)
+                        if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
+                            return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
                         }
-                        MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
-                            executeLlmChatWithDiagnostics(
-                                config = LlmConfig(
-                                    baseUrl = mmCfg.baseUrl,
-                                    apiKey = mmCfg.apiKey,
-                                    model = mmCfg.model,
-                                    temperature = mmCfg.temperature,
-                                    thinkingMode = mmCfg.thinkingMode
-                                ),
-                                systemPrompt = sysPrompt,
-                                userPrompt = usrPrompt,
-                                imageJpegBase64 = effectiveScreenshotB64,
-                                fallbackGeminiConfig = fallbackGeminiCfg
-                            ).text
+                        executeLlmChatWithDiagnostics(
+                            config = llmCfg,
+                            systemPrompt = sysPrompt,
+                            userPrompt = usrPrompt,
+                            imageJpegBase64 = effectiveScreenshotB64,
+                            fallbackGeminiConfig = fallbackGeminiCfg
+                        ).text
+                    }
+                    PipelineMode.MULTIMODAL_DIRECT -> {
+                        val mmCfg = settings.multimodalConfig
+                        if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
+                            return@withContext Result.failure(IllegalStateException("请先填写多模态 API Key"))
+                        }
+                        when (mmCfg.protocol) {
+                            MultimodalProtocol.GEMINI_NATIVE -> {
+                                callGeminiTextOnlyWithDiagnostics(
+                                    config = mmCfg,
+                                    fullPrompt = "$sysPrompt\n\n$usrPrompt",
+                                    imageJpegBase64 = effectiveScreenshotB64
+                                ).text
+                            }
+                            MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
+                                executeLlmChatWithDiagnostics(
+                                    config = LlmConfig(
+                                        baseUrl = mmCfg.baseUrl,
+                                        apiKey = mmCfg.apiKey,
+                                        model = mmCfg.model,
+                                        temperature = mmCfg.temperature,
+                                        thinkingMode = mmCfg.thinkingMode
+                                    ),
+                                    systemPrompt = sysPrompt,
+                                    userPrompt = usrPrompt,
+                                    imageJpegBase64 = effectiveScreenshotB64,
+                                    fallbackGeminiConfig = fallbackGeminiCfg
+                                ).text
+                            }
                         }
                     }
                 }
@@ -1153,7 +1207,8 @@ class AiPipelineEngine(
 
             val isGeminiNativeSlot =
                 (slot == ModelCapabilitySlot.MULTIMODAL && protocol == MultimodalProtocol.GEMINI_NATIVE) ||
-                    (slot == ModelCapabilitySlot.LLM && EndpointResolver.isGeminiNativeHttpUrl(cleanBase))
+                    ((slot == ModelCapabilitySlot.LLM || slot == ModelCapabilitySlot.JEV_COPILOT) &&
+                        EndpointResolver.isGeminiNativeHttpUrl(cleanBase))
             val models = if (isGeminiNativeSlot) {
                 fetchGeminiOrGatewayModels(cleanBase, cleanKey, slot)
             } else {
@@ -1294,7 +1349,8 @@ class AiPipelineEngine(
         if (modelIds.isEmpty()) return@withContext emptyList()
         val warmTarget = when {
             (slot == ModelCapabilitySlot.MULTIMODAL && protocol == MultimodalProtocol.GEMINI_NATIVE) ||
-                (slot == ModelCapabilitySlot.LLM && EndpointResolver.isGeminiNativeHttpUrl(baseUrl)) ->
+                ((slot == ModelCapabilitySlot.LLM || slot == ModelCapabilitySlot.JEV_COPILOT) &&
+                    EndpointResolver.isGeminiNativeHttpUrl(baseUrl)) ->
                 EndpointResolver.resolveGeminiModelsEndpoint(baseUrl, apiKey)
             slot == ModelCapabilitySlot.STT ->
                 EndpointResolver.resolveSttEndpoint(baseUrl)
@@ -1377,7 +1433,8 @@ class AiPipelineEngine(
                 }
 
                 (slot == ModelCapabilitySlot.MULTIMODAL && protocol == MultimodalProtocol.GEMINI_NATIVE) ||
-                    (slot == ModelCapabilitySlot.LLM && EndpointResolver.isGeminiNativeHttpUrl(baseUrl)) -> {
+                    ((slot == ModelCapabilitySlot.LLM || slot == ModelCapabilitySlot.JEV_COPILOT) &&
+                        EndpointResolver.isGeminiNativeHttpUrl(baseUrl)) -> {
                     val url = EndpointResolver.resolveGeminiEndpoint(baseUrl, cleanModel, apiKey)
                     fun buildGeminiProbe(withThinking: Boolean): JsonObject {
                         val genCfg = buildGeminiGenerationConfig(
@@ -2669,12 +2726,28 @@ class AiPipelineEngine(
                         badge = "🔊 语音转写"
                     }
                 }
-                ModelCapabilitySlot.LLM -> {
+                ModelCapabilitySlot.LLM,
+                ModelCapabilitySlot.JEV_COPILOT -> {
                     // Universal chat eligibility: filter out non-chat utility/embedding/STT/live models,
                     // while letting real live-probed `ms` latency badges replace hardcoded speed strings.
                     val isPureStt = lower.contains("whisper") || lower.contains("sensevoice") || lower.endsWith("-asr")
                     if (!isNonTextOrUtility && !isPureStt && !lower.contains("live")) {
                         recommended = true
+                        if (slot == ModelCapabilitySlot.JEV_COPILOT) {
+                            val isHighIqFlagship = code.startsWith("gemini-3.8-flash") ||
+                                code.startsWith("gemini-3.1-pro") ||
+                                code.startsWith("gemini-2.5-pro") ||
+                                code == "deepseek-chat" ||
+                                code == "deepseek-reasoner" ||
+                                (code.startsWith("doubao-seed-2") && code.contains("pro")) ||
+                                code.startsWith("qwen3-max") ||
+                                code.startsWith("qwen-max") ||
+                                code.startsWith("gpt-4o") ||
+                                code.startsWith("claude-")
+                            if (isHighIqFlagship) {
+                                badge = "🧠 军师推荐"
+                            }
+                        }
                     }
                 }
                 ModelCapabilitySlot.MULTIMODAL -> {
@@ -2733,6 +2806,20 @@ class AiPipelineEngine(
                     code == "gemini-3.8-flash" -> 93
                     code == "gpt-4o-mini" -> 92
                     code.startsWith("qwen3-8b") -> 91
+                    else -> 10
+                }
+                ModelCapabilitySlot.JEV_COPILOT -> when {
+                    code == "gemini-3.8-flash" -> 106
+                    code.startsWith("gemini-3.1-pro") -> 105
+                    code.startsWith("doubao-seed-2") && code.contains("pro") -> 104
+                    code == "deepseek-chat" -> 103
+                    code == "deepseek-reasoner" -> 102
+                    code == "gemini-2.5-pro" -> 101
+                    code.startsWith("qwen3-max") || code.startsWith("qwen-max") -> 100
+                    code == "gpt-4o" -> 99
+                    code.startsWith("claude-") -> 98
+                    code == "gemini-2.5-flash" -> 95
+                    code == "gemini-3.5-flash-lite" -> 92
                     else -> 10
                 }
                 ModelCapabilitySlot.STT -> when {

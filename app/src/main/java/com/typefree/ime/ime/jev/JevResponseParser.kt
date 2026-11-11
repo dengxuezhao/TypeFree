@@ -24,6 +24,7 @@ object JevResponseParser {
     private val LV_TAG_REGEX = Regex("<lv>\\s*(?:lv\\.?\\s*)?([1-9])\\s*</lv>", RegexOption.IGNORE_CASE)
     private val TAG_ELEM_REGEX = Regex("<tag>([\\s\\S]*?)</tag>", RegexOption.IGNORE_CASE)
     private val SUBTEXT_ELEM_REGEX = Regex("<subtext>([\\s\\S]*?)</subtext>", RegexOption.IGNORE_CASE)
+    private val WEIGHTS_ELEM_REGEX = Regex("<weights>([\\s\\S]*?)</weights>", RegexOption.IGNORE_CASE)
 
     /**
      * Non-crossing inner `<opt>` matcher: forbids crossing any nested `<opt` or `</opt` boundary
@@ -50,7 +51,7 @@ object JevResponseParser {
     )
 
     private val RESIDUAL_JEV_XML_TAG_REGEX = Regex(
-        """</?\s*(?:opt|jev|lv|tag|subtext)\b[^>]*>?""",
+        """</?\s*(?:opt|jev|lv|tag|subtext|weights)\b[^>]*>?""",
         RegexOption.IGNORE_CASE
     )
 
@@ -206,8 +207,27 @@ object JevResponseParser {
             ?: m.groups[4]?.value
             ?: m.groups[5]?.value
             ?: return 0
-        val numStr = Regex("""(\d{1,3}(?:\.\d+)?)""").find(raw)?.groupValues?.getOrNull(1) ?: return 0
+        val trimmed = raw.trim()
+        // Guard against a weak model literally echoing template placeholder "P1"/"P2"/"P3" or "W1"/"W2"/"W3"
+        if (trimmed.matches(Regex("^[pPwW][1-3]$"))) return 0
+        val numStr = Regex("""(\d{1,3}(?:\.\d+)?)""").find(trimmed)?.groupValues?.getOrNull(1) ?: return 0
         return numStr.toDoubleOrNull()?.roundToInt()?.coerceAtLeast(0) ?: 0
+    }
+
+    private fun extractPostHocWeights(text: String): List<Int> {
+        val content = WEIGHTS_ELEM_REGEX.find(text)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+        if (content.isEmpty()) return emptyList()
+        return content.split(Regex("[,，/\\s|;；]+"))
+            .mapNotNull { token ->
+                val clean = token.trim().removeSuffix("%")
+                if (clean.isEmpty() || clean.matches(Regex("^[wWpP][1-3]$"))) {
+                    null
+                } else {
+                    Regex("""(\d{1,3}(?:\.\d+)?)""").find(clean)
+                        ?.groupValues?.getOrNull(1)
+                        ?.toDoubleOrNull()?.roundToInt()?.coerceAtLeast(0)
+                }
+            }
     }
 
     private fun sanitizeRawOutput(raw: String): String {
@@ -236,7 +256,9 @@ object JevResponseParser {
             .orEmpty()
             .ifEmpty { "已拆解对方潜台词并生成差异化应对策略" }
 
-        val options = optMatches.mapIndexedNotNull { idx, m ->
+        val postHocWeights = extractPostHocWeights(text)
+
+        val rawOptions = optMatches.mapIndexedNotNull { idx, m ->
             val innerAttrs = m.groupValues[1]
             val prefixBeforeMatch = if (m.range.first > 0) text.substring(0, m.range.first) else ""
             val outerAttrs = PRECEDING_OPEN_OPT_REGEX.find(prefixBeforeMatch)?.groupValues?.getOrNull(1).orEmpty()
@@ -254,7 +276,17 @@ object JevResponseParser {
             }
         }
 
-        if (options.isEmpty()) return null
+        if (rawOptions.isEmpty()) return null
+
+        val options = rawOptions.mapIndexed { idx, opt ->
+            val postHoc = postHocWeights.getOrNull(idx) ?: 0
+            if (postHoc > 0) {
+                opt.copy(probability = postHoc)
+            } else {
+                opt
+            }
+        }
+
         return JevCopilotResult(
             level = level,
             tag = tag,
@@ -420,11 +452,13 @@ object JevResponseParser {
 
     internal fun cleanOptionText(raw: String): String {
         return raw
+            .replace(WEIGHTS_ELEM_REGEX, "")
             .replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
             .trim()
             .removeSurrounding("\"")
             .removeSurrounding("“", "”")
             .removeSurrounding("「", "」")
+            .replace(WEIGHTS_ELEM_REGEX, "")
             .replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
             .trim()
     }

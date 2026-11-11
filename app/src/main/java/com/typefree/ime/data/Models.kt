@@ -49,7 +49,8 @@ enum class DictionarySource(val label: String) {
 enum class ModelCapabilitySlot(val label: String) {
     STT("STT 语音识别"),
     LLM("LLM 语义润色"),
-    MULTIMODAL("多模态音频直出")
+    MULTIMODAL("多模态音频直出"),
+    JEV_COPILOT("Jev 军师专用")
 }
 
 enum class ThinkingMode(val label: String, val description: String) {
@@ -446,6 +447,16 @@ data class AppSettings(
     val chatContextDisclosureAccepted: Boolean = false, // 是否已阅读并同意「AI 帮回」首次显著披露
     val chatContextDisclosureDismissed: Boolean = false, // 是否已在键盘首次披露卡点过「暂不开启」（避免反复打扰，但不代表已同意披露）
     val jevCopilotEnabled: Boolean = true, // 启用「✦ Jev 军师」模式（默认开启）
+    val jevUseDedicatedModel: Boolean = false, // 是否为「✦ Jev 军师」启用独立模型覆盖（false = 跟随默认模型）
+    val jevLlmConfig: LlmConfig = LlmConfig(
+        enabled = true,
+        presetId = "gemini_llm",
+        baseUrl = "https://generativelanguage.googleapis.com/v1beta",
+        apiKey = "",
+        model = "gemini-3.8-flash",
+        temperature = 0.35f,
+        thinkingMode = ThinkingMode.AUTO
+    ),
     val chatContextSendScreenshot: Boolean = true, // 读屏时允许附带脱敏视口截图（关闭或遇高危机密时仅传脱敏纯文本）
     val manualIncognitoMode: Boolean = false, // 手动无痕模式开关（开启后强制阻断个人词库/预测/剪贴板/历史音频/AI读屏）
     val replyAttitudePresets: List<ReplyAttitudePreset> = DefaultPresets.defaultReplyAttitudes(),
