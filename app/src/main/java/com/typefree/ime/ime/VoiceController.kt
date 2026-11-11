@@ -972,7 +972,10 @@ class VoiceController(
                         latencyMs = displayLatencyMs
                     )
                 }
-                if (!host.stateFlow.value.isIncognitoMode) {
+                val isIncognito = host.stateFlow.value.isIncognitoMode || settings.manualIncognitoMode
+                if (isIncognito) {
+                    runCatching { wavFile.delete() }
+                } else {
                     val historyAudioFile = host.archiveWavForHistory(wavFile, settings.historyRetention)
                     host.repository.addHistory(
                         HistoryRecord(

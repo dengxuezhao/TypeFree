@@ -213,6 +213,15 @@ object PromptBuilder {
         return HELP_ME_WRITE_SYSTEM_PROMPT to userPrompt
     }
 
+    private val VISION_GUIDE_BLOCK_REGEX = Regex(
+        """<chat_screen_vision_guide>[\s\S]*?</chat_screen_vision_guide>\s*"""
+    )
+
+    fun stripChatScreenVisionGuide(prompt: String): String {
+        if (!prompt.contains("<chat_screen_vision_guide>")) return prompt
+        return prompt.replace(VISION_GUIDE_BLOCK_REGEX, "")
+    }
+
     private fun buildChatContextXmlBlock(chatContextMessages: List<String>): String {
         if (chatContextMessages.isEmpty()) return ""
         val sanitizedLines = chatContextMessages

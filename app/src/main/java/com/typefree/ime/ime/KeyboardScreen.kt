@@ -171,6 +171,7 @@ fun KeyboardScreen(
     onOpenStylePickerFromToolPanel: () -> Unit = {},
     onToggleAiCompletion: () -> Unit = {},
     onToggleLiveWrite: () -> Unit = {},
+    onToggleManualIncognito: () -> Unit = {},
     onSelectPredictionCandidate: (Int) -> Unit = {},
     onSelectAiCompletion: (String) -> Unit = {},
     onDismissPredictions: () -> Unit = {}
@@ -362,7 +363,8 @@ fun KeyboardScreen(
                                         onToggleFlypyLanguageMode = onToggleFlypyLanguageMode,
                                         onToggleStylePicker = onToggleStylePicker,
                                         onPerformUndo = onPerformUndo,
-                                        onPasteClipboardText = onPasteClipboardText
+                                        onPasteClipboardText = onPasteClipboardText,
+                                        onToggleManualIncognito = onToggleManualIncognito
                                     )
                                 }
                             }
@@ -399,6 +401,7 @@ fun KeyboardScreen(
                                         onOpenStylePicker = onOpenStylePickerFromToolPanel,
                                         onToggleAiCompletion = onToggleAiCompletion,
                                         onToggleLiveWrite = onToggleLiveWrite,
+                                        onToggleManualIncognito = onToggleManualIncognito,
                                         onOpenDictionary = { onOpenHostApp(AppDestinations.TAB_DICTIONARY) },
                                         onOpenSettings = { onOpenHostApp(AppDestinations.TAB_SETTINGS) }
                                     )
@@ -636,7 +639,8 @@ private fun TypeFreeTopBar(
     onToggleFlypyLanguageMode: () -> Unit,
     onToggleStylePicker: () -> Unit,
     onPerformUndo: () -> Unit,
-    onPasteClipboardText: (String) -> Unit
+    onPasteClipboardText: (String) -> Unit,
+    onToggleManualIncognito: () -> Unit = {}
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val metrics = LocalKeyboardMetrics.current
@@ -689,6 +693,27 @@ private fun TypeFreeTopBar(
                 isOpen = uiState.isToolPanelOpen,
                 onClick = onToggleToolPanel
             )
+
+            if (uiState.isIncognitoMode) {
+                Box(
+                    modifier = Modifier
+                        .height(24.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(TypeFreeEmerald.copy(alpha = 0.16f))
+                        .border(1.dp, TypeFreeEmerald.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                        .clickable(onClick = onToggleManualIncognito)
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "🕵️ 无痕",
+                        color = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+            }
 
             val learnedTerm = uiState.autoLearnedToastTerm
             val quickToast = uiState.quickActionToast

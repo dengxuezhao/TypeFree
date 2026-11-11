@@ -15,8 +15,8 @@ android {
         applicationId = "com.typefree.ime"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "3.0.0"
+        versionCode = 17
+        versionName = "3.0.1"
         buildConfigField("boolean", "USE_PRIVATE_DICT", usePrivateDict.toString())
 
         ndk {

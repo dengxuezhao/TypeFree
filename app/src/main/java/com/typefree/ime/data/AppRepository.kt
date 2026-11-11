@@ -12,9 +12,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
 import kotlin.math.roundToInt
 
-class AppRepository(private val appContext: Context) {
+class AppRepository(
+    private val appContext: Context?,
+    internal val publicStore: KeyValueStore,
+    internal val secretVault: SecretVault
+) {
 
-    private val prefs = appContext.getSharedPreferences("typefree_ime_prefs", Context.MODE_PRIVATE)
+    constructor(appContext: Context) : this(
+        appContext = appContext,
+        publicStore = SharedPreferencesKeyValueStore(
+            appContext.getSharedPreferences(PUBLIC_PREFS_NAME, Context.MODE_PRIVATE)
+        ),
+        secretVault = SecretVault.fromContext(appContext)
+    )
+
     private val gson: Gson = GsonBuilder().setPrettyPrinting().create()
 
     private val _settings = MutableStateFlow(loadSettingsInternal())
@@ -37,7 +48,8 @@ class AppRepository(private val appContext: Context) {
 
     @Suppress("SENSELESS_COMPARISON")
     private fun loadSettingsInternal(): AppSettings {
-        val raw = prefs.getString(KEY_SETTINGS, null) ?: return AppSettings()
+        val raw = publicStore.getString(KEY_SETTINGS, null)
+            ?: return secretVault.hydrateSettingsWithSecrets(AppSettings())
         return try {
             val parsed = gson.fromJson(raw, AppSettings::class.java) ?: AppSettings()
             val safeTargets = (parsed.translationTargets ?: emptyList())
@@ -130,9 +142,9 @@ class AppRepository(private val appContext: Context) {
             } else {
                 0
             }
-            val migratedV30LiveWrite = prefs.getBoolean(KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT, false)
+            val migratedV30LiveWrite = publicStore.getBoolean(KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT, false)
             val resolvedLiveWriteToEditor = if (!migratedV30LiveWrite) {
-                prefs.edit().putBoolean(KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT, true).apply()
+                publicStore.putBoolean(KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT, true)
                 true
             } else if (raw.contains("\"liveWriteToEditor\"")) {
                 parsed.liveWriteToEditor
@@ -172,6 +184,11 @@ class AppRepository(private val appContext: Context) {
             }
             val resolvedChatContextDisclosureDismissed = if (raw.contains("\"chatContextDisclosureDismissed\"")) {
                 parsed.chatContextDisclosureDismissed
+            } else {
+                false
+            }
+            val resolvedManualIncognitoMode = if (raw.contains("\"manualIncognitoMode\"")) {
+                parsed.manualIncognitoMode
             } else {
                 false
             }
@@ -265,6 +282,7 @@ class AppRepository(private val appContext: Context) {
                 chatContextReplyEnabled = resolvedChatContextReplyEnabled,
                 chatContextDisclosureAccepted = resolvedChatContextDisclosureAccepted,
                 chatContextDisclosureDismissed = resolvedChatContextDisclosureDismissed,
+                manualIncognitoMode = resolvedManualIncognitoMode,
                 replyAttitudePresets = safeReplyAttitudes,
                 providerVault = safeVault,
                 snippets = safeSnippets,
@@ -276,17 +294,21 @@ class AppRepository(private val appContext: Context) {
                 appRules = parsed.appRules ?: DefaultPresets.defaultAppRules(),
                 dictionary = safeDict
             )
-            preliminary.copy(
-                providerVault = UnifiedProviderCatalog.hydrateVaultFromSettings(preliminary)
-            )
+            val hydrated = secretVault.hydrateSettingsWithSecrets(preliminary)
+            if (SecretVault.containsPlaintextSecrets(preliminary)) {
+                secretVault.saveSecretsFromSettings(hydrated)
+                val sanitized = secretVault.stripSecretsForPublicPersistence(hydrated)
+                publicStore.putString(KEY_SETTINGS, gson.toJson(sanitized))
+            }
+            hydrated
         } catch (_: Exception) {
-            AppSettings()
+            secretVault.hydrateSettingsWithSecrets(AppSettings())
         }
     }
 
     @Suppress("SENSELESS_COMPARISON")
     private fun loadHistoryInternal(): List<HistoryRecord> {
-        val raw = prefs.getString(KEY_HISTORY, null) ?: return emptyList()
+        val raw = publicStore.getString(KEY_HISTORY, null) ?: return emptyList()
         return try {
             val type = object : TypeToken<List<HistoryRecord>>() {}.type
             val list = gson.fromJson<List<HistoryRecord>>(raw, type) ?: emptyList()
@@ -309,7 +331,7 @@ class AppRepository(private val appContext: Context) {
 
     @Suppress("SENSELESS_COMPARISON")
     private fun loadClipboardInternal(): List<ClipboardEntry> {
-        val raw = prefs.getString(KEY_CLIPBOARD, null) ?: return emptyList()
+        val raw = publicStore.getString(KEY_CLIPBOARD, null) ?: return emptyList()
         return try {
             val type = object : TypeToken<List<ClipboardEntry>>() {}.type
             val list = gson.fromJson<List<ClipboardEntry>>(raw, type) ?: emptyList()
@@ -332,7 +354,7 @@ class AppRepository(private val appContext: Context) {
     private fun saveClipboardList(updated: List<ClipboardEntry>) {
         val sorted = sortClipboardEntries(updated)
         _clipboardItems.value = sorted
-        prefs.edit().putString(KEY_CLIPBOARD, gson.toJson(sorted)).apply()
+        publicStore.putString(KEY_CLIPBOARD, gson.toJson(sorted))
     }
 
     fun recordClipboardText(
@@ -383,13 +405,15 @@ class AppRepository(private val appContext: Context) {
         val prevRetention = _settings.value.historyRetention
         val updated = transform(_settings.value)
         _settings.value = updated
-        prefs.edit().putString(KEY_SETTINGS, gson.toJson(updated)).apply()
+        secretVault.saveSecretsFromSettings(updated)
+        val sanitized = secretVault.stripSecretsForPublicPersistence(updated)
+        publicStore.putString(KEY_SETTINGS, gson.toJson(sanitized))
 
         if (updated.historyRetention != prevRetention) {
             val pruned = pruneHistoryByRetention(_history.value, updated.historyRetention)
             if (pruned.size != _history.value.size) {
                 _history.value = pruned
-                prefs.edit().putString(KEY_HISTORY, gson.toJson(pruned)).apply()
+                publicStore.putString(KEY_HISTORY, gson.toJson(pruned))
             }
         }
     }
@@ -402,18 +426,18 @@ class AppRepository(private val appContext: Context) {
         val prunedExisting = pruneHistoryByRetention(_history.value, retention)
         val updated = (listOf(record) + prunedExisting).take(MAX_HISTORY_ITEMS)
         _history.value = updated
-        prefs.edit().putString(KEY_HISTORY, gson.toJson(updated)).apply()
+        publicStore.putString(KEY_HISTORY, gson.toJson(updated))
     }
 
     fun deleteHistoryItem(id: String) {
         val updated = _history.value.filterNot { it.id == id }
         _history.value = updated
-        prefs.edit().putString(KEY_HISTORY, gson.toJson(updated)).apply()
+        publicStore.putString(KEY_HISTORY, gson.toJson(updated))
     }
 
     fun clearHistory() {
         _history.value = emptyList()
-        prefs.edit().remove(KEY_HISTORY).apply()
+        publicStore.remove(KEY_HISTORY)
     }
 
     fun deleteDictionaryEntries(ids: Set<String>) {
@@ -479,8 +503,10 @@ class AppRepository(private val appContext: Context) {
         _settings.value.appRules.firstOrNull { it.packageName == packageName }?.let {
             if (it.appName.isNotBlank()) return it.appName
         }
+        val ctx = appContext ?: return packageName.substringAfterLast('.')
+            .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
         return try {
-            val pm = appContext.packageManager
+            val pm = ctx.packageManager
             val info = pm.getApplicationInfo(packageName, 0)
             pm.getApplicationLabel(info).toString()
         } catch (_: PackageManager.NameNotFoundException) {
@@ -532,9 +558,10 @@ class AppRepository(private val appContext: Context) {
     }
 
     companion object {
-        private const val KEY_SETTINGS = "settings_v1"
-        private const val KEY_HISTORY = "history_v1"
-        private const val KEY_CLIPBOARD = "clipboard_v1"
+        const val PUBLIC_PREFS_NAME = "typefree_ime_prefs"
+        internal const val KEY_SETTINGS = "settings_v1"
+        internal const val KEY_HISTORY = "history_v1"
+        internal const val KEY_CLIPBOARD = "clipboard_v1"
         private const val KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT = "migrated_v30_live_write_default"
         private const val MAX_HISTORY_ITEMS = 200
         private const val MAX_CLIPBOARD_UNPINNED = 40

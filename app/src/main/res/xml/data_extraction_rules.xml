@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="typefree_ime_prefs.xml" />
+        <exclude domain="sharedpref" path="typefree_secure_secrets.xml" />
+        <exclude domain="file" path="voice_history" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="typefree_ime_prefs.xml" />
+        <exclude domain="sharedpref" path="typefree_secure_secrets.xml" />
+        <exclude domain="file" path="voice_history" />
+    </device-transfer>
+</data-extraction-rules>

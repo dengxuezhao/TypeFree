@@ -145,13 +145,20 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     lastScheme = currentSettings.inputScheme
                     typingController.resetComposing()
                 }
+                val nextIncognito = ImeLogic.isIncognitoImeOptions(
+                    imeOptions = _imeState.value.currentImeOptions,
+                    inputType = _imeState.value.currentInputType,
+                    manualIncognitoMode = currentSettings.manualIncognitoMode
+                )
+                typingController.setIncognitoMode(nextIncognito)
                 _imeState.update {
                     it.copy(
                         activeInputScheme = currentSettings.inputScheme,
                         isRimeDeploying = currentSettings.inputScheme.usesRime && !typingController.isRimeReady,
                         activeHeightLevel = currentSettings.keyboardHeightLevel,
                         activeHeightMode = currentSettings.keyboardHeightMode,
-                        activeLiftLevel = currentSettings.keyboardLiftLevel
+                        activeLiftLevel = currentSettings.keyboardLiftLevel,
+                        isIncognitoMode = nextIncognito
                     )
                 }
                 val prevSetting = lastFlypySetting
@@ -263,7 +270,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         val hasCachedWav = hasRetryWavFile()
         val settingsSnapshot = repository.settings.value
         val isPasswordField = ImeLogic.isPasswordEditorInputType(inputType)
-        val isIncognito = ImeLogic.isIncognitoImeOptions(imeOptions, inputType)
+        val isIncognito = ImeLogic.isIncognitoImeOptions(
+            imeOptions = imeOptions,
+            inputType = inputType,
+            manualIncognitoMode = settingsSnapshot.manualIncognitoMode
+        )
         typingController.setIncognitoMode(isIncognito)
 
         var shouldEnsureFlypyDict = false
@@ -523,6 +534,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     onOpenStylePickerFromToolPanel = ::openStylePickerFromToolPanel,
                     onToggleAiCompletion = ::toggleAiCompletion,
                     onToggleLiveWrite = ::toggleLiveWrite,
+                    onToggleManualIncognito = ::toggleManualIncognito,
                     onSelectPredictionCandidate = ::selectPredictionCandidate,
                     onSelectAiCompletion = ::selectAiCompletion,
                     onDismissPredictions = ::dismissPredictions
@@ -1084,11 +1096,35 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     private fun cycleInputScheme() {
         performKeyFeedback(strong = false)
         val current = repository.settings.value.inputScheme
-        val next = nextCycledInputScheme(current)
+        val hasCustom = TypeFreeApp.instance.rimeDataManager.hasCustomSchemaImported()
+        val next = nextCycledInputScheme(current, hasCustomSchema = hasCustom)
         typingController.resetComposing()
         repository.updateSettings { it.copy(inputScheme = next) }
         _imeState.update { it.copy(activeInputScheme = next) }
         showQuickActionToast("输入方案：${next.label}")
+    }
+
+    private fun toggleManualIncognito() {
+        performKeyFeedback(strong = true)
+        val nextManual = !repository.settings.value.manualIncognitoMode
+        repository.updateSettings { it.copy(manualIncognitoMode = nextManual) }
+        val curr = _imeState.value
+        val effectiveIncognito = ImeLogic.isIncognitoImeOptions(
+            imeOptions = curr.currentImeOptions,
+            inputType = curr.currentInputType,
+            manualIncognitoMode = nextManual
+        )
+        typingController.setIncognitoMode(effectiveIncognito)
+        _imeState.update {
+            it.copy(
+                isIncognitoMode = effectiveIncognito,
+                capturedChatContext = if (effectiveIncognito) CapturedChatContext() else it.capturedChatContext,
+                aiCompletionSuggestion = if (effectiveIncognito) null else it.aiCompletionSuggestion
+            )
+        }
+        showQuickActionToast(
+            if (nextManual) "🕵️ 已开启手动无痕模式（暂停历史、词频与读屏）" else "✓ 已关闭手动无痕模式"
+        )
     }
 
     private fun openStylePickerFromToolPanel() {
@@ -1180,21 +1216,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     }
 
     override fun archiveWavForHistory(wavFile: File, retention: HistoryRetention): File {
-        if (retention == HistoryRetention.NEVER || !wavFile.exists()) {
-            return wavFile
-        }
-        return try {
-            val dir = File(cacheDir, "history_audio").apply { mkdirs() }
-            val archived = File(dir, "voice_${System.currentTimeMillis()}.wav")
-            wavFile.copyTo(archived, overwrite = true)
-            val files = dir.listFiles()?.sortedByDescending { it.lastModified() }.orEmpty()
-            if (files.size > 50) {
-                files.drop(50).forEach { runCatching { it.delete() } }
-            }
-            archived
-        } catch (_: Exception) {
-            wavFile
-        }
+        return WavAudioRecorder.archiveWavForHistory(
+            baseDir = filesDir,
+            wavFile = wavFile,
+            retention = retention
+        )
     }
 
     override fun getLastRecordingWavFile(): File = WavAudioRecorder.getLastRecordingFile(this)

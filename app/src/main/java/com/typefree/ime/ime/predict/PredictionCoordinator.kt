@@ -78,7 +78,10 @@ class PredictionCoordinator(
     }
 
     private fun effectiveIncognito(): Boolean {
-        return isIncognitoMode || stateFlow.value.isIncognitoMode || predictionStore.isIncognitoMode
+        return isIncognitoMode ||
+            stateFlow.value.isIncognitoMode ||
+            predictionStore.isIncognitoMode ||
+            settingsProvider().manualIncognitoMode
     }
 
     fun setIncognitoMode(incognito: Boolean) {
@@ -217,6 +220,9 @@ class PredictionCoordinator(
                     if (!stateFlow.value.isFlypyComposing) {
                         stateFlow.update { curr ->
                             curr.copy(aiCompletionSuggestion = suggestion)
+                        }
+                        if (!suggestion.isNullOrBlank()) {
+                            restartIdleTimer()
                         }
                     }
                 }

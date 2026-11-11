@@ -11,6 +11,7 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import androidx.core.content.ContextCompat
+import com.typefree.ime.data.HistoryRetention
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,6 +28,7 @@ import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -526,6 +528,38 @@ class WavAudioRecorder(private val context: Context) {
 
         fun getLastRecordingFile(context: Context): File {
             return File(context.cacheDir, "last_typefree_voice.wav")
+        }
+
+        /**
+         * Copies [wavFile] into an isolated `<baseDir>/voice_history/voice_<timestamp>_<uuid8>.wav`
+         * archive file so subsequent recordings into `last_typefree_voice.wav` (from either the IME
+         * or the floating Bubble service) never overwrite historical audio playback files.
+         */
+        fun archiveWavForHistory(
+            baseDir: File,
+            wavFile: File,
+            retention: HistoryRetention,
+            maxFiles: Int = 50,
+            nowMs: Long = System.currentTimeMillis()
+        ): File {
+            if (retention == HistoryRetention.NEVER || !wavFile.exists()) {
+                return wavFile
+            }
+            return try {
+                val dir = File(baseDir, "voice_history").apply { mkdirs() }
+                val suffix = UUID.randomUUID().toString().take(8)
+                val archived = File(dir, "voice_${nowMs}_${suffix}.wav")
+                wavFile.copyTo(archived, overwrite = true)
+                val files = dir.listFiles()?.filter { it.isFile && it.name.endsWith(".wav") }
+                    ?.sortedByDescending { it.lastModified() }
+                    .orEmpty()
+                if (files.size > maxFiles) {
+                    files.drop(maxFiles).forEach { runCatching { it.delete() } }
+                }
+                archived
+            } catch (_: Exception) {
+                wavFile
+            }
         }
 
         /**

@@ -152,11 +152,24 @@ class RimeDataManager(
                             .trimStart('/')
                         val rawName = File(cleanRelative).name
                         val lower = rawName.lowercase()
-                        val isAllowed = lower.endsWith(".yaml") ||
+                        val isYamlOrDict = lower.endsWith(".yaml") ||
                             lower.endsWith(".tsv") ||
                             lower.endsWith(".txt")
+                        val isLuaScript = lower.endsWith(".lua") &&
+                            (cleanRelative == "rime.lua" || cleanRelative.startsWith("lua/"))
+                        val isOpenccAsset = cleanRelative.startsWith("opencc/") && (
+                            lower.endsWith(".json") ||
+                                lower.endsWith(".ocd2") ||
+                                lower.endsWith(".ocd") ||
+                                lower.endsWith(".txt")
+                            )
+                        val isAllowed = isYamlOrDict || isLuaScript || isOpenccAsset
                         if (isAllowed && !rawName.startsWith(".") && !cleanRelative.contains("..")) {
-                            val outFile = if (cleanRelative.startsWith("cn_dicts/")) {
+                            val preserveRelativeDir = cleanRelative == "rime.lua" ||
+                                cleanRelative.startsWith("cn_dicts/") ||
+                                cleanRelative.startsWith("lua/") ||
+                                cleanRelative.startsWith("opencc/")
+                            val outFile = if (preserveRelativeDir) {
                                 File(sharedDir, cleanRelative)
                             } else {
                                 File(sharedDir, rawName)
@@ -339,18 +352,38 @@ class RimeDataManager(
         }
     }
 
-    suspend fun restoreDefaultRimeData(scheme: InputScheme = InputScheme.RIME_PINYIN): RimeDeploymentState {
-        return withContext(Dispatchers.IO) {
-            File(sharedDir, FULL_DICT_MARKER_FILENAME).delete()
-            File(sharedDir, CUSTOM_SCHEMA_META_FILENAME).delete()
-            sharedDir.listFiles().orEmpty().forEach { f ->
-                if (f.isFile && f.name !in BUILTIN_ASSET_FILES) {
-                    f.delete()
+    fun restoreDefaultRimeDataSync(scheme: InputScheme = InputScheme.RIME_PINYIN): RimeDeploymentState {
+        File(sharedDir, FULL_DICT_MARKER_FILENAME).delete()
+        File(sharedDir, CUSTOM_SCHEMA_META_FILENAME).delete()
+        val builtinSet = BUILTIN_ASSET_FILES.toSet()
+        sharedDir.listFiles().orEmpty().forEach { f ->
+            if (f.isFile && f.name !in builtinSet) {
+                f.delete()
+            }
+        }
+        val cnDictsDir = File(sharedDir, "cn_dicts")
+        if (cnDictsDir.exists()) {
+            cnDictsDir.walkBottomUp().forEach { f ->
+                if (f != cnDictsDir) {
+                    val rel = f.relativeTo(sharedDir).invariantSeparatorsPath
+                    if (f.isFile && rel !in builtinSet) {
+                        f.delete()
+                    } else if (f.isDirectory && f.listFiles().isNullOrEmpty()) {
+                        f.delete()
+                    }
                 }
             }
-            extractBuiltInAssetsIfNeeded(forceOverwrite = true)
-            invalidateCompiledTableFiles()
-            deployDefaultSync(scheme)
+        }
+        File(sharedDir, "lua").deleteRecursively()
+        File(sharedDir, "opencc").deleteRecursively()
+        extractBuiltInAssetsIfNeeded(forceOverwrite = true)
+        invalidateCompiledTableFiles()
+        return deployDefaultSync(scheme)
+    }
+
+    suspend fun restoreDefaultRimeData(scheme: InputScheme = InputScheme.RIME_PINYIN): RimeDeploymentState {
+        return withContext(Dispatchers.IO) {
+            restoreDefaultRimeDataSync(scheme)
         }
     }
 

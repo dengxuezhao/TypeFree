@@ -356,9 +356,13 @@ object ChatScreenContextExtractor {
         return false
     }
 
+    const val MAX_SAFE_VIEWPORT_BOTTOM_RATIO = 0.76f
+
     /**
      * Computes the crop rectangle `[left, top, width, height]` of the chat message viewport
      * above the input box / soft keyboard, excluding the top status/app bar and the bottom keyboard.
+     * Enforces [MAX_SAFE_VIEWPORT_BOTTOM_RATIO] so stale pre-`adjustResize` bottom coordinates
+     * never accidentally include the soft keyboard itself in the screenshot.
      */
     fun computeChatRegionCropRect(
         bitmapWidth: Int,
@@ -370,7 +374,10 @@ object ChatScreenContextExtractor {
         }
         val cropTop = (bitmapHeight * 0.088f).toInt().coerceIn(0, bitmapHeight - 1)
         val defaultBottom = (bitmapHeight * 0.58f).toInt().coerceIn(cropTop + 1, bitmapHeight)
-        val cropBottom = if (inputBoxTop in (cropTop + 100)..bitmapHeight) {
+        val maxSafeBottom = (bitmapHeight * MAX_SAFE_VIEWPORT_BOTTOM_RATIO)
+            .toInt()
+            .coerceIn(defaultBottom, bitmapHeight)
+        val cropBottom = if (inputBoxTop in (cropTop + 100)..maxSafeBottom) {
             inputBoxTop
         } else {
             defaultBottom

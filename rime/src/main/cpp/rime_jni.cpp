@@ -5,6 +5,7 @@
 #include <rime_api.h>
 #include <android/log.h>
 
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -39,15 +40,119 @@ bool g_fixed_candidate_order = false;
 
 std::string jstringToStdString(JNIEnv* env, jstring jstr) {
   if (!jstr) return "";
-  const char* chars = env->GetStringUTFChars(jstr, nullptr);
-  if (!chars) return "";
-  std::string out(chars);
-  env->ReleaseStringUTFChars(jstr, chars);
+  const jsize len = env->GetStringLength(jstr);
+  if (len <= 0) return "";
+  std::vector<jchar> utf16(static_cast<size_t>(len));
+  env->GetStringRegion(jstr, 0, len, utf16.data());
+
+  std::string out;
+  out.reserve(static_cast<size_t>(len) * 3);
+  size_t i = 0;
+  const size_t ulen = utf16.size();
+  while (i < ulen) {
+    uint32_t cp = utf16[i++];
+    if (cp >= 0xD800 && cp <= 0xDBFF) {
+      if (i < ulen && utf16[i] >= 0xDC00 && utf16[i] <= 0xDFFF) {
+        uint32_t low = utf16[i++];
+        cp = 0x10000 + (((cp - 0xD800) << 10) | (low - 0xDC00));
+      } else {
+        cp = 0xFFFD;
+      }
+    } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+      cp = 0xFFFD;
+    }
+
+    if (cp < 0x80) {
+      out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+      out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+      out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+      out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+  }
   return out;
 }
 
 jstring stdStringToJstring(JNIEnv* env, const std::string& str) {
-  return env->NewStringUTF(str.c_str());
+  if (str.empty()) {
+    return env->NewString(nullptr, 0);
+  }
+  std::vector<jchar> utf16;
+  utf16.reserve(str.size());
+  const auto* bytes = reinterpret_cast<const uint8_t*>(str.data());
+  const size_t len = str.size();
+  size_t i = 0;
+
+  while (i < len) {
+    uint32_t b0 = bytes[i];
+    if (b0 < 0x80) {
+      utf16.push_back(static_cast<jchar>(b0));
+      i += 1;
+    } else if ((b0 & 0xE0) == 0xC0) {
+      if (i + 1 < len && (bytes[i + 1] & 0xC0) == 0x80) {
+        uint32_t cp = ((b0 & 0x1F) << 6) | (bytes[i + 1] & 0x3F);
+        if (cp >= 0x80) {
+          utf16.push_back(static_cast<jchar>(cp));
+        } else {
+          utf16.push_back(0xFFFD);
+        }
+        i += 2;
+      } else {
+        utf16.push_back(0xFFFD);
+        i += 1;
+      }
+    } else if ((b0 & 0xF0) == 0xE0) {
+      if (i + 2 < len &&
+          (bytes[i + 1] & 0xC0) == 0x80 &&
+          (bytes[i + 2] & 0xC0) == 0x80) {
+        uint32_t cp = ((b0 & 0x0F) << 12) |
+                      ((bytes[i + 1] & 0x3F) << 6) |
+                      (bytes[i + 2] & 0x3F);
+        if (cp >= 0x800 && (cp < 0xD800 || cp > 0xDFFF)) {
+          utf16.push_back(static_cast<jchar>(cp));
+        } else {
+          utf16.push_back(0xFFFD);
+        }
+        i += 3;
+      } else {
+        utf16.push_back(0xFFFD);
+        i += 1;
+      }
+    } else if ((b0 & 0xF8) == 0xF0) {
+      if (i + 3 < len &&
+          (bytes[i + 1] & 0xC0) == 0x80 &&
+          (bytes[i + 2] & 0xC0) == 0x80 &&
+          (bytes[i + 3] & 0xC0) == 0x80) {
+        uint32_t cp = ((b0 & 0x07) << 18) |
+                      ((bytes[i + 1] & 0x3F) << 12) |
+                      ((bytes[i + 2] & 0x3F) << 6) |
+                      (bytes[i + 3] & 0x3F);
+        if (cp >= 0x10000 && cp <= 0x10FFFF) {
+          cp -= 0x10000;
+          utf16.push_back(static_cast<jchar>(0xD800 + (cp >> 10)));
+          utf16.push_back(static_cast<jchar>(0xDC00 + (cp & 0x3FF)));
+        } else {
+          utf16.push_back(0xFFFD);
+        }
+        i += 4;
+      } else {
+        utf16.push_back(0xFFFD);
+        i += 1;
+      }
+    } else {
+      utf16.push_back(0xFFFD);
+      i += 1;
+    }
+  }
+  return env->NewString(utf16.data(), static_cast<jsize>(utf16.size()));
 }
 
 void applySessionOptionsLocked(RimeApi* api, RimeSessionId sid) {

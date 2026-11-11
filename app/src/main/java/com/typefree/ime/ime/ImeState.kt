@@ -314,8 +314,13 @@ object ImeLogic {
         }
     }
 
-    fun isIncognitoImeOptions(imeOptions: Int, inputType: Int = 0): Boolean {
-        return (imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0 ||
+    fun isIncognitoImeOptions(
+        imeOptions: Int,
+        inputType: Int = 0,
+        manualIncognitoMode: Boolean = false
+    ): Boolean {
+        return manualIncognitoMode ||
+            (imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0 ||
             isPasswordEditorInputType(inputType)
     }
 

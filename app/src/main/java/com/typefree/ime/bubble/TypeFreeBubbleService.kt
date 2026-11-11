@@ -460,22 +460,38 @@ class TypeFreeBubbleService :
                             if (!inserted) {
                                 copyToClipboard(finalOut)
                             }
-                            repository.addHistory(
-                                HistoryRecord(
-                                    targetAppName = if (appName == "未知应用") "悬浮胶囊" else appName,
-                                    targetPackage = pkg,
-                                    styleName = activeStyle.name,
-                                    isSpeakToEdit = selectedText.isNotBlank(),
-                                    intentMode = intentMode,
-                                    originalSelectedText = selectedText,
-                                    rawTranscript = exec.rawTranscript,
-                                    polishedText = finalOut,
-                                    durationMs = recorded.durationMs,
-                                    latencyMs = exec.latencyMs,
-                                    modeLabel = "胶囊 · ${exec.modeSummary}",
-                                    audioFilePath = recorded.wavFile.absolutePath
+                            val isIncognito = settings.manualIncognitoMode ||
+                                liveSnap.isSensitivePassword ||
+                                ImeLogic.isIncognitoImeOptions(
+                                    imeOptions = 0,
+                                    inputType = liveSnap.inputType,
+                                    manualIncognitoMode = settings.manualIncognitoMode
                                 )
-                            )
+                            if (isIncognito) {
+                                runCatching { recorded.wavFile.delete() }
+                            } else {
+                                val archivedWav = WavAudioRecorder.archiveWavForHistory(
+                                    baseDir = filesDir,
+                                    wavFile = recorded.wavFile,
+                                    retention = settings.historyRetention
+                                )
+                                repository.addHistory(
+                                    HistoryRecord(
+                                        targetAppName = if (appName == "未知应用") "悬浮胶囊" else appName,
+                                        targetPackage = pkg,
+                                        styleName = activeStyle.name,
+                                        isSpeakToEdit = selectedText.isNotBlank(),
+                                        intentMode = intentMode,
+                                        originalSelectedText = selectedText,
+                                        rawTranscript = exec.rawTranscript,
+                                        polishedText = finalOut,
+                                        durationMs = recorded.durationMs,
+                                        latencyMs = exec.latencyMs,
+                                        modeLabel = "胶囊 · ${exec.modeSummary}",
+                                        audioFilePath = archivedWav.absolutePath
+                                    )
+                                )
+                            }
                             vibrate(strong = false)
                             runCatching { aiEngine.prewarmLiveStreamingIfNeeded(settings) }
                             showTemporaryFeedback(

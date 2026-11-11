@@ -381,6 +381,17 @@ class AiPipelineEngine(
                             }.joinToString("\n")
                         )
                     } else {
+                        val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
+                        val canSendVision = canRouteVisionScreenshot(
+                            primaryBaseUrl = llmCfg.baseUrl,
+                            primaryModel = llmCfg.model,
+                            fallbackGeminiConfig = fallbackGeminiCfg
+                        )
+                        val activeImageB64 = if (effectiveIntent == VoiceIntentMode.HELP_ME_WRITE && canSendVision) {
+                            chatContextScreenshotBase64
+                        } else {
+                            ""
+                        }
                         val (sysPrompt, usrPrompt) = when (effectiveIntent) {
                             VoiceIntentMode.SPEAK_TO_EDIT -> PromptBuilder.buildSpeakToEditPrompts(
                                 selectedText = selectedText,
@@ -398,7 +409,7 @@ class AiPipelineEngine(
                                 dictionary = settings.dictionary,
                                 surroundingBeforeCursor = safeContext,
                                 chatContextMessages = chatContextMessages,
-                                hasChatScreenshot = chatContextScreenshotBase64.isNotBlank()
+                                hasChatScreenshot = activeImageB64.isNotBlank()
                             )
                             VoiceIntentMode.TRANSLATE -> PromptBuilder.buildTranslatePrompts(
                                 rawSpeech = rawTranscript,
@@ -414,17 +425,12 @@ class AiPipelineEngine(
                                 surroundingBeforeCursor = safeContext
                             )
                         }
-                        val activeImageB64 = if (effectiveIntent == VoiceIntentMode.HELP_ME_WRITE) {
-                            chatContextScreenshotBase64
-                        } else {
-                            ""
-                        }
                         executeLlmChatWithDiagnostics(
                             config = llmCfg,
                             systemPrompt = sysPrompt,
                             userPrompt = usrPrompt,
                             imageJpegBase64 = activeImageB64,
-                            fallbackGeminiConfig = resolveAvailableGeminiVisionConfig(settings)
+                            fallbackGeminiConfig = fallbackGeminiCfg
                         )
                     }
                     val polished = llmOutcome.text
@@ -458,7 +464,10 @@ class AiPipelineEngine(
                     }
 
                     onStageChanged(PipelineStage.MULTIMODAL_PROCESSING)
-                    val activeImageB64 = if (effectiveIntent == VoiceIntentMode.HELP_ME_WRITE) {
+                    val activeImageB64 = if (
+                        effectiveIntent == VoiceIntentMode.HELP_ME_WRITE &&
+                        mmCfg.protocol == MultimodalProtocol.GEMINI_NATIVE
+                    ) {
                         chatContextScreenshotBase64
                     } else {
                         ""
@@ -682,17 +691,6 @@ class AiPipelineEngine(
         )
     }
 
-    private fun isKnownPureTextModel(model: String): Boolean {
-        val lower = model.trim().lowercase()
-        return lower.startsWith("deepseek-chat") ||
-            lower.startsWith("deepseek-reasoner") ||
-            lower.startsWith("deepseek-v3") ||
-            lower.startsWith("deepseek-r1") ||
-            lower.startsWith("qwen-turbo") ||
-            lower.startsWith("qwen-plus") ||
-            lower.startsWith("qwen2.5-") && !lower.contains("vl")
-    }
-
     private fun executeLlmChatWithDiagnostics(
         config: LlmConfig,
         systemPrompt: String,
@@ -716,15 +714,24 @@ class AiPipelineEngine(
             )
         }
         if (imageJpegBase64.isNotBlank()) {
-            if (isKnownPureTextModel(config.model) && fallbackGeminiConfig != null) {
-                val visionAttempt = runCatching {
-                    callGeminiTextOnlyWithDiagnostics(
-                        config = fallbackGeminiConfig,
-                        fullPrompt = "$systemPrompt\n\n$userPrompt",
-                        imageJpegBase64 = imageJpegBase64
-                    )
+            if (isKnownPureTextModel(config.model)) {
+                if (fallbackGeminiConfig != null) {
+                    val visionAttempt = runCatching {
+                        callGeminiTextOnlyWithDiagnostics(
+                            config = fallbackGeminiConfig,
+                            fullPrompt = "$systemPrompt\n\n$userPrompt",
+                            imageJpegBase64 = imageJpegBase64
+                        )
+                    }
+                    visionAttempt.getOrNull()?.let { return it }
                 }
-                visionAttempt.getOrNull()?.let { return it }
+                val strippedPrompt = PromptBuilder.stripChatScreenVisionGuide(userPrompt)
+                return callOpenAiChatCompletionWithDiagnostics(
+                    config = config,
+                    systemPrompt = systemPrompt,
+                    userPrompt = strippedPrompt,
+                    imageJpegBase64 = ""
+                )
             }
             val openAiVisionAttempt = runCatching {
                 callOpenAiChatCompletionWithDiagnostics(
@@ -746,7 +753,12 @@ class AiPipelineEngine(
                 geminiFallback.getOrNull()?.let { return it }
             }
         }
-        return callOpenAiChatCompletionWithDiagnostics(config, systemPrompt, userPrompt, imageJpegBase64 = "")
+        val textOnlyPrompt = if (imageJpegBase64.isNotBlank()) {
+            PromptBuilder.stripChatScreenVisionGuide(userPrompt)
+        } else {
+            userPrompt
+        }
+        return callOpenAiChatCompletionWithDiagnostics(config, systemPrompt, textOnlyPrompt, imageJpegBase64 = "")
     }
 
     /**
@@ -764,6 +776,30 @@ class AiPipelineEngine(
     ): Result<PipelineExecutionResult> = withContext(Dispatchers.IO) {
         val startMs = System.currentTimeMillis()
         try {
+            val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
+            val canSendVision = when (settings.pipelineMode) {
+                PipelineMode.DUAL_STAGE -> {
+                    val llmCfg = resolveEffectiveLlmConfig(settings)
+                    canRouteVisionScreenshot(
+                        primaryBaseUrl = llmCfg.baseUrl,
+                        primaryModel = llmCfg.model,
+                        fallbackGeminiConfig = fallbackGeminiCfg
+                    )
+                }
+                PipelineMode.MULTIMODAL_DIRECT -> {
+                    val mmCfg = settings.multimodalConfig
+                    when (mmCfg.protocol) {
+                        MultimodalProtocol.GEMINI_NATIVE -> true
+                        MultimodalProtocol.OPENAI_AUDIO_CHAT ->
+                            canRouteVisionScreenshot(
+                                primaryBaseUrl = mmCfg.baseUrl,
+                                primaryModel = mmCfg.model,
+                                fallbackGeminiConfig = fallbackGeminiCfg
+                            )
+                    }
+                }
+            }
+            val effectiveScreenshotB64 = if (canSendVision) chatContextScreenshotBase64 else ""
             val isContextualReply = chatContextMessages.isNotEmpty() || chatContextScreenshotBase64.isNotBlank()
             val (sysPrompt, usrPrompt) = if (isContextualReply) {
                 PromptBuilder.buildHelpMeWritePrompts(
@@ -773,7 +809,7 @@ class AiPipelineEngine(
                     dictionary = settings.dictionary,
                     surroundingBeforeCursor = "",
                     chatContextMessages = chatContextMessages,
-                    hasChatScreenshot = chatContextScreenshotBase64.isNotBlank()
+                    hasChatScreenshot = effectiveScreenshotB64.isNotBlank()
                 )
             } else if (!explicitInstruction.isNullOrBlank()) {
                 PromptBuilder.buildSpeakToEditPrompts(
@@ -806,8 +842,8 @@ class AiPipelineEngine(
                         config = llmCfg,
                         systemPrompt = sysPrompt,
                         userPrompt = usrPrompt,
-                        imageJpegBase64 = chatContextScreenshotBase64,
-                        fallbackGeminiConfig = resolveAvailableGeminiVisionConfig(settings)
+                        imageJpegBase64 = effectiveScreenshotB64,
+                        fallbackGeminiConfig = fallbackGeminiCfg
                     )
                     output = outcome.text
                     diagLog = outcome.diagnosticLog
@@ -823,7 +859,7 @@ class AiPipelineEngine(
                             val outcome = callGeminiTextOnlyWithDiagnostics(
                                 config = mmCfg,
                                 fullPrompt = "$sysPrompt\n\n$usrPrompt",
-                                imageJpegBase64 = chatContextScreenshotBase64
+                                imageJpegBase64 = effectiveScreenshotB64
                             )
                             output = outcome.text
                             diagLog = outcome.diagnosticLog
@@ -839,8 +875,8 @@ class AiPipelineEngine(
                                 ),
                                 systemPrompt = sysPrompt,
                                 userPrompt = usrPrompt,
-                                imageJpegBase64 = chatContextScreenshotBase64,
-                                fallbackGeminiConfig = resolveAvailableGeminiVisionConfig(settings)
+                                imageJpegBase64 = effectiveScreenshotB64,
+                                fallbackGeminiConfig = fallbackGeminiCfg
                             )
                             output = outcome.text
                             diagLog = outcome.diagnosticLog
@@ -1523,6 +1559,14 @@ class AiPipelineEngine(
         )
         var (code, respText) = sendOnce(initialBody)
 
+        // Short-circuit immediately when an endpoint rejects multimodal image_url/array content with HTTP 400
+        // so we NEVER run thinking-hint fallback retries or pollute unsupportedThinkingHintKeys!
+        if (code == 400 && imageJpegBase64.isNotBlank() && isVisionPayloadRejectionHttp400(respText)) {
+            throw IOException(
+                "当前模型不支持多模态图片输入 (400): ${extractErrorDetail(respText)}\n--- 诊断日志 ---\n${traceLines.joinToString("\n")}"
+            )
+        }
+
         // Step 1: Cross-syntax non-thinking fallback (e.g. `thinking.disabled` <-> `reasoning_effort=minimal`
         // for custom Volcengine `ep-...` or Seed 2.x proxies) so we NEVER accidentally run full CoT!
         if (code == 400 && hadThinkingHint && !respText.contains("temperature", ignoreCase = true)) {
@@ -1829,6 +1873,63 @@ class AiPipelineEngine(
         fun clearUnsupportedThinkingCache() {
             unsupportedThinkingHintKeys.clear()
             preferredThinkingSyntaxCache.clear()
+        }
+
+        fun isThinkingHintMarkedUnsupported(baseUrl: String, model: String, mode: ThinkingMode): Boolean {
+            return thinkingCacheKey(baseUrl, model, mode) in unsupportedThinkingHintKeys
+        }
+
+        fun isKnownPureTextModel(model: String): Boolean {
+            val lower = model.trim().lowercase()
+            val code = normalizeModelCode(model)
+            if (code.isEmpty()) return false
+            val hasVisionMarker = lower.contains("vl") ||
+                lower.contains("vision") ||
+                lower.contains("omni") ||
+                lower.contains("4v") ||
+                lower.contains("-v-") ||
+                lower.endsWith("-v")
+            return when {
+                code.startsWith("deepseek-") && !code.contains("vl") -> true
+                code.startsWith("qwen-turbo") || code.startsWith("qwen-plus") || code.startsWith("qwen-max") ->
+                    !hasVisionMarker
+                (code.startsWith("qwen2.5-") || code.startsWith("qwen2-") || code.startsWith("qwen3-") || lower.contains("qwen3-")) &&
+                    !hasVisionMarker -> true
+                (code.startsWith("doubao-1-5-lite") || code.startsWith("doubao-1-5-pro") ||
+                    code.startsWith("doubao-lite") || code.startsWith("doubao-pro")) &&
+                    !lower.contains("vision") -> true
+                (code.startsWith("glm-4-flash") || code.startsWith("glm-4-air") ||
+                    code.startsWith("glm-4-plus") || code.startsWith("glm-4-9b") || code == "glm-4") &&
+                    !hasVisionMarker -> true
+                (code.startsWith("yi-lightning") || code.startsWith("llama-3.3") || code.startsWith("llama-3.1")) &&
+                    !hasVisionMarker -> true
+                else -> false
+            }
+        }
+
+        fun canRouteVisionScreenshot(
+            primaryBaseUrl: String,
+            primaryModel: String,
+            fallbackGeminiConfig: MultimodalConfig?
+        ): Boolean {
+            if (EndpointResolver.isGeminiNativeHttpUrl(primaryBaseUrl)) return true
+            if (isKnownPureTextModel(primaryModel)) {
+                return fallbackGeminiConfig != null
+            }
+            return true
+        }
+
+        fun isVisionPayloadRejectionHttp400(respBody: String): Boolean {
+            val lower = respBody.lowercase()
+            return lower.contains("image_url") ||
+                lower.contains("multimodal") ||
+                lower.contains("vision") ||
+                lower.contains("content must be a string") ||
+                lower.contains("expected a string") ||
+                lower.contains("invalid type: sequence") ||
+                lower.contains("unsupported content type") ||
+                lower.contains("does not support image") ||
+                lower.contains("image input")
         }
 
         internal fun alternateThinkingSyntaxForFallback(

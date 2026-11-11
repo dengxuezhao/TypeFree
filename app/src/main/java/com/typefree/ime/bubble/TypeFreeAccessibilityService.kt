@@ -9,10 +9,12 @@ import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.InputType
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.typefree.ime.TypeFreeApp
 import com.typefree.ime.data.AppSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -56,19 +58,26 @@ class TypeFreeAccessibilityService : AccessibilityService() {
         TypeFreeBubbleController.syncBubbleService(this)
     }
 
+    @Volatile
+    private var lastContentChangedHandledAtMs: Long = 0L
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        when (event.eventType) {
-            AccessibilityEvent.TYPE_VIEW_FOCUSED,
-            AccessibilityEvent.TYPE_VIEW_CLICKED,
-            AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
-            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
-                refreshFocusedInputState()
-            }
-            else -> Unit
+        val bubbleEnabled = runCatching {
+            TypeFreeApp.instance.repository.settings.value.bubbleEnabled
+        }.getOrDefault(false)
+        val nowMs = SystemClock.uptimeMillis()
+        val (shouldProcess, allowMultiWindowScan) = shouldProcessAccessibilityEvent(
+            eventType = event.eventType,
+            bubbleEnabled = bubbleEnabled,
+            nowMs = nowMs,
+            lastContentChangedMs = lastContentChangedHandledAtMs
+        )
+        if (!shouldProcess) return
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            lastContentChangedHandledAtMs = nowMs
         }
+        refreshFocusedInputState(allowMultiWindowScan = allowMultiWindowScan)
     }
 
     override fun onInterrupt() {
@@ -83,8 +92,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    fun refreshFocusedInputState(): FocusedInputSnapshot {
-        val focusedNode = findFocusedEditableNode()
+    fun refreshFocusedInputState(allowMultiWindowScan: Boolean = true): FocusedInputSnapshot {
+        val focusedNode = findFocusedEditableNode(allowMultiWindowScan = allowMultiWindowScan)
         if (focusedNode == null) {
             val empty = FocusedInputSnapshot(hasEditableFocus = false)
             TypeFreeBubbleController.updateFocusedInput(empty)
@@ -215,7 +224,7 @@ class TypeFreeAccessibilityService : AccessibilityService() {
         return false
     }
 
-    private fun findFocusedEditableNode(): AccessibilityNodeInfo? {
+    private fun findFocusedEditableNode(allowMultiWindowScan: Boolean = true): AccessibilityNodeInfo? {
         try {
             val root = rootInActiveWindow
             if (root != null) {
@@ -223,6 +232,9 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                 if (inputFocused != null && isEditableTarget(inputFocused)) {
                     return inputFocused
                 }
+            }
+            if (!allowMultiWindowScan) {
+                return null
             }
             val windowList = windows
             if (windowList != null) {
@@ -330,7 +342,7 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     inputBoxTop = editableCandidate.boundsTop
                 }
             }
-            lastKnownInputBoxTopPx = inputBoxTop
+            recordInputBoxTopHint(expectedPackage, inputBoxTop)
 
             ChatScreenContextExtractor.extractChatContext(
                 nodes = collectedNodes,
@@ -376,7 +388,7 @@ class TypeFreeAccessibilityService : AccessibilityService() {
             return null
         }
 
-        val inputTopHint = lastKnownInputBoxTopPx
+        val inputTopHint = resolveInputBoxTopHintForPackage(expectedPackage)
         val rawBitmap = withTimeoutOrNull(950L) {
             suspendCancellableCoroutine<Bitmap?> { cont ->
                 try {
@@ -512,12 +524,73 @@ class TypeFreeAccessibilityService : AccessibilityService() {
     }
 
     companion object {
+        const val CONTENT_CHANGED_THROTTLE_MS = 180L
+
         @Volatile
         var activeInstance: TypeFreeAccessibilityService? = null
             private set
 
         @Volatile
         private var lastKnownInputBoxTopPx: Int = -1
+
+        @Volatile
+        private var lastKnownInputBoxPackage: String = ""
+
+        fun recordInputBoxTopHint(packageName: String, inputBoxTopPx: Int) {
+            if (packageName.isBlank() || inputBoxTopPx <= 0) {
+                if (packageName.isNotBlank() && packageName == lastKnownInputBoxPackage) {
+                    lastKnownInputBoxTopPx = -1
+                    lastKnownInputBoxPackage = ""
+                }
+                return
+            }
+            lastKnownInputBoxPackage = packageName
+            lastKnownInputBoxTopPx = inputBoxTopPx
+        }
+
+        fun resolveInputBoxTopHintForPackage(expectedPackage: String): Int {
+            if (expectedPackage.isBlank()) return -1
+            return if (expectedPackage == lastKnownInputBoxPackage && lastKnownInputBoxTopPx > 0) {
+                lastKnownInputBoxTopPx
+            } else {
+                -1
+            }
+        }
+
+        fun clearInputBoxTopHint() {
+            lastKnownInputBoxTopPx = -1
+            lastKnownInputBoxPackage = ""
+        }
+
+        /**
+         * Determines `(shouldProcess, allowMultiWindowScan)` for incoming accessibility events.
+         * - `TYPE_WINDOW_CONTENT_CHANGED` is ignored completely when the floating bubble is disabled,
+         *   throttled to `>= 180ms`, and strictly forbidden from invoking `getWindows()` multi-window IPC.
+         */
+        fun shouldProcessAccessibilityEvent(
+            eventType: Int,
+            bubbleEnabled: Boolean,
+            nowMs: Long,
+            lastContentChangedMs: Long
+        ): Pair<Boolean, Boolean> {
+            return when (eventType) {
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                    if (!bubbleEnabled) {
+                        false to false
+                    } else if (nowMs - lastContentChangedMs < CONTENT_CHANGED_THROTTLE_MS) {
+                        false to false
+                    } else {
+                        true to false
+                    }
+                }
+                AccessibilityEvent.TYPE_VIEW_FOCUSED,
+                AccessibilityEvent.TYPE_VIEW_CLICKED,
+                AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+                AccessibilityEvent.TYPE_WINDOWS_CHANGED -> true to true
+                else -> false to false
+            }
+        }
 
         @Volatile
         var debugSimulatedNodesForTest: Pair<String, List<RawScreenTextNode>>? = null

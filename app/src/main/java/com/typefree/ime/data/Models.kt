@@ -444,6 +444,7 @@ data class AppSettings(
     val chatContextReplyEnabled: Boolean = false, // 读屏上下文「AI 帮回」（默认关闭，需首次披露同意后开启）
     val chatContextDisclosureAccepted: Boolean = false, // 是否已阅读并同意「AI 帮回」首次显著披露
     val chatContextDisclosureDismissed: Boolean = false, // 是否已在键盘首次披露卡点过「暂不开启」（避免反复打扰，但不代表已同意披露）
+    val manualIncognitoMode: Boolean = false, // 手动无痕模式开关（开启后强制阻断个人词库/预测/剪贴板/历史音频/AI读屏）
     val replyAttitudePresets: List<ReplyAttitudePreset> = DefaultPresets.defaultReplyAttitudes(),
     val providerVault: Map<String, ProviderCredential> = emptyMap(),
     val snippets: List<SnippetEntry> = DefaultPresets.defaultSnippets(),

@@ -64,18 +64,21 @@ fun KeyboardToolPanel(
     onOpenStylePicker: () -> Unit,
     onToggleAiCompletion: () -> Unit,
     onToggleLiveWrite: () -> Unit,
+    onToggleManualIncognito: () -> Unit = {},
     onOpenDictionary: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val metrics = LocalKeyboardMetrics.current
+    val palette = LocalTypeFreeKeyboardPalette.current
     val s = metrics.elementScale
 
     Column(
         modifier = modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy((6f * s).dp)
+        verticalArrangement = Arrangement.spacedBy((5f * s).dp)
     ) {
-        // Inline 5-Level Height Adjustment Strip when "键盘高度" is expanded
+        // Inline 5-Level Height Adjustment Strip when "键盘高度" is expanded,
+        // or Compact Privacy / Manual Incognito Toggle Bar otherwise
         AnimatedVisibility(
             visible = uiState.isToolPanelHeightExpanded,
             enter = fadeIn(tween(120)) + expandVertically(tween(140)),
@@ -89,6 +92,64 @@ fun KeyboardToolPanel(
                 onSelectLevel = onSelectHeightLevel,
                 onSelectLiftLevel = onSelectLiftLevel
             )
+        }
+
+        if (!uiState.isToolPanelHeightExpanded) {
+            val isManualIncognito = settings.manualIncognitoMode
+            val isEffectiveIncognito = uiState.isIncognitoMode || isManualIncognito
+            val barBg = if (isEffectiveIncognito) {
+                TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.16f else 0.12f)
+            } else {
+                palette.capsuleTrackBg
+            }
+            val barBorder = if (isEffectiveIncognito) {
+                TypeFreeEmerald.copy(alpha = 0.65f)
+            } else {
+                palette.keyBorder
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(28.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(barBg)
+                    .border(1.dp, barBorder, RoundedCornerShape(9.dp))
+                    .clickable(onClick = onToggleManualIncognito)
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = if (isManualIncognito) {
+                        "🕵️ 无痕模式 · 已手动开启（不记历史/词频/剪贴板/读屏）"
+                    } else if (uiState.isIncognitoMode) {
+                        "🕵️ 无痕模式 · 宿主输入框自动受保护（点此锁定手动无痕）"
+                    } else {
+                        "🕵️ 无痕模式 · 已关闭（点击一键开启隐私无痕输入）"
+                    },
+                    color = if (isEffectiveIncognito) {
+                        if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+                    } else {
+                        palette.keyTextMuted
+                    },
+                    fontSize = 10.5.sp,
+                    fontWeight = if (isEffectiveIncognito) FontWeight.SemiBold else FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = if (isManualIncognito) "关闭" else "开启",
+                    color = if (isManualIncognito) {
+                        if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+                    } else {
+                        palette.keyTextPrimary
+                    },
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
         }
 
         // Row 1: 剪贴板 · 键盘高度 · 输入方案 · 文风
@@ -408,9 +469,12 @@ fun shortInputSchemeLabel(scheme: InputScheme): String = when (scheme) {
     InputScheme.RIME_CUSTOM -> "自定义方案"
 }
 
-fun nextCycledInputScheme(current: InputScheme): InputScheme = when (current) {
+fun nextCycledInputScheme(
+    current: InputScheme,
+    hasCustomSchema: Boolean = false
+): InputScheme = when (current) {
     InputScheme.RIME_PINYIN -> InputScheme.RIME_DOUBLE_PINYIN_FLYPY
     InputScheme.RIME_DOUBLE_PINYIN_FLYPY -> InputScheme.FLYPY_TABLE
-    InputScheme.FLYPY_TABLE -> InputScheme.RIME_PINYIN
+    InputScheme.FLYPY_TABLE -> if (hasCustomSchema) InputScheme.RIME_CUSTOM else InputScheme.RIME_PINYIN
     InputScheme.RIME_CUSTOM -> InputScheme.RIME_PINYIN
 }
