@@ -48,10 +48,19 @@ sealed interface ImeUiAction {
     // Help Me Write & Speak to Edit
     data class SelectQuickEditChip(val chip: QuickEditChip) : ImeUiAction
     data class SelectHelpWritePreset(val preset: HelpWritePromptPreset) : ImeUiAction
+    data class RunHelpWriteDraftTransform(val preset: HelpWritePromptPreset) : ImeUiAction
     data object DirectGenerateHelpWrite : ImeUiAction
     data object AcceptChatContextDisclosure : ImeUiAction
     data object DeclineChatContextDisclosure : ImeUiAction
     data object ToggleIgnoreChatContext : ImeUiAction
+
+    // v3.5.0 Ask AI Card panel actions
+    data object OpenAskAiCard : ImeUiAction
+    data object ReturnFromAskAiToQwerty : ImeUiAction
+    data object RetryAskAiCard : ImeUiAction
+    data object DismissAskAiAndClearEditor : ImeUiAction
+    data object CopyAskAiAnswer : ImeUiAction
+    data object CommitAskAiAnswerToEditor : ImeUiAction
 
     // Style & Preferences
     data object SelectAutoStyle : ImeUiAction

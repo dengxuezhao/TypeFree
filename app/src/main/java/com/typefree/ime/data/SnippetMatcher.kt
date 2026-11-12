@@ -68,6 +68,7 @@ object SnippetMatcher {
      * Parses inline `==` Ask-AI query in an input field (e.g. `==帮我用英文礼貌催一下合同进度`).
      * Returns the extracted query string when valid, or `null` if not an `==` command.
      */
+    @Deprecated("Replaced in v3.5.0 by top bar [🔍 问AI] capsule and AskAiCardPanel; kept for unit test compatibility.")
     fun extractEqualEqualAskAiQuery(editorText: String): String? {
         val trimmed = editorText.trim()
         val body = when {

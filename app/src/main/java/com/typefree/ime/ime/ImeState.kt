@@ -51,7 +51,8 @@ enum class VoiceSubPanel {
     NONE,
     HELP_ME_WRITE,
     SPEAK_TO_EDIT,
-    JEV_COPILOT
+    JEV_COPILOT,
+    ASK_AI_CARD
 }
 
 enum class ShiftKeyState {
@@ -155,7 +156,12 @@ data class ImeUiState(
     val jevUserBottomLine: String = "",
     val jevExcludedReplies: List<String> = emptyList(),
     val isFullScreenPeekCapturing: Boolean = false,
-    val isJevContextInspectorOpen: Boolean = false
+    val isJevContextInspectorOpen: Boolean = false,
+    val currentEditorText: String = "",
+    val askAiQuery: String = "",
+    val askAiAnswer: String = "",
+    val isAskAiLoading: Boolean = false,
+    val askAiErrorMessage: String? = null
 ) {
     val hasActiveChatContext: Boolean
         get() = capturedChatContext.hasContext && !ignoreChatContextForThisTurn && !isIncognitoMode
@@ -194,6 +200,7 @@ data class ImeUiState(
     val resolvedVoiceSubPanel: VoiceSubPanel
         get() = when {
             voiceSubPanel == VoiceSubPanel.JEV_COPILOT -> VoiceSubPanel.JEV_COPILOT
+            voiceSubPanel == VoiceSubPanel.ASK_AI_CARD -> VoiceSubPanel.ASK_AI_CARD
             isSpeakToEditActive -> VoiceSubPanel.SPEAK_TO_EDIT
             voiceSubPanel == VoiceSubPanel.SPEAK_TO_EDIT -> VoiceSubPanel.NONE
             else -> voiceSubPanel

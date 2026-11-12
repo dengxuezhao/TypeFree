@@ -1228,8 +1228,8 @@ private fun AppearanceAndPreferencesPane(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
                 PreferenceSwitchRow(
-                    title = "🤖 输入框「==问题」回车直接问 AI",
-                    subtitle = "在任意输入框以 == 开头输入问题或指令（如 ==把下午3点换算成美西时间）后按回车/发送键，自动拦截并替换为 AI 答案",
+                    title = "🔍 顶栏「问AI」随手查胶囊",
+                    subtitle = "在普通输入框打字满 2 个字后，键盘顶栏自动浮现「🔍 问AI」，点击在键盘内弹出安全解答卡片，不擅自修改输入框内容",
                     checked = settings.equalEqualAskAiEnabled,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(equalEqualAskAiEnabled = enabled) }

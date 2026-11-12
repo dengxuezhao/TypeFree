@@ -231,6 +231,7 @@ class AiPipelineEngine(
         chatContextMessages: List<String> = emptyList(),
         chatContextScreenshotBase64: String = "",
         attitudeInstruction: String = "",
+        editorDraft: String = "",
         onStageChanged: (PipelineStage) -> Unit = {}
     ): Result<PipelineExecutionResult> = withContext(Dispatchers.IO) {
         val startMs = System.currentTimeMillis()
@@ -419,7 +420,8 @@ class AiPipelineEngine(
                                 dictionary = settings.dictionary,
                                 surroundingBeforeCursor = safeContext,
                                 chatContextMessages = chatContextMessages,
-                                hasChatScreenshot = activeImageB64.isNotBlank()
+                                hasChatScreenshot = activeImageB64.isNotBlank(),
+                                editorDraft = editorDraft
                             )
                             VoiceIntentMode.JEV_COPILOT -> PromptBuilder.buildJevCopilotPrompts(
                                 domainProfile = JevDomainProfile.FORMAL_WORKFLOW,
@@ -502,7 +504,8 @@ class AiPipelineEngine(
                         surroundingBeforeCursor = safeContext,
                         chatContextMessages = chatContextMessages,
                         hasChatScreenshot = activeImageB64.isNotBlank(),
-                        attitudeInstruction = attitudeInstruction
+                        attitudeInstruction = attitudeInstruction,
+                        editorDraft = editorDraft
                     )
                     val output = when (mmCfg.protocol) {
                         MultimodalProtocol.GEMINI_NATIVE -> {
@@ -943,6 +946,96 @@ class AiPipelineEngine(
                     finalOutput = output,
                     latencyMs = elapsed,
                     modeSummary = modelLabel,
+                    llmLatencyMs = elapsed,
+                    diagnosticLog = diagLog
+                )
+            )
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Executes `🔍 问AI` query for [com.typefree.ime.ime.panels.AskAiCardPanel]:
+     * Direct query answering with 100% static [PromptBuilder.ASK_AI_CARD_SYSTEM_PROMPT].
+     */
+    suspend fun runAskAiCardQuery(
+        settings: AppSettings,
+        query: String,
+        targetAppName: String = ""
+    ): Result<PipelineExecutionResult> = withContext(Dispatchers.IO) {
+        val startMs = System.currentTimeMillis()
+        try {
+            val (sysPrompt, usrPrompt) = PromptBuilder.buildAskAiCardPrompts(
+                query = query,
+                targetAppName = targetAppName,
+                dictionary = settings.dictionary
+            )
+            val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
+            val output: String
+            val modelLabel: String
+            var diagLog = ""
+
+            when (settings.pipelineMode) {
+                PipelineMode.DUAL_STAGE -> {
+                    val llmCfg = resolveEffectiveLlmConfig(settings)
+                    if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
+                        return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
+                    }
+                    val outcome = executeLlmChatWithDiagnostics(
+                        config = llmCfg,
+                        systemPrompt = sysPrompt,
+                        userPrompt = usrPrompt,
+                        imageJpegBase64 = "",
+                        fallbackGeminiConfig = fallbackGeminiCfg
+                    )
+                    output = outcome.text
+                    diagLog = outcome.diagnosticLog
+                    modelLabel = llmCfg.model
+                }
+                PipelineMode.MULTIMODAL_DIRECT -> {
+                    val mmCfg = settings.multimodalConfig
+                    if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
+                        return@withContext Result.failure(IllegalStateException("请先填写多模态 API Key"))
+                    }
+                    when (mmCfg.protocol) {
+                        MultimodalProtocol.GEMINI_NATIVE -> {
+                            val outcome = callGeminiTextOnlyWithDiagnostics(
+                                config = mmCfg,
+                                fullPrompt = "$sysPrompt\n\n$usrPrompt"
+                            )
+                            output = outcome.text
+                            diagLog = outcome.diagnosticLog
+                            modelLabel = mmCfg.model
+                        }
+                        MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
+                            val outcome = executeLlmChatWithDiagnostics(
+                                config = LlmConfig(
+                                    baseUrl = mmCfg.baseUrl,
+                                    apiKey = mmCfg.apiKey,
+                                    model = mmCfg.model,
+                                    temperature = mmCfg.temperature
+                                ),
+                                systemPrompt = sysPrompt,
+                                userPrompt = usrPrompt,
+                                imageJpegBase64 = "",
+                                fallbackGeminiConfig = fallbackGeminiCfg
+                            )
+                            output = outcome.text
+                            diagLog = outcome.diagnosticLog
+                            modelLabel = mmCfg.model
+                        }
+                    }
+                }
+            }
+
+            val elapsed = System.currentTimeMillis() - startMs
+            Result.success(
+                PipelineExecutionResult(
+                    rawTranscript = query,
+                    finalOutput = output.trim(),
+                    latencyMs = elapsed,
+                    modeSummary = "问AI · $modelLabel",
                     llmLatencyMs = elapsed,
                     diagnosticLog = diagLog
                 )

@@ -88,31 +88,16 @@ class VoiceController(
         host.performKeyFeedback(strong = false)
         finalizeJevDraftAndClearMemory(clearContext = false)
         onResetComposing()
-        val settingsSnap = host.repository.settings.value
         val stateSnap = host.stateFlow.value
         val isPassword = ImeLogic.isPasswordEditorInputType(stateSnap.currentInputType)
-        val accessibilityConnected =
-            TypeFreeAccessibilityService.activeInstance != null || TypeFreeAccessibilityService.debugSimulatedNodesForTest != null
-        val shouldPromptDisclosure = stateSnap.rawSelectedText.isBlank() &&
-            accessibilityConnected &&
-            ChatScreenContextExtractor.shouldPromptFirstTimeDisclosure(
-                settings = settingsSnap,
-                isIncognitoMode = stateSnap.isIncognitoMode,
-                isPasswordInput = isPassword,
-                targetInputPackage = stateSnap.targetPackage
-            )
-        val capturedContext = if (stateSnap.rawSelectedText.isBlank() && !shouldPromptDisclosure) {
-            chatContextCaptureProvider(
-                stateSnap.targetPackage,
-                stateSnap.targetAppName,
-                settingsSnap,
-                stateSnap.isIncognitoMode,
-                isPassword,
-                false
-            )
+        val editorDraft = if (isPassword) "" else host.readFullEditorTextSafely().trim()
+        val isSocialPkg = com.typefree.ime.ime.panels.HelpWriteChipFilter.isSocialContentPackage(stateSnap.targetPackage)
+        val defaultPreset = if (isSocialPkg && editorDraft.isBlank()) {
+            com.typefree.ime.ime.panels.HelpWriteChipFilter.creativeGenres.firstOrNull { it.id == "genre_seed_note" }
         } else {
-            CapturedChatContext()
+            null
         }
+
         host.stateFlow.update { prev ->
             if (prev.rawSelectedText.isNotBlank()) {
                 prev.copy(
@@ -123,6 +108,7 @@ class VoiceController(
                     capturedChatContext = CapturedChatContext(),
                     ignoreChatContextForThisTurn = false,
                     showChatContextDisclosurePrompt = false,
+                    currentEditorText = editorDraft,
                     jevCopilotResult = null,
                     selectedJevStrategyIndex = -1,
                     isJevLoading = false,
@@ -146,9 +132,11 @@ class VoiceController(
                     tabMode = KeyboardTabMode.VOICE,
                     voiceSubPanel = VoiceSubPanel.HELP_ME_WRITE,
                     activeIntentMode = VoiceIntentMode.HELP_ME_WRITE,
-                    capturedChatContext = capturedContext,
+                    capturedChatContext = CapturedChatContext(),
                     ignoreChatContextForThisTurn = false,
-                    showChatContextDisclosurePrompt = shouldPromptDisclosure,
+                    showChatContextDisclosurePrompt = false,
+                    currentEditorText = editorDraft,
+                    selectedHelpWritePreset = defaultPreset,
                     jevCopilotResult = null,
                     selectedJevStrategyIndex = -1,
                     isJevLoading = false,
@@ -156,7 +144,6 @@ class VoiceController(
                     jevExcludedReplies = emptyList(),
                     isFullScreenPeekCapturing = false,
                     isJevContextInspectorOpen = false,
-                    selectedHelpWritePreset = null,
                     bigBangClipboardItem = null,
                     isClipboardOpen = false,
                     isToolPanelOpen = false,
@@ -168,15 +155,6 @@ class VoiceController(
                     isFlypyCandidateSheetExpanded = false
                 )
             }
-        }
-        if (stateSnap.rawSelectedText.isBlank() && !shouldPromptDisclosure) {
-            triggerChatViewportScreenshotCapture(
-                expectedPackage = stateSnap.targetPackage,
-                appName = stateSnap.targetAppName,
-                settings = settingsSnap,
-                isIncognitoMode = stateSnap.isIncognitoMode,
-                isPasswordInput = isPassword
-            )
         }
     }
 
@@ -1474,6 +1452,7 @@ class VoiceController(
             chatContextMessages = activeChatContext,
             chatContextScreenshotBase64 = activeChatScreenshot,
             attitudeInstruction = activeAttitudeInstruction,
+            editorDraft = if (resolvedIntent == VoiceIntentMode.HELP_ME_WRITE) snapshot.currentEditorText.trim() else "",
             onStageChanged = { stage ->
                 host.stateFlow.update { curr ->
                     curr.copy(
@@ -1506,12 +1485,36 @@ class VoiceController(
                         latencyMs = displayLatencyMs
                     )
                 } else {
-                    val overwritten = if (isSpeakToEdit) liveSelection else host.readSelectedTextSafely()
-                    commitPipelineOutput(
-                        finalText = finalOutput,
-                        overwrittenSelection = overwritten,
-                        latencyMs = displayLatencyMs
-                    )
+                    if (resolvedIntent == VoiceIntentMode.HELP_ME_WRITE && snapshot.currentEditorText.isNotBlank()) {
+                        replaceFullEditorTextSafely(
+                            finalOutput = finalOutput,
+                            originalText = snapshot.currentEditorText
+                        )
+                        host.stateFlow.update {
+                            it.copy(
+                                voicePhase = VoicePhase.SuccessToast(
+                                    preview = ImeLogic.formatSelectionPreview(finalOutput, 24),
+                                    latencyMs = displayLatencyMs
+                                ),
+                                voiceSubPanel = VoiceSubPanel.NONE,
+                                activeIntentMode = VoiceIntentMode.DICTATE,
+                                currentEditorText = finalOutput,
+                                selectedHelpWritePreset = null,
+                                undoSnapshot = host.peekTopUndoSnapshot(),
+                                rawSelectedText = "",
+                                ignoreSelectionForThisTurn = false,
+                                liveWriteStatus = LiveWriteUiStatus.INACTIVE
+                            )
+                        }
+                        scheduleToastReset()
+                    } else {
+                        val overwritten = if (isSpeakToEdit) liveSelection else host.readSelectedTextSafely()
+                        commitPipelineOutput(
+                            finalText = finalOutput,
+                            overwrittenSelection = overwritten,
+                            latencyMs = displayLatencyMs
+                        )
+                    }
                 }
                 val isIncognito = host.stateFlow.value.isIncognitoMode || settings.manualIncognitoMode
                 if (isIncognito) {
@@ -1855,6 +1858,7 @@ class VoiceController(
                 capturedChatContext = CapturedChatContext(),
                 ignoreChatContextForThisTurn = false,
                 showChatContextDisclosurePrompt = false,
+                currentEditorText = finalText,
                 selectedHelpWritePreset = null,
                 undoSnapshot = host.peekTopUndoSnapshot(),
                 rawSelectedText = "",
@@ -1863,6 +1867,244 @@ class VoiceController(
             )
         }
         scheduleToastReset()
+    }
+
+    fun replaceFullEditorTextSafely(finalOutput: String, originalText: String = "") {
+        val ic = host.currentInputConnection()
+        val currentFull = originalText.ifEmpty { host.readFullEditorTextSafely() }
+        if (ic != null) {
+            ic.beginBatchEdit()
+            val extracted = runCatching {
+                ic.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0)
+            }.getOrNull()
+            if (extracted?.text != null) {
+                ic.setSelection(0, extracted.text.length)
+                ic.commitText(finalOutput, 1)
+            } else {
+                val beforeLen = runCatching {
+                    ic.getTextBeforeCursor(4000, 0)?.length ?: currentFull.length
+                }.getOrDefault(currentFull.length)
+                val afterLen = runCatching {
+                    ic.getTextAfterCursor(4000, 0)?.length ?: 0
+                }.getOrDefault(0)
+                ic.deleteSurroundingText(beforeLen, afterLen)
+                ic.commitText(finalOutput, 1)
+            }
+            ic.endBatchEdit()
+        }
+
+        host.clearAutoLearnBaseline()
+        host.performHaptic(strong = true)
+        if (finalOutput.isNotEmpty()) {
+            onExternalCommitToEngine(finalOutput)
+        }
+        val undo = ImeLogic.createUndoSnapshot(
+            committedText = finalOutput,
+            replacedSelection = currentFull
+        )
+        host.pushUndoSnapshot(undo)
+    }
+
+    fun runHelpWriteDraftTransform(preset: HelpWritePromptPreset) {
+        val currPhase = host.stateFlow.value.voicePhase
+        if (currPhase is VoicePhase.Recording || currPhase is VoicePhase.Processing) return
+
+        host.performKeyFeedback(strong = false)
+        toastDismissJob?.cancel()
+        activePipelineJob?.cancel()
+
+        activePipelineJob = host.scope.launch {
+            val settings = host.repository.settings.value
+            val snapshot = host.stateFlow.value
+            val isPassword = ImeLogic.isPasswordEditorInputType(snapshot.currentInputType)
+            val currentDraft = if (isPassword) "" else host.readFullEditorTextSafely().trim().ifBlank { snapshot.currentEditorText.trim() }
+            if (currentDraft.isBlank()) return@launch
+
+            val targetPkg = snapshot.targetPackage
+            val targetAppName = snapshot.targetAppName
+            val (activeStyle, _) = host.repository.resolveActiveStyle(targetPkg, snapshot.currentInputType)
+
+            host.stateFlow.update {
+                it.copy(voicePhase = VoicePhase.Processing(stageText = "正在${preset.label}..."))
+            }
+
+            val transformResult = host.aiEngine.runTextTransform(
+                settings = settings,
+                activeStyle = activeStyle,
+                rawOrSelectedText = currentDraft,
+                explicitInstruction = preset.instruction,
+                targetAppName = targetAppName,
+                chatContextMessages = emptyList(),
+                chatContextScreenshotBase64 = ""
+            )
+
+            transformResult.fold(
+                onSuccess = { exec ->
+                    val finalOutput = exec.finalOutput
+                    replaceFullEditorTextSafely(finalOutput = finalOutput, originalText = currentDraft)
+                    host.stateFlow.update {
+                        it.copy(
+                            voicePhase = VoicePhase.SuccessToast(
+                                preview = ImeLogic.formatSelectionPreview(finalOutput, 24),
+                                latencyMs = exec.latencyMs
+                            ),
+                            tabMode = KeyboardTabMode.QWERTY,
+                            voiceSubPanel = VoiceSubPanel.NONE,
+                            currentEditorText = finalOutput,
+                            selectedHelpWritePreset = null,
+                            undoSnapshot = host.peekTopUndoSnapshot(),
+                            rawSelectedText = "",
+                            ignoreSelectionForThisTurn = false,
+                            liveWriteStatus = LiveWriteUiStatus.INACTIVE
+                        )
+                    }
+                    scheduleToastReset()
+                    host.showQuickActionToast("✓ 已一键成稿 · 可点 ↶ 撤回")
+                },
+                onFailure = { err ->
+                    if (err is CancellationException) return@launch
+                    host.performHaptic(strong = true)
+                    val errorPhase = ImeLogic.classifyErrorFlags(
+                        errorMessage = err.message ?: "生成失败，请检查网络或 API 配置",
+                        hasCachedAudio = false,
+                        hasMicPermission = true
+                    )
+                    host.stateFlow.update { it.copy(voicePhase = errorPhase) }
+                }
+            )
+        }
+    }
+
+    private var askAiJob: Job? = null
+
+    fun openAskAiCardPanel() {
+        host.performKeyFeedback(strong = false)
+        onResetComposing()
+        val stateSnap = host.stateFlow.value
+        val isPassword = ImeLogic.isPasswordEditorInputType(stateSnap.currentInputType)
+        val fullText = if (isPassword) "" else host.readFullEditorTextSafely().trim().ifBlank { stateSnap.currentEditorText.trim() }
+        if (fullText.isBlank()) return
+
+        host.stateFlow.update {
+            it.copy(
+                tabMode = KeyboardTabMode.VOICE,
+                voiceSubPanel = VoiceSubPanel.ASK_AI_CARD,
+                activeIntentMode = VoiceIntentMode.DICTATE,
+                askAiQuery = fullText,
+                askAiAnswer = "",
+                isAskAiLoading = true,
+                askAiErrorMessage = null,
+                isClipboardOpen = false,
+                isToolPanelOpen = false,
+                selectedHelpWritePreset = null
+            )
+        }
+        triggerAskAiInference(fullText)
+    }
+
+    fun triggerAskAiInference(query: String) {
+        askAiJob?.cancel()
+        askAiJob = host.scope.launch {
+            val settings = host.repository.settings.value
+            val snapshot = host.stateFlow.value
+            val result = host.aiEngine.runAskAiCardQuery(
+                settings = settings,
+                query = query,
+                targetAppName = snapshot.targetAppName
+            )
+            result.fold(
+                onSuccess = { exec ->
+                    host.stateFlow.update {
+                        it.copy(
+                            isAskAiLoading = false,
+                            askAiAnswer = exec.finalOutput,
+                            askAiErrorMessage = null
+                        )
+                    }
+                },
+                onFailure = { err ->
+                    if (err is CancellationException) return@launch
+                    host.stateFlow.update {
+                        it.copy(
+                            isAskAiLoading = false,
+                            askAiErrorMessage = err.message ?: "解答失败，请检查网络或 API 配置"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun retryAskAiCard() {
+        val q = host.stateFlow.value.askAiQuery
+        if (q.isBlank()) return
+        host.performKeyFeedback(strong = false)
+        host.stateFlow.update {
+            it.copy(
+                isAskAiLoading = true,
+                askAiErrorMessage = null
+            )
+        }
+        triggerAskAiInference(q)
+    }
+
+    fun returnFromAskAiToQwerty() {
+        host.performKeyFeedback(strong = false)
+        askAiJob?.cancel()
+        host.stateFlow.update {
+            it.copy(
+                tabMode = KeyboardTabMode.QWERTY,
+                voiceSubPanel = VoiceSubPanel.NONE,
+                isAskAiLoading = false,
+                askAiErrorMessage = null
+            )
+        }
+    }
+
+    fun dismissAskAiAndClearEditor() {
+        host.performKeyFeedback(strong = false)
+        askAiJob?.cancel()
+        val q = host.stateFlow.value.askAiQuery
+        replaceFullEditorTextSafely(finalOutput = "", originalText = q)
+        host.stateFlow.update {
+            it.copy(
+                tabMode = KeyboardTabMode.QWERTY,
+                voiceSubPanel = VoiceSubPanel.NONE,
+                currentEditorText = "",
+                undoSnapshot = host.peekTopUndoSnapshot(),
+                isAskAiLoading = false,
+                askAiErrorMessage = null
+            )
+        }
+        host.showQuickActionToast("✓ 已清空，可点 ↶ 撤回找回")
+    }
+
+    fun copyAskAiAnswer() {
+        val answer = host.stateFlow.value.askAiAnswer
+        if (answer.isBlank()) return
+        host.performKeyFeedback(strong = false)
+        host.copyTextToClipboard(answer)
+        host.showQuickActionToast("✓ 已复制 AI 解答")
+    }
+
+    fun commitAskAiAnswerToEditor() {
+        val answer = host.stateFlow.value.askAiAnswer
+        if (answer.isBlank()) return
+        host.performKeyFeedback(strong = false)
+        askAiJob?.cancel()
+        val q = host.stateFlow.value.askAiQuery
+        replaceFullEditorTextSafely(finalOutput = answer, originalText = q)
+        host.stateFlow.update {
+            it.copy(
+                tabMode = KeyboardTabMode.QWERTY,
+                voiceSubPanel = VoiceSubPanel.NONE,
+                currentEditorText = answer,
+                undoSnapshot = host.peekTopUndoSnapshot(),
+                isAskAiLoading = false,
+                askAiErrorMessage = null
+            )
+        }
+        host.showQuickActionToast("✓ 已填入输入框 · 可点 ↶ 撤回")
     }
 
     fun scheduleToastReset() {

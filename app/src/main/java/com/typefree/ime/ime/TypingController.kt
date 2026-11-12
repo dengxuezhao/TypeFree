@@ -57,6 +57,7 @@ interface ImeHostCallbacks {
     fun readFullEditorTextSafely(): String
     fun readSystemClipboardText(): String
     fun syncSystemClipboardIfNeeded(allowFreshBanner: Boolean)
+    fun copyTextToClipboard(text: String) {}
 
     fun archiveWavForHistory(wavFile: File, retention: HistoryRetention): File
     fun getLastRecordingWavFile(): File
@@ -497,16 +498,6 @@ class TypingController(
         }
 
         predictionCoordinator.dismissPredictions(resetChain = true)
-
-        val settingsSnap = safeSettings()
-        if (settingsSnap.equalEqualAskAiEnabled) {
-            val fullText = host.readFullEditorTextSafely()
-            val directQuery = SnippetMatcher.extractEqualEqualAskAiQuery(fullText)
-            if (directQuery != null) {
-                onRunEqualEqualAskAi(fullText, directQuery)
-                return
-            }
-        }
 
         host.performKeyFeedback(strong = false)
         host.tryAutoLearnFromRecentEdit()

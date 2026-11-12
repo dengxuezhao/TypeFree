@@ -43,6 +43,7 @@ import com.typefree.ime.ime.chrome.ErrorContextBanner
 import com.typefree.ime.ime.chrome.InlineStyleSelectorStrip
 import com.typefree.ime.ime.chrome.TypeFreeTopBar
 import com.typefree.ime.ime.panels.ArcTranslateFullPanel
+import com.typefree.ime.ime.panels.AskAiCardPanel
 import com.typefree.ime.ime.panels.HelpMeWritePanel
 import com.typefree.ime.ime.panels.JevCopilotPanel
 import com.typefree.ime.ime.panels.RealtimeTranslatePanel
@@ -252,6 +253,14 @@ fun KeyboardScreen(
                     }
 
                     uiState.tabMode == KeyboardTabMode.VOICE &&
+                        resolvedSubPanel == VoiceSubPanel.ASK_AI_CARD -> {
+                        AskAiCardPanel(
+                            uiState = uiState,
+                            onAction = onAction
+                        )
+                    }
+
+                    uiState.tabMode == KeyboardTabMode.VOICE &&
                         resolvedSubPanel == VoiceSubPanel.HELP_ME_WRITE -> {
                         HelpMeWritePanel(
                             uiState = uiState,
@@ -277,7 +286,8 @@ fun KeyboardScreen(
                             onDismissError = onDismissError,
                             onHideKeyboard = onHideKeyboard,
                             onSwitchKeyboard = onSwitchKeyboard,
-                            onShowImePicker = onShowImePicker
+                            onShowImePicker = onShowImePicker,
+                            onAction = onAction
                         )
                     }
 
@@ -361,7 +371,8 @@ fun KeyboardScreen(
                                             if (uiState.isClipboardOpen) onCloseClipboard() else onOpenClipboard()
                                         },
                                         onStartVoiceDictation = { onMicPressDown(VoiceIntentMode.DICTATE) },
-                                        onStopVoiceDictation = onMicPressUp
+                                        onStopVoiceDictation = onMicPressUp,
+                                        onOpenAskAiCard = { onAction(ImeUiAction.OpenAskAiCard) }
                                     )
                                 }
                             }

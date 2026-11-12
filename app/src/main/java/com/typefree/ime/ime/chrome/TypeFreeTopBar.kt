@@ -116,6 +116,28 @@ object TopBarSlotPolicy {
             showQwertyHoldVoiceCapsule = activeTab == KeyboardTabMode.QWERTY
         )
     }
+
+    fun shouldShowTopBarAskAiPill(
+        settings: AppSettings,
+        activeTab: KeyboardTabMode,
+        isComposing: Boolean,
+        isToolPanelOpen: Boolean,
+        isClipboardOpen: Boolean,
+        currentInputType: Int,
+        currentEditorText: String
+    ): Boolean {
+        if (!settings.equalEqualAskAiEnabled) return false
+        if (activeTab != KeyboardTabMode.QWERTY || isComposing || isToolPanelOpen || isClipboardOpen) return false
+        if (ImeLogic.isPasswordEditorInputType(currentInputType)) return false
+        val inputClass = currentInputType and android.text.InputType.TYPE_MASK_CLASS
+        if (inputClass == android.text.InputType.TYPE_CLASS_NUMBER ||
+            inputClass == android.text.InputType.TYPE_CLASS_PHONE ||
+            inputClass == android.text.InputType.TYPE_CLASS_DATETIME
+        ) {
+            return false
+        }
+        return currentEditorText.trim().length >= 2
+    }
 }
 
 @Composable
@@ -161,6 +183,7 @@ fun TypeFreeTopBar(
     onPasteClipboardText: (String) -> Unit,
     onToggleManualIncognito: () -> Unit = {},
     onOpenJevCopilot: () -> Unit = {},
+    onOpenAskAiCard: () -> Unit = {},
     onToggleClipboard: () -> Unit = {},
     onStartVoiceDictation: () -> Unit = {},
     onStopVoiceDictation: () -> Unit = {}
@@ -500,10 +523,22 @@ fun TypeFreeTopBar(
         // - In QWERTY mode: [✦ 军师] + [✍️ 帮写/改写] + Dark Primary [🎤 语音] (tap <220ms switches to VOICE; hold >=220ms dictates in-place)
         // - In VOICE / TRANSLATE mode: Compact 2-Segment Track [鹤 打字 | 文A]
         if (isQwertyRightCluster) {
+            val showAskAi = TopBarSlotPolicy.shouldShowTopBarAskAiPill(
+                settings = settings,
+                activeTab = uiState.tabMode,
+                isComposing = uiState.isFlypyComposing,
+                isToolPanelOpen = uiState.isToolPanelOpen,
+                isClipboardOpen = uiState.isClipboardOpen,
+                currentInputType = uiState.currentInputType,
+                currentEditorText = uiState.currentEditorText
+            )
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
+                if (showAskAi) {
+                    TopBarAskAiPill(onClick = onOpenAskAiCard)
+                }
                 if (slotState.showJevCopilotPill) {
                     TopBarJevCopilotPill(onClick = onOpenJevCopilot)
                 }
@@ -621,6 +656,43 @@ private fun TopBarVoicePenPill(
         Text(
             text = label,
             color = if (isHighlighted) palette.onPrimaryMic else palette.keyTextPrimary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+    }
+}
+
+private val AskAiPillIndigo = Color(0xFF6366F1)
+
+@Composable
+fun TopBarAskAiPill(
+    onClick: () -> Unit
+) {
+    val palette = LocalTypeFreeKeyboardPalette.current
+    val fgColor = if (palette.isDark) Color(0xFF818CF8) else Color(0xFF4F46E5)
+    Row(
+        modifier = Modifier
+            .height(28.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(AskAiPillIndigo.copy(alpha = 0.14f))
+            .border(
+                width = 1.dp,
+                color = AskAiPillIndigo.copy(alpha = 0.50f),
+                shape = RoundedCornerShape(14.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Text(
+            text = "🔍",
+            fontSize = 10.sp
+        )
+        Text(
+            text = "问AI",
+            color = fgColor,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1

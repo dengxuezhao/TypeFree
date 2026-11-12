@@ -247,6 +247,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         }
         syncEditorMetadata(info, restarting)
         syncSystemClipboardIfNeeded(allowFreshBanner = true)
+        syncCurrentEditorText()
         voiceController.warmVoiceConnectionsInBackground()
     }
 
@@ -424,6 +425,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 }
             )
         }
+        syncCurrentEditorText()
     }
 
     override fun onWindowHidden() {
@@ -573,6 +575,13 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
 
             is ImeUiAction.SelectQuickEditChip -> voiceController.runQuickEditChip(action.chip)
             is ImeUiAction.SelectHelpWritePreset -> voiceController.toggleHelpWritePreset(action.preset)
+            is ImeUiAction.RunHelpWriteDraftTransform -> voiceController.runHelpWriteDraftTransform(action.preset)
+            ImeUiAction.OpenAskAiCard -> voiceController.openAskAiCardPanel()
+            ImeUiAction.ReturnFromAskAiToQwerty -> voiceController.returnFromAskAiToQwerty()
+            ImeUiAction.RetryAskAiCard -> voiceController.retryAskAiCard()
+            ImeUiAction.DismissAskAiAndClearEditor -> voiceController.dismissAskAiAndClearEditor()
+            ImeUiAction.CopyAskAiAnswer -> voiceController.copyAskAiAnswer()
+            ImeUiAction.CommitAskAiAnswerToEditor -> voiceController.commitAskAiAnswerToEditor()
             ImeUiAction.DirectGenerateHelpWrite -> voiceController.runSelectedHelpWritePresetDirect()
             ImeUiAction.AcceptChatContextDisclosure -> voiceController.acceptChatContextDisclosure()
             ImeUiAction.DeclineChatContextDisclosure -> voiceController.declineChatContextDisclosure()
@@ -749,6 +758,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 )
             }
         }
+        syncCurrentEditorText()
     }
 
     override fun onDictationCommittedForAutoLearn(fullBufferAfterCommit: String) {
@@ -1260,6 +1270,35 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 ?.toString()
                 .orEmpty()
         }.getOrDefault("")
+    }
+
+    override fun copyTextToClipboard(text: String) {
+        runCatching {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("TypeFree AskAI", text))
+        }
+    }
+
+    private fun syncCurrentEditorText() {
+        val stateSnap = _imeState.value
+        if (ImeLogic.isPasswordEditorInputType(stateSnap.currentInputType)) {
+            if (stateSnap.currentEditorText.isNotEmpty()) {
+                _imeState.update { it.copy(currentEditorText = "") }
+            }
+            return
+        }
+        val ic = currentInputConnection ?: return
+        val text = try {
+            val before = ic.getTextBeforeCursor(1000, 0)?.toString().orEmpty()
+            val sel = ic.getSelectedText(0)?.toString().orEmpty()
+            val after = ic.getTextAfterCursor(1000, 0)?.toString().orEmpty()
+            (before + sel + after).trim()
+        } catch (_: Exception) {
+            ""
+        }
+        if (text != stateSnap.currentEditorText) {
+            _imeState.update { it.copy(currentEditorText = text) }
+        }
     }
 
     override fun readSelectedTextSafely(): String {

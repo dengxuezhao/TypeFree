@@ -370,8 +370,8 @@ class ChatScreenContextExtractorTest {
         )
 
         val gradleKts = File(root, "app/build.gradle.kts").readText()
-        assertTrue(gradleKts.contains("versionCode = 26"))
-        assertTrue(gradleKts.contains("versionName = \"3.4.3\""))
+        assertTrue(gradleKts.contains("versionCode = 27"))
+        assertTrue(gradleKts.contains("versionName = \"3.5.0\""))
         assertTrue(gradleKts.contains("com.google.mlkit:text-recognition-chinese:16.0.1"))
 
         assertEquals(JevDomainProfile.IM_CHAT, JevDomainProfile.fromPackage("com.alibaba.aliding"))
