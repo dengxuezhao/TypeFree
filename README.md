@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v3.0.0"><img src="https://img.shields.io/badge/Release-v3.0.0-10B981?style=flat-square&logo=github" alt="Release v3.0.0" /></a>
+  <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v3.5.0"><img src="https://img.shields.io/badge/Release-v3.5.0-10B981?style=flat-square&logo=github" alt="Release v3.5.0" /></a>
   <img src="https://img.shields.io/badge/Language-Kotlin_2.0-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" />
   <img src="https://img.shields.io/badge/UI-Jetpack_Compose_1.7-4285F4?style=flat-square&logo=android&logoColor=white" alt="Jetpack Compose" />
   <img src="https://img.shields.io/badge/Design-Material_3-000000?style=flat-square" alt="Material 3" />
@@ -20,12 +20,25 @@
 </p>
 
 <p align="center">
-  📦 <b>最新预编译安装包</b>：<a href="https://github.com/dengxuezhao/TypeFree/releases/download/v3.0.0/TypeFree-v3.0.0-release.apk">下载 TypeFree-v3.0.0-release.apk</a> · <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v3.0.0">查看 v3.0.0 发行说明</a>
+  📦 <b>最新预编译安装包</b>：<a href="https://github.com/dengxuezhao/TypeFree/releases/download/v3.5.0/TypeFree-v3.5.0-release.apk">下载 TypeFree-v3.5.0-release.apk</a> · <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v3.5.0">查看 v3.5.0 发行说明</a><br/>
+  📐 <b>核心架构与企划文档</b>：<a href="docs/jev-decision-tree.md">✦ Jev 军师五层决策树与反装蠢白皮书</a> · <a href="docs/promo-video-plan.md">🎬 《TypeFree 键盘进化论》推广视频企划</a>
 </p>
 
 ---
 
-## 🆕 v3.0.0 / v2.9.0 最新升级亮点
+## 🆕 v3.5.0 / v3.4.x 最新升级亮点
+
+### v3.5.0
+- **🧠 「✦ Jev 军师」升级五层正交决策树（新增 Layer 3 事实筛子与内行平视三轴）**：彻底根治技术群/知识社群探讨时 AI「装傻提问、乱抖谐音烂梗」的降智感！在端侧隐私信号净化（`Layer 1`）与群聊角色拓扑路由（`Layer 2`）之后新增 **议题性质与事实筛查层（`Layer 3`）**——聊人情利害走微表情潜台词雷达，聊技术观点先启动事实筛子审视对方逻辑漏洞，自动切换 **「① 同频升维 · ② 温和勘误 · ③ 极客外推」** 笃定陈述句三轴（架构详解见 **[`docs/jev-decision-tree.md`](docs/jev-decision-tree.md)**）。
+- **✍️ 「帮写」彻底回归零读屏纯粹创作工作台**：将聊天读屏职责 100% 收敛至「✦ 军师」，`✍️ 帮写` 零读屏、零截屏开销！空框状态直出 **7 大高频创作体裁芯片**（`种草安利 / 朋友圈文案 / 工作周报 / 请假通知 / 催办跟进 / 致谢祝福 / 润色扩写`）；输入框已有草稿碎词时**免选中直接点击** `扩成种草文 / 润色得体 / 精简干练 / 扩写丰富 / 整理要点` 或口述指令一键成文。
+- **🔍 顶栏动态「问 AI」胶囊与键盘内安全解答卡（退役隐蔽 `==` 拦截）**：在输入框敲入问题后，键盘顶栏自动点亮 **`🔍 问AI`** 胶囊；点击后答案直接流式渲染在**键盘内部卡片**中（绝不误发到上方聊天群！），阅后可点 **`[✓ 知道了（清空输入框）]`** 无痕退回（附带一键恢复原问题防手滑），或点 `[填入输入框]` 引用分享。
+
+### v3.4.x ~ v3.3.x
+- **⌨️ `252dp` 黄金紧凑 4 行 26 键与全键位副符号上滑**：砍掉臃肿的第 5 符号行，将紧凑档键盘总高精炼至 `252dp`，26 键全量内置上滑副符号输入，大幅释放聊天可视面积。
+- **🛡️ 端侧敏感隐私正则脱敏（`SensitiveDataRedactor`）与群聊拓扑防串台（`ChatContextSanitizer`）**：手机号、身份证号、银行卡、微信号在端侧自动替换为 `[手机号_1]` 占位符上云并在本地无损还原，支持面板内一键「隐私透明检视」；精准区分 `1v1 私聊`、`群聊当事人` 与 `群聊第三方旁观者`，绝不替别人认领战火。
+
+<details>
+<summary>📖 展开查看 v3.0.0 / v2.9.0 / v2.8.0 / v2.7.0 / v2.6.1 / v2.5.0 / v2.4.0 历史升级亮点</summary>
 
 ### v3.0.0
 - **📸 读屏 AI 帮回升级为「无障碍真实截屏 + 多模态视觉识别」**：针对微信（`MMNeat7extView`）与 QQ NT（`AIO`）采用自绘 `Canvas` 渲染聊天气泡导致常规无障碍节点树只能读到头衔徽章（`管理员`）或门牌昵称（`2-102`）的痛点，在 Android 11+ (`API 30+`) 引入按需 `AccessibilityService.takeScreenshot()` 聊天视口截屏（自动裁除顶部状态栏与底部键盘，内存内等比缩放 JPEG 直传 Gemini / OpenAI 视觉接口，用完即焚零落盘），同时支持识别聊天里的截图、表情包与图片内容，并精准过滤群头衔与门牌号噪点。
@@ -38,7 +51,7 @@
 - **🐛 QQ 等特殊编辑器流式直写防重与 Gemini Live 分句就地替换修复**：针对腾讯 QQ 等在 `finishComposingText()` 时触发异步 `onUpdateSelection` 回调的特殊输入框，重构 `StreamingComposer` 组合态提交与幂等去重状态机，彻底根除开启「实时写入」时流式语音重复上屏两遍的问题；同时修复 `Gemini Live` 录音中途分句定稿（Mid-recording Turn Finalization）时的草稿就地替换与短语音耗时统计显示。
 
 <details>
-<summary>📖 展开查看 v2.8.0 / v2.7.0 / v2.6.1 / v2.5.0 / v2.4.0 历史升级亮点</summary>
+<summary>📖 展开查看 v2.8.0 ~ v2.4.0 更早升级记录</summary>
 
 ### v2.8.0
 - **💬 读屏上下文 AI 帮回 (`Contextual AI Reply`)**：在微信、QQ、Telegram、飞书、钉钉、短信等聊天应用中点击键盘 `帮我写`，按需读取当前屏幕可见的最近聊天记录；内置 **7 道隐私安全闸门**（首次显式披露授权卡片、仅手动点击时按需抓取、顶栏一键忽略、面板关闭立即清空内存、绝不写入历史或词库、自动屏蔽银行/支付/密码界面、`<chat_context>` 标签转义防提示词注入）。
@@ -65,10 +78,11 @@
 - **可选顶部独立数字行 (`1–0`) 与 `~1.14 : 1` 黄金键帽人体工学重构**。
 
 </details>
+</details>
 
 ---
 
-## ✨ 全量 Feature 矩阵概览 (v3.0.0)
+## ✨ 全量 Feature 矩阵概览 (v3.5.0)
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
@@ -76,16 +90,16 @@
 ├────────────────────────────────────┬───────────────────────────────────────┤
 │   🚀 全局无感悬浮语音胶囊 (Bubble)   │     ⌨️ 原生 librime + AI 双模全键盘    │
 │  - 任意 App 输入框聚焦自动静默浮现   │  - 雾凇全拼 / 小鹤双拼 / 小鹤音形顶功   │
-│  - Android 13+ 原生光标级零污染直插 │  - 2D 展开候选网格 + L1/L2/L3 联想词   │
+│  - Android 13+ 原生光标级零污染直插 │  - 252dp 紧凑 4 行 + 全键副符号上滑    │
 │  - 单击免提 / 按住说话 + 选词智能改写 │  - 5 档等比缩放 + 5 档底部垫高 (LIFT)  │
 │  - 密码/支付/敏感输入框主动静默避让 │  - ⊞ 4×2 快捷工具面板 & 零抖动帧高统一 │
 ├────────────────────────────────────┴───────────────────────────────────────┤
 │                        🧠 现代 AI 语音与智能创作工作台                      │
 │  - 三大实时流式通道：Gemini Live (45s 预热池) / 豆包 SeedASR / 百炼流式     │
 │  - 流式边说边上屏 (StreamingComposer 默认开启) + 超 60s 长语音静音无感续接  │
-│  - 五大意图：口述净写 / 帮我写 / 📸 读屏识图 AI 帮回 / 选词改写 / 快译     │
+│  - ✦ Jev 军师五层决策树：潜台词破译 + 事实筛子反装蠢 + 按住说底牌 + 端侧脱敏│
+│  - ✍️ 纯净零读屏帮写（7 大体裁/免选中扩写） + 🔍 顶栏问 AI 键盘内安全解答卡 │
 │  - 💥 智能剪贴板 2.0：顶栏双胶囊 + 菜鸟/丰巢取件码 + 快递单号 + 大爆炸拆词  │
-│  - 宿主感知自适应文风 / 自定义帮回态度 / 耳语增益 / 口令短语 / 无痕隐私模式 │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -229,7 +243,7 @@ bash rime/src/main/cpp/fetch_librime_deps.sh
 
 1. **零中心服务器**：TypeFree 本身不运营任何数据收集服务器，无埋点统计、无广告 SDK、无追踪器。
 2. **直连您的服务端点**：您的音频流与改写/帮回内容仅向您在本地配置的 API 端点（或您自建的本地服务）发送。
-3. **读屏与截屏上下文严格按需与敏感界面熔断**：「读屏识图 AI 帮回」仅在用户显式同意披露说明且手动点击 `✍️ 帮我写` 时按需读取当前可见聊天窗口并裁除状态栏与键盘，用完即焚绝不写入本地磁盘、历史或词库，且在银行、支付、密码框界面强制熔断。
+3. **读屏与截屏上下文严格按需、端侧脱敏与敏感界面熔断**：屏幕上下文仅在用户显式同意披露说明且手动点击 **`✦ 军师`** 时按需读取当前可见聊天视口（裁除状态栏与键盘，手机号/身份证/微信号等在端侧先行正则脱敏为 `[手机号_1]` 占位符，用完即焚零落盘，且在银行、支付、密码框界面强制熔断）；**`✍️ 帮写`** 与 **`🔍 问AI`** 全程零读屏、零截屏。
 4. **可控历史留存**：支持选择历史记录留存周期（3 天 / 7 天 / 30 天 / 永久 / 立即清除），敏感凭证加密存储在 Android 私有空间 `EncryptedSharedPreferences` 中。
 
 ---
