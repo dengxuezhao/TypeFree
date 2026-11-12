@@ -154,7 +154,8 @@ data class ImeUiState(
     val selectedJevStrategyIndex: Int = -1,
     val jevUserBottomLine: String = "",
     val jevExcludedReplies: List<String> = emptyList(),
-    val isFullScreenPeekCapturing: Boolean = false
+    val isFullScreenPeekCapturing: Boolean = false,
+    val isJevContextInspectorOpen: Boolean = false
 ) {
     val hasActiveChatContext: Boolean
         get() = capturedChatContext.hasContext && !ignoreChatContextForThisTurn && !isIncognitoMode

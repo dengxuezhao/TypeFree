@@ -853,25 +853,41 @@ object ChatScreenContextExtractor {
     }
 
     const val MAX_SAFE_VIEWPORT_BOTTOM_RATIO = 0.76f
+    const val MAX_FULL_SCREEN_PEEK_BOTTOM_RATIO = 0.92f
+    const val DEFAULT_FULL_SCREEN_PEEK_BOTTOM_RATIO = 0.88f
 
     /**
      * Computes the crop rectangle `[left, top, width, height]` of the chat message viewport
      * above the input box / soft keyboard, excluding the top status bar (`0.052f`) and the bottom keyboard,
      * while preserving the top app/group title bar (`大鸽子交流群(8)`).
-     * Enforces [MAX_SAFE_VIEWPORT_BOTTOM_RATIO] so stale pre-`adjustResize` bottom coordinates
-     * never accidentally include the soft keyboard itself in the screenshot.
+     * - When [allowFullScreenViewport] is `false` (default), enforces [MAX_SAFE_VIEWPORT_BOTTOM_RATIO] (`0.76f`)
+     *   and falls back to `0.58f` so stale pre-`adjustResize` bottom coordinates never include the soft keyboard.
+     * - When [allowFullScreenViewport] is `true` (240ms full-screen peek with keyboard hidden), relaxes
+     *   the safe bottom ratio to [MAX_FULL_SCREEN_PEEK_BOTTOM_RATIO] (`0.92f`) and default bottom to `0.88f`
+     *   so the newly exposed lower-half screen messages above the bottom input bar (`~2120px` on `2400px`) are preserved.
      */
     fun computeChatRegionCropRect(
         bitmapWidth: Int,
         bitmapHeight: Int,
-        inputBoxTop: Int = -1
+        inputBoxTop: Int = -1,
+        allowFullScreenViewport: Boolean = false
     ): IntArray {
         if (bitmapWidth <= 0 || bitmapHeight <= 0) {
             return intArrayOf(0, 0, 0, 0)
         }
         val cropTop = (bitmapHeight * 0.052f).toInt().coerceIn(0, bitmapHeight - 1)
-        val defaultBottom = (bitmapHeight * 0.58f).toInt().coerceIn(cropTop + 1, bitmapHeight)
-        val maxSafeBottom = (bitmapHeight * MAX_SAFE_VIEWPORT_BOTTOM_RATIO)
+        val defaultBottomRatio = if (allowFullScreenViewport) {
+            DEFAULT_FULL_SCREEN_PEEK_BOTTOM_RATIO
+        } else {
+            0.58f
+        }
+        val maxSafeBottomRatio = if (allowFullScreenViewport) {
+            MAX_FULL_SCREEN_PEEK_BOTTOM_RATIO
+        } else {
+            MAX_SAFE_VIEWPORT_BOTTOM_RATIO
+        }
+        val defaultBottom = (bitmapHeight * defaultBottomRatio).toInt().coerceIn(cropTop + 1, bitmapHeight)
+        val maxSafeBottom = (bitmapHeight * maxSafeBottomRatio)
             .toInt()
             .coerceIn(defaultBottom, bitmapHeight)
         val cropBottom = if (inputBoxTop in (cropTop + 100)..maxSafeBottom) {

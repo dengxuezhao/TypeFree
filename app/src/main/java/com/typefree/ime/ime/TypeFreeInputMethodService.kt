@@ -221,6 +221,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     jevUserBottomLine = "",
                     jevExcludedReplies = emptyList(),
                     isFullScreenPeekCapturing = false,
+                    isJevContextInspectorOpen = false,
                     isPunctuationStripOpen = false,
                     isStylePickerExpanded = false,
                     flypyComposingCode = "",
@@ -269,7 +270,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 isJevLoading = false,
                 jevUserBottomLine = "",
                 jevExcludedReplies = emptyList(),
-                isFullScreenPeekCapturing = false
+                isFullScreenPeekCapturing = false,
+                isJevContextInspectorOpen = false
             )
         }
         super.onFinishInputView(finishingInput)
@@ -551,6 +553,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             ImeUiAction.RefreshJevStrategies -> voiceController.refreshJevStrategies()
             ImeUiAction.TriggerFullScreenPeekCapture ->
                 voiceController.triggerFullScreenPeekCapture(::requestRefreshImeInsets)
+            ImeUiAction.ToggleJevContextInspector -> voiceController.toggleJevContextInspector()
 
             ImeUiAction.StartVoiceRecording -> voiceController.handleMicPressDown(VoiceIntentMode.DICTATE)
             ImeUiAction.StopVoiceRecording -> voiceController.handleMicPressUp()

@@ -55,6 +55,8 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.typefree.ime.bubble.CapturedChatContext
+import com.typefree.ime.bubble.ChatSpeaker
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.ImeUiAction
@@ -131,28 +133,39 @@ fun JevCopilotPanel(
                     onSelectJevCopilot = {}
                 )
 
-                // Redaction / Domain / Context status pill
+                // Redaction / Domain / Context status pill (toggles read-only JevContextInspectorCard)
                 val statusLabel = when {
-                    uiState.ignoreChatContextForThisTurn -> "已忽略上文"
-                    captured.redactionCount > 0 -> "🛡已脱敏${captured.redactionCount}处"
-                    captured.hasContext -> "${captured.effectiveBadgeTitle}·${captured.messageCount}条"
-                    else -> captured.effectiveBadgeTitle
+                    captured.redactionCount > 0 ->
+                        "🛡已脱敏${captured.redactionCount}处 ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
+                    captured.hasContext ->
+                        "${captured.effectiveBadgeTitle}·${captured.messageCount}条 ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
+                    else ->
+                        "${captured.effectiveBadgeTitle} ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
                 }
-                val statusTint = if (!uiState.ignoreChatContextForThisTurn &&
-                    (captured.redactionCount > 0 || captured.hasContext)
-                ) {
-                    if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+                val statusTint = when {
+                    uiState.isJevContextInspectorOpen -> palette.primaryMicSolid
+                    captured.redactionCount > 0 || captured.hasContext ->
+                        if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+                    else -> palette.keyTextMuted
+                }
+                val statusBg = if (uiState.isJevContextInspectorOpen) {
+                    palette.capsuleSelectedBg
                 } else {
-                    palette.keyTextMuted
+                    palette.keyCapBg
+                }
+                val statusBorder = if (uiState.isJevContextInspectorOpen) {
+                    palette.primaryMicSolid
+                } else {
+                    palette.keyBorder
                 }
                 Row(
                     modifier = Modifier
                         .height(22.dp)
                         .clip(RoundedCornerShape(11.dp))
-                        .background(palette.keyCapBg)
-                        .border(1.dp, palette.keyBorder, RoundedCornerShape(11.dp))
-                        .clickable(enabled = !isProcessing) {
-                            onAction(ImeUiAction.ToggleIgnoreChatContext)
+                        .background(statusBg)
+                        .border(1.dp, statusBorder, RoundedCornerShape(11.dp))
+                        .clickable(enabled = !uiState.isFullScreenPeekCapturing) {
+                            onAction(ImeUiAction.ToggleJevContextInspector)
                         }
                         .padding(horizontal = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -218,7 +231,7 @@ fun JevCopilotPanel(
             domainBadge = captured.effectiveBadgeTitle
         )
 
-        // 3. Center Area: Disclosure Prompt / Error Banner / Scrollable 3 Strategy Keycap Cards
+        // 3. Center Area: Disclosure Prompt / Read-Only Context Inspector / Error Banner / Scrollable 3 Strategy Cards
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -228,6 +241,14 @@ fun JevCopilotPanel(
                 JevFirstTimeDisclosureCard(
                     onAccept = { onAction(ImeUiAction.AcceptChatContextDisclosure) },
                     onDecline = { onAction(ImeUiAction.DeclineChatContextDisclosure) }
+                )
+            } else if (uiState.isJevContextInspectorOpen) {
+                JevContextInspectorCard(
+                    captured = captured,
+                    usedVision = jevResult?.usedVision == true || captured.hasScreenshot,
+                    isBusy = isProcessing || uiState.isFullScreenPeekCapturing,
+                    onCollapse = { onAction(ImeUiAction.ToggleJevContextInspector) },
+                    onTriggerFullScreenPeek = { onAction(ImeUiAction.TriggerFullScreenPeekCapture) }
                 )
             } else if (phase is VoicePhase.Error) {
                 ErrorContextBanner(
@@ -637,6 +658,229 @@ private fun JevPlaceholderCard(
     }
 }
 
+internal fun buildJevInspectorHeaderSummary(
+    captured: CapturedChatContext,
+    usedVision: Boolean = false
+): String {
+    val chatKind = if (captured.topology.isGroupChat) {
+        if (captured.topology.groupMemberCount > 0) {
+            "多人聊天群(${captured.topology.groupMemberCount}人)"
+        } else {
+            "多人聊天群"
+        }
+    } else {
+        "双人私聊"
+    }
+    val roleLabel = captured.topology.roleMode.label
+    val base = "$chatKind · $roleLabel · 共${captured.messageCount}条"
+    val redactionPart = if (captured.redactionCount > 0) {
+        " · 🛡脱敏${captured.redactionCount}处"
+    } else {
+        ""
+    }
+    val visionPart = if (usedVision || captured.hasScreenshot) {
+        " · 含视觉"
+    } else {
+        ""
+    }
+    return base + redactionPart + visionPart
+}
+
+@Composable
+private fun JevContextInspectorCard(
+    captured: CapturedChatContext,
+    usedVision: Boolean,
+    isBusy: Boolean,
+    onCollapse: () -> Unit,
+    onTriggerFullScreenPeek: () -> Unit
+) {
+    val palette = LocalTypeFreeKeyboardPalette.current
+    val summaryText = remember(captured, usedVision) {
+        buildJevInspectorHeaderSummary(captured = captured, usedVision = usedVision)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(9.dp))
+            .background(palette.keyCapBg)
+            .border(1.dp, palette.keyBorder, RoundedCornerShape(9.dp))
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        // Card Top Header: Topology + Role + Count (+ Redaction / Vision) + `[收起 ▴]`
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = summaryText,
+                style = TextStyle(
+                    color = palette.keyTextPrimary,
+                    fontSize = 9.5.sp,
+                    lineHeight = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                ),
+                maxLines = 1,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Box(
+                modifier = Modifier
+                    .height(19.dp)
+                    .clip(RoundedCornerShape(9.5.dp))
+                    .background(palette.capsuleTrackBg)
+                    .border(1.dp, palette.keyBorder, RoundedCornerShape(9.5.dp))
+                    .clickable(onClick = onCollapse)
+                    .padding(horizontal = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "收起 ▴",
+                    style = TextStyle(
+                        color = palette.keyTextMuted,
+                        fontSize = 9.sp,
+                        lineHeight = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                    ),
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+        }
+
+        // Scrollable read-only extracted message list
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(3.5.dp)
+        ) {
+            if (captured.messages.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Text(
+                        text = "当前未提取到聊天文本，可点击右下角「⛶ 全屏补抓更多上文」重新取景识别",
+                        style = TextStyle(
+                            color = palette.keyTextMuted,
+                            fontSize = 10.sp,
+                            lineHeight = 13.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        ),
+                        maxLines = 2
+                    )
+                }
+            } else {
+                captured.messages.forEach { msg ->
+                    val isSelf = msg.speaker == ChatSpeaker.SELF
+                    val roleBadgeText = if (msg.speaker == ChatSpeaker.OTHER && msg.senderAlias.isNotBlank()) {
+                        "[${msg.senderAlias}]"
+                    } else {
+                        msg.speaker.tag
+                    }
+                    val badgeBg = if (isSelf) palette.capsuleSelectedBg else palette.capsuleTrackBg
+                    val badgeBorder = if (isSelf) palette.primaryMicSolid.copy(alpha = 0.45f) else palette.keyBorder
+                    val badgeFg = if (isSelf) palette.primaryMicSolid else palette.keyTextMuted
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .height(17.dp)
+                                .clip(RoundedCornerShape(4.5.dp))
+                                .background(badgeBg)
+                                .border(1.dp, badgeBorder, RoundedCornerShape(4.5.dp))
+                                .padding(horizontal = 4.5.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = roleBadgeText,
+                                style = TextStyle(
+                                    color = badgeFg,
+                                    fontSize = 9.sp,
+                                    lineHeight = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                                ),
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                        Text(
+                            text = msg.text,
+                            style = TextStyle(
+                                color = palette.keyTextPrimary,
+                                fontSize = 10.5.sp,
+                                lineHeight = 14.sp,
+                                fontWeight = FontWeight.Medium,
+                                platformStyle = PlatformTextStyle(includeFontPadding = false)
+                            ),
+                            maxLines = Int.MAX_VALUE,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Card Bottom Row: Memory-only privacy note + `[⛶ 全屏补抓更多上文]`
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "仅驻留内存 · 关面板即焚",
+                style = TextStyle(
+                    color = palette.keyTextMuted,
+                    fontSize = 9.sp,
+                    lineHeight = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                ),
+                maxLines = 1,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Box(
+                modifier = Modifier
+                    .height(21.dp)
+                    .clip(RoundedCornerShape(10.5.dp))
+                    .background(palette.capsuleSelectedBg)
+                    .border(1.dp, palette.primaryMicSolid, RoundedCornerShape(10.5.dp))
+                    .clickable(enabled = !isBusy, onClick = onTriggerFullScreenPeek)
+                    .padding(horizontal = 7.5.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "⛶ 全屏补抓更多上文",
+                    style = TextStyle(
+                        color = palette.primaryMicSolid,
+                        fontSize = 9.5.sp,
+                        lineHeight = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                    ),
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun JevFirstTimeDisclosureCard(
     onAccept: () -> Unit,
@@ -654,15 +898,22 @@ private fun JevFirstTimeDisclosureCard(
     ) {
         Text(
             text = "开启「✦ Jev 军师」端侧脱敏读屏说明",
-            color = palette.keyTextPrimary,
-            fontSize = 11.5.sp,
-            fontWeight = FontWeight.Bold
+            style = TextStyle(
+                color = palette.keyTextPrimary,
+                fontSize = 11.5.sp,
+                lineHeight = 14.sp,
+                fontWeight = FontWeight.Bold,
+                platformStyle = PlatformTextStyle(includeFontPadding = false)
+            )
         )
         Text(
             text = "仅在你主动打开军师时按需读取当前窗口上下文，端侧自动将手机号/邮箱/地址替换为占位符、涂黑截图敏感区，遇密码/验证码/身份证/银行卡自动弃图，关闭面板即刻清空内存。",
-            color = palette.keyTextMuted,
-            fontSize = 10.sp,
-            lineHeight = 13.5.sp,
+            style = TextStyle(
+                color = palette.keyTextMuted,
+                fontSize = 10.sp,
+                lineHeight = 13.5.sp,
+                platformStyle = PlatformTextStyle(includeFontPadding = false)
+            ),
             maxLines = 3
         )
         Row(
@@ -682,9 +933,13 @@ private fun JevFirstTimeDisclosureCard(
             ) {
                 Text(
                     text = "仅口述底牌",
-                    color = palette.keyTextMuted,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.SemiBold
+                    style = TextStyle(
+                        color = palette.keyTextMuted,
+                        fontSize = 10.sp,
+                        lineHeight = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                    )
                 )
             }
             Spacer(modifier = Modifier.width(6.dp))
@@ -699,9 +954,13 @@ private fun JevFirstTimeDisclosureCard(
             ) {
                 Text(
                     text = "同意并启用",
-                    color = palette.onPrimaryMic,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold
+                    style = TextStyle(
+                        color = palette.onPrimaryMic,
+                        fontSize = 10.sp,
+                        lineHeight = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                    )
                 )
             }
         }

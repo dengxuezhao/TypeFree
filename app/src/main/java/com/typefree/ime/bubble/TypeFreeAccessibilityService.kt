@@ -331,7 +331,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
         isIncognitoMode: Boolean,
         isPasswordInput: Boolean,
         ignoreChatContextForTurn: Boolean,
-        forJevCopilot: Boolean = false
+        forJevCopilot: Boolean = false,
+        isFullScreenPeek: Boolean = false
     ): CapturedChatContext {
         return try {
             val root = rootInActiveWindow ?: return CapturedChatContext()
@@ -389,6 +390,9 @@ class TypeFreeAccessibilityService : AccessibilityService() {
             }
             recordInputBoxTopHint(expectedPackage, inputBoxTop)
 
+            val maxMessages = if (isFullScreenPeek) 12 else 10
+            val maxTotalChars = if (isFullScreenPeek) 1100 else 800
+
             ChatScreenContextExtractor.extractChatContext(
                 nodes = collectedNodes,
                 screenWidth = screenWidth,
@@ -396,6 +400,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                 inputBoxTop = inputBoxTop,
                 packageName = expectedPackage,
                 appName = appName,
+                maxMessages = maxMessages,
+                maxTotalChars = maxTotalChars,
                 redactPii = true,
                 context = this
             )
@@ -426,7 +432,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
         ignoreChatContextForTurn: Boolean,
         forJevCopilot: Boolean = false,
         existingMessages: List<String> = emptyList(),
-        redactionSession: RedactionSession? = null
+        redactionSession: RedactionSession? = null,
+        isFullScreenPeek: Boolean = false
     ): ViewportCaptureOutcome? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         val root = try {
@@ -472,6 +479,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
         val screenWidth = rootBounds.width().takeIf { it > 0 } ?: dm.widthPixels
         val screenHeight = rootBounds.height().takeIf { it > 0 } ?: dm.heightPixels
         val inputTopHint = resolveInputBoxTopHintForPackage(expectedPackage)
+        val maxMessages = if (isFullScreenPeek) 12 else 10
+        val maxTotalChars = if (isFullScreenPeek) 1100 else 800
 
         val a11yNodes = ArrayList<RawScreenTextNode>(64)
         collectVisibleTextNodes(root, a11yNodes, depth = 0)
@@ -481,6 +490,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
             screenHeight = screenHeight,
             inputBoxTop = inputTopHint,
             packageName = expectedPackage,
+            maxMessages = maxMessages,
+            maxTotalChars = maxTotalChars,
             redactPii = false
         )
         val baseA11yMessages = if (unredactedA11yCtx.formattedMessages.isNotEmpty()) {
@@ -542,7 +553,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                 val cropRect = ChatScreenContextExtractor.computeChatRegionCropRect(
                     bitmapWidth = rawBitmap.width,
                     bitmapHeight = rawBitmap.height,
-                    inputBoxTop = inputTopHint
+                    inputBoxTop = inputTopHint,
+                    allowFullScreenViewport = isFullScreenPeek
                 )
                 val cropX = cropRect[0]
                 val cropY = cropRect[1]
@@ -579,8 +591,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                         screenHeight = rawBitmap.height,
                         inputBoxTop = inputTopHint,
                         packageName = expectedPackage,
-                        maxMessages = 10,
-                        maxTotalChars = 800,
+                        maxMessages = maxMessages,
+                        maxTotalChars = maxTotalChars,
                         redactPii = false
                     )
                 } else {
@@ -593,7 +605,7 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     ChatScreenContextExtractor.mergeAccessibilityAndOcrMessages(
                         a11yMessages = baseA11yMessages,
                         ocrMessages = if (ocrNodes.isNotEmpty()) fusedExtracted.formattedMessages else emptyList(),
-                        maxMessages = 10
+                        maxMessages = maxMessages
                     )
                 }
                 val combinedNodes = if (ocrNodes.isNotEmpty()) a11yNodes + ocrNodes else a11yNodes
@@ -847,7 +859,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
             isIncognitoMode: Boolean,
             isPasswordInput: Boolean,
             ignoreChatContextForTurn: Boolean,
-            forJevCopilot: Boolean = false
+            forJevCopilot: Boolean = false,
+            isFullScreenPeek: Boolean = false
         ): CapturedChatContext {
             val sim = debugSimulatedNodesForTest
             if (sim != null) {
@@ -877,14 +890,29 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                 if (!gateAllowed) {
                     return CapturedChatContext()
                 }
+                val maxMessages = if (isFullScreenPeek) 12 else 10
+                val maxTotalChars = if (isFullScreenPeek) 1100 else 800
                 val editableTop = simNodes.firstOrNull { it.isEditable }?.boundsTop ?: -1
+                val effectiveInputBoxTop = if (editableTop > 0) {
+                    val cropRect = ChatScreenContextExtractor.computeChatRegionCropRect(
+                        bitmapWidth = 1080,
+                        bitmapHeight = 2400,
+                        inputBoxTop = editableTop,
+                        allowFullScreenViewport = isFullScreenPeek
+                    )
+                    cropRect[1] + cropRect[3]
+                } else {
+                    -1
+                }
                 val baseCtx = ChatScreenContextExtractor.extractChatContext(
                     nodes = simNodes,
                     screenWidth = 1080,
                     screenHeight = 2400,
-                    inputBoxTop = editableTop,
+                    inputBoxTop = effectiveInputBoxTop,
                     packageName = expectedPackage,
                     appName = appName,
+                    maxMessages = maxMessages,
+                    maxTotalChars = maxTotalChars,
                     redactPii = true
                 )
                 val simShot = debugSimulatedScreenshotBase64ForTest.orEmpty()
@@ -914,7 +942,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                 isIncognitoMode = isIncognitoMode,
                 isPasswordInput = isPasswordInput,
                 ignoreChatContextForTurn = ignoreChatContextForTurn,
-                forJevCopilot = forJevCopilot
+                forJevCopilot = forJevCopilot,
+                isFullScreenPeek = isFullScreenPeek
             )
         }
 
@@ -926,7 +955,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
             ignoreChatContextForTurn: Boolean,
             forJevCopilot: Boolean = false,
             existingMessages: List<String> = emptyList(),
-            redactionSession: RedactionSession? = null
+            redactionSession: RedactionSession? = null,
+            isFullScreenPeek: Boolean = false
         ): ViewportCaptureOutcome? {
             val simShot = debugSimulatedScreenshotBase64ForTest
             val simOcrNodes = ViewportOcrExtractor.debugSimulatedOcrNodesForTest
@@ -958,14 +988,27 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                 if (!gateAllowed) {
                     return null
                 }
-                val editableTop = simNodes.firstOrNull { it.isEditable }?.boundsTop ?: -1
+                val maxMessages = if (isFullScreenPeek) 12 else 10
+                val maxTotalChars = if (isFullScreenPeek) 1100 else 800
+                val editableTop = simNodes.firstOrNull { it.isEditable }?.boundsTop
+                    ?: resolveInputBoxTopHintForPackage(expectedPackage)
+                val simCropRect = ChatScreenContextExtractor.computeChatRegionCropRect(
+                    bitmapWidth = 1080,
+                    bitmapHeight = 2400,
+                    inputBoxTop = editableTop,
+                    allowFullScreenViewport = isFullScreenPeek
+                )
+                val simCropBottom = simCropRect[1] + simCropRect[3]
+                val effectiveInputBoxTop = if (editableTop > 0) simCropBottom else -1
                 val unredactedA11yCtx = if (simNodes.isNotEmpty()) {
                     ChatScreenContextExtractor.extractChatContext(
                         nodes = simNodes,
                         screenWidth = 1080,
                         screenHeight = 2400,
-                        inputBoxTop = editableTop,
+                        inputBoxTop = effectiveInputBoxTop,
                         packageName = expectedPackage,
+                        maxMessages = maxMessages,
+                        maxTotalChars = maxTotalChars,
                         redactPii = false
                     )
                 } else {
@@ -982,10 +1025,10 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                         nodes = merged2DNodes,
                         screenWidth = 1080,
                         screenHeight = 2400,
-                        inputBoxTop = editableTop,
+                        inputBoxTop = effectiveInputBoxTop,
                         packageName = expectedPackage,
-                        maxMessages = 10,
-                        maxTotalChars = 800,
+                        maxMessages = maxMessages,
+                        maxTotalChars = maxTotalChars,
                         redactPii = false
                     )
                 } else {
@@ -997,7 +1040,7 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     ChatScreenContextExtractor.mergeAccessibilityAndOcrMessages(
                         a11yMessages = unredactedA11y,
                         ocrMessages = if (!simOcrNodes.isNullOrEmpty()) fusedExtracted.formattedMessages else emptyList(),
-                        maxMessages = 10
+                        maxMessages = maxMessages
                     )
                 }
                 val combinedNodes = simNodes + simOcrNodes.orEmpty()
@@ -1038,7 +1081,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                 ignoreChatContextForTurn = ignoreChatContextForTurn,
                 forJevCopilot = forJevCopilot,
                 existingMessages = existingMessages,
-                redactionSession = redactionSession
+                redactionSession = redactionSession,
+                isFullScreenPeek = isFullScreenPeek
             )
         }
 

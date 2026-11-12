@@ -125,6 +125,7 @@ class VoiceController(
                     jevUserBottomLine = "",
                     jevExcludedReplies = emptyList(),
                     isFullScreenPeekCapturing = false,
+                    isJevContextInspectorOpen = false,
                     selectedHelpWritePreset = null,
                     bigBangClipboardItem = null,
                     isClipboardOpen = false,
@@ -150,6 +151,7 @@ class VoiceController(
                     jevUserBottomLine = "",
                     jevExcludedReplies = emptyList(),
                     isFullScreenPeekCapturing = false,
+                    isJevContextInspectorOpen = false,
                     selectedHelpWritePreset = null,
                     bigBangClipboardItem = null,
                     isClipboardOpen = false,
@@ -224,6 +226,7 @@ class VoiceController(
                 jevUserBottomLine = "",
                 jevExcludedReplies = emptyList(),
                 isFullScreenPeekCapturing = false,
+                isJevContextInspectorOpen = false,
                 selectedHelpWritePreset = null,
                 bigBangClipboardItem = null,
                 isClipboardOpen = false,
@@ -259,7 +262,17 @@ class VoiceController(
             )
         }
         host.stateFlow.update {
-            it.copy(selectedJevStrategyIndex = index)
+            it.copy(
+                selectedJevStrategyIndex = index,
+                isJevContextInspectorOpen = false
+            )
+        }
+    }
+
+    fun toggleJevContextInspector() {
+        host.performKeyFeedback(strong = false)
+        host.stateFlow.update {
+            it.copy(isJevContextInspectorOpen = !it.isJevContextInspectorOpen)
         }
     }
 
@@ -295,6 +308,7 @@ class VoiceController(
                 capturedChatContext = refreshedContext,
                 selectedJevStrategyIndex = -1,
                 isJevLoading = true,
+                isJevContextInspectorOpen = false,
                 jevExcludedReplies = updatedExcluded
             )
         }
@@ -307,11 +321,19 @@ class VoiceController(
         host.performKeyFeedback(strong = false)
         jevInferenceJob?.cancel()
         chatScreenshotJob?.cancel()
+        host.stateFlow.update {
+            it.copy(
+                isJevContextInspectorOpen = false,
+                isFullScreenPeekCapturing = true,
+                isJevLoading = true
+            )
+        }
 
         jevInferenceJob = host.scope.launch {
             try {
                 host.stateFlow.update {
                     it.copy(
+                        isJevContextInspectorOpen = false,
                         isFullScreenPeekCapturing = true,
                         isJevLoading = true
                     )
@@ -329,7 +351,8 @@ class VoiceController(
                     isIncognitoMode = curr.isIncognitoMode,
                     isPasswordInput = isPassword,
                     ignoreChatContextForTurn = false,
-                    forJevCopilot = true
+                    forJevCopilot = true,
+                    isFullScreenPeek = true
                 )
                 val fullScreenOutcome = if (
                     settingsSnap.chatContextSendScreenshot ||
@@ -344,7 +367,8 @@ class VoiceController(
                             ignoreChatContextForTurn = false,
                             forJevCopilot = true,
                             existingMessages = fullScreenCtx.formattedMessages,
-                            redactionSession = fullScreenCtx.redactionSession
+                            redactionSession = fullScreenCtx.redactionSession,
+                            isFullScreenPeek = true
                         )
                     }.getOrNull()
                 } else {
@@ -363,6 +387,7 @@ class VoiceController(
                 host.stateFlow.update {
                     it.copy(
                         isFullScreenPeekCapturing = false,
+                        isJevContextInspectorOpen = false,
                         capturedChatContext = mergedCtx,
                         ignoreChatContextForThisTurn = false,
                         showChatContextDisclosurePrompt = false,
@@ -378,7 +403,7 @@ class VoiceController(
                 host.stateFlow.update { it.copy(isFullScreenPeekCapturing = false) }
                 onRequestComputeInsets()
             }
-            executeJevCopilotInferenceSuspend(isRefresh = false)
+            executeJevCopilotInferenceSuspend(isRefresh = false, skipViewportRecapture = true)
         }
     }
 
@@ -403,7 +428,8 @@ class VoiceController(
         @Suppress("UNUSED_PARAMETER") isRefresh: Boolean = false,
         overrideBottomLine: String? = null,
         wavFile: File? = null,
-        pretranscribedSpeech: String? = null
+        pretranscribedSpeech: String? = null,
+        skipViewportRecapture: Boolean = false
     ) {
         val settingsSnap = host.repository.settings.value
         val initialSnap = host.stateFlow.value
@@ -412,11 +438,13 @@ class VoiceController(
         host.stateFlow.update {
             it.copy(
                 isJevLoading = true,
+                isJevContextInspectorOpen = false,
                 selectedJevStrategyIndex = -1
             )
         }
 
-        val needsViewportCaptureOrOcr = !initialSnap.ignoreChatContextForThisTurn &&
+        val needsViewportCaptureOrOcr = !skipViewportRecapture &&
+            !initialSnap.ignoreChatContextForThisTurn &&
             !initialSnap.showChatContextDisclosurePrompt &&
             (
                 (settingsSnap.chatContextSendScreenshot && initialSnap.capturedChatContext.screenshotJpegBase64.isBlank()) ||
@@ -558,6 +586,7 @@ class VoiceController(
                 jevUserBottomLine = "",
                 jevExcludedReplies = emptyList(),
                 isFullScreenPeekCapturing = false,
+                isJevContextInspectorOpen = false,
                 capturedChatContext = if (clearContext) CapturedChatContext() else prev.capturedChatContext
             )
         }
@@ -748,6 +777,7 @@ class VoiceController(
                 capturedChatContext = CapturedChatContext(),
                 ignoreChatContextForThisTurn = false,
                 showChatContextDisclosurePrompt = false,
+                isJevContextInspectorOpen = false,
                 selectedHelpWritePreset = null
             )
         }

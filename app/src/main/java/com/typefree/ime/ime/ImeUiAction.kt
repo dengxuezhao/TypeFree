@@ -29,6 +29,7 @@ sealed interface ImeUiAction {
     data class SelectJevStrategyCard(val index: Int) : ImeUiAction
     data object RefreshJevStrategies : ImeUiAction
     data object TriggerFullScreenPeekCapture : ImeUiAction
+    data object ToggleJevContextInspector : ImeUiAction
 
     // Voice recording & Arc Translate
     data object StartVoiceRecording : ImeUiAction
