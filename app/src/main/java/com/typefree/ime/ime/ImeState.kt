@@ -141,7 +141,7 @@ data class ImeUiState(
     val aiCompletionSuggestion: String? = null,
     val isIncognitoMode: Boolean = false,
     val activeHeightLevel: Int = KeyboardMetrics.DEFAULT_LEVEL,
-    val activeHeightMode: KeyboardHeightMode = KeyboardHeightMode.STRETCH,
+    val activeHeightMode: KeyboardHeightMode = KeyboardHeightMode.LIFT,
     val activeLiftLevel: Int = KeyboardMetrics.DEFAULT_LIFT_LEVEL,
     val capturedChatContext: CapturedChatContext = CapturedChatContext(),
     val ignoreChatContextForThisTurn: Boolean = false,
@@ -208,6 +208,11 @@ object ImeLogic {
     const val ARC_WHEEL_STEP_DP: Float = 56f
     const val ARC_CANCEL_THRESHOLD_DP: Float = 20f
     const val DOUBLE_TAP_SHIFT_MS: Long = 360L
+    const val SPACE_CURSOR_SLIDE_ACTIVATE_DP: Float = 10f
+    const val SPACE_CURSOR_SLIDE_STEP_DP: Float = 11f
+    const val SECONDARY_KEY_LONG_PRESS_MS: Long = 250L
+    const val SECONDARY_KEY_SWIPE_UP_DP: Float = 18f
+    const val TOP_BAR_VOICE_HOLD_MS: Long = 220L
 
     private val WHITESPACE_COLLAPSE_REGEX = Regex("\\s+")
 
@@ -667,17 +672,17 @@ object ImeLogic {
     }
 
     /**
-     * Formats the left preedit badge in [CandidateStrip]:
+     * Formats the top preedit display in [CandidateStrip]:
      * - For [InputScheme.FLYPY_TABLE], displays the raw 4-code (`rawCode`).
      * - For Rime Pinyin / Double-Pinyin / Custom schemes, displays the segmented preedit
-     *   (e.g. `ni'hao'shi'jie`) and left-truncates (`"…" + preedit.takeLast(maxVisibleChars)`)
-     *   when longer than [maxVisibleChars] so the latest input remains visible.
+     *   (e.g. `wo'men'ming'tian'xia'wu'san'dian`) and left-truncates (`"…" + preedit.takeLast(maxVisibleChars)`)
+     *   when longer than [maxVisibleChars] (38 chars in v3.4.0) so full-sentence pinyin stays visible.
      */
     fun formatPreeditDisplay(
         preedit: String,
-        rawCode: String,
-        scheme: InputScheme,
-        maxVisibleChars: Int = 18
+        rawCode: String = "",
+        scheme: InputScheme = InputScheme.RIME_PINYIN,
+        maxVisibleChars: Int = 38
     ): String {
         if (!scheme.usesRime) {
             return rawCode.ifEmpty { preedit }
@@ -689,6 +694,21 @@ object ImeLogic {
         } else {
             base
         }
+    }
+
+    /**
+     * Computes integer character steps and remaining unconsumed pixel delta during
+     * horizontal spacebar cursor sliding (`11.dp` per character step).
+     */
+    fun computeSpaceCursorSlideSteps(
+        accumulatedDxPx: Float,
+        stepPx: Float
+    ): Pair<Int, Float> {
+        if (stepPx <= 0f) return 0 to accumulatedDxPx
+        val steps = (accumulatedDxPx / stepPx).toInt()
+        if (steps == 0) return 0 to accumulatedDxPx
+        val remainder = accumulatedDxPx - (steps * stepPx)
+        return steps to remainder
     }
 
     /**

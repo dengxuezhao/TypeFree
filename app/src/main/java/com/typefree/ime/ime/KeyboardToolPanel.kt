@@ -279,11 +279,7 @@ fun KeyboardToolPanel(
             ToolPanelTile(
                 icon = TypeFreeIcons.Tune,
                 title = "键盘高度",
-                subtitle = if (uiState.activeHeightMode == KeyboardHeightMode.LIFT) {
-                    "垫高 · ${KeyboardMetrics.labelForLiftLevel(uiState.activeLiftLevel)}"
-                } else {
-                    KeyboardMetrics.labelForLevel(uiState.activeHeightLevel)
-                },
+                subtitle = "垫高 · ${KeyboardMetrics.labelForLiftLevel(uiState.activeLiftLevel)}",
                 isExpandedActive = uiState.isToolPanelHeightExpanded,
                 onClick = onToggleHeightExpanded,
                 modifier = Modifier
@@ -374,15 +370,10 @@ private fun ToolPanelHeightAdjustStrip(
     onSelectLiftLevel: (Int) -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
-    val isLift = heightMode == KeyboardHeightMode.LIFT
-    val isDefault = if (isLift) {
-        activeLiftLevel == KeyboardMetrics.DEFAULT_LIFT_LEVEL
-    } else {
-        activeLevel == KeyboardMetrics.DEFAULT_LEVEL
-    }
-    val levels = if (isLift) KeyboardMetrics.ALL_LIFT_LEVELS else KeyboardMetrics.ALL_LEVELS
+    val isDefault = activeLiftLevel == KeyboardMetrics.DEFAULT_LIFT_LEVEL
+    val levels = KeyboardMetrics.ALL_LIFT_LEVELS
 
-    // Single 34.dp row: [拉伸 | 垫高] mode switch + 5 levels + reset
+    // Unified 34.dp row: 底部垫高 (0dp / 8dp / 16dp / 24dp / 32dp) + 默认
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -390,48 +381,22 @@ private fun ToolPanelHeightAdjustStrip(
             .clip(RoundedCornerShape(10.dp))
             .background(palette.capsuleTrackBg)
             .border(1.dp, palette.keyBorder, RoundedCornerShape(10.dp))
-            .padding(horizontal = 4.dp, vertical = 3.dp),
+            .padding(horizontal = 6.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp)
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxHeight()
-                .clip(RoundedCornerShape(7.dp))
-                .background(palette.keyCapBg)
-                .border(1.dp, palette.keyBorder, RoundedCornerShape(7.dp))
-                .padding(2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            KeyboardHeightMode.entries.forEach { mode ->
-                val selected = mode == heightMode
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(5.dp))
-                        .background(if (selected) palette.capsuleSelectedBg else Color.Transparent)
-                        .clickable { if (!selected) onSelectMode(mode) }
-                        .padding(horizontal = 7.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = mode.label,
-                        color = if (selected) palette.keyTextPrimary else palette.keyTextMuted,
-                        fontSize = 11.sp,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                        maxLines = 1
-                    )
-                }
-            }
-        }
+        Text(
+            text = "底部垫高",
+            color = palette.keyTextMuted,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 4.dp)
+        )
 
         levels.forEach { level ->
-            val selected = if (isLift) activeLiftLevel == level else activeLevel == level
-            val label = if (isLift) {
-                KeyboardMetrics.liftDpForLevel(level).toString()
-            } else {
-                KeyboardMetrics.labelForLevel(level)
-            }
+            val selected = activeLiftLevel == level
+            val label = KeyboardMetrics.labelForLiftLevel(level)
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -440,7 +405,12 @@ private fun ToolPanelHeightAdjustStrip(
                     .background(
                         if (selected) palette.primaryMicSolid else Color.Transparent
                     )
-                    .clickable { if (isLift) onSelectLiftLevel(level) else onSelectLevel(level) },
+                    .clickable {
+                        if (heightMode != KeyboardHeightMode.LIFT) {
+                            onSelectMode(KeyboardHeightMode.LIFT)
+                        }
+                        onSelectLiftLevel(level)
+                    },
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -460,11 +430,10 @@ private fun ToolPanelHeightAdjustStrip(
                 .background(palette.keyCapBg)
                 .border(1.dp, palette.keyBorder, RoundedCornerShape(7.dp))
                 .clickable(enabled = !isDefault) {
-                    if (isLift) {
-                        onSelectLiftLevel(KeyboardMetrics.DEFAULT_LIFT_LEVEL)
-                    } else {
-                        onSelectLevel(KeyboardMetrics.DEFAULT_LEVEL)
+                    if (heightMode != KeyboardHeightMode.LIFT) {
+                        onSelectMode(KeyboardHeightMode.LIFT)
                     }
+                    onSelectLiftLevel(KeyboardMetrics.DEFAULT_LIFT_LEVEL)
                 }
                 .padding(horizontal = 6.dp),
             contentAlignment = Alignment.Center

@@ -182,13 +182,14 @@ fun KeyboardScreen(
                 .weight(1f)
                 .then(
                     if (isActiveQwertyGrid) {
-                        Modifier.padding(top = 8.dp, bottom = 0.dp)
+                        val qwertyTopPad = if (uiState.isFlypyComposing) 1.dp else 5.dp
+                        Modifier.padding(top = qwertyTopPad, bottom = 0.dp)
                     } else {
                         Modifier.padding(
                             start = 12.dp,
                             end = 12.dp,
-                            top = 8.dp,
-                            bottom = (18f * metrics.elementScale).dp
+                            top = 5.dp,
+                            bottom = 6.dp
                         )
                     }
                 )
@@ -197,7 +198,7 @@ fun KeyboardScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .alpha(if (uiState.isArcTranslateActive) 0f else 1f),
-                verticalArrangement = Arrangement.spacedBy(if (isActiveQwertyGrid) 3.dp else 6.dp)
+                verticalArrangement = Arrangement.spacedBy(if (isActiveQwertyGrid) 2.dp else 4.dp)
             ) {
                 when {
                     uiState.isClipboardOpen -> {
@@ -333,7 +334,12 @@ fun KeyboardScreen(
                                         onPerformUndo = onPerformUndo,
                                         onPasteClipboardText = onPasteClipboardText,
                                         onToggleManualIncognito = onToggleManualIncognito,
-                                        onOpenJevCopilot = { onAction(ImeUiAction.OpenJevCopilot) }
+                                        onOpenJevCopilot = { onAction(ImeUiAction.OpenJevCopilot) },
+                                        onToggleClipboard = {
+                                            if (uiState.isClipboardOpen) onCloseClipboard() else onOpenClipboard()
+                                        },
+                                        onStartVoiceDictation = { onMicPressDown(VoiceIntentMode.DICTATE) },
+                                        onStopVoiceDictation = onMicPressUp
                                     )
                                 }
                             }
@@ -414,8 +420,11 @@ fun KeyboardScreen(
                                         flypyCandidateCount = uiState.flypyCandidates.size,
                                         commaPeriodQuickSelect = settings.flypyCommaPeriodQuickSelect,
                                         onCommitChar = onCommitQwertyChar,
+                                        onCommitSecondarySymbol = { onAction(ImeUiAction.CommitSecondarySymbol(it)) },
+                                        onInsertPairedSymbol = onInsertPairedSymbol,
                                         onCommaOrPeriodKey = onCommaOrPeriodKey,
                                         onInsertSpace = onInsertSpace,
+                                        onMoveCursorByStep = { onAction(ImeUiAction.MoveCursorByChars(it)) },
                                         onToggleFlypyLanguageMode = onToggleFlypyLanguageMode,
                                         onClearComposing = onClearFlypyComposing,
                                         onFlushComposingBeforeLayerSwitch = onFlushFlypyComposing,

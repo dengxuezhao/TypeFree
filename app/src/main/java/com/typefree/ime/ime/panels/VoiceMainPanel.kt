@@ -245,8 +245,8 @@ fun VoiceMainPanel(
         Box(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = (24f * s).dp)
-                .size(width = (160f * s).dp, height = (104f * s).dp)
+                .padding(top = (16f * s).dp)
+                .size(width = (160f * s).dp, height = (96f * s).dp)
                 .pointerInput(Unit) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
@@ -376,7 +376,7 @@ fun VoiceMainPanel(
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = (40f * s).dp),
+                    .padding(bottom = (28f * s).dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -435,48 +435,18 @@ fun VoiceMainPanel(
                     onInsertPairedSymbol = onInsertPairedSymbol,
                     modifier = Modifier
                         .align(Alignment.BottomStart)
-                        .padding(bottom = (86f * s).dp, end = (52f * s).dp)
+                        .padding(bottom = (76f * s).dp, end = (52f * s).dp)
                 )
             }
 
-            // Bottom-Left Vertically Stacked `[CopilotStar 军师]` capsule + Circular White Key (`46.dp`, `VoicePen`)
-            Column(
+            // Bottom-Left Single Circular White Key (`44.dp`, `VoicePen` — top bar already hosts `[✦ 军师]`)
+            Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(bottom = (33f * s).dp),
-                verticalArrangement = Arrangement.spacedBy((8f * s).dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                    .padding(bottom = (26f * s).dp)
             ) {
-                if (settings.jevCopilotEnabled) {
-                    Row(
-                        modifier = Modifier
-                            .height((26f * s).dp)
-                            .clip(RoundedCornerShape((13f * s).dp))
-                            .background(palette.keyCapBg)
-                            .border(1.dp, palette.keyBorder, RoundedCornerShape((13f * s).dp))
-                            .clickable(onClick = onOpenJevCopilot)
-                            .padding(horizontal = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(3.dp)
-                    ) {
-                        Icon(
-                            imageVector = TypeFreeIcons.CopilotStar,
-                            contentDescription = "Jev 军师",
-                            tint = palette.keyTextPrimary,
-                            modifier = Modifier.size((11.5f * s).dp)
-                        )
-                        Text(
-                            text = "军师",
-                            color = palette.keyTextPrimary,
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1
-                        )
-                    }
-                }
-
                 CircleFloatingKey(
-                    size = (46f * s).dp,
+                    size = (44f * s).dp,
                     highlighted = uiState.hasIgnoredSelection,
                     onClick = onVoicePenClick
                 ) {
@@ -484,24 +454,24 @@ fun VoiceMainPanel(
                         imageVector = TypeFreeIcons.VoicePen,
                         contentDescription = "帮我写 / 语音编辑",
                         tint = if (uiState.hasIgnoredSelection) palette.onPrimaryMic else palette.keyTextPrimary,
-                        modifier = Modifier.size((20f * s).dp)
+                        modifier = Modifier.size((19f * s).dp)
                     )
                 }
             }
 
-            // Bottom-Center Stadium White Key (`106.dp × 44.dp`, adaptive Enter/Action label)
+            // Bottom-Center Stadium White Key (`104.dp × 42.dp`, adaptive Enter/Action label)
             val enterInfo = uiState.enterActionInfo
             val enterInteraction = remember { MutableInteractionSource() }
             val enterPressed by enterInteraction.collectIsPressedAsState()
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = (34f * s).dp)
-                    .size(width = (106f * s).dp, height = (44f * s).dp)
+                    .padding(bottom = (26f * s).dp)
+                    .size(width = (104f * s).dp, height = (42f * s).dp)
                     .scale(if (enterPressed) 0.95f else 1f)
-                    .clip(RoundedCornerShape((22f * s).dp))
+                    .clip(RoundedCornerShape((21f * s).dp))
                     .background(palette.keyCapBg)
-                    .border(1.dp, palette.keyBorder, RoundedCornerShape((22f * s).dp))
+                    .border(1.dp, palette.keyBorder, RoundedCornerShape((21f * s).dp))
                     .clickable(
                         interactionSource = enterInteraction,
                         indication = null,
@@ -518,23 +488,23 @@ fun VoiceMainPanel(
                 )
             }
 
-            // Right Vertically Stacked Dual Circular White Keys (`44.dp` Backspace + `44.dp` `@`)
+            // Right Vertically Stacked Dual Circular White Keys (`42.dp` Backspace + `42.dp` `@`)
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(bottom = (34f * s).dp),
-                verticalArrangement = Arrangement.spacedBy((8f * s).dp),
+                    .padding(bottom = (26f * s).dp),
+                verticalArrangement = Arrangement.spacedBy((6f * s).dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Upper Circle: Repeating Backspace (`44.dp`)
+                // Upper Circle: Repeating Backspace (`42.dp`)
                 RepeatingCircleBackspaceKey(
-                    size = (44f * s).dp,
+                    size = (42f * s).dp,
                     onBackspace = onBackspace
                 )
 
-                // Lower Circle: `@` Quick Punctuation Toggle (`44.dp`)
+                // Lower Circle: `@` Quick Punctuation Toggle (`42.dp`)
                 CircleFloatingKey(
-                    size = (44f * s).dp,
+                    size = (42f * s).dp,
                     highlighted = uiState.isPunctuationStripOpen,
                     onClick = onTogglePunctuationStrip
                 ) {

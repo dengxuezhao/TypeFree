@@ -44,6 +44,7 @@ object ApiConfigBackupHelper {
         "pauseMediaWhileRecording",
         "whisperModeEnabled",
         "equalEqualAskAiEnabled",
+        "qwertyShowNumberRow",
         "keyboardHeightLevel",
         "keyboardHeightMode",
         "keyboardLiftLevel",
@@ -578,6 +579,8 @@ object ApiConfigBackupHelper {
                     ?: existingSettings.whisperModeEnabled,
                 equalEqualAskAiEnabled = rootObj.optBoolean("equalEqualAskAiEnabled")
                     ?: existingSettings.equalEqualAskAiEnabled,
+                qwertyShowNumberRow = rootObj.optBoolean("qwertyShowNumberRow")
+                    ?: existingSettings.qwertyShowNumberRow,
                 keyboardHeightLevel = mergedHeightLevel,
                 keyboardHeightMode = mergedHeightMode,
                 keyboardLiftLevel = mergedLiftLevel,

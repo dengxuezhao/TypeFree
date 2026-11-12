@@ -1,8 +1,10 @@
 package com.typefree.ime.ime
 
 import android.content.Context
+import android.view.KeyEvent
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
+import kotlin.math.abs
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.DefaultPresets
@@ -571,26 +573,102 @@ class TypingController(
         }
     }
 
-    fun insertPairedSymbol(left: String, right: String) {
+    fun commitSecondarySymbol(symbol: String) {
+        if (symbol.isEmpty()) return
+        val state = host.stateFlow.value
+        // Special case: preserve Xiaohe Yinxing (`FLYPY_TABLE`) stroke reverse-lookup `ji\`` when composing
+        if (
+            symbol == "`" &&
+            state.activeInputScheme == InputScheme.FLYPY_TABLE &&
+            state.isFlypyChineseMode &&
+            isComposing
+        ) {
+            commitQwertyChar("`")
+            return
+        }
+
+        if (isComposing) {
+            flushFlypyComposing()
+        }
+        predictionCoordinator.onPunctuationCommitted()
+        host.commitDirectText(
+            text = symbol,
+            recordUndo = true,
+            markManualEdit = true,
+            playFeedback = true
+        )
+    }
+
+    fun commitPairedSymbol(open: String, close: String) {
+        if (isComposing) {
+            flushFlypyComposing()
+        }
         predictionCoordinator.onPunctuationCommitted()
         host.performKeyFeedback(strong = false)
         val ic = host.currentInputConnection() ?: return
         val selected = host.readSelectedTextSafely()
         ic.beginBatchEdit()
         if (selected.isNotEmpty()) {
-            ic.commitText("$left$selected$right", 1)
+            ic.commitText("$open$selected$close", 1)
         } else {
-            ic.commitText("$left$right", 1)
+            ic.commitText("$open$close", 1)
             val extracted = try {
                 ic.getExtractedText(ExtractedTextRequest(), 0)
             } catch (_: Exception) {
                 null
             }
-            if (extracted != null && extracted.selectionStart >= right.length) {
-                val cursorInside = extracted.selectionStart - right.length
+            if (extracted != null && extracted.selectionStart >= close.length) {
+                val cursorInside = extracted.selectionStart - close.length
                 ic.setSelection(cursorInside, cursorInside)
+            } else {
+                val before = runCatching { ic.getTextBeforeCursor(4000, 0) }.getOrNull()
+                if (before != null && before.length >= close.length) {
+                    val cursorInside = before.length - close.length
+                    ic.setSelection(cursorInside, cursorInside)
+                } else {
+                    repeat(close.length) {
+                        runCatching {
+                            ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT))
+                            ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_LEFT))
+                        }
+                    }
+                }
             }
         }
         ic.endBatchEdit()
+        host.recordManualEditTouch()
+    }
+
+    fun insertPairedSymbol(left: String, right: String) {
+        commitPairedSymbol(left, right)
+    }
+
+    fun moveCursorByChars(delta: Int) {
+        if (delta == 0) return
+        if (isComposing) {
+            flushFlypyComposing()
+        }
+        host.performHaptic(strong = false)
+        val ic = host.currentInputConnection() ?: return
+        val extracted = runCatching {
+            ic.getExtractedText(ExtractedTextRequest(), 0)
+        }.getOrNull()
+        val fullText = extracted?.text
+        if (extracted != null && fullText != null) {
+            val baseCursor = extracted.selectionEnd.coerceIn(0, fullText.length)
+            val target = (baseCursor + delta).coerceIn(0, fullText.length)
+            if (target != baseCursor || extracted.selectionStart != extracted.selectionEnd) {
+                runCatching { ic.setSelection(target, target) }
+            }
+            return
+        }
+        val keyCode = if (delta < 0) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
+        val steps = abs(delta).coerceIn(1, 32)
+        repeat(steps) {
+            runCatching {
+                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+            }
+        }
     }
 }

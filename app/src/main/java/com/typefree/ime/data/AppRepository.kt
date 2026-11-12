@@ -49,7 +49,10 @@ class AppRepository(
     @Suppress("SENSELESS_COMPARISON")
     private fun loadSettingsInternal(): AppSettings {
         val raw = publicStore.getString(KEY_SETTINGS, null)
-            ?: return secretVault.hydrateSettingsWithSecrets(AppSettings())
+        if (raw == null) {
+            publicStore.putBoolean(KEY_MIGRATED_V340_COMPACT_4ROW_AND_LIFT, true)
+            return secretVault.hydrateSettingsWithSecrets(AppSettings())
+        }
         return try {
             val parsed = gson.fromJson(raw, AppSettings::class.java) ?: AppSettings()
             val safeTargets = (parsed.translationTargets ?: emptyList())
@@ -90,10 +93,16 @@ class AppRepository(
             } else {
                 resolvedFlypyEnabled
             }
-            val resolvedQwertyShowNumberRow = if (raw.contains("\"qwertyShowNumberRow\"")) {
+            val migratedV340CompactLift = publicStore.getBoolean(KEY_MIGRATED_V340_COMPACT_4ROW_AND_LIFT, false)
+            val rawQwertyShowNumberRow = if (raw.contains("\"qwertyShowNumberRow\"")) {
                 parsed.qwertyShowNumberRow
             } else {
-                true
+                false
+            }
+            val resolvedQwertyShowNumberRow = if (!migratedV340CompactLift) {
+                false
+            } else {
+                rawQwertyShowNumberRow
             }
             val resolvedQwertyKeyPopupPreview = if (raw.contains("\"qwertyKeyPopupPreview\"")) {
                 parsed.qwertyKeyPopupPreview
@@ -130,17 +139,33 @@ class AppRepository(
             } else {
                 0
             }
-            val resolvedKeyboardHeightMode: KeyboardHeightMode =
+            val rawKeyboardHeightMode: KeyboardHeightMode =
                 if (raw.contains("\"keyboardHeightMode\"")) {
                     @Suppress("USELESS_ELVIS")
-                    parsed.keyboardHeightMode ?: KeyboardHeightMode.STRETCH
-                } else {
+                    parsed.keyboardHeightMode ?: KeyboardHeightMode.LIFT
+                } else if (!migratedV340CompactLift) {
                     KeyboardHeightMode.STRETCH
+                } else {
+                    KeyboardHeightMode.LIFT
                 }
-            val resolvedKeyboardLiftLevel = if (raw.contains("\"keyboardLiftLevel\"")) {
+            val rawKeyboardLiftLevel = if (raw.contains("\"keyboardLiftLevel\"")) {
                 parsed.keyboardLiftLevel.coerceIn(0, 4)
             } else {
                 0
+            }
+            val resolvedKeyboardHeightMode: KeyboardHeightMode = if (!migratedV340CompactLift) {
+                KeyboardHeightMode.LIFT
+            } else {
+                rawKeyboardHeightMode
+            }
+            val resolvedKeyboardLiftLevel = if (!migratedV340CompactLift) {
+                migrateStretchLevelToLiftLevel(
+                    oldMode = rawKeyboardHeightMode,
+                    oldHeightLevel = resolvedKeyboardHeightLevel,
+                    oldLiftLevel = rawKeyboardLiftLevel
+                )
+            } else {
+                rawKeyboardLiftLevel
             }
             val migratedV30LiveWrite = publicStore.getBoolean(KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT, false)
             val resolvedLiveWriteToEditor = if (!migratedV30LiveWrite) {
@@ -328,10 +353,13 @@ class AppRepository(
                 dictionary = safeDict
             )
             val hydrated = secretVault.hydrateSettingsWithSecrets(preliminary)
-            if (SecretVault.containsPlaintextSecrets(preliminary)) {
+            if (SecretVault.containsPlaintextSecrets(preliminary) || !migratedV340CompactLift) {
                 secretVault.saveSecretsFromSettings(hydrated)
                 val sanitized = secretVault.stripSecretsForPublicPersistence(hydrated)
                 publicStore.putString(KEY_SETTINGS, gson.toJson(sanitized))
+                if (!migratedV340CompactLift) {
+                    publicStore.putBoolean(KEY_MIGRATED_V340_COMPACT_4ROW_AND_LIFT, true)
+                }
             }
             hydrated
         } catch (_: Exception) {
@@ -596,10 +624,44 @@ class AppRepository(
         internal const val KEY_HISTORY = "history_v1"
         internal const val KEY_CLIPBOARD = "clipboard_v1"
         private const val KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT = "migrated_v30_live_write_default"
+        internal const val KEY_MIGRATED_V340_COMPACT_4ROW_AND_LIFT = "mig_v340_compact_4row_and_lift"
         private const val MAX_HISTORY_ITEMS = 200
         private const val MAX_CLIPBOARD_UNPINNED = 40
         private const val MAX_CLIP_CHARS = 4000
         private val PUNCT_OR_SPACE_ONLY = Regex("^[\\s\\p{Punct}，。？！、：；“”‘’（）【】《》…—\\-]+$")
+
+        fun migrateStretchLevelToLiftLevel(
+            oldMode: KeyboardHeightMode,
+            oldHeightLevel: Int,
+            oldLiftLevel: Int
+        ): Int {
+            return if (oldMode == KeyboardHeightMode.STRETCH) {
+                when {
+                    oldHeightLevel <= 0 -> 0
+                    oldHeightLevel == 1 -> 2
+                    else -> 3
+                }
+            } else {
+                oldLiftLevel.coerceIn(0, 4)
+            }
+        }
+
+        fun migrateSettingsToV340CompactLift(
+            oldSettings: AppSettings,
+            alreadyMigrated: Boolean
+        ): AppSettings {
+            if (alreadyMigrated) return oldSettings
+            val migratedLift = migrateStretchLevelToLiftLevel(
+                oldMode = oldSettings.keyboardHeightMode,
+                oldHeightLevel = oldSettings.keyboardHeightLevel,
+                oldLiftLevel = oldSettings.keyboardLiftLevel
+            )
+            return oldSettings.copy(
+                qwertyShowNumberRow = false,
+                keyboardHeightMode = KeyboardHeightMode.LIFT,
+                keyboardLiftLevel = migratedLift
+            )
+        }
 
         fun sortClipboardEntries(entries: List<ClipboardEntry>): List<ClipboardEntry> {
             return entries.sortedWith(

@@ -823,7 +823,7 @@ private fun AppearanceAndPreferencesPane(
 
                 PreferenceSwitchRow(
                     title = "顶部独立数字行 (1–0)",
-                    subtitle = "默认开启，无需切 123 符号层一键盲打数字（候选态自动顶字上屏）；关闭后底部呈现人体工学收起/切换托盘，始终保持零高度跳变",
+                    subtitle = "默认关闭（4 行 252dp 黄金紧凑高度，Q–P 长按或上滑直输 1–0）；开启后显示顶部独立数字行（294dp）",
                     checked = settings.qwertyShowNumberRow,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(qwertyShowNumberRow = enabled) }
@@ -832,16 +832,11 @@ private fun AppearanceAndPreferencesPane(
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
-                // Keyboard Height: 拉伸 (scale keys, -2..+2) / 垫高 (keep keys, bottom cushion 0..32dp)
-                val currentHeightLevel = settings.keyboardHeightLevel.coerceIn(
-                    KeyboardMetrics.MIN_LEVEL,
-                    KeyboardMetrics.MAX_LEVEL
-                )
+                // Unified Keyboard Bottom Cushion (底部垫高 0 / 8 / 16 / 24 / 32dp)
                 val currentLiftLevel = settings.keyboardLiftLevel.coerceIn(
                     KeyboardMetrics.MIN_LIFT_LEVEL,
                     KeyboardMetrics.MAX_LIFT_LEVEL
                 )
-                val isLiftMode = settings.keyboardHeightMode == KeyboardHeightMode.LIFT
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -853,37 +848,28 @@ private fun AppearanceAndPreferencesPane(
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             Text(
-                                text = if (isLiftMode) {
-                                    "键盘高度 · 垫高 ${KeyboardMetrics.labelForLiftLevel(currentLiftLevel)}"
-                                } else {
-                                    "键盘高度 · ${KeyboardMetrics.labelForLevel(currentHeightLevel)}"
-                                },
+                                text = "底部垫高 · ${KeyboardMetrics.labelForLiftLevel(currentLiftLevel)}",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = if (isLiftMode) {
-                                    "按键大小不变，底部留白把键盘整体托高；所有面板同步生效"
-                                } else {
-                                    "按比例拉伸按键高度；所有面板同步生效，切换面板高度始终一致"
-                                },
+                                text = "按键保持 46dp 黄金高度不变，仅在底部增加防误触留白托起键盘；所有面板同步生效",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            KeyboardHeightMode.entries.forEach { mode ->
-                                FilterChip(
-                                    selected = settings.keyboardHeightMode == mode,
-                                    onClick = {
-                                        repository.updateSettings { it.copy(keyboardHeightMode = mode) }
-                                    },
-                                    label = { Text(mode.label, fontSize = 12.sp, maxLines = 1) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                                    )
-                                )
+                        if (currentLiftLevel != KeyboardMetrics.DEFAULT_LIFT_LEVEL) {
+                            TextButton(
+                                onClick = {
+                                    repository.updateSettings {
+                                        it.copy(
+                                            keyboardHeightMode = KeyboardHeightMode.LIFT,
+                                            keyboardLiftLevel = KeyboardMetrics.DEFAULT_LIFT_LEVEL
+                                        )
+                                    }
+                                }
+                            ) {
+                                Text("恢复默认", fontSize = 12.sp)
                             }
                         }
                     }
@@ -892,23 +878,21 @@ private fun AppearanceAndPreferencesPane(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        val levels = if (isLiftMode) KeyboardMetrics.ALL_LIFT_LEVELS else KeyboardMetrics.ALL_LEVELS
-                        levels.forEach { level ->
-                            val selected = if (isLiftMode) level == currentLiftLevel else level == currentHeightLevel
+                        KeyboardMetrics.ALL_LIFT_LEVELS.forEach { level ->
+                            val selected = level == currentLiftLevel
                             FilterChip(
                                 selected = selected,
                                 onClick = {
                                     repository.updateSettings {
-                                        if (isLiftMode) it.copy(keyboardLiftLevel = level) else it.copy(keyboardHeightLevel = level)
+                                        it.copy(
+                                            keyboardHeightMode = KeyboardHeightMode.LIFT,
+                                            keyboardLiftLevel = level
+                                        )
                                     }
                                 },
                                 label = {
                                     Text(
-                                        text = if (isLiftMode) {
-                                            KeyboardMetrics.labelForLiftLevel(level)
-                                        } else {
-                                            KeyboardMetrics.labelForLevel(level)
-                                        },
+                                        text = KeyboardMetrics.labelForLiftLevel(level),
                                         fontSize = 12.sp,
                                         maxLines = 1
                                     )

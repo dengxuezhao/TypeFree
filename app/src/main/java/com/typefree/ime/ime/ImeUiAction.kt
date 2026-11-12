@@ -80,6 +80,8 @@ sealed interface ImeUiAction {
     data object DismissPredictions : ImeUiAction
     data class RunEditorShortcut(val action: EditorShortcutAction) : ImeUiAction
     data class InsertPairedSymbol(val left: String, val right: String) : ImeUiAction
+    data class CommitSecondarySymbol(val symbol: String) : ImeUiAction
+    data class MoveCursorByChars(val delta: Int) : ImeUiAction
     data object InsertSpace : ImeUiAction
     data object Backspace : ImeUiAction
     data object EnterOrNewline : ImeUiAction

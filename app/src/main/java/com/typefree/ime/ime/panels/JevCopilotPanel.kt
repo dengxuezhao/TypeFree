@@ -19,16 +19,22 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,8 +43,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.ime.data.AppSettings
@@ -46,9 +56,7 @@ import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.ImeUiAction
 import com.typefree.ime.ime.ImeUiState
 import com.typefree.ime.ime.KeyboardTabMode
-import com.typefree.ime.ime.LocalKeyboardMetrics
 import com.typefree.ime.ime.VoicePhase
-import com.typefree.ime.ime.chrome.BottomCornerUtilityIcons
 import com.typefree.ime.ime.chrome.ErrorContextBanner
 import com.typefree.ime.ime.chrome.SubPanelHeaderBridgeBar
 import com.typefree.ime.ime.chrome.SubPanelModeSwitchTrack
@@ -63,16 +71,17 @@ import com.typefree.ime.ui.theme.TypeFreeEmerald
 import com.typefree.ime.ui.theme.TypeFreeRose
 
 /**
- * TypeFree v3.2.0 `✦ Jev 军师` Panel (Plan B 1:1 Monochrome Keycap Architecture).
+ * TypeFree v3.4.0 `✦ Jev 军师` Panel (Zero-Truncation Inline-Pill & 32.dp Slim Control Bar).
  *
- * Strictly fits inside the constant `298.dp` keyboard frame height with zero layout jump:
- * 1. Header (`30.dp`): `[ 帮写 | ✦ 军师 ]` segmented switch + privacy/redaction badge + `[⛶ 全屏深读]`
+ * Fits inside the compact `252.dp` 4-row keyboard frame height with zero layout jump:
+ * 1. Header (`28.dp`): `[ 帮写 | ✦ 军师 ]` segmented switch + privacy/redaction badge + `[⛶ 全屏深读]`
  *    240ms non-disconnecting peek trigger + `[鹤 打字] [📋] [×]`.
- * 2. Subtext Radar Bar (`25.dp`): single `6.dp` breathing semantic dot (`Lv.1–3` Emerald, `Lv.4–6` Amber,
- *    `Lv.7–9` Rose) + `Lv.X 定性标签` + 1-line subtext decoding.
- * 3. 3-Strategy Keycap Cards: monochrome keycaps (`palette.keyCapBg` + `1.dp` `palette.keyBorder`),
- *    selected state with `1.5.dp` `palette.primaryMicSolid` border + Emerald `✓ 已置入草稿` badge.
- * 4. Bottom Voice Bottom-Line Bar (`42.dp` sphere) + `[↻ 换一批]` + `BottomCornerUtilityIcons`.
+ * 2. Subtext Radar Bar (`heightIn(min = 24.dp)`, `maxLines = 2`): single `6.dp` breathing semantic dot
+ *    + `Lv.X 定性标签 · 潜台词拆解正文` flowing naturally across up to 2 lines (`<= 46` chars).
+ * 3. 3-Strategy Keycap Cards (`Modifier.weight(1f).verticalScroll`): first-line inline strategy pill
+ *    (`[★ 55% 策略名]`) via `InlineTextContent` + `buildAnnotatedString`, followed by full-width
+ *    `option.replyText` (`maxLines = Int.MAX_VALUE`, zero ellipsis truncation) + inline `✓已置入`.
+ * 4. Bottom Control Row (`32.dp`): full-width left hold-to-speak bottom-line capsule + right `[↻ 换一批]`.
  */
 @Composable
 fun JevCopilotPanel(
@@ -81,119 +90,118 @@ fun JevCopilotPanel(
     onAction: (ImeUiAction) -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
-    val s = LocalKeyboardMetrics.current.elementScale
     val phase = uiState.voicePhase
-    val isRecording = phase is VoicePhase.Recording
     val isProcessing = phase is VoicePhase.Processing || uiState.isJevLoading
     val captured = uiState.capturedChatContext
     val jevResult = uiState.jevCopilotResult
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        // 1. Top Header Bar (`28.dp`): Mode Switcher + Privacy/Redaction Pill + `[⛶ 全屏深读]` + Bridge
+        Row(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(bottom = (26f * s).dp),
-            verticalArrangement = Arrangement.SpaceBetween
+                .fillMaxWidth()
+                .height(28.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            // 1. Top Header Bar (`30.dp`): Mode Switcher + Privacy/Redaction Pill + `[⛶ 全屏深读]` + Bridge
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(30.dp),
+                modifier = Modifier.weight(1f),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                SubPanelModeSwitchTrack(
+                    isJevActive = true,
+                    jevEnabled = settings.jevCopilotEnabled,
+                    onSelectHelpMeWrite = { onAction(ImeUiAction.OpenHelpMeWrite) },
+                    onSelectJevCopilot = {}
+                )
+
+                // Redaction / Domain / Context status pill
+                val statusLabel = when {
+                    uiState.ignoreChatContextForThisTurn -> "已忽略上文"
+                    captured.redactionCount > 0 -> "🛡已脱敏${captured.redactionCount}处"
+                    captured.hasContext -> "${captured.effectiveBadgeTitle}·${captured.messageCount}条"
+                    else -> captured.effectiveBadgeTitle
+                }
+                val statusTint = if (!uiState.ignoreChatContextForThisTurn &&
+                    (captured.redactionCount > 0 || captured.hasContext)
                 ) {
-                    SubPanelModeSwitchTrack(
-                        isJevActive = true,
-                        jevEnabled = settings.jevCopilotEnabled,
-                        onSelectHelpMeWrite = { onAction(ImeUiAction.OpenHelpMeWrite) },
-                        onSelectJevCopilot = {}
+                    if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+                } else {
+                    palette.keyTextMuted
+                }
+                Row(
+                    modifier = Modifier
+                        .height(22.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(palette.keyCapBg)
+                        .border(1.dp, palette.keyBorder, RoundedCornerShape(11.dp))
+                        .clickable(enabled = !isProcessing) {
+                            onAction(ImeUiAction.ToggleIgnoreChatContext)
+                        }
+                        .padding(horizontal = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = statusLabel,
+                        color = statusTint,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
                     )
-
-                    // Redaction / Domain / Context status pill
-                    val statusLabel = when {
-                        uiState.ignoreChatContextForThisTurn -> "已忽略上文"
-                        captured.redactionCount > 0 -> "🛡已脱敏${captured.redactionCount}处"
-                        captured.hasContext -> "${captured.effectiveBadgeTitle}·${captured.messageCount}条"
-                        else -> captured.effectiveBadgeTitle
-                    }
-                    val statusTint = if (!uiState.ignoreChatContextForThisTurn &&
-                        (captured.redactionCount > 0 || captured.hasContext)
-                    ) {
-                        if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
-                    } else {
-                        palette.keyTextMuted
-                    }
-                    Row(
-                        modifier = Modifier
-                            .height(22.dp)
-                            .clip(RoundedCornerShape(11.dp))
-                            .background(palette.keyCapBg)
-                            .border(1.dp, palette.keyBorder, RoundedCornerShape(11.dp))
-                            .clickable(enabled = !isProcessing) {
-                                onAction(ImeUiAction.ToggleIgnoreChatContext)
-                            }
-                            .padding(horizontal = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = statusLabel,
-                            color = statusTint,
-                            fontSize = 9.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    // `[⛶ 全屏深读]` 240ms non-disconnecting peek pill
-                    Row(
-                        modifier = Modifier
-                            .height(22.dp)
-                            .clip(RoundedCornerShape(11.dp))
-                            .background(palette.keyCapBg)
-                            .border(1.dp, palette.keyBorder, RoundedCornerShape(11.dp))
-                            .clickable(enabled = !isProcessing && !uiState.isFullScreenPeekCapturing) {
-                                onAction(ImeUiAction.TriggerFullScreenPeekCapture)
-                            }
-                            .padding(horizontal = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        Text(
-                            text = if (uiState.isFullScreenPeekCapturing) "取景中…" else "⛶ 全屏深读",
-                            color = palette.keyTextPrimary,
-                            fontSize = 9.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1
-                        )
-                    }
                 }
 
-                SubPanelHeaderBridgeBar(
-                    isFlypyChineseMode = uiState.isFlypyChineseMode,
-                    inputSchemeShortBadge = uiState.activeInputScheme.shortBadge,
-                    hasFreshClipboard = uiState.freshClipboardBannerItem != null,
-                    onSwitchToQwerty = { onAction(ImeUiAction.SelectTab(KeyboardTabMode.QWERTY)) },
-                    onOpenClipboard = { onAction(ImeUiAction.OpenClipboard) },
-                    closeDescription = "关闭 Jev 军师",
-                    onClose = { onAction(ImeUiAction.CloseSubPanel) }
-                )
+                // `[⛶ 全屏深读]` 240ms non-disconnecting peek pill
+                Row(
+                    modifier = Modifier
+                        .height(22.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(palette.keyCapBg)
+                        .border(1.dp, palette.keyBorder, RoundedCornerShape(11.dp))
+                        .clickable(enabled = !isProcessing && !uiState.isFullScreenPeekCapturing) {
+                            onAction(ImeUiAction.TriggerFullScreenPeekCapture)
+                        }
+                        .padding(horizontal = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = if (uiState.isFullScreenPeekCapturing) "取景中…" else "⛶ 全屏深读",
+                        color = palette.keyTextPrimary,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
             }
 
-            // 2. Subtext Intent Radar Bar (`25.dp`)
-            JevSubtextRadarBar(
-                result = jevResult,
-                isLoading = isProcessing,
-                domainBadge = captured.effectiveBadgeTitle
+            SubPanelHeaderBridgeBar(
+                isFlypyChineseMode = uiState.isFlypyChineseMode,
+                inputSchemeShortBadge = uiState.activeInputScheme.shortBadge,
+                hasFreshClipboard = uiState.freshClipboardBannerItem != null,
+                onSwitchToQwerty = { onAction(ImeUiAction.SelectTab(KeyboardTabMode.QWERTY)) },
+                onOpenClipboard = { onAction(ImeUiAction.OpenClipboard) },
+                closeDescription = "关闭 Jev 军师",
+                onClose = { onAction(ImeUiAction.CloseSubPanel) }
             )
+        }
 
-            // 3. Center Area: Disclosure Prompt / Error Banner / 3 Strategy Keycap Cards
+        // 2. Subtext Intent Radar Bar (`heightIn(min = 24.dp)`, 2-line adaptive)
+        JevSubtextRadarBar(
+            result = jevResult,
+            isLoading = isProcessing,
+            domainBadge = captured.effectiveBadgeTitle
+        )
+
+        // 3. Center Area: Disclosure Prompt / Error Banner / Scrollable 3 Strategy Keycap Cards
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
             if (uiState.showChatContextDisclosurePrompt) {
                 JevFirstTimeDisclosureCard(
                     onAccept = { onAction(ImeUiAction.AcceptChatContextDisclosure) },
@@ -224,7 +232,6 @@ fun JevCopilotPanel(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
                         maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -248,7 +255,9 @@ fun JevCopilotPanel(
             } else {
                 val options = jevResult?.options.orEmpty()
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     if (options.isEmpty()) {
@@ -271,28 +280,19 @@ fun JevCopilotPanel(
                     }
                 }
             }
-
-            // 4. Bottom Voice Bottom-Line Bar + `[↻ 换一批]`
-            JevBottomControlRow(
-                phase = phase,
-                isJevLoading = uiState.isJevLoading,
-                userBottomLine = uiState.jevUserBottomLine,
-                onStartRecording = { onAction(ImeUiAction.MicPressDown(VoiceIntentMode.JEV_COPILOT)) },
-                onReleaseRecording = { onAction(ImeUiAction.MicPressUp) },
-                onFinishHandsFree = { onAction(ImeUiAction.FinishHandsFree) },
-                onCancelRecording = { onAction(ImeUiAction.CancelVoiceRecording) },
-                onRefreshStrategies = { onAction(ImeUiAction.RefreshJevStrategies) }
-            )
         }
 
-        if (!isRecording) {
-            BottomCornerUtilityIcons(
-                onHideKeyboard = { onAction(ImeUiAction.HideKeyboard) },
-                onSwitchKeyboard = { onAction(ImeUiAction.SwitchKeyboard) },
-                onShowImePicker = { onAction(ImeUiAction.ShowImePicker) },
-                modifier = Modifier.align(Alignment.BottomCenter)
-            )
-        }
+        // 4. Bottom 32.dp Ultra-Slim Dual Capsules
+        JevBottomControlRow(
+            phase = phase,
+            isJevLoading = uiState.isJevLoading,
+            userBottomLine = uiState.jevUserBottomLine,
+            onStartRecording = { onAction(ImeUiAction.MicPressDown(VoiceIntentMode.JEV_COPILOT)) },
+            onReleaseRecording = { onAction(ImeUiAction.MicPressUp) },
+            onFinishHandsFree = { onAction(ImeUiAction.FinishHandsFree) },
+            onCancelRecording = { onAction(ImeUiAction.CancelVoiceRecording) },
+            onRefreshStrategies = { onAction(ImeUiAction.RefreshJevStrategies) }
+        )
     }
 }
 
@@ -329,17 +329,49 @@ private fun JevSubtextRadarBar(
     val subtext = when {
         isLoading -> "正在结合脱敏上文拆解对方潜台词与三套博弈话术…"
         result != null -> result.subtext
-        else -> "点「↻ 换一批」读取上文推演，或按住声波球口述底牌"
+        else -> "点「↻ 换一批」读取上文推演，或按住底栏口述底牌"
+    }
+
+    val combinedRadarText = remember(badgeText, subtext, palette.keyTextPrimary, palette.keyTextMuted) {
+        buildAnnotatedString {
+            withStyle(
+                SpanStyle(
+                    color = palette.keyTextPrimary,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+            ) {
+                append(badgeText)
+            }
+            withStyle(
+                SpanStyle(
+                    color = palette.keyTextMuted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            ) {
+                append(" · ")
+            }
+            withStyle(
+                SpanStyle(
+                    color = palette.keyTextMuted,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            ) {
+                append(subtext)
+            }
+        }
     }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(25.dp)
+            .heightIn(min = 24.dp)
             .clip(RoundedCornerShape(7.dp))
             .background(palette.capsuleTrackBg)
             .border(1.dp, palette.keyBorder, RoundedCornerShape(7.dp))
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = 8.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
@@ -351,25 +383,9 @@ private fun JevSubtextRadarBar(
                 .background(dotColor)
         )
         Text(
-            text = badgeText,
-            color = palette.keyTextPrimary,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.ExtraBold,
-            maxLines = 1
-        )
-        Text(
-            text = "·",
-            color = palette.keyTextMuted,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold
-        )
-        Text(
-            text = subtext,
-            color = palette.keyTextMuted,
-            fontSize = 10.5.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+            text = combinedRadarText,
+            lineHeight = 13.5.sp,
+            maxLines = 2,
             modifier = Modifier.weight(1f)
         )
     }
@@ -408,63 +424,87 @@ private fun JevStrategyKeycapCard(
         isTopPick -> palette.keyTextPrimary
         else -> palette.keyTextMuted
     }
+    val checkColor = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+    val inlinePillId = "jev_strategy_pill"
+    val pillWidthSp = (badgeText.length * 8.2f + 14f).coerceIn(58f, 118f).sp
 
-    Row(
+    val inlineContentMap = remember(badgeText, isSelected, isTopPick, palette) {
+        mapOf(
+            inlinePillId to InlineTextContent(
+                placeholder = Placeholder(
+                    width = pillWidthSp,
+                    height = 16.sp,
+                    placeholderVerticalAlign = PlaceholderVerticalAlign.Center
+                )
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(end = 4.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(if (isSelected) palette.primaryMicSolid else palette.capsuleTrackBg)
+                            .border(
+                                width = pillBorderWidth,
+                                color = pillBorderColor,
+                                shape = RoundedCornerShape(5.dp)
+                            )
+                            .padding(horizontal = 5.dp, vertical = 1.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = badgeText,
+                            color = pillTextColor,
+                            fontSize = 9.5.sp,
+                            fontWeight = if (isTopPick || isSelected) FontWeight.ExtraBold else FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        )
+    }
+
+    val cardAnnotatedText = remember(option.replyText, isSelected, checkColor) {
+        buildAnnotatedString {
+            appendInlineContent(inlinePillId, "[$badgeText] ")
+            append(option.replyText)
+            if (isSelected) {
+                withStyle(
+                    SpanStyle(
+                        color = checkColor,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                ) {
+                    append(" ✓已置入")
+                }
+            }
+        }
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(9.dp))
             .background(bgColor)
             .border(borderWidth, borderColor, RoundedCornerShape(9.dp))
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 9.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(7.dp)
+            .padding(horizontal = 8.dp, vertical = 5.5.dp)
     ) {
-        // Left Strategy Tag + Normalized Probability Pill
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(5.dp))
-                .background(if (isSelected) palette.primaryMicSolid else palette.capsuleTrackBg)
-                .border(
-                    width = pillBorderWidth,
-                    color = pillBorderColor,
-                    shape = RoundedCornerShape(5.dp)
-                )
-                .padding(horizontal = 5.5.dp, vertical = 2.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = badgeText,
-                color = pillTextColor,
-                fontSize = 10.sp,
-                fontWeight = if (isTopPick || isSelected) FontWeight.ExtraBold else FontWeight.Bold,
-                maxLines = 1
-            )
-        }
-
-        // Center Pure Reply Text
         Text(
-            text = option.replyText,
+            text = cardAnnotatedText,
+            inlineContent = inlineContentMap,
             color = palette.keyTextPrimary,
             fontSize = 11.5.sp,
             fontWeight = FontWeight.SemiBold,
-            lineHeight = 15.sp,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
+            lineHeight = 15.5.sp,
+            maxLines = Int.MAX_VALUE,
+            modifier = Modifier.fillMaxWidth()
         )
-
-        // Right Status Indicator (`✓ 已置入草稿`)
-        if (isSelected) {
-            val checkColor = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
-            Text(
-                text = "✓ 已置入",
-                color = checkColor,
-                fontSize = 9.5.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1
-            )
-        }
     }
 }
 
@@ -505,12 +545,11 @@ private fun JevPlaceholderCard(
             )
         }
         Text(
-            text = if (isLoading) defaultHints.getOrElse(index) { "推演中…" } else "点击「↻ 换一批」或按住下方声波球生成策略",
+            text = if (isLoading) defaultHints.getOrElse(index) { "推演中…" } else "点击「↻ 换一批」或按住下方底牌条生成策略",
             color = palette.keyTextMuted,
             fontSize = 11.sp,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
     }
@@ -542,8 +581,7 @@ private fun JevFirstTimeDisclosureCard(
             color = palette.keyTextMuted,
             fontSize = 10.sp,
             lineHeight = 13.5.sp,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis
+            maxLines = 3
         )
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -611,7 +649,7 @@ private fun JevBottomControlRow(
     val infiniteTransition = rememberInfiniteTransition(label = "jevVoicePulse")
     val pulseScale by infiniteTransition.animateFloat(
         initialValue = 1.0f,
-        targetValue = 1.12f,
+        targetValue = 1.10f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 900, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
@@ -619,20 +657,32 @@ private fun JevBottomControlRow(
         label = "jevPulseScale"
     )
 
+    val bottomStatusText = when {
+        isRecording -> "正在聆听底牌 · 松手重算"
+        isProcessing -> "军师推演中…"
+        userBottomLine.isNotBlank() -> "底牌：$userBottomLine"
+        else -> "按住说底牌 · 如：底价800 / 周六补约"
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 36.dp),
+            .height(32.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // Left 42.dp Dark Charcoal Voice Sphere
-        Box(
+        // Left full-width hold-to-speak bottom-line capsule (`height(32.dp)`)
+        Row(
             modifier = Modifier
-                .size(42.dp)
-                .scale(if (isRecording) pulseScale else 1f)
-                .clip(CircleShape)
-                .background(palette.primaryMicSolid)
+                .weight(1f)
+                .height(32.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(if (isRecording) palette.capsuleSelectedBg else palette.keyCapBg)
+                .border(
+                    width = if (isRecording) 1.5.dp else 1.dp,
+                    color = if (isRecording) palette.primaryMicSolid else palette.keyBorder,
+                    shape = RoundedCornerShape(16.dp)
+                )
                 .pointerInput(Unit) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
@@ -657,89 +707,80 @@ private fun JevBottomControlRow(
                         val heldMs = System.currentTimeMillis() - downTime
                         if (startedFromHandsFree) {
                             currentOnFinish()
-                        } else if (heldMs >= 240L) {
+                        } else if (heldMs >= 200L) {
+                            currentOnRelease()
+                        } else {
                             currentOnRelease()
                         }
                     }
-                },
-            contentAlignment = Alignment.Center
+                }
+                .padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            if (isProcessing) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    color = palette.onPrimaryMic,
-                    strokeWidth = 2.dp
-                )
-            } else {
-                Icon(
-                    imageVector = TypeFreeIcons.VoiceWaveform,
-                    contentDescription = "按住补充底牌",
-                    tint = palette.onPrimaryMic,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
-
-        // Center Title & Subtitle
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(1.dp)
-        ) {
-            Text(
-                text = when {
-                    isRecording -> "正在聆听底牌 · 松手重算三策"
-                    isProcessing -> "军师推演中…"
-                    userBottomLine.isNotBlank() -> "底牌：$userBottomLine"
-                    else -> "按住补充底牌"
-                },
-                color = palette.keyTextPrimary,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = if (isRecording) {
-                    "说出你的底线或真实意图"
+            Box(
+                modifier = Modifier
+                    .size(22.dp)
+                    .scale(if (isRecording) pulseScale else 1f)
+                    .clip(CircleShape)
+                    .background(palette.primaryMicSolid),
+                contentAlignment = Alignment.Center
+            ) {
+                if (isProcessing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        color = palette.onPrimaryMic,
+                        strokeWidth = 1.6.dp
+                    )
                 } else {
-                    "如「底价800不包邮」「周三前交不出」"
-                },
-                color = palette.keyTextMuted,
-                fontSize = 9.5.sp,
-                fontWeight = FontWeight.Medium,
+                    Icon(
+                        imageVector = TypeFreeIcons.VoiceWaveform,
+                        contentDescription = "按住说底牌",
+                        tint = palette.onPrimaryMic,
+                        modifier = Modifier.size(13.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = bottomStatusText,
+                color = if (isRecording || userBottomLine.isNotBlank()) palette.keyTextPrimary else palette.keyTextMuted,
+                fontSize = 10.5.sp,
+                fontWeight = if (isRecording || userBottomLine.isNotBlank()) FontWeight.Bold else FontWeight.SemiBold,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                modifier = Modifier.weight(1f)
             )
         }
 
-        // Right Action: Cancel (when recording) or `[↻ 换一批]`
+        // Right secondary capsule (`height(32.dp)`): Cancel (when recording) or `[↻ 换一批]`
         if (isRecording) {
             Box(
                 modifier = Modifier
-                    .height(28.dp)
-                    .clip(RoundedCornerShape(14.dp))
+                    .height(32.dp)
+                    .clip(RoundedCornerShape(16.dp))
                     .background(palette.keyCapBg)
-                    .border(1.dp, palette.keyBorder, RoundedCornerShape(14.dp))
+                    .border(1.dp, palette.keyBorder, RoundedCornerShape(16.dp))
                     .clickable(onClick = onCancelRecording)
-                    .padding(horizontal = 10.dp),
+                    .padding(horizontal = 11.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = "取消",
                     color = palette.keyTextPrimary,
                     fontSize = 10.5.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
                 )
             }
         } else {
             Box(
                 modifier = Modifier
-                    .height(28.dp)
-                    .clip(RoundedCornerShape(14.dp))
+                    .height(32.dp)
+                    .clip(RoundedCornerShape(16.dp))
                     .background(palette.keyCapBg)
-                    .border(1.dp, palette.keyBorder, RoundedCornerShape(14.dp))
+                    .border(1.dp, palette.keyBorder, RoundedCornerShape(16.dp))
                     .clickable(enabled = !isProcessing, onClick = onRefreshStrategies)
-                    .padding(horizontal = 9.dp),
+                    .padding(horizontal = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(

@@ -481,13 +481,15 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             uiState.activeHeightLevel,
             uiState.activeHeightMode,
             uiState.activeLiftLevel,
+            settings.qwertyShowNumberRow,
             isLandscape
         ) {
             KeyboardMetrics.fromLevel(
                 level = uiState.activeHeightLevel,
                 isLandscape = isLandscape,
                 heightMode = uiState.activeHeightMode,
-                liftLevel = uiState.activeLiftLevel
+                liftLevel = uiState.activeLiftLevel,
+                showNumberRow = settings.qwertyShowNumberRow
             )
         }
 
@@ -583,7 +585,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             is ImeUiAction.SelectAiCompletion -> selectAiCompletion(action.text)
             ImeUiAction.DismissPredictions -> dismissPredictions()
             is ImeUiAction.RunEditorShortcut -> typingController.handleEditorShortcutAction(action.action)
-            is ImeUiAction.InsertPairedSymbol -> typingController.insertPairedSymbol(action.left, action.right)
+            is ImeUiAction.InsertPairedSymbol -> typingController.commitPairedSymbol(action.left, action.right)
+            is ImeUiAction.CommitSecondarySymbol -> typingController.commitSecondarySymbol(action.symbol)
+            is ImeUiAction.MoveCursorByChars -> typingController.moveCursorByChars(action.delta)
             ImeUiAction.InsertSpace -> typingController.insertSpace()
             ImeUiAction.Backspace -> typingController.deleteBackward()
             ImeUiAction.EnterOrNewline -> performEnterOrNewline()

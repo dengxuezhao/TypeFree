@@ -3,6 +3,7 @@ package com.typefree.ime.v27
 import androidx.compose.ui.unit.dp
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.InputScheme
+import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.ime.KeyboardMetrics
 import com.typefree.ime.ime.nextCycledInputScheme
 import com.typefree.ime.ime.shortInputSchemeLabel
@@ -16,51 +17,72 @@ import org.junit.Test
 class KeyboardMetricsTest {
 
     @Test
-    fun `portrait 5 levels compute exact scale, frameHeight 268-283-298-316-333dp, and elementScale capped at 1f`() {
-        val mCompact = KeyboardMetrics.fromLevel(level = -2, isLandscape = false)
+    fun `portrait 5 levels compute exact scale, 4-row compact 252dp baseline, and elementScale capped at 1f`() {
+        val mCompact = KeyboardMetrics.fromLevel(
+            level = -2,
+            isLandscape = false,
+            heightMode = KeyboardHeightMode.STRETCH,
+            showNumberRow = false
+        )
         assertEquals(-2, mCompact.level)
         assertEquals(0.88f, mCompact.scale, 0.0001f)
         assertEquals(0.88f, mCompact.elementScale, 0.0001f)
-        assertEquals(268.dp, mCompact.frameHeight)
-        assertEquals(220.dp, mCompact.keyAreaHeight)
+        assertEquals(227.dp, mCompact.frameHeight)
+        assertEquals(185.dp, mCompact.keyAreaHeight)
         assertEquals(34.dp, mCompact.topBarHeight)
         assertEquals(1.dp, mCompact.dividerHeight)
 
-        val mLow = KeyboardMetrics.fromLevel(level = -1, isLandscape = false)
+        val mLow = KeyboardMetrics.fromLevel(
+            level = -1,
+            isLandscape = false,
+            heightMode = KeyboardHeightMode.STRETCH,
+            showNumberRow = false
+        )
         assertEquals(-1, mLow.level)
         assertEquals(0.94f, mLow.scale, 0.0001f)
         assertEquals(0.94f, mLow.elementScale, 0.0001f)
-        assertEquals(283.dp, mLow.frameHeight)
-        assertEquals(235.dp, mLow.keyAreaHeight)
+        assertEquals(239.dp, mLow.frameHeight)
+        assertEquals(197.dp, mLow.keyAreaHeight)
         assertEquals(34.dp, mLow.topBarHeight)
         assertEquals(1.dp, mLow.dividerHeight)
 
         val mStandard = KeyboardMetrics.fromLevel(level = 0, isLandscape = false)
         assertEquals(0, mStandard.level)
+        assertEquals(KeyboardHeightMode.LIFT, mStandard.heightMode)
         assertEquals(1.00f, mStandard.scale, 0.0001f)
         assertEquals(1.00f, mStandard.elementScale, 0.0001f)
-        assertEquals(298.dp, mStandard.frameHeight)
-        assertEquals(250.dp, mStandard.keyAreaHeight)
+        assertEquals(252.dp, mStandard.frameHeight)
+        assertEquals(210.dp, mStandard.keyAreaHeight)
         assertEquals(34.dp, mStandard.topBarHeight)
         assertEquals(1.dp, mStandard.dividerHeight)
 
-        val mTall = KeyboardMetrics.fromLevel(level = 1, isLandscape = false)
+        val mTall = KeyboardMetrics.fromLevel(
+            level = 1,
+            isLandscape = false,
+            heightMode = KeyboardHeightMode.STRETCH,
+            showNumberRow = false
+        )
         assertEquals(1, mTall.level)
         assertEquals(1.07f, mTall.scale, 0.0001f)
         assertEquals(1.00f, mTall.elementScale, 0.0001f)
         assertTrue(mTall.elementScale <= 1.0f)
-        assertEquals(316.dp, mTall.frameHeight)
-        assertEquals(268.dp, mTall.keyAreaHeight)
+        assertEquals(267.dp, mTall.frameHeight)
+        assertEquals(225.dp, mTall.keyAreaHeight)
         assertEquals(34.dp, mTall.topBarHeight)
         assertEquals(1.dp, mTall.dividerHeight)
 
-        val mComfort = KeyboardMetrics.fromLevel(level = 2, isLandscape = false)
+        val mComfort = KeyboardMetrics.fromLevel(
+            level = 2,
+            isLandscape = false,
+            heightMode = KeyboardHeightMode.STRETCH,
+            showNumberRow = false
+        )
         assertEquals(2, mComfort.level)
         assertEquals(1.14f, mComfort.scale, 0.0001f)
         assertEquals(1.00f, mComfort.elementScale, 0.0001f)
         assertTrue(mComfort.elementScale <= 1.0f)
-        assertEquals(333.dp, mComfort.frameHeight)
-        assertEquals(285.dp, mComfort.keyAreaHeight)
+        assertEquals(281.dp, mComfort.frameHeight)
+        assertEquals(239.dp, mComfort.keyAreaHeight)
         assertEquals(34.dp, mComfort.topBarHeight)
         assertEquals(1.dp, mComfort.dividerHeight)
     }
@@ -76,8 +98,8 @@ class KeyboardMetricsTest {
             assertTrue(landscapeMetrics.elementScale <= 1.0f)
             assertEquals(34.dp, landscapeMetrics.topBarHeight)
             assertEquals(1.dp, landscapeMetrics.dividerHeight)
-            // 48 + round(250 * 0.704) = 48 + 176 = 224.dp
-            assertEquals(224.dp, landscapeMetrics.frameHeight)
+            // 42 + round(210 * 0.704) = 42 + 148 = 190.dp
+            assertEquals(190.dp, landscapeMetrics.frameHeight)
         }
     }
 

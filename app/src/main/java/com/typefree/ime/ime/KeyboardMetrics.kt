@@ -31,10 +31,11 @@ data class KeyboardMetrics(
     val frameHeight: Dp,
     val label: String,
     /** STRETCH scales the key area; LIFT keeps keys at standard size and adds [liftHeight] at the bottom. */
-    val heightMode: KeyboardHeightMode = KeyboardHeightMode.STRETCH,
+    val heightMode: KeyboardHeightMode = KeyboardHeightMode.LIFT,
     val liftLevel: Int = 0,
     /** Blank bottom cushion inside [frameHeight] (0.dp in STRETCH mode and in landscape). */
-    val liftHeight: Dp = 0.dp
+    val liftHeight: Dp = 0.dp,
+    val showNumberRow: Boolean = false
 ) {
     companion object {
         const val MIN_LEVEL = -2
@@ -48,8 +49,9 @@ data class KeyboardMetrics(
         const val SCALE_COMFORTABLE = 1.14f
         const val LANDSCAPE_FACTOR = 0.80f
 
-        private const val BASE_KEY_AREA_DP = 250f
-        private const val FIXED_CHROME_DP = 48 // 1.dp divider + 8.dp top pad + 34.dp top bar + 5.dp gap
+        private const val BASE_KEY_AREA_4ROW_DP = 210f
+        private const val BASE_KEY_AREA_5ROW_DP = 252f
+        const val FIXED_CHROME_DP = 42 // 1.dp divider + 5.dp top pad + 34.dp top bar + 2.dp gap
 
         val ALL_LEVELS: List<Int> = listOf(-2, -1, 0, 1, 2)
 
@@ -88,10 +90,11 @@ data class KeyboardMetrics(
         fun labelForLiftLevel(liftLevel: Int): String = "${liftDpForLevel(liftLevel)}dp"
 
         fun fromLevel(
-            level: Int,
+            level: Int = DEFAULT_LEVEL,
             isLandscape: Boolean = false,
-            heightMode: KeyboardHeightMode = KeyboardHeightMode.STRETCH,
-            liftLevel: Int = DEFAULT_LIFT_LEVEL
+            heightMode: KeyboardHeightMode = KeyboardHeightMode.LIFT,
+            liftLevel: Int = DEFAULT_LIFT_LEVEL,
+            showNumberRow: Boolean = false
         ): KeyboardMetrics {
             val clamped = level.coerceIn(MIN_LEVEL, MAX_LEVEL)
             val isLift = heightMode == KeyboardHeightMode.LIFT
@@ -103,7 +106,8 @@ data class KeyboardMetrics(
             val clampedLift = liftLevel.coerceIn(MIN_LIFT_LEVEL, MAX_LIFT_LEVEL)
             // Landscape never adds a cushion: vertical space is already scarce.
             val liftDp = if (isLift && !isLandscape) liftDpForLevel(clampedLift) else 0
-            val keyAreaDp = (BASE_KEY_AREA_DP * effectiveScale).roundToInt()
+            val baseKeyAreaDp = if (showNumberRow) BASE_KEY_AREA_5ROW_DP else BASE_KEY_AREA_4ROW_DP
+            val keyAreaDp = (baseKeyAreaDp * effectiveScale).roundToInt()
             val frameDp = FIXED_CHROME_DP + keyAreaDp + liftDp
             return KeyboardMetrics(
                 level = clamped,
@@ -117,7 +121,8 @@ data class KeyboardMetrics(
                 label = if (isLift) "垫高 · ${labelForLiftLevel(clampedLift)}" else labelForLevel(clamped),
                 heightMode = heightMode,
                 liftLevel = clampedLift,
-                liftHeight = liftDp.dp
+                liftHeight = liftDp.dp,
+                showNumberRow = showNumberRow
             )
         }
     }

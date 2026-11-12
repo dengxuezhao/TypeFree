@@ -34,21 +34,35 @@ class LiftModeAndLiveWriteDedupTest {
 
     @Test
     fun `LIFT mode keeps standard keys and adds 0-8-16-24-32dp bottom cushion`() {
-        val expectedFrames = listOf(298, 306, 314, 322, 330)
+        val expected4RowFrames = listOf(252, 260, 268, 276, 284)
         KeyboardMetrics.ALL_LIFT_LEVELS.forEachIndexed { idx, liftLevel ->
             val m = KeyboardMetrics.fromLevel(
                 level = 0,
                 isLandscape = false,
                 heightMode = KeyboardHeightMode.LIFT,
-                liftLevel = liftLevel
+                liftLevel = liftLevel,
+                showNumberRow = false
             )
             assertEquals(KeyboardHeightMode.LIFT, m.heightMode)
-            assertEquals(250.dp, m.keyAreaHeight)
+            assertEquals(210.dp, m.keyAreaHeight)
             assertEquals(1.0f, m.scale, 0.0001f)
             assertEquals(1.0f, m.elementScale, 0.0001f)
             assertEquals((liftLevel * 8).dp, m.liftHeight)
-            assertEquals(expectedFrames[idx].dp, m.frameHeight)
+            assertEquals(expected4RowFrames[idx].dp, m.frameHeight)
             assertEquals(34.dp, m.topBarHeight)
+        }
+
+        val expected5RowFrames = listOf(294, 302, 310, 318, 326)
+        KeyboardMetrics.ALL_LIFT_LEVELS.forEachIndexed { idx, liftLevel ->
+            val m5 = KeyboardMetrics.fromLevel(
+                level = 0,
+                isLandscape = false,
+                heightMode = KeyboardHeightMode.LIFT,
+                liftLevel = liftLevel,
+                showNumberRow = true
+            )
+            assertEquals(252.dp, m5.keyAreaHeight)
+            assertEquals(expected5RowFrames[idx].dp, m5.frameHeight)
         }
     }
 
@@ -58,10 +72,11 @@ class LiftModeAndLiveWriteDedupTest {
         val liftWithStretchLevel = KeyboardMetrics.fromLevel(
             level = 2,
             heightMode = KeyboardHeightMode.LIFT,
-            liftLevel = 2
+            liftLevel = 2,
+            showNumberRow = false
         )
-        assertEquals(250.dp, liftWithStretchLevel.keyAreaHeight)
-        assertEquals(314.dp, liftWithStretchLevel.frameHeight)
+        assertEquals(210.dp, liftWithStretchLevel.keyAreaHeight)
+        assertEquals(268.dp, liftWithStretchLevel.frameHeight)
 
         // Out-of-range lift levels are clamped
         val over = KeyboardMetrics.fromLevel(level = 0, heightMode = KeyboardHeightMode.LIFT, liftLevel = 99)
@@ -77,13 +92,12 @@ class LiftModeAndLiveWriteDedupTest {
             liftLevel = 4
         )
         assertEquals(0.dp, landscape.liftHeight)
-        assertEquals(224.dp, landscape.frameHeight)
+        assertEquals(190.dp, landscape.frameHeight)
 
-        // STRETCH mode is unchanged and never has a cushion
+        // STRETCH mode never has a cushion
         val stretch = KeyboardMetrics.fromLevel(level = 2, heightMode = KeyboardHeightMode.STRETCH, liftLevel = 4)
         assertEquals(0.dp, stretch.liftHeight)
-        assertEquals(333.dp, stretch.frameHeight)
-        assertEquals(KeyboardMetrics.fromLevel(level = 2), stretch.copy(liftLevel = 0))
+        assertEquals(281.dp, stretch.frameHeight)
     }
 
     @Test
@@ -91,16 +105,19 @@ class LiftModeAndLiveWriteDedupTest {
         val original = AppSettings(
             keyboardHeightMode = KeyboardHeightMode.LIFT,
             keyboardLiftLevel = 3,
-            keyboardHeightLevel = -1
+            keyboardHeightLevel = -1,
+            qwertyShowNumberRow = true
         )
         val json = ApiConfigBackupHelper.exportSettingsJson(original, includeSecrets = false)
         assertTrue(json.contains("\"keyboardHeightMode\": \"LIFT\""))
         assertTrue(json.contains("\"keyboardLiftLevel\": 3"))
+        assertTrue(json.contains("\"qwertyShowNumberRow\": true"))
 
         val merged = ApiConfigBackupHelper.parseAndMergeConfigJson(json, AppSettings()).getOrThrow()
         assertEquals(KeyboardHeightMode.LIFT, merged.keyboardHeightMode)
         assertEquals(3, merged.keyboardLiftLevel)
         assertEquals(-1, merged.keyboardHeightLevel)
+        assertTrue(merged.qwertyShowNumberRow)
 
         // Partial JSON without the new keys keeps existing values; invalid lift level is clamped
         val partial = ApiConfigBackupHelper.parseAndMergeConfigJson(
@@ -110,9 +127,10 @@ class LiftModeAndLiveWriteDedupTest {
         assertEquals(KeyboardHeightMode.LIFT, partial.keyboardHeightMode)
         assertEquals(4, partial.keyboardLiftLevel)
 
-        // Defaults for fresh installs
-        assertEquals(KeyboardHeightMode.STRETCH, AppSettings().keyboardHeightMode)
+        // Defaults for fresh v3.4.0 installs: LIFT mode + 4-row compact (qwertyShowNumberRow = false)
+        assertEquals(KeyboardHeightMode.LIFT, AppSettings().keyboardHeightMode)
         assertEquals(0, AppSettings().keyboardLiftLevel)
+        assertFalse(AppSettings().qwertyShowNumberRow)
     }
 
     // =========================================================================

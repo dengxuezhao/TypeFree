@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
@@ -24,8 +25,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -33,37 +37,48 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.view.HapticFeedbackConstants
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.ime.ImeLogic
 import com.typefree.ime.ime.ImeUiState
 import com.typefree.ime.ime.KeyboardTabMode
 import com.typefree.ime.ime.LocalKeyboardMetrics
+import com.typefree.ime.ime.VoicePhase
 import com.typefree.ime.ime.clipboard.ClipboardSmartExtractor
 import com.typefree.ime.ime.clipboard.SmartClipKind
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.LocalTypeFreeKeyboardPalette
 import com.typefree.ime.ui.theme.TypeFreeEmerald
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 data class TopBarLeftSlotState(
     val showUndoButton: Boolean,
     val showClipboardQuickPaste: Boolean,
     val showVoicePenPill: Boolean,
     val voicePenLabel: String,
-    val showJevCopilotPill: Boolean = false
+    val showJevCopilotPill: Boolean = false,
+    val showClipboardButton: Boolean = true,
+    val showStyleBadge: Boolean = false,
+    val showQwertyHoldVoiceCapsule: Boolean = false
 )
 
 /**
- * Pure policy for TypeFree v3.1.0+ Top Bar left-area slot priority:
+ * Pure policy for TypeFree v3.4.0 Top Bar slot priority & intent convergence:
  * 1. When [hasUndoSnapshot] is true, [TopBarUndoIconButton] is ALWAYS kept visible so a fresh
  *    clipboard banner never swallows the 1-tap Undo safety net.
- * 2. When in [KeyboardTabMode.QWERTY] idle state (not composing), compact monochrome
- *    `[VoicePen 帮写/改写]` and `[CopilotStar 军师]` pills are exposed so typing users can jump
- *    to HelpMeWrite or Jev Copilot in 1 tap.
+ * 2. A permanent 26.dp [TopBarClipboardIconButton] (`[📋]`) is always exposed when not composing
+ *    for 1-tap clipboard access, with a green notification dot when [hasFreshClipboardBanner] is true.
+ * 3. The AI Tone Style badge (`💼 职场▾`) is ONLY shown in [KeyboardTabMode.VOICE] (hidden in QWERTY).
+ * 4. In [KeyboardTabMode.QWERTY] idle state, the right cluster converges to `[✦ 军师]` + `[✍️ 帮写/改写]`
+ *    + dark primary `[🎤 语音]` capsule (tap `< 220ms` switches to Voice panel; hold `>= 220ms` dictates in-place).
  */
 object TopBarSlotPolicy {
     fun resolveLeftSlots(
@@ -80,7 +95,10 @@ object TopBarSlotPolicy {
                 showClipboardQuickPaste = false,
                 showVoicePenPill = false,
                 voicePenLabel = if (hasActiveSelection) "改写" else "帮写",
-                showJevCopilotPill = false
+                showJevCopilotPill = false,
+                showClipboardButton = false,
+                showStyleBadge = false,
+                showQwertyHoldVoiceCapsule = false
             )
         }
         val showVoicePen = activeTab == KeyboardTabMode.QWERTY ||
@@ -92,7 +110,10 @@ object TopBarSlotPolicy {
             showClipboardQuickPaste = hasFreshClipboardBanner,
             showVoicePenPill = showVoicePen,
             voicePenLabel = if (hasActiveSelection) "改写" else "帮写",
-            showJevCopilotPill = showJevPill
+            showJevCopilotPill = showJevPill,
+            showClipboardButton = true,
+            showStyleBadge = activeTab == KeyboardTabMode.VOICE,
+            showQwertyHoldVoiceCapsule = activeTab == KeyboardTabMode.QWERTY
         )
     }
 }
@@ -139,7 +160,10 @@ fun TypeFreeTopBar(
     onPerformUndo: () -> Unit,
     onPasteClipboardText: (String) -> Unit,
     onToggleManualIncognito: () -> Unit = {},
-    onOpenJevCopilot: () -> Unit = {}
+    onOpenJevCopilot: () -> Unit = {},
+    onToggleClipboard: () -> Unit = {},
+    onStartVoiceDictation: () -> Unit = {},
+    onStopVoiceDictation: () -> Unit = {}
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val metrics = LocalKeyboardMetrics.current
@@ -171,6 +195,10 @@ fun TypeFreeTopBar(
         )
     }
 
+    val isQwertyRightCluster = slotState.showQwertyHoldVoiceCapsule && !uiState.isToolPanelOpen
+    val isInPlaceQwertyVoiceActive = uiState.tabMode == KeyboardTabMode.QWERTY &&
+        (uiState.voicePhase is VoicePhase.Recording || uiState.voicePhase is VoicePhase.Processing)
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -200,7 +228,7 @@ fun TypeFreeTopBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        // Left: 28.dp Circular Brand Expand Button + Smart Paste / VoicePen / Scene Badge / Undo / Toast
+        // Left Cluster: [⊞] + [↶] + [📋] + Smart Paste / Status / Style Badge (VOICE only)
         Row(
             modifier = Modifier.weight(1f),
             verticalAlignment = Alignment.CenterVertically,
@@ -216,71 +244,26 @@ fun TypeFreeTopBar(
                 TopBarUndoIconButton(onClick = onPerformUndo)
             }
 
-            // 2. Compact monochrome VoicePen pill in QWERTY idle state or when selection is active
-            if (slotState.showVoicePenPill) {
-                val isSelectionRewrite = uiState.shouldShowTopBarSpeakToEditPill
-                Row(
-                    modifier = Modifier
-                        .height(26.dp)
-                        .clip(RoundedCornerShape(13.dp))
-                        .background(if (isSelectionRewrite) palette.primaryMicSolid else palette.keyCapBg)
-                        .border(
-                            width = 1.dp,
-                            color = if (isSelectionRewrite) Color.Transparent else palette.keyBorder,
-                            shape = RoundedCornerShape(13.dp)
-                        )
-                        .clickable(onClick = onOpenHelpMeWrite)
-                        .padding(horizontal = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
-                    Icon(
-                        imageVector = TypeFreeIcons.VoicePen,
-                        contentDescription = slotState.voicePenLabel,
-                        tint = if (isSelectionRewrite) palette.onPrimaryMic else palette.keyTextPrimary,
-                        modifier = Modifier.size(11.5.dp)
-                    )
-                    Text(
-                        text = slotState.voicePenLabel,
-                        color = if (isSelectionRewrite) palette.onPrimaryMic else palette.keyTextPrimary,
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1
-                    )
-                }
+            // 2. Permanent 1-Tap 26.dp Clipboard Button ([📋]) with green badge dot on fresh clip
+            if (slotState.showClipboardButton) {
+                TopBarClipboardIconButton(
+                    isOpen = uiState.isClipboardOpen,
+                    hasFreshClip = freshClip != null,
+                    onClick = onToggleClipboard
+                )
             }
 
-            // 2b. Compact monochrome Jev Copilot pill (`[CopilotStar 军师]`)
-            if (slotState.showJevCopilotPill) {
-                Row(
-                    modifier = Modifier
-                        .height(26.dp)
-                        .clip(RoundedCornerShape(13.dp))
-                        .background(palette.keyCapBg)
-                        .border(
-                            width = 1.dp,
-                            color = palette.keyBorder,
-                            shape = RoundedCornerShape(13.dp)
-                        )
-                        .clickable(onClick = onOpenJevCopilot)
-                        .padding(horizontal = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
-                    Icon(
-                        imageVector = TypeFreeIcons.CopilotStar,
-                        contentDescription = "军师",
-                        tint = palette.keyTextPrimary,
-                        modifier = Modifier.size(11.dp)
-                    )
-                    Text(
-                        text = "军师",
-                        color = palette.keyTextPrimary,
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1
-                    )
-                }
+            // In VOICE / TRANSLATE / ToolPanel mode, render [✦ 军师] and [✍️ 帮写/改写] on the left
+            if (!isQwertyRightCluster && slotState.showJevCopilotPill) {
+                TopBarJevCopilotPill(onClick = onOpenJevCopilot)
+            }
+
+            if (!isQwertyRightCluster && slotState.showVoicePenPill) {
+                TopBarVoicePenPill(
+                    label = slotState.voicePenLabel,
+                    isHighlighted = uiState.shouldShowTopBarSpeakToEditPill,
+                    onClick = onOpenHelpMeWrite
+                )
             }
 
             if (uiState.isIncognitoMode) {
@@ -314,7 +297,30 @@ fun TypeFreeTopBar(
 
             val learnedTerm = uiState.autoLearnedToastTerm
             val quickToast = uiState.quickActionToast
-            if (!learnedTerm.isNullOrBlank()) {
+            if (isInPlaceQwertyVoiceActive) {
+                val statusLabel = if (uiState.voicePhase is VoicePhase.Processing) {
+                    "🎙 正在转写上屏…"
+                } else {
+                    "🎙 聆听中 · 松手上屏"
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(TypeFreeEmerald.copy(alpha = 0.16f))
+                        .border(1.dp, TypeFreeEmerald.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        text = statusLabel,
+                        color = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            } else if (!learnedTerm.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
                         .weight(1f, fill = false)
@@ -450,8 +456,8 @@ fun TypeFreeTopBar(
                         )
                     }
                 }
-            } else {
-                // Compact Clickable Scene Style Badge
+            } else if (slotState.showStyleBadge) {
+                // Compact Clickable Scene Style Badge (ONLY in VOICE mode, hidden in QWERTY!)
                 val badgeLabel = ImeLogic.buildCompactStyleBadgeText(activeStyle, isAutoMatched)
                 val chevron = if (uiState.isStylePickerExpanded) "▴" else "▾"
                 Row(
@@ -490,66 +496,293 @@ fun TypeFreeTopBar(
 
         Spacer(modifier = Modifier.width(4.dp))
 
-        // Right Cluster: Authentic 3-Segment Capsule Track (`VOICE` | `拼/鹤/EN` | `文A`)
-        Row(
-            modifier = Modifier
-                .height(32.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(palette.capsuleTrackBg)
-                .border(1.dp, palette.keyBorder, RoundedCornerShape(16.dp))
-                .padding(3.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            // Segment 1: Voice Dictation (`TypeFreeIcons.VoiceWaveform`)
-            ModeSegmentItem(
-                selected = uiState.tabMode == KeyboardTabMode.VOICE && !uiState.isToolPanelOpen,
-                onClick = { onSelectTabMode(KeyboardTabMode.VOICE) }
-            ) { contentColor ->
-                Icon(
-                    imageVector = TypeFreeIcons.VoiceWaveform,
-                    contentDescription = "语音模式",
-                    tint = contentColor,
-                    modifier = Modifier.size(16.dp)
+        // Right Cluster:
+        // - In QWERTY mode: [✦ 军师] + [✍️ 帮写/改写] + Dark Primary [🎤 语音] (tap <220ms switches to VOICE; hold >=220ms dictates in-place)
+        // - In VOICE / TRANSLATE mode: Compact 2-Segment Track [鹤 打字 | 文A]
+        if (isQwertyRightCluster) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                if (slotState.showJevCopilotPill) {
+                    TopBarJevCopilotPill(onClick = onOpenJevCopilot)
+                }
+                if (slotState.showVoicePenPill) {
+                    TopBarVoicePenPill(
+                        label = slotState.voicePenLabel,
+                        isHighlighted = uiState.shouldShowTopBarSpeakToEditPill,
+                        onClick = onOpenHelpMeWrite
+                    )
+                }
+                QwertyTopBarHoldVoiceCapsule(
+                    isRecordingInPlace = uiState.voicePhase is VoicePhase.Recording,
+                    onTapSwitchToVoice = { onSelectTabMode(KeyboardTabMode.VOICE) },
+                    onStartVoiceDictation = onStartVoiceDictation,
+                    onStopVoiceDictation = onStopVoiceDictation
                 )
             }
-
-            // Segment 2: Dynamic Input Scheme (`拼` / `鹤`) / English (`EN`)
-            val middleBadge = if (uiState.isFlypyChineseMode) {
-                uiState.activeInputScheme.shortBadge
-            } else {
-                "EN"
-            }
-            ModeSegmentItem(
-                selected = uiState.tabMode == KeyboardTabMode.QWERTY && !uiState.isToolPanelOpen,
-                onClick = {
-                    if (uiState.tabMode == KeyboardTabMode.QWERTY && !uiState.isToolPanelOpen) {
-                        onToggleFlypyLanguageMode()
-                    } else {
-                        onSelectTabMode(KeyboardTabMode.QWERTY)
+        } else {
+            Row(
+                modifier = Modifier
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(15.dp))
+                    .background(palette.capsuleTrackBg)
+                    .border(1.dp, palette.keyBorder, RoundedCornerShape(15.dp))
+                    .padding(2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                if (uiState.tabMode != KeyboardTabMode.VOICE) {
+                    ModeSegmentItem(
+                        selected = false,
+                        width = 30.dp,
+                        onClick = { onSelectTabMode(KeyboardTabMode.VOICE) }
+                    ) { contentColor ->
+                        Icon(
+                            imageVector = TypeFreeIcons.VoiceWaveform,
+                            contentDescription = "语音模式",
+                            tint = contentColor,
+                            modifier = Modifier.size(14.dp)
+                        )
                     }
                 }
-            ) { contentColor ->
-                Text(
-                    text = middleBadge,
-                    color = contentColor,
-                    fontSize = if (uiState.isFlypyChineseMode) 12.sp else 11.5.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
 
-            // Segment 3: Real-time Translate (`文A`)
-            ModeSegmentItem(
-                selected = uiState.tabMode == KeyboardTabMode.TRANSLATE && !uiState.isToolPanelOpen,
-                onClick = { onSelectTabMode(KeyboardTabMode.TRANSLATE) }
-            ) { contentColor ->
-                Text(
-                    text = "文A",
-                    color = contentColor,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+                val schemeBadge = if (uiState.isFlypyChineseMode) {
+                    uiState.activeInputScheme.shortBadge
+                } else {
+                    "EN"
+                }
+                ModeSegmentItem(
+                    selected = uiState.tabMode == KeyboardTabMode.QWERTY && !uiState.isToolPanelOpen,
+                    width = 52.dp,
+                    onClick = {
+                        if (uiState.tabMode == KeyboardTabMode.QWERTY && !uiState.isToolPanelOpen) {
+                            onToggleFlypyLanguageMode()
+                        } else {
+                            onSelectTabMode(KeyboardTabMode.QWERTY)
+                        }
+                    }
+                ) { contentColor ->
+                    Text(
+                        text = "$schemeBadge 打字",
+                        color = contentColor,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+
+                ModeSegmentItem(
+                    selected = uiState.tabMode == KeyboardTabMode.TRANSLATE && !uiState.isToolPanelOpen,
+                    width = 34.dp,
+                    onClick = { onSelectTabMode(KeyboardTabMode.TRANSLATE) }
+                ) { contentColor ->
+                    Text(
+                        text = "文A",
+                        color = contentColor,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun TopBarVoicePenPill(
+    label: String,
+    isHighlighted: Boolean,
+    onClick: () -> Unit
+) {
+    val palette = LocalTypeFreeKeyboardPalette.current
+    Row(
+        modifier = Modifier
+            .height(28.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (isHighlighted) palette.primaryMicSolid else palette.keyCapBg)
+            .border(
+                width = 1.dp,
+                color = if (isHighlighted) Color.Transparent else palette.keyBorder,
+                shape = RoundedCornerShape(14.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Icon(
+            imageVector = TypeFreeIcons.VoicePen,
+            contentDescription = label,
+            tint = if (isHighlighted) palette.onPrimaryMic else palette.keyTextPrimary,
+            modifier = Modifier.size(11.5.dp)
+        )
+        Text(
+            text = label,
+            color = if (isHighlighted) palette.onPrimaryMic else palette.keyTextPrimary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun TopBarJevCopilotPill(
+    onClick: () -> Unit
+) {
+    val palette = LocalTypeFreeKeyboardPalette.current
+    Row(
+        modifier = Modifier
+            .height(28.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(palette.keyCapBg)
+            .border(
+                width = 1.dp,
+                color = palette.keyBorder,
+                shape = RoundedCornerShape(14.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Icon(
+            imageVector = TypeFreeIcons.CopilotStar,
+            contentDescription = "军师",
+            tint = palette.keyTextPrimary,
+            modifier = Modifier.size(11.dp)
+        )
+        Text(
+            text = "军师",
+            color = palette.keyTextPrimary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun QwertyTopBarHoldVoiceCapsule(
+    isRecordingInPlace: Boolean,
+    onTapSwitchToVoice: () -> Unit,
+    onStartVoiceDictation: () -> Unit,
+    onStopVoiceDictation: () -> Unit
+) {
+    val palette = LocalTypeFreeKeyboardPalette.current
+    val view = LocalView.current
+    val scope = rememberCoroutineScope()
+    val currentOnTap by rememberUpdatedState(onTapSwitchToVoice)
+    val currentOnStart by rememberUpdatedState(onStartVoiceDictation)
+    val currentOnStop by rememberUpdatedState(onStopVoiceDictation)
+    var isHoldingMic by remember { mutableStateOf(false) }
+
+    val activeHighlight = isHoldingMic || isRecordingInPlace
+    val bgColor = if (activeHighlight) TypeFreeEmerald else palette.primaryMicSolid
+    val fgColor = if (activeHighlight) Color.White else palette.onPrimaryMic
+
+    Row(
+        modifier = Modifier
+            .height(28.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(bgColor)
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    var holdTriggered = false
+                    val holdJob: Job = scope.launch {
+                        delay(ImeLogic.TOP_BAR_VOICE_HOLD_MS)
+                        holdTriggered = true
+                        isHoldingMic = true
+                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        currentOnStart()
+                    }
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                                ?: event.changes.firstOrNull()
+                                ?: break
+                            if (!change.pressed) {
+                                change.consume()
+                                break
+                            }
+                        }
+                    } finally {
+                        holdJob.cancel()
+                        isHoldingMic = false
+                    }
+                    if (holdTriggered) {
+                        currentOnStop()
+                    } else {
+                        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        currentOnTap()
+                    }
+                }
+            }
+            .padding(horizontal = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Icon(
+            imageVector = TypeFreeIcons.Mic,
+            contentDescription = "轻点切语音 / 按住说上屏",
+            tint = fgColor,
+            modifier = Modifier.size(12.dp)
+        )
+        Text(
+            text = if (activeHighlight) "松手上屏" else "语音",
+            color = fgColor,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+fun TopBarClipboardIconButton(
+    isOpen: Boolean,
+    hasFreshClip: Boolean,
+    onClick: () -> Unit
+) {
+    val palette = LocalTypeFreeKeyboardPalette.current
+    val bgColor = if (isOpen) palette.primaryMicSolid else palette.keyCapBg
+    val borderColor = if (isOpen) Color.Transparent else palette.keyBorder
+    val iconTint = if (isOpen) palette.onPrimaryMic else palette.keyTextPrimary
+
+    Box(
+        modifier = Modifier.requiredSize(26.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .requiredSize(26.dp)
+                .clip(CircleShape)
+                .background(bgColor)
+                .border(1.dp, borderColor, CircleShape)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = TypeFreeIcons.Clipboard,
+                contentDescription = "剪贴板",
+                tint = iconTint,
+                modifier = Modifier.size(13.dp)
+            )
+        }
+        if (hasFreshClip && !isOpen) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = 1.dp, y = (-1).dp)
+                    .requiredSize(6.dp)
+                    .clip(CircleShape)
+                    .background(TypeFreeEmerald)
+            )
         }
     }
 }
@@ -580,6 +813,7 @@ fun TopBarUndoIconButton(
 @Composable
 private fun ModeSegmentItem(
     selected: Boolean,
+    width: androidx.compose.ui.unit.Dp = 33.dp,
     onClick: () -> Unit,
     content: @Composable (Color) -> Unit
 ) {
@@ -588,7 +822,7 @@ private fun ModeSegmentItem(
 
     Box(
         modifier = Modifier
-            .width(33.dp)
+            .width(width)
             .fillMaxHeight()
             .clip(RoundedCornerShape(13.dp))
             .background(if (selected) palette.capsuleSelectedBg else Color.Transparent)

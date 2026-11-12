@@ -1063,7 +1063,8 @@ class VoiceController(
         }
 
         val heldDurationMs = System.currentTimeMillis() - downTime
-        if (ImeLogic.isPressAndHoldGesture(heldDurationMs)) {
+        val isFromQwertyTopBar = host.stateFlow.value.tabMode == KeyboardTabMode.QWERTY
+        if (isFromQwertyTopBar || ImeLogic.isPressAndHoldGesture(heldDurationMs)) {
             host.performKeyFeedback(strong = false)
             stopRecordingAndRunPipeline()
         } else {

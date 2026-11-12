@@ -67,6 +67,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 enum class EditorShortcutAction {
@@ -74,6 +75,157 @@ enum class EditorShortcutAction {
     CUT,
     COPY,
     PASTE
+}
+
+sealed interface SecondaryKeyAction {
+    data class CommitSymbol(val symbol: String) : SecondaryKeyAction
+    data class CommitPaired(val open: String, val close: String) : SecondaryKeyAction
+    data class EditorShortcut(val action: EditorShortcutAction) : SecondaryKeyAction
+}
+
+data class SecondaryKeySpec(
+    val keyChar: Char,
+    val displayBadge: String,
+    val allowSwipeUp: Boolean,
+    val action: SecondaryKeyAction
+)
+
+/**
+ * TypeFree v3.4.0 26-Key Full Secondary Symbol & Paired Punctuation Map.
+ * - Row 1 (`Q..P`): `1..0` when `!showNumberRow` (`allowSwipeUp = true`).
+ * - Row 2 (`A..L`): `A`=全(`SELECT_ALL`, `allowSwipeUp = false`), `S`=`@`, `D`=`#`, `F`=`¥`/`$`,
+ *   `G`=`~`, `H`=`-`, `J`=`“”`/`""` (paired), `K`=`()` -> `（）`/`()` (paired), `L`=`：`/`:`.
+ * - Row 3 (`Z..M`): `Z`=`` ` ``, `X`=剪(`CUT`, `allowSwipeUp = false`), `C`=复(`COPY`, `allowSwipeUp = false`),
+ *   `V`=粘(`PASTE`, `allowSwipeUp = false`), `B`=`、`/`/`, `N`=`！`/`!`, `M`=`？`/`?`.
+ */
+object QwertySecondaryKeyMap {
+
+    fun resolve(
+        key: String,
+        isChinese: Boolean,
+        showNumberRow: Boolean = false
+    ): SecondaryKeySpec? {
+        val ch = key.firstOrNull()?.lowercaseChar() ?: return null
+        return resolve(keyChar = ch, isChinese = isChinese, showNumberRow = showNumberRow)
+    }
+
+    fun resolve(
+        keyChar: Char,
+        isChinese: Boolean,
+        showNumberRow: Boolean = false
+    ): SecondaryKeySpec? {
+        val lower = keyChar.lowercaseChar()
+        return when (lower) {
+            // Row 1: Q W E R T Y U I O P -> 1 2 3 4 5 6 7 8 9 0 (only when 4-row compact mode is active)
+            'q' -> if (!showNumberRow) SecondaryKeySpec('q', "1", true, SecondaryKeyAction.CommitSymbol("1")) else null
+            'w' -> if (!showNumberRow) SecondaryKeySpec('w', "2", true, SecondaryKeyAction.CommitSymbol("2")) else null
+            'e' -> if (!showNumberRow) SecondaryKeySpec('e', "3", true, SecondaryKeyAction.CommitSymbol("3")) else null
+            'r' -> if (!showNumberRow) SecondaryKeySpec('r', "4", true, SecondaryKeyAction.CommitSymbol("4")) else null
+            't' -> if (!showNumberRow) SecondaryKeySpec('t', "5", true, SecondaryKeyAction.CommitSymbol("5")) else null
+            'y' -> if (!showNumberRow) SecondaryKeySpec('y', "6", true, SecondaryKeyAction.CommitSymbol("6")) else null
+            'u' -> if (!showNumberRow) SecondaryKeySpec('u', "7", true, SecondaryKeyAction.CommitSymbol("7")) else null
+            'i' -> if (!showNumberRow) SecondaryKeySpec('i', "8", true, SecondaryKeyAction.CommitSymbol("8")) else null
+            'o' -> if (!showNumberRow) SecondaryKeySpec('o', "9", true, SecondaryKeyAction.CommitSymbol("9")) else null
+            'p' -> if (!showNumberRow) SecondaryKeySpec('p', "0", true, SecondaryKeyAction.CommitSymbol("0")) else null
+
+            // Row 2: A S D F G H J K L
+            'a' -> SecondaryKeySpec('a', "全", false, SecondaryKeyAction.EditorShortcut(EditorShortcutAction.SELECT_ALL))
+            's' -> SecondaryKeySpec('s', "@", true, SecondaryKeyAction.CommitSymbol("@"))
+            'd' -> SecondaryKeySpec('d', "#", true, SecondaryKeyAction.CommitSymbol("#"))
+            'f' -> {
+                val sym = if (isChinese) "¥" else "$"
+                SecondaryKeySpec('f', sym, true, SecondaryKeyAction.CommitSymbol(sym))
+            }
+            'g' -> SecondaryKeySpec('g', "~", true, SecondaryKeyAction.CommitSymbol("~"))
+            'h' -> SecondaryKeySpec('h', "-", true, SecondaryKeyAction.CommitSymbol("-"))
+            'j' -> {
+                val open = if (isChinese) "“" else "\""
+                val close = if (isChinese) "”" else "\""
+                val badge = if (isChinese) "“”" else "\"\""
+                SecondaryKeySpec('j', badge, true, SecondaryKeyAction.CommitPaired(open, close))
+            }
+            'k' -> {
+                val open = if (isChinese) "（" else "("
+                val close = if (isChinese) "）" else ")"
+                SecondaryKeySpec('k', "()", true, SecondaryKeyAction.CommitPaired(open, close))
+            }
+            'l' -> {
+                val sym = if (isChinese) "：" else ":"
+                SecondaryKeySpec('l', sym, true, SecondaryKeyAction.CommitSymbol(sym))
+            }
+
+            // Row 3: Z X C V B N M
+            'z' -> SecondaryKeySpec('z', "`", true, SecondaryKeyAction.CommitSymbol("`"))
+            'x' -> SecondaryKeySpec('x', "剪", false, SecondaryKeyAction.EditorShortcut(EditorShortcutAction.CUT))
+            'c' -> SecondaryKeySpec('c', "复", false, SecondaryKeyAction.EditorShortcut(EditorShortcutAction.COPY))
+            'v' -> SecondaryKeySpec('v', "粘", false, SecondaryKeyAction.EditorShortcut(EditorShortcutAction.PASTE))
+            'b' -> {
+                val sym = if (isChinese) "、" else "/"
+                SecondaryKeySpec('b', sym, true, SecondaryKeyAction.CommitSymbol(sym))
+            }
+            'n' -> {
+                val sym = if (isChinese) "！" else "!"
+                SecondaryKeySpec('n', sym, true, SecondaryKeyAction.CommitSymbol(sym))
+            }
+            'm' -> {
+                val sym = if (isChinese) "？" else "?"
+                SecondaryKeySpec('m', sym, true, SecondaryKeyAction.CommitSymbol(sym))
+            }
+            else -> null
+        }
+    }
+
+    /**
+     * Evaluates whether an upward swipe vector (`dxPx`, `dyPx`) should trigger [spec]:
+     * - Returns `false` for `A/X/C/V` (`allowSwipeUp == false`) so fast upward typing never
+     *   accidentally triggers Select All / Cut / Copy / Paste.
+     * - Returns `true` when `dyPx <= -thresholdPx` (`18.dp`) and vertical motion dominates (`abs(dyPx) > abs(dxPx)`).
+     */
+    fun shouldTriggerSwipeUp(
+        spec: SecondaryKeySpec?,
+        dxPx: Float,
+        dyPx: Float,
+        thresholdPx: Float
+    ): Boolean {
+        if (spec == null || !spec.allowSwipeUp || thresholdPx <= 0f) return false
+        return dyPx <= -thresholdPx && abs(dyPx) > abs(dxPx)
+    }
+
+    /**
+     * Pure helper computing `(committedText, newCursorOffsetFromStart)` for paired punctuation (`J`/`K`):
+     * - When [selectedText] is non-empty, wraps it as `"$open$selectedText$close"` and places cursor at end.
+     * - When [selectedText] is empty, inserts `"$open$close"` and places cursor at `open.length` (center).
+     */
+    fun formatPairedInsertion(
+        open: String,
+        close: String,
+        selectedText: String = ""
+    ): Pair<String, Int> {
+        return if (selectedText.isNotEmpty()) {
+            val wrapped = "$open$selectedText$close"
+            wrapped to wrapped.length
+        } else {
+            val pair = "$open$close"
+            pair to open.length
+        }
+    }
+
+    /**
+     * Pure helper verifying that `Z` (`\``) routes to the composing engine ONLY when
+     * [inputScheme] is [InputScheme.FLYPY_TABLE] and [isComposing] is true (preserving Xiaohe
+     * Yinxing stroke reverse-lookup `ji\``), and flushes + commits `\`` otherwise.
+     */
+    fun shouldRouteBacktickToComposingEngine(
+        symbol: String,
+        inputScheme: InputScheme,
+        isComposing: Boolean,
+        isChineseMode: Boolean = true
+    ): Boolean {
+        return symbol == "`" &&
+            inputScheme == InputScheme.FLYPY_TABLE &&
+            isChineseMode &&
+            isComposing
+    }
 }
 
 private data class PressedKeyPreview(
@@ -95,15 +247,15 @@ private val SYM_ROW_1 = listOf("[", "]", "{", "}", "<", ">", "^", "*", "=", "~")
 private val SYM_ROW_2 = listOf("_", "\\", "|", "、", "；", "“", "”", "‘", "’", "…")
 private val SYM_ROW_3 = listOf("¥", "€", "£", "°", "•", "`", "?")
 
-private const val KEY_LONG_PRESS_MS = 290L
+private const val KEY_LONG_PRESS_MS = ImeLogic.SECONDARY_KEY_LONG_PRESS_MS
 
-// Ergonomic Gboard / iOS / WeType Zero-Dead-Zone Cell Insets inside the constant 298.dp IME frame:
+// Ergonomic Gboard / iOS / WeType Zero-Dead-Zone Cell Insets inside the compact 252.dp 4-row IME frame:
 // Touch hitboxes fill 100% of the cell (`0.dp` dead space), while visual keycaps inset cleanly
-// to hold a ~1.17–1.18:1 golden keycap aspect ratio with generous vertical row separation.
+// to hold a golden keycap aspect ratio with generous vertical row separation.
 private val KEY_CELL_HPAD = 2.4.dp
-private val KEY_CELL_VPAD_5ROW = 4.0.dp
-private val KEY_CELL_VPAD_4ROW = 4.3.dp
-private val NUM_ROW_VPAD = 3.1.dp
+private val KEY_CELL_VPAD_5ROW = 3.2.dp
+private val KEY_CELL_VPAD_4ROW = 3.2.dp
+private val NUM_ROW_VPAD = 2.8.dp
 private val ALPHA_KEY_CORNER = 6.5.dp
 private val NUM_KEY_CORNER = 6.0.dp
 private val FUNC_KEY_CORNER = 7.5.dp
@@ -119,6 +271,9 @@ fun BuiltInQwertyKeyboard(
     flypyCandidateCount: Int,
     commaPeriodQuickSelect: Boolean,
     onCommitChar: (String) -> Unit,
+    onCommitSecondarySymbol: (String) -> Unit = onCommitChar,
+    onInsertPairedSymbol: (String, String) -> Unit = { l, r -> onCommitChar("$l$r") },
+    onMoveCursorByStep: (Int) -> Unit = {},
     onCommaOrPeriodKey: (Boolean) -> Unit,
     onInsertSpace: () -> Unit,
     onToggleFlypyLanguageMode: () -> Unit,
@@ -132,13 +287,12 @@ fun BuiltInQwertyKeyboard(
     onSwitchSystemIme: () -> Unit,
     onHideKeyboard: () -> Unit = {},
     onShowImePicker: () -> Unit = {},
-    showNumberRow: Boolean = true,
+    showNumberRow: Boolean = false,
     inputSessionToken: Int = 0,
     showKeyPopupPreview: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
-    val elementScale = LocalKeyboardMetrics.current.elementScale
 
     var isSymbolLayer by remember { mutableStateOf(false) }
     var isMoreSymbols by remember { mutableStateOf(false) }
@@ -166,24 +320,12 @@ fun BuiltInQwertyKeyboard(
     val letterFontSize = if (isUpperCase) 18.5.sp else 20.5.sp
     val letterFontWeight = if (isUpperCase) FontWeight.Medium else FontWeight.Normal
 
-    fun subHintForKey(ch: String): String? = when (ch) {
-        "a" -> "全"
-        "x" -> "剪"
-        "c" -> "复"
-        "v" -> "粘"
-        "z" -> "`"
-        "l" -> ";"
-        else -> null
-    }
-
-    fun longPressActionForKey(ch: String): (() -> Unit)? = when (ch) {
-        "a" -> ({ onEditorShortcutAction(EditorShortcutAction.SELECT_ALL) })
-        "x" -> ({ onEditorShortcutAction(EditorShortcutAction.CUT) })
-        "c" -> ({ onEditorShortcutAction(EditorShortcutAction.COPY) })
-        "v" -> ({ onEditorShortcutAction(EditorShortcutAction.PASTE) })
-        "z" -> ({ onCommitChar("`") })
-        "l" -> ({ onCommitChar(";") })
-        else -> null
+    fun executeSecondarySpec(spec: SecondaryKeySpec) {
+        when (val act = spec.action) {
+            is SecondaryKeyAction.CommitSymbol -> onCommitSecondarySymbol(act.symbol)
+            is SecondaryKeyAction.CommitPaired -> onInsertPairedSymbol(act.open, act.close)
+            is SecondaryKeyAction.EditorShortcut -> onEditorShortcutAction(act.action)
+        }
     }
 
     fun showPreviewForKey(label: String, keyOriginInWindow: Offset, keySize: IntSize): Long {
@@ -263,8 +405,15 @@ fun BuiltInQwertyKeyboard(
                     ) {
                         ALPHA_ROW_1.forEach { ch ->
                             val display = if (isUpperCase) ch.uppercase() else ch
+                            val secSpec = QwertySecondaryKeyMap.resolve(
+                                key = ch,
+                                isChinese = isFlypyChineseMode,
+                                showNumberRow = showNumberRow
+                            )
                             QwertyCharKey(
                                 label = display,
+                                subLabel = secSpec?.displayBadge,
+                                allowSwipeUpSecondary = secSpec?.allowSwipeUp ?: false,
                                 fontSize = letterFontSize,
                                 fontWeight = letterFontWeight,
                                 verticalCellPad = rowVPad,
@@ -276,6 +425,11 @@ fun BuiltInQwertyKeyboard(
                                 onClick = {
                                     onCommitChar(display)
                                     shiftState = ImeLogic.consumeShiftAfterCharCommit(shiftState)
+                                },
+                                onLongPress = if (secSpec != null) {
+                                    { executeSecondarySpec(secSpec) }
+                                } else {
+                                    null
                                 }
                             )
                         }
@@ -300,9 +454,15 @@ fun BuiltInQwertyKeyboard(
                                 isLast -> Alignment.CenterStart
                                 else -> Alignment.Center
                             }
+                            val secSpec = QwertySecondaryKeyMap.resolve(
+                                key = ch,
+                                isChinese = isFlypyChineseMode,
+                                showNumberRow = showNumberRow
+                            )
                             QwertyCharKey(
                                 label = display,
-                                subLabel = subHintForKey(ch),
+                                subLabel = secSpec?.displayBadge,
+                                allowSwipeUpSecondary = secSpec?.allowSwipeUp ?: false,
                                 fontSize = letterFontSize,
                                 fontWeight = letterFontWeight,
                                 verticalCellPad = rowVPad,
@@ -317,7 +477,11 @@ fun BuiltInQwertyKeyboard(
                                     onCommitChar(display)
                                     shiftState = ImeLogic.consumeShiftAfterCharCommit(shiftState)
                                 },
-                                onLongPress = longPressActionForKey(ch)
+                                onLongPress = if (secSpec != null) {
+                                    { executeSecondarySpec(secSpec) }
+                                } else {
+                                    null
+                                }
                             )
                         }
                     }
@@ -362,9 +526,15 @@ fun BuiltInQwertyKeyboard(
 
                         ALPHA_ROW_3.forEach { ch ->
                             val display = if (isUpperCase) ch.uppercase() else ch
+                            val secSpec = QwertySecondaryKeyMap.resolve(
+                                key = ch,
+                                isChinese = isFlypyChineseMode,
+                                showNumberRow = showNumberRow
+                            )
                             QwertyCharKey(
                                 label = display,
-                                subLabel = subHintForKey(ch),
+                                subLabel = secSpec?.displayBadge,
+                                allowSwipeUpSecondary = secSpec?.allowSwipeUp ?: false,
                                 fontSize = letterFontSize,
                                 fontWeight = letterFontWeight,
                                 verticalCellPad = rowVPad,
@@ -377,7 +547,11 @@ fun BuiltInQwertyKeyboard(
                                     onCommitChar(display)
                                     shiftState = ImeLogic.consumeShiftAfterCharCommit(shiftState)
                                 },
-                                onLongPress = longPressActionForKey(ch)
+                                onLongPress = if (secSpec != null) {
+                                    { executeSecondarySpec(secSpec) }
+                                } else {
+                                    null
+                                }
                             )
                         }
 
@@ -506,35 +680,48 @@ fun BuiltInQwertyKeyboard(
                         }
                     )
 
-                    // Globe: tap = switch back to Voice mode, long-press = system IME picker / previous IME
-                    val globeInteraction = remember { MutableInteractionSource() }
-                    val globePressed by globeInteraction.collectIsPressedAsState()
+                    // [中/英] Language Toggle Key: tap = toggle 中文 <-> EN, long-press = system IME picker
+                    val langInteraction = remember { MutableInteractionSource() }
+                    val langPressed by langInteraction.collectIsPressedAsState()
+                    val effectiveChinese = isFlypyChineseMode && !isSymbolLayer
                     Box(
                         modifier = Modifier
                             .weight(1.00f)
                             .fillMaxHeight()
                             .combinedClickable(
-                                interactionSource = globeInteraction,
+                                interactionSource = langInteraction,
                                 indication = null,
-                                onClick = onSwitchToVoice,
+                                onClick = onToggleFlypyLanguageMode,
                                 onLongClick = onSwitchSystemIme
                             )
                             .padding(horizontal = KEY_CELL_HPAD, vertical = rowVPad)
                     ) {
                         TactileKeycapSurface(
-                            isPressed = globePressed,
+                            isPressed = langPressed,
                             cornerRadius = FUNC_KEY_CORNER,
-                            faceColor = if (globePressed) palette.keyBorder else palette.keyCapSecondaryBg,
+                            faceColor = if (langPressed) palette.keyBorder else palette.keyCapSecondaryBg,
                             borderColor = palette.keyBorder.copy(alpha = 0.65f),
                             shadowColor = palette.keyShadow
                         ) {
-                            Icon(
-                                imageVector = TypeFreeIcons.Globe,
-                                contentDescription = "切回语音或切换输入法",
-                                tint = palette.keyTextPrimary,
+                            Text(
+                                text = if (effectiveChinese) "中" else "EN",
+                                color = palette.keyTextPrimary,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 1,
                                 modifier = Modifier
                                     .align(Alignment.Center)
-                                    .size(18.dp)
+                                    .offset(x = (-2).dp, y = (-1).dp)
+                            )
+                            Text(
+                                text = if (effectiveChinese) "英" else "中",
+                                color = palette.keyTextMuted.copy(alpha = 0.62f),
+                                fontSize = 8.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(bottom = 2.dp, end = 4.dp)
                             )
                         }
                     }
@@ -546,6 +733,7 @@ fun BuiltInQwertyKeyboard(
                         label = if (isFlypyChineseMode && !isSymbolLayer) "，" else ",",
                         subLabel = if (showSecondBadge) "2" else if (isFlypyChineseMode && !hasActiveFlypyComposing) "," else null,
                         highlightSubLabel = showSecondBadge,
+                        allowSwipeUpSecondary = isFlypyChineseMode && !hasActiveFlypyComposing,
                         fontSize = 17.5.sp,
                         fontWeight = FontWeight.Medium,
                         cornerRadius = FUNC_KEY_CORNER,
@@ -567,14 +755,14 @@ fun BuiltInQwertyKeyboard(
                         }
                     )
 
-                    // Wide Space Bar: Tap commits 1st candidate / space, Long-Press toggles 中文 <-> EN
+                    // Wide Space Bar: Tap commits 1st candidate / space, Hold & Slide horizontally moves cursor
                     QwertySpaceBarKey(
                         isFlypyChineseMode = isFlypyChineseMode && !isSymbolLayer,
                         activeInputScheme = activeInputScheme,
                         hasComposing = hasActiveFlypyComposing,
                         verticalCellPad = rowVPad,
                         onTap = onInsertSpace,
-                        onLongPress = onToggleFlypyLanguageMode,
+                        onMoveCursorByStep = onMoveCursorByStep,
                         modifier = Modifier
                             .weight(3.95f)
                             .fillMaxHeight()
@@ -584,6 +772,7 @@ fun BuiltInQwertyKeyboard(
                         label = if (isFlypyChineseMode && !isSymbolLayer) "。" else ".",
                         subLabel = if (showThirdBadge) "3" else if (isFlypyChineseMode && !hasActiveFlypyComposing) "." else null,
                         highlightSubLabel = showThirdBadge,
+                        allowSwipeUpSecondary = isFlypyChineseMode && !hasActiveFlypyComposing,
                         fontSize = 17.5.sp,
                         fontWeight = FontWeight.Medium,
                         cornerRadius = FUNC_KEY_CORNER,
@@ -675,63 +864,13 @@ fun BuiltInQwertyKeyboard(
                 }
             }
 
-            // Ergonomic Bottom Thumb Cushion inside the constant 298.dp IME frame:
-            // - 5-row mode (`hasFiveRows == true`): 10.dp anti-mistouch thumb pad above system gesture bar.
-            // - 4-row mode (`showNumberRow == false` or Symbol Layer): 44.dp iOS/WeType-style ergonomic
-            //   bottom utility bar (`⌄` hide keyboard left, `⌨` switch IME right) keeping 0px outer height jump!
-            if (hasFiveRows) {
-                Spacer(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(10.dp)
-                )
-            } else {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(44.dp)
-                        .padding(start = 10.dp, end = 10.dp, bottom = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.Bottom
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(width = 40.dp, height = 30.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable(onClick = onHideKeyboard),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        Icon(
-                            imageVector = TypeFreeIcons.ChevronDown,
-                            contentDescription = "收起键盘",
-                            tint = palette.keyTextPrimary.copy(alpha = 0.78f),
-                            modifier = Modifier
-                                .padding(start = 6.dp)
-                                .size(18.dp)
-                        )
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .size(width = 40.dp, height = 30.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .combinedClickable(
-                                onClick = onSwitchSystemIme,
-                                onLongClick = onShowImePicker
-                            ),
-                        contentAlignment = Alignment.CenterEnd
-                    ) {
-                        Icon(
-                            imageVector = TypeFreeIcons.KeyboardGrid,
-                            contentDescription = "切换输入法",
-                            tint = palette.keyTextPrimary.copy(alpha = 0.78f),
-                            modifier = Modifier
-                                .padding(end = 6.dp)
-                                .size(18.dp)
-                        )
-                    }
-                }
-            }
+            // Unified 6.dp bottom anti-mistouch margin for both 4-row (252.dp) and 5-row (294.dp) modes,
+            // releasing the full 210.dp / 252.dp key area to large tactile keycaps without a fake bottom tray.
+            Spacer(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+            )
         }
 
         // Non-clipping Floating Key-Press Preview Magnifier Bubble (Gboard / iOS callout style)
@@ -841,6 +980,7 @@ private fun QwertyCharKey(
     modifier: Modifier = Modifier,
     subLabel: String? = null,
     highlightSubLabel: Boolean = false,
+    allowSwipeUpSecondary: Boolean = false,
     fontSize: TextUnit = 20.sp,
     fontWeight: FontWeight = FontWeight.Normal,
     cornerRadius: Dp = ALPHA_KEY_CORNER,
@@ -855,8 +995,11 @@ private fun QwertyCharKey(
     val palette = LocalTypeFreeKeyboardPalette.current
     val density = LocalDensity.current
     val touchSlopPx = with(density) { 28.dp.toPx() }
+    val swipeUpThresholdPx = with(density) { ImeLogic.SECONDARY_KEY_SWIPE_UP_DP.dp.toPx() }
 
     val currentLabel by rememberUpdatedState(label)
+    val currentSubLabel by rememberUpdatedState(subLabel)
+    val currentAllowSwipeUp by rememberUpdatedState(allowSwipeUpSecondary)
     val currentOnClick by rememberUpdatedState(onClick)
     val currentOnLongPress by rememberUpdatedState(onLongPress)
     val currentOnPreviewStart by rememberUpdatedState(onPressPreviewStart)
@@ -874,21 +1017,30 @@ private fun QwertyCharKey(
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         down.consume()
+                        val startPos = down.position
                         isPressed = true
-                        val previewToken = currentOnPreviewStart?.invoke(
+                        var previewToken = currentOnPreviewStart?.invoke(
                             currentLabel,
                             keyCapOriginInWindow,
                             keyCapSizePx
                         ) ?: 0L
-                        var longPressFired = false
+                        var secondaryFired = false
                         var cancelled = false
 
                         val longJob: Job? = if (currentOnLongPress != null) {
                             outerScope.launch {
                                 delay(KEY_LONG_PRESS_MS)
-                                if (!cancelled) {
-                                    longPressFired = true
+                                if (!cancelled && !secondaryFired) {
+                                    secondaryFired = true
                                     currentOnPreviewEnd?.invoke(previewToken)
+                                    val badge = currentSubLabel
+                                    if (!badge.isNullOrEmpty()) {
+                                        previewToken = currentOnPreviewStart?.invoke(
+                                            badge,
+                                            keyCapOriginInWindow,
+                                            keyCapSizePx
+                                        ) ?: 0L
+                                    }
                                     currentOnLongPress?.invoke()
                                 }
                             }
@@ -905,11 +1057,29 @@ private fun QwertyCharKey(
                                     break
                                 }
                                 val pos = change.position
+                                val dx = pos.x - startPos.x
+                                val dy = pos.y - startPos.y
+
+                                // Swipe-up quick secondary trigger (>= 18.dp upward when allowSwipeUpSecondary is true)
                                 if (
-                                    pos.x < -touchSlopPx ||
-                                    pos.x > size.width + touchSlopPx ||
-                                    pos.y < -touchSlopPx ||
-                                    pos.y > size.height + touchSlopPx
+                                    !secondaryFired &&
+                                    !cancelled &&
+                                    currentAllowSwipeUp &&
+                                    currentOnLongPress != null &&
+                                    dy <= -swipeUpThresholdPx &&
+                                    abs(dy) > abs(dx)
+                                ) {
+                                    secondaryFired = true
+                                    longJob?.cancel()
+                                    change.consume()
+                                    currentOnPreviewEnd?.invoke(previewToken)
+                                    currentOnLongPress?.invoke()
+                                } else if (
+                                    !secondaryFired &&
+                                    (pos.x < -touchSlopPx ||
+                                        pos.x > size.width + touchSlopPx ||
+                                        pos.y < -touchSlopPx ||
+                                        pos.y > size.height + touchSlopPx)
                                 ) {
                                     cancelled = true
                                     longJob?.cancel()
@@ -927,7 +1097,7 @@ private fun QwertyCharKey(
                             currentOnPreviewEnd?.invoke(previewToken)
                         }
 
-                        if (!cancelled && !longPressFired) {
+                        if (!cancelled && !secondaryFired) {
                             currentOnClick()
                         }
                     }
@@ -958,10 +1128,10 @@ private fun QwertyCharKey(
                         color = if (highlightSubLabel) {
                             palette.keyTextPrimary
                         } else {
-                            palette.keyTextMuted.copy(alpha = 0.62f)
+                            palette.keyTextMuted.copy(alpha = 0.68f)
                         },
                         fontSize = if (highlightSubLabel) 9.5.sp else 8.sp,
-                        fontWeight = if (highlightSubLabel) FontWeight.Bold else FontWeight.Medium,
+                        fontWeight = if (highlightSubLabel) FontWeight.Bold else FontWeight.SemiBold,
                         maxLines = 1,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
@@ -992,69 +1162,85 @@ private fun QwertySpaceBarKey(
     hasComposing: Boolean,
     verticalCellPad: Dp = KEY_CELL_VPAD_5ROW,
     onTap: () -> Unit,
-    onLongPress: () -> Unit,
+    onMoveCursorByStep: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val density = LocalDensity.current
     val touchSlopPx = with(density) { 28.dp.toPx() }
+    val slideActivatePx = with(density) { ImeLogic.SPACE_CURSOR_SLIDE_ACTIVATE_DP.dp.toPx() }
+    val slideStepPx = with(density) { ImeLogic.SPACE_CURSOR_SLIDE_STEP_DP.dp.toPx() }
 
     val currentOnTap by rememberUpdatedState(onTap)
-    val currentOnLongPress by rememberUpdatedState(onLongPress)
+    val currentOnMoveCursor by rememberUpdatedState(onMoveCursorByStep)
     var isPressed by remember { mutableStateOf(false) }
+    var isCursorSliding by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
             .pointerInput(Unit) {
-                coroutineScope {
-                    val outerScope = this
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        down.consume()
-                        isPressed = true
-                        var longFired = false
-                        var cancelled = false
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    val startX = down.position.x
+                    var lastX = startX
+                    var accumulatedDx = 0f
+                    var slidingActive = false
+                    var cancelled = false
+                    isPressed = true
+                    isCursorSliding = false
 
-                        val longJob = outerScope.launch {
-                            delay(KEY_LONG_PRESS_MS)
-                            if (!cancelled) {
-                                longFired = true
-                                currentOnLongPress()
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                            if (change == null) {
+                                cancelled = true
+                                break
+                            }
+                            val pos = change.position
+                            val totalDx = pos.x - startX
+                            val frameDx = pos.x - lastX
+                            lastX = pos.x
+
+                            if (!slidingActive && abs(totalDx) >= slideActivatePx) {
+                                slidingActive = true
+                                isCursorSliding = true
+                                accumulatedDx = totalDx
+                            } else if (slidingActive) {
+                                accumulatedDx += frameDx
+                            }
+
+                            if (slidingActive) {
+                                change.consume()
+                                val (steps, rem) = ImeLogic.computeSpaceCursorSlideSteps(
+                                    accumulatedDxPx = accumulatedDx,
+                                    stepPx = slideStepPx
+                                )
+                                if (steps != 0) {
+                                    accumulatedDx = rem
+                                    currentOnMoveCursor(steps)
+                                }
+                            } else if (
+                                pos.y < -touchSlopPx ||
+                                pos.y > size.height + touchSlopPx
+                            ) {
+                                cancelled = true
+                                isPressed = false
+                            }
+
+                            if (!change.pressed) {
+                                change.consume()
+                                break
                             }
                         }
+                    } finally {
+                        isPressed = false
+                        isCursorSliding = false
+                    }
 
-                        try {
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.firstOrNull { it.id == down.id }
-                                if (change == null) {
-                                    cancelled = true
-                                    break
-                                }
-                                val pos = change.position
-                                if (
-                                    pos.x < -touchSlopPx ||
-                                    pos.x > size.width + touchSlopPx ||
-                                    pos.y < -touchSlopPx ||
-                                    pos.y > size.height + touchSlopPx
-                                ) {
-                                    cancelled = true
-                                    longJob.cancel()
-                                    isPressed = false
-                                }
-                                if (!change.pressed) {
-                                    change.consume()
-                                    break
-                                }
-                            }
-                        } finally {
-                            isPressed = false
-                            longJob.cancel()
-                        }
-
-                        if (!cancelled && !longFired) {
-                            currentOnTap()
-                        }
+                    if (!cancelled && !slidingActive) {
+                        currentOnTap()
                     }
                 }
             }
@@ -1068,26 +1254,18 @@ private fun QwertySpaceBarKey(
             shadowColor = palette.keyShadow
         ) {
             val label = when {
+                isCursorSliding -> "‹ 滑动移光标 ›"
                 hasComposing -> "空格首选"
                 isFlypyChineseMode -> shortInputSchemeLabel(activeInputScheme)
                 else -> "English"
             }
             Text(
                 text = label,
-                color = if (hasComposing) palette.keyTextPrimary else palette.keyTextMuted,
-                fontSize = 12.5.sp,
-                fontWeight = if (hasComposing) FontWeight.SemiBold else FontWeight.Medium,
+                color = if (hasComposing || isCursorSliding) palette.keyTextPrimary else palette.keyTextMuted,
+                fontSize = 12.sp,
+                fontWeight = if (hasComposing || isCursorSliding) FontWeight.SemiBold else FontWeight.Medium,
                 maxLines = 1,
                 modifier = Modifier.align(Alignment.Center)
-            )
-            Text(
-                text = if (isFlypyChineseMode) "EN" else activeInputScheme.shortBadge,
-                color = palette.keyTextMuted.copy(alpha = 0.52f),
-                fontSize = 8.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(bottom = 2.5.dp, end = 6.dp)
             )
         }
     }
