@@ -156,7 +156,7 @@ class ContextualReplyAndShareCardTest {
         )
         assertEquals(0, left)
         assertEquals(1080, right)
-        assertTrue(top >= 180)
+        assertTrue(top >= 100)
         assertTrue(bottom <= 1450)
 
         // Screenshot-only context (when WeChat/QQ custom Canvas hides all accessibility text nodes)

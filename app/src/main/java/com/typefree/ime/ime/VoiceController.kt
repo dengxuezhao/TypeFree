@@ -333,7 +333,7 @@ class VoiceController(
                 )
                 val fullScreenOutcome = if (
                     settingsSnap.chatContextSendScreenshot ||
-                    fullScreenCtx.messageCount < 2
+                    ChatScreenContextExtractor.shouldTriggerOcrForCustomCanvas(fullScreenCtx)
                 ) {
                     runCatching {
                         TypeFreeAccessibilityService.captureChatViewportOutcomeIfAvailable(
@@ -420,7 +420,7 @@ class VoiceController(
             !initialSnap.showChatContextDisclosurePrompt &&
             (
                 (settingsSnap.chatContextSendScreenshot && initialSnap.capturedChatContext.screenshotJpegBase64.isBlank()) ||
-                    initialSnap.capturedChatContext.messageCount < 2
+                    ChatScreenContextExtractor.shouldTriggerOcrForCustomCanvas(initialSnap.capturedChatContext)
                 )
         if (needsViewportCaptureOrOcr) {
             val capturedOutcome = runCatching {
@@ -457,6 +457,11 @@ class VoiceController(
             JevDomainProfile.fromPackage(latest.targetPackage)
         }
         val effectiveBottomLine = overrideBottomLine ?: latest.jevUserBottomLine
+        val effectiveTopology = if (latest.ignoreChatContextForThisTurn) {
+            com.typefree.ime.ime.jev.ChatTopology()
+        } else {
+            latest.capturedChatContext.topology
+        }
 
         val result = try {
             host.aiEngine.runJevCopilot(
@@ -470,7 +475,8 @@ class VoiceController(
                 excludedPreviousReplies = latest.jevExcludedReplies,
                 redactionSession = latest.capturedChatContext.redactionSession,
                 wavFile = wavFile,
-                preTranscribedBottomLine = pretranscribedSpeech
+                preTranscribedBottomLine = pretranscribedSpeech,
+                chatTopology = effectiveTopology
             )
         } finally {
             // Wall 4: Ephemeral screenshot bytes & audio file wiped immediately after request

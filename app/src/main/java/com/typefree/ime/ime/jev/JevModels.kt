@@ -14,6 +14,29 @@ enum class JevTensionTier(val label: String) {
 }
 
 /**
+ * 3-State Role Topology Mode for `✦ Jev 军师` to distinguish 1v1 private chat,
+ * group chat involved party, and group chat 3rd-party bystander.
+ */
+enum class JevRoleMode(val label: String) {
+    PRIVATE_1V1("1v1私聊对象"),
+    GROUP_INVOLVED_PARTY("群聊当事人"),
+    GROUP_BYSTANDER("群聊第三方旁观者")
+}
+
+/**
+ * Conversation topology extracted from top-bar group features, multi-speaker nickname pairing,
+ * and recent user turn / `@` mention signals.
+ */
+data class ChatTopology(
+    val isGroupChat: Boolean = false,
+    val groupMemberCount: Int = 0,
+    val distinctOtherSenders: List<String> = emptyList(),
+    val recentSelfTurns: Int = 0,
+    val hasExplicitMentionMe: Boolean = false,
+    val roleMode: JevRoleMode = JevRoleMode.PRIVATE_1V1
+)
+
+/**
  * A single selectable strategy option card in `✦ Jev 军师`.
  *
  * @property label Short 2–6 character tactical tag (e.g. `太极推挡`, `锚定底价`, `神评造梗`)

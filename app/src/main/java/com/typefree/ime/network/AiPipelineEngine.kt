@@ -20,6 +20,7 @@ import com.typefree.ime.data.ThinkingMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.UnifiedProviderCatalog
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.ime.jev.ChatTopology
 import com.typefree.ime.ime.jev.JevCopilotResult
 import com.typefree.ime.ime.jev.JevDomainProfile
 import com.typefree.ime.ime.jev.JevResponseParser
@@ -968,7 +969,8 @@ class AiPipelineEngine(
         surroundingBeforeCursor: String = "",
         redactionSession: RedactionSession? = null,
         wavFile: File? = null,
-        preTranscribedBottomLine: String? = null
+        preTranscribedBottomLine: String? = null,
+        chatTopology: ChatTopology = ChatTopology()
     ): Result<Pair<JevCopilotResult, String>> = withContext(Dispatchers.IO) {
         try {
             val resolvedBottomLine = when {
@@ -1033,7 +1035,8 @@ class AiPipelineEngine(
                 excludedPreviousReplies = excludedPreviousReplies,
                 surroundingBeforeCursor = surroundingBeforeCursor,
                 style = activeStyle,
-                dictionary = settings.dictionary
+                dictionary = settings.dictionary,
+                chatTopology = chatTopology
             )
 
             val rawOutput: String = if (dedicatedCfg != null) {

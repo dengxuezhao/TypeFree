@@ -488,7 +488,10 @@ class TypeFreeAccessibilityService : AccessibilityService() {
         } else {
             existingMessages
         }
-        val needsOcrForCustomCanvas = baseA11yMessages.size < 2
+        val needsOcrForCustomCanvas = ChatScreenContextExtractor.shouldTriggerOcrForCustomCanvas(
+            ctx = unredactedA11yCtx,
+            baseMessages = baseA11yMessages
+        )
 
         if (!settings.chatContextSendScreenshot && !needsOcrForCustomCanvas) {
             return null
@@ -568,9 +571,10 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     scaleRatio = scaleRatio,
                     timeoutMs = 750L
                 )
-                val ocrExtracted = if (ocrNodes.isNotEmpty()) {
+                val fusedExtracted = if (ocrNodes.isNotEmpty()) {
+                    val merged2DNodes = ChatScreenContextExtractor.mergeCoordinateNodes(a11yNodes, ocrNodes)
                     ChatScreenContextExtractor.extractChatContext(
-                        nodes = ocrNodes,
+                        nodes = merged2DNodes,
                         screenWidth = rawBitmap.width,
                         screenHeight = rawBitmap.height,
                         inputBoxTop = inputTopHint,
@@ -580,19 +584,27 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                         redactPii = false
                     )
                 } else {
-                    CapturedChatContext.EMPTY
+                    unredactedA11yCtx
                 }
 
-                val rawMergedMessages = ChatScreenContextExtractor.mergeAccessibilityAndOcrMessages(
-                    a11yMessages = baseA11yMessages,
-                    ocrMessages = ocrExtracted.formattedMessages,
-                    maxMessages = 10
-                )
+                val rawMergedMessages = if (a11yNodes.isNotEmpty() && ocrNodes.isNotEmpty()) {
+                    fusedExtracted.formattedMessages
+                } else {
+                    ChatScreenContextExtractor.mergeAccessibilityAndOcrMessages(
+                        a11yMessages = baseA11yMessages,
+                        ocrMessages = if (ocrNodes.isNotEmpty()) fusedExtracted.formattedMessages else emptyList(),
+                        maxMessages = 10
+                    )
+                }
                 val combinedNodes = if (ocrNodes.isNotEmpty()) a11yNodes + ocrNodes else a11yNodes
                 val (redactedMergedMessages, mergedRedactionSession) = LocalPiiRedactor.redactMessages(
                     messages = rawMergedMessages,
                     context = this@TypeFreeAccessibilityService,
                     sourceNodes = combinedNodes
+                )
+                val resolvedTopology = ChatScreenContextExtractor.inferTopologyFromFormattedMessages(
+                    messages = redactedMergedMessages,
+                    existingTopology = fusedExtracted.topology
                 )
 
                 val shouldDrop = ImagePrivacyGuard.shouldDropScreenshot(
@@ -608,7 +620,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                         width = 0,
                         height = 0,
                         mergedMessages = redactedMergedMessages,
-                        redactionSession = mergedRedactionSession
+                        redactionSession = mergedRedactionSession,
+                        topology = resolvedTopology
                     )
                 }
 
@@ -641,7 +654,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     width = if (b64.isNotBlank()) outWidth else 0,
                     height = if (b64.isNotBlank()) outHeight else 0,
                     mergedMessages = redactedMergedMessages,
-                    redactionSession = mergedRedactionSession
+                    redactionSession = mergedRedactionSession,
+                    topology = resolvedTopology
                 )
             } catch (_: Throwable) {
                 null
@@ -945,7 +959,7 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     return null
                 }
                 val editableTop = simNodes.firstOrNull { it.isEditable }?.boundsTop ?: -1
-                val unredactedA11y = if (simNodes.isNotEmpty()) {
+                val unredactedA11yCtx = if (simNodes.isNotEmpty()) {
                     ChatScreenContextExtractor.extractChatContext(
                         nodes = simNodes,
                         screenWidth = 1080,
@@ -953,13 +967,19 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                         inputBoxTop = editableTop,
                         packageName = expectedPackage,
                         redactPii = false
-                    ).formattedMessages
+                    )
+                } else {
+                    CapturedChatContext.EMPTY
+                }
+                val unredactedA11y = if (unredactedA11yCtx.formattedMessages.isNotEmpty()) {
+                    unredactedA11yCtx.formattedMessages
                 } else {
                     existingMessages
                 }
-                val ocrExtracted = if (!simOcrNodes.isNullOrEmpty()) {
+                val fusedExtracted = if (!simOcrNodes.isNullOrEmpty()) {
+                    val merged2DNodes = ChatScreenContextExtractor.mergeCoordinateNodes(simNodes, simOcrNodes)
                     ChatScreenContextExtractor.extractChatContext(
-                        nodes = simOcrNodes,
+                        nodes = merged2DNodes,
                         screenWidth = 1080,
                         screenHeight = 2400,
                         inputBoxTop = editableTop,
@@ -967,20 +987,28 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                         maxMessages = 10,
                         maxTotalChars = 800,
                         redactPii = false
-                    ).formattedMessages
+                    )
                 } else {
-                    emptyList()
+                    unredactedA11yCtx
                 }
-                val rawMerged = ChatScreenContextExtractor.mergeAccessibilityAndOcrMessages(
-                    a11yMessages = unredactedA11y,
-                    ocrMessages = ocrExtracted,
-                    maxMessages = 10
-                )
+                val rawMerged = if (simNodes.isNotEmpty() && !simOcrNodes.isNullOrEmpty()) {
+                    fusedExtracted.formattedMessages
+                } else {
+                    ChatScreenContextExtractor.mergeAccessibilityAndOcrMessages(
+                        a11yMessages = unredactedA11y,
+                        ocrMessages = if (!simOcrNodes.isNullOrEmpty()) fusedExtracted.formattedMessages else emptyList(),
+                        maxMessages = 10
+                    )
+                }
                 val combinedNodes = simNodes + simOcrNodes.orEmpty()
                 val (redactedMerged, mergedSession) = LocalPiiRedactor.redactMessages(
                     messages = rawMerged,
                     context = null,
                     sourceNodes = combinedNodes
+                )
+                val resolvedTopology = ChatScreenContextExtractor.inferTopologyFromFormattedMessages(
+                    messages = redactedMerged,
+                    existingTopology = fusedExtracted.topology
                 )
                 val effectiveHighRisk = mergedSession.hasHighRiskCredentials ||
                     redactionSession?.hasHighRiskCredentials == true
@@ -997,7 +1025,8 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     width = if (finalShot.isNotBlank()) 720 else 0,
                     height = if (finalShot.isNotBlank()) 960 else 0,
                     mergedMessages = redactedMerged,
-                    redactionSession = mergedSession.copy(hasHighRiskCredentials = effectiveHighRisk)
+                    redactionSession = mergedSession.copy(hasHighRiskCredentials = effectiveHighRisk),
+                    topology = resolvedTopology
                 )
             }
             val instance = activeInstance ?: return null

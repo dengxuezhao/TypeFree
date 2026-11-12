@@ -119,8 +119,8 @@ fun JevCopilotPanel(
                     val statusLabel = when {
                         uiState.ignoreChatContextForThisTurn -> "已忽略上文"
                         captured.redactionCount > 0 -> "🛡已脱敏${captured.redactionCount}处"
-                        captured.hasContext -> "${captured.domainProfile.badgeTitle}·${captured.messageCount}条"
-                        else -> captured.domainProfile.badgeTitle
+                        captured.hasContext -> "${captured.effectiveBadgeTitle}·${captured.messageCount}条"
+                        else -> captured.effectiveBadgeTitle
                     }
                     val statusTint = if (!uiState.ignoreChatContextForThisTurn &&
                         (captured.redactionCount > 0 || captured.hasContext)
@@ -190,7 +190,7 @@ fun JevCopilotPanel(
             JevSubtextRadarBar(
                 result = jevResult,
                 isLoading = isProcessing,
-                domainBadge = captured.domainProfile.badgeTitle
+                domainBadge = captured.effectiveBadgeTitle
             )
 
             // 3. Center Area: Disclosure Prompt / Error Banner / 3 Strategy Keycap Cards

@@ -4,7 +4,9 @@ import android.content.Context
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.AppToneRule
 import com.typefree.ime.data.DefaultPresets
+import com.typefree.ime.ime.jev.ChatTopology
 import com.typefree.ime.ime.jev.JevDomainProfile
+import com.typefree.ime.ime.jev.JevRoleMode
 import com.typefree.ime.privacy.LocalPiiRedactor
 import com.typefree.ime.privacy.RedactionSession
 import kotlin.math.abs
@@ -32,10 +34,15 @@ data class RawScreenTextNode(
 data class ExtractedChatMessage(
     val speaker: ChatSpeaker,
     val text: String,
-    val boundsTop: Int
+    val boundsTop: Int,
+    val senderAlias: String = ""
 ) {
     val formattedWithSpeaker: String
-        get() = "${speaker.tag} $text"
+        get() = if (speaker == ChatSpeaker.OTHER && senderAlias.isNotBlank()) {
+            "[$senderAlias] $text"
+        } else {
+            "${speaker.tag} $text"
+        }
 }
 
 data class CapturedChatContext(
@@ -54,8 +61,16 @@ data class CapturedChatContext(
     val redactionSession: RedactionSession = RedactionSession.EMPTY,
     val redactionCount: Int = redactionSession.redactionCount,
     val hasHighRiskRedaction: Boolean = redactionSession.hasHighRiskCredentials,
-    val domainProfile: JevDomainProfile = JevDomainProfile.fromPackage(packageName)
+    val domainProfile: JevDomainProfile = JevDomainProfile.fromPackage(packageName),
+    val topology: ChatTopology = ChatTopology()
 ) {
+    val effectiveBadgeTitle: String
+        get() = if (topology.isGroupChat && domainProfile == JevDomainProfile.IM_CHAT) {
+            "群聊局势"
+        } else {
+            domainProfile.badgeTitle
+        }
+
     val hasScreenshot: Boolean
         get() = screenshotJpegBase64.isNotBlank()
 
@@ -110,11 +125,47 @@ data class CapturedChatContext(
                 } else {
                     previewTarget.text
                 }
-                "${previewTarget.speaker.tag} $body"
+                val prefixTag = if (previewTarget.speaker == ChatSpeaker.OTHER && previewTarget.senderAlias.isNotBlank()) {
+                    "[${previewTarget.senderAlias}]"
+                } else {
+                    previewTarget.speaker.tag
+                }
+                "$prefixTag $body"
             }
             safeScreenshot.isNotBlank() -> latestMessagePreview.ifBlank { "📸 已截屏捕获聊天画面与图片" }
             else -> latestMessagePreview
         }
+        val inferredSenders = updatedMessages
+            .mapNotNull { msg -> msg.senderAlias.takeIf { msg.speaker == ChatSpeaker.OTHER && it.isNotBlank() } }
+            .distinct()
+        val mergedSenders = when {
+            inferredSenders.isNotEmpty() -> inferredSenders
+            outcome.topology.distinctOtherSenders.isNotEmpty() -> outcome.topology.distinctOtherSenders
+            else -> topology.distinctOtherSenders
+        }
+        val mergedIsGroup = topology.isGroupChat ||
+            outcome.topology.isGroupChat ||
+            mergedSenders.isNotEmpty()
+        val mergedMemberCount = maxOf(topology.groupMemberCount, outcome.topology.groupMemberCount)
+        val mergedMentionMe = topology.hasExplicitMentionMe || outcome.topology.hasExplicitMentionMe
+        val mergedRecentSelfTurns = if (updatedMessages.isNotEmpty()) {
+            updatedMessages.takeLast(5).count { it.speaker == ChatSpeaker.SELF }
+        } else {
+            maxOf(topology.recentSelfTurns, outcome.topology.recentSelfTurns)
+        }
+        val mergedTopology = ChatTopology(
+            isGroupChat = mergedIsGroup,
+            groupMemberCount = mergedMemberCount,
+            distinctOtherSenders = mergedSenders,
+            recentSelfTurns = mergedRecentSelfTurns,
+            hasExplicitMentionMe = mergedMentionMe,
+            roleMode = ChatScreenContextExtractor.resolveRoleMode(
+                isGroupChat = mergedIsGroup,
+                distinctOtherSendersCount = mergedSenders.size,
+                recentSelfTurns = mergedRecentSelfTurns,
+                hasExplicitMentionMe = mergedMentionMe
+            )
+        )
         return copy(
             packageName = resolvedPkg,
             appName = resolvedApp,
@@ -126,7 +177,8 @@ data class CapturedChatContext(
             redactionSession = updatedSession,
             redactionCount = updatedSession.redactionCount,
             hasHighRiskRedaction = updatedSession.hasHighRiskCredentials,
-            domainProfile = if (resolvedPkg.isNotBlank()) JevDomainProfile.fromPackage(resolvedPkg) else domainProfile
+            domainProfile = if (resolvedPkg.isNotBlank()) JevDomainProfile.fromPackage(resolvedPkg) else domainProfile,
+            topology = mergedTopology
         )
     }
 
@@ -140,7 +192,8 @@ data class ViewportCaptureOutcome(
     val width: Int = 0,
     val height: Int = 0,
     val mergedMessages: List<String> = emptyList(),
-    val redactionSession: RedactionSession = RedactionSession.EMPTY
+    val redactionSession: RedactionSession = RedactionSession.EMPTY,
+    val topology: ChatTopology = ChatTopology()
 )
 
 /**
@@ -327,7 +380,20 @@ object ChatScreenContextExtractor {
      * Matches top-bar group chat titles with member counts such as `未成年成长交流群(16)` or `金泰和序-【真】业主群(435)`.
      */
     private val GROUP_TITLE_MEMBER_COUNT_REGEX = Regex(
-        """^.{1,30}[(（]\d{1,5}[)）]$"""
+        """^.{1,30}\s*[(（]\d{1,5}[)）]$"""
+    )
+
+    private val GROUP_TITLE_MEMBER_COUNT_CAPTURE_REGEX = Regex(
+        """^(.{1,30}?)\s*[(（](\d{1,5})[)）]$"""
+    )
+
+    private val MENTION_ME_SIGNAL_REGEX = Regex(
+        """(?:\[\s*有人@我\s*]|有人@我|\[\s*@我\s*]|@我\b|@所有人|@All\b)""",
+        RegexOption.IGNORE_CASE
+    )
+
+    private val STANDALONE_MENTION_BANNER_REGEX = Regex(
+        """^(?:[↑↓]\s*)?[\[【(（]?\s*(?:有人@我|@我|\d+\s*条?新消息)\s*[\]】)）]?$"""
     )
 
     /**
@@ -358,11 +424,12 @@ object ChatScreenContextExtractor {
         """^[\[【(（]?\s*(?:管理员|群主|群管理员|活跃|龙王|学霸|翰林|潜水|冒泡|群机器人|机器人)\s*[\]】)）]?$"""
     )
 
-    private val SPEAKER_PREFIX_REGEX = Regex("""^\s*\[(?:对方|我|未知)]\s*:?\s*""")
+    private val SPEAKER_PREFIX_REGEX = Regex("""^\s*\[(?:对方|我|未知|群友[A-Z](?:\([^\n]{1,32}\))?)]\s*:?\s*""")
+    private val GROUP_SENDER_PREFIX_CAPTURE_REGEX = Regex("""^\s*\[(群友[A-Z](?:\([^\n]{1,32}\))?)]\s*:?\s*(.*)$""")
     private val NORMALIZE_PUNCT_SPACE_REGEX = Regex("""[\s\p{P}\p{S}]+""")
 
     private val TAG_ESCAPE_REGEX = Regex(
-        """<(/?\s*(?:chat_context|writing_request|system|user|assistant|cursor_before_context|personal_dictionary|app_and_tone|jev|domain_profile|user_bottom_line|excluded_previous_replies|opt|subtext|lv|tag)\b[^>]*)>""",
+        """<(/?\s*(?:chat_context|writing_request|system|user|assistant|cursor_before_context|personal_dictionary|app_and_tone|jev|domain_profile|conversation_topology|user_bottom_line|excluded_previous_replies|opt|subtext|lv|tag|weights)\b[^>]*)>""",
         RegexOption.IGNORE_CASE
     )
 
@@ -518,6 +585,7 @@ object ChatScreenContextExtractor {
         val trimmed = rawText.trim()
         if (trimmed.isEmpty()) return true
         if (trimmed in UI_CHROME_NOISE_EXACT) return true
+        if (STANDALONE_MENTION_BANNER_REGEX.matches(trimmed)) return true
         if (ROLE_BADGE_REGEX.matches(trimmed)) return true
         if (AVATAR_PROFILE_CARD_REGEX.matches(trimmed)) return true
         if (GROUP_AFFILIATION_HEADER_REGEX.matches(trimmed)) return true
@@ -555,6 +623,15 @@ object ChatScreenContextExtractor {
         fallbackTop: Int = 0
     ): ExtractedChatMessage {
         val trimmed = formatted.trim()
+        val groupMatch = GROUP_SENDER_PREFIX_CAPTURE_REGEX.matchEntire(trimmed)
+        if (groupMatch != null) {
+            return ExtractedChatMessage(
+                speaker = ChatSpeaker.OTHER,
+                text = groupMatch.groupValues[2].trim(),
+                boundsTop = fallbackTop,
+                senderAlias = groupMatch.groupValues[1].trim()
+            )
+        }
         return when {
             trimmed.startsWith(ChatSpeaker.OTHER.tag) -> ExtractedChatMessage(
                 speaker = ChatSpeaker.OTHER,
@@ -579,13 +656,116 @@ object ChatScreenContextExtractor {
         }
     }
 
+    fun resolveRoleMode(
+        isGroupChat: Boolean,
+        distinctOtherSendersCount: Int,
+        recentSelfTurns: Int,
+        hasExplicitMentionMe: Boolean
+    ): JevRoleMode {
+        if (!isGroupChat && distinctOtherSendersCount < 2) {
+            return JevRoleMode.PRIVATE_1V1
+        }
+        return if (hasExplicitMentionMe || recentSelfTurns > 0) {
+            JevRoleMode.GROUP_INVOLVED_PARTY
+        } else {
+            JevRoleMode.GROUP_BYSTANDER
+        }
+    }
+
+    fun inferTopologyFromFormattedMessages(
+        messages: List<String>,
+        existingTopology: ChatTopology = ChatTopology()
+    ): ChatTopology {
+        if (messages.isEmpty()) return existingTopology
+        val parsed = messages.mapIndexed { idx, line ->
+            parseFormattedChatMessage(line, fallbackTop = idx * 100)
+        }
+        val senders = parsed
+            .mapNotNull { m -> m.senderAlias.takeIf { m.speaker == ChatSpeaker.OTHER && it.isNotBlank() } }
+            .distinct()
+        val finalSenders = senders.ifEmpty { existingTopology.distinctOtherSenders }
+        val isGroup = existingTopology.isGroupChat || finalSenders.isNotEmpty()
+        val recentSelf = parsed.takeLast(5).count { it.speaker == ChatSpeaker.SELF }
+        val mentionMe = existingTopology.hasExplicitMentionMe ||
+            parsed.any { it.speaker == ChatSpeaker.OTHER && MENTION_ME_SIGNAL_REGEX.containsMatchIn(it.text) }
+        return ChatTopology(
+            isGroupChat = isGroup,
+            groupMemberCount = existingTopology.groupMemberCount,
+            distinctOtherSenders = finalSenders,
+            recentSelfTurns = recentSelf,
+            hasExplicitMentionMe = mentionMe,
+            roleMode = resolveRoleMode(
+                isGroupChat = isGroup,
+                distinctOtherSendersCount = finalSenders.size,
+                recentSelfTurns = recentSelf,
+                hasExplicitMentionMe = mentionMe
+            )
+        )
+    }
+
+    fun shouldTriggerOcrForCustomCanvas(
+        ctx: CapturedChatContext,
+        baseMessages: List<String> = ctx.formattedMessages
+    ): Boolean {
+        if (baseMessages.size < 2) return true
+        val allShortUnpairedLabels = ctx.messages.isNotEmpty() && ctx.messages.all { msg ->
+            msg.speaker == ChatSpeaker.OTHER &&
+                msg.senderAlias.isBlank() &&
+                msg.text.length <= 14 &&
+                !msg.text.any { it in "，。？！：；,.?!～~" }
+        }
+        return allShortUnpairedLabels
+    }
+
+    /**
+     * Merges Accessibility nodes ([a11yNodes]) and on-device OCR nodes ([ocrNodes]) in 2D screen
+     * coordinate space before running [extractChatContext], so group nickname headers from A11y
+     * (e.g. `凉意` at `top=310..348`) geometrically pair with custom-canvas chat bubbles
+     * recognized by OCR immediately below them (`不好玩` at `top=358..410`).
+     */
+    fun mergeCoordinateNodes(
+        a11yNodes: List<RawScreenTextNode>,
+        ocrNodes: List<RawScreenTextNode>
+    ): List<RawScreenTextNode> {
+        if (ocrNodes.isEmpty()) return a11yNodes
+        if (a11yNodes.isEmpty()) return ocrNodes
+        val merged = ArrayList<RawScreenTextNode>(a11yNodes.size + ocrNodes.size)
+        merged.addAll(a11yNodes)
+        for (ocr in ocrNodes) {
+            val normOcr = normalizeMessageForDedup(ocr.text)
+            if (normOcr.isEmpty()) continue
+            val duplicateIdx = merged.indexOfFirst { existing ->
+                if (!existing.isVisibleToUser || existing.text.isBlank()) return@indexOfFirst false
+                val verticalOverlap = minOf(existing.boundsBottom, ocr.boundsBottom) - maxOf(existing.boundsTop, ocr.boundsTop)
+                val closeY = verticalOverlap >= -16 || abs(existing.boundsTop - ocr.boundsTop) <= 28
+                if (!closeY) return@indexOfFirst false
+                val normExisting = normalizeMessageForDedup(existing.text)
+                normExisting.isNotEmpty() && (
+                    normExisting == normOcr ||
+                        (normOcr.length >= 2 && normExisting.contains(normOcr)) ||
+                        (normExisting.length >= 2 && normOcr.contains(normExisting))
+                    )
+            }
+            if (duplicateIdx >= 0) {
+                val existing = merged[duplicateIdx]
+                val normExisting = normalizeMessageForDedup(existing.text)
+                if (normOcr.length > normExisting.length + 4 && normOcr.contains(normExisting)) {
+                    merged[duplicateIdx] = existing.copy(text = ocr.text)
+                }
+            } else {
+                merged.add(ocr)
+            }
+        }
+        return merged
+    }
+
     /**
      * Merges and deduplicates messages extracted from the Accessibility tree ([a11yMessages])
      * with messages recognized by on-device viewport OCR ([ocrMessages]):
      * - When [a11yMessages] is empty (e.g. Mobile QQ NT / WeChat custom-canvas bubbles), directly
      *   uses [ocrMessages].
      * - When both are non-empty, deduplicates overlapping messages by normalized body text
-     *   (stripping `[对方]`/`[我]` prefixes, whitespace, and punctuation) while appending
+     *   (stripping `[对方]`/`[我]`/`[群友A]` prefixes, whitespace, and punctuation) while appending
      *   custom-drawn bubbles or inline image text found only by OCR, keeping the last [maxMessages].
      */
     fun mergeAccessibilityAndOcrMessages(
@@ -623,9 +803,12 @@ object ChatScreenContextExtractor {
                     (normExisting.length >= 2 && normOcr.contains(normExisting))
             }
             if (existingIdx >= 0) {
-                // If OCR captured a significantly fuller line than a truncated accessibility node, upgrade it
+                // If OCR captured a significantly fuller line or group sender prefix, upgrade it
                 val existingNorm = normalizedMerged[existingIdx]
-                if (normOcr.length > existingNorm.length + 4 && normOcr.contains(existingNorm)) {
+                val existingRaw = merged[existingIdx]
+                val ocrHasGroupAlias = GROUP_SENDER_PREFIX_CAPTURE_REGEX.matches(ocrMsg) &&
+                    !GROUP_SENDER_PREFIX_CAPTURE_REGEX.matches(existingRaw)
+                if ((normOcr.length > existingNorm.length + 4 && normOcr.contains(existingNorm)) || ocrHasGroupAlias) {
                     merged[existingIdx] = ocrMsg
                     normalizedMerged[existingIdx] = normOcr
                 }
@@ -642,7 +825,8 @@ object ChatScreenContextExtractor {
 
     /**
      * Computes the crop rectangle `[left, top, width, height]` of the chat message viewport
-     * above the input box / soft keyboard, excluding the top status/app bar and the bottom keyboard.
+     * above the input box / soft keyboard, excluding the top status bar (`0.052f`) and the bottom keyboard,
+     * while preserving the top app/group title bar (`大鸽子交流群(8)`).
      * Enforces [MAX_SAFE_VIEWPORT_BOTTOM_RATIO] so stale pre-`adjustResize` bottom coordinates
      * never accidentally include the soft keyboard itself in the screenshot.
      */
@@ -654,7 +838,7 @@ object ChatScreenContextExtractor {
         if (bitmapWidth <= 0 || bitmapHeight <= 0) {
             return intArrayOf(0, 0, 0, 0)
         }
-        val cropTop = (bitmapHeight * 0.088f).toInt().coerceIn(0, bitmapHeight - 1)
+        val cropTop = (bitmapHeight * 0.052f).toInt().coerceIn(0, bitmapHeight - 1)
         val defaultBottom = (bitmapHeight * 0.58f).toInt().coerceIn(cropTop + 1, bitmapHeight)
         val maxSafeBottom = (bitmapHeight * MAX_SAFE_VIEWPORT_BOTTOM_RATIO)
             .toInt()
@@ -667,6 +851,13 @@ object ChatScreenContextExtractor {
         val cropHeight = (cropBottom - cropTop).coerceAtLeast(1)
         return intArrayOf(0, cropTop, bitmapWidth, cropHeight)
     }
+
+    private data class PendingPairedMessage(
+        val speaker: ChatSpeaker,
+        val text: String,
+        val boundsTop: Int,
+        val rawNickname: String = ""
+    )
 
     fun extractChatContext(
         nodes: List<RawScreenTextNode>,
@@ -699,15 +890,40 @@ object ChatScreenContextExtractor {
             bottomFallbackThreshold
         }
 
-        // Pre-scan avatar profile cards ("玄冰是仓鼠 资料卡" -> "玄冰是仓鼠") and role badge Y positions
-        // so standalone sender nickname headers in QQ NT / DingTalk are filtered even when custom Canvas
-        // hides the bubble text node below them.
+        // Pre-extract top-bar group title & memberCount (`大鸽子交流群(8)`), enterprise group tags,
+        // `@我` / `[有人@我]` signals, avatar profile cards, and role badge Y positions BEFORE top-bar filtering.
+        var isGroupChat = false
+        var groupMemberCount = 0
+        var hasExplicitMentionMe = false
+        val groupHeaderMaxTop = if (screenHeight > 0) (screenHeight * 0.16).toInt().coerceAtLeast(260) else 260
+
         val knownAvatarNicknames = HashSet<String>()
         val roleBadgeTops = ArrayList<Int>(8)
         for (node in nodes) {
             if (!node.isVisibleToUser) continue
             val t = node.text.replace(Regex("""\s+"""), " ").trim()
             if (t.isEmpty()) continue
+            if (node.boundsTop <= groupHeaderMaxTop) {
+                val groupMatch = GROUP_TITLE_MEMBER_COUNT_CAPTURE_REGEX.matchEntire(t)
+                if (groupMatch != null) {
+                    val count = groupMatch.groupValues[2].toIntOrNull() ?: 0
+                    if (count >= 2) {
+                        isGroupChat = true
+                        if (count > groupMemberCount) {
+                            groupMemberCount = count
+                        }
+                    }
+                }
+            }
+            if (GROUP_AFFILIATION_HEADER_REGEX.matches(t) ||
+                ROLE_BADGE_REGEX.matches(t) ||
+                t in setOf("群公告", "群主", "管理员", "群管理员")
+            ) {
+                isGroupChat = true
+            }
+            if (!node.isEditable && MENTION_ME_SIGNAL_REGEX.containsMatchIn(t)) {
+                hasExplicitMentionMe = true
+            }
             AVATAR_PROFILE_CARD_REGEX.matchEntire(t)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }?.let {
                 knownAvatarNicknames.add(it)
             }
@@ -753,59 +969,125 @@ object ChatScreenContextExtractor {
             } else {
                 RedactionSession.EMPTY
             }
+            val emptyTopology = ChatTopology(
+                isGroupChat = isGroupChat,
+                groupMemberCount = groupMemberCount,
+                hasExplicitMentionMe = hasExplicitMentionMe,
+                roleMode = resolveRoleMode(
+                    isGroupChat = isGroupChat,
+                    distinctOtherSendersCount = 0,
+                    recentSelfTurns = 0,
+                    hasExplicitMentionMe = hasExplicitMentionMe
+                )
+            )
             return CapturedChatContext(
                 packageName = packageName,
                 appName = appName,
                 capturedAtMs = nowMs,
-                redactionSession = emptyNodeSession
+                redactionSession = emptyNodeSession,
+                topology = emptyTopology
             )
         }
 
-        // Filter out standalone sender nickname headers that sit immediately above a message bubble
-        // (e.g. small height label `玩不起玩不起` 4..42px above the actual bubble `我找到了蓝猫台词的音频`)
-        val filteredNodes = mutableListOf<RawScreenTextNode>()
-        for (i in rawCandidates.indices) {
-            val curr = rawCandidates[i]
-            val next = rawCandidates.getOrNull(i + 1)
+        // Adaptive 1080p / 1.5K / 2K thresholds for group sender nickname -> bubble pairing
+        val maxNickHeight = if (screenHeight > 0) (screenHeight * 0.032).toInt().coerceAtLeast(68) else 68
+        val maxVerticalGap = if (screenHeight > 0) (screenHeight * 0.032).toInt().coerceAtLeast(68) else 68
+        val maxLeftDelta = if (screenWidth > 0) (screenWidth * 0.12).toInt().coerceAtLeast(96) else 96
+        val leftNickColumnLimit = if (screenWidth > 0) (screenWidth * 0.34).toInt() else 368
+
+        val leftShortTextFreq = HashMap<String, Int>()
+        for (node in rawCandidates) {
+            val h = node.boundsBottom - node.boundsTop
+            if (node.boundsLeft <= leftNickColumnLimit &&
+                classifySpeaker(node, screenWidth) == ChatSpeaker.OTHER &&
+                node.text.length in 1..14 &&
+                h <= maxNickHeight &&
+                !node.text.any { it in "，。？！：；,.?!～~" }
+            ) {
+                leftShortTextFreq[node.text] = (leftShortTextFreq[node.text] ?: 0) + 1
+            }
+        }
+        if (leftShortTextFreq.values.any { it >= 2 }) {
+            isGroupChat = true
+        }
+
+        // Pair sender nickname headers sitting immediately above left-aligned bubbles (`curr` -> `next`)
+        val pairedCandidates = ArrayList<PendingPairedMessage>(rawCandidates.size)
+        var idx = 0
+        while (idx < rawCandidates.size) {
+            val curr = rawCandidates[idx]
+            val next = rawCandidates.getOrNull(idx + 1)
             val currHeight = curr.boundsBottom - curr.boundsTop
-            if (next != null) {
+            val currSpeaker = classifySpeaker(curr, screenWidth)
+            var pairedWithNext = false
+
+            if (next != null && currSpeaker == ChatSpeaker.OTHER) {
+                val nextSpeaker = classifySpeaker(next, screenWidth)
                 val nextHeight = next.boundsBottom - next.boundsTop
                 val verticalGap = next.boundsTop - curr.boundsBottom
-                val sameSide = abs(curr.boundsLeft - next.boundsLeft) <= (screenWidth * 0.25).toInt()
-                val looksLikeShortNickname = curr.text.length <= 14 &&
-                    !curr.text.any { it in "，。？！：；,.?!" } &&
-                    currHeight <= 56 &&
-                    (nextHeight >= (currHeight * 1.25).toInt() ||
-                        (currHeight <= 48 && nextHeight >= currHeight && next.text.length > curr.text.length + 2))
-                if (verticalGap in -6..42 && sameSide && looksLikeShortNickname) {
-                    continue
+                val sameLeftColumn = curr.boundsLeft <= leftNickColumnLimit &&
+                    abs(curr.boundsLeft - next.boundsLeft) <= maxLeftDelta
+                val hasNicknameShape = curr.text.length in 1..14 &&
+                    !curr.text.any { it in "，。？！：；,.?!～~" } &&
+                    currHeight <= maxNickHeight
+
+                if (nextSpeaker == ChatSpeaker.OTHER &&
+                    sameLeftColumn &&
+                    hasNicknameShape &&
+                    verticalGap in -10..maxVerticalGap
+                ) {
+                    val isSmallerBoxThanBubble = nextHeight >= (currHeight * 1.18).toInt()
+                    val isRepeatedHeader = (leftShortTextFreq[curr.text] ?: 0) >= 2
+                    val isGroupTightHeader = isGroupChat && nextHeight >= (currHeight * 0.85).toInt()
+                    if (isSmallerBoxThanBubble || isRepeatedHeader || isGroupTightHeader) {
+                        pairedCandidates.add(
+                            PendingPairedMessage(
+                                speaker = ChatSpeaker.OTHER,
+                                text = next.text,
+                                boundsTop = next.boundsTop,
+                                rawNickname = curr.text
+                            )
+                        )
+                        idx += 2
+                        pairedWithNext = true
+                    }
                 }
             }
-            filteredNodes.add(curr)
+
+            if (!pairedWithNext) {
+                pairedCandidates.add(
+                    PendingPairedMessage(
+                        speaker = currSpeaker,
+                        text = curr.text,
+                        boundsTop = curr.boundsTop,
+                        rawNickname = ""
+                    )
+                )
+                idx += 1
+            }
         }
 
-        val candidates = filteredNodes.map { node ->
-            ExtractedChatMessage(
-                speaker = classifySpeaker(node, screenWidth),
-                text = node.text,
-                boundsTop = node.boundsTop
-            )
-        }
-
-        if (candidates.isEmpty()) {
+        if (pairedCandidates.isEmpty()) {
             return CapturedChatContext(packageName = packageName, appName = appName, capturedAtMs = nowMs)
         }
 
         // Deduplicate adjacent identical or substring-overlapping nodes at almost identical Y positions
-        val deduplicated = mutableListOf<ExtractedChatMessage>()
-        for (msg in candidates) {
+        val deduplicated = mutableListOf<PendingPairedMessage>()
+        for (msg in pairedCandidates) {
             val prev = deduplicated.lastOrNull()
             if (prev != null && abs(msg.boundsTop - prev.boundsTop) <= 24) {
                 if (prev.text == msg.text || prev.text.contains(msg.text)) {
+                    if (prev.rawNickname.isBlank() && msg.rawNickname.isNotBlank()) {
+                        deduplicated[deduplicated.lastIndex] = prev.copy(rawNickname = msg.rawNickname)
+                    }
                     continue
                 }
                 if (msg.text.contains(prev.text)) {
-                    deduplicated[deduplicated.lastIndex] = msg
+                    deduplicated[deduplicated.lastIndex] = if (msg.rawNickname.isBlank() && prev.rawNickname.isNotBlank()) {
+                        msg.copy(rawNickname = prev.rawNickname)
+                    } else {
+                        msg
+                    }
                     continue
                 }
             }
@@ -814,7 +1096,7 @@ object ChatScreenContextExtractor {
 
         // Take last `maxMessages` and enforce `maxTotalChars` budget from bottom (most recent) up
         val tailWindow = deduplicated.takeLast(maxMessages.coerceAtLeast(1))
-        val selectedReversed = mutableListOf<ExtractedChatMessage>()
+        val selectedReversed = mutableListOf<PendingPairedMessage>()
         var charCount = 0
         for (msg in tailWindow.asReversed()) {
             val clippedText = if (msg.text.length > 180) {
@@ -830,6 +1112,10 @@ object ChatScreenContextExtractor {
         }
 
         val rawFinalMessages = selectedReversed.asReversed()
+        if (rawFinalMessages.any { it.rawNickname.isNotBlank() }) {
+            isGroupChat = true
+        }
+
         val redactionSession = if (redactPii && rawFinalMessages.isNotEmpty()) {
             val joinedText = rawFinalMessages.joinToString("\n") { it.text }
             LocalPiiRedactor.redactText(
@@ -843,14 +1129,59 @@ object ChatScreenContextExtractor {
             RedactionSession.EMPTY
         }
 
-        val finalMessages = if (redactPii && redactionSession.redactionCount > 0) {
-            val redactedLines = redactionSession.redactedText.split("\n")
-            rawFinalMessages.mapIndexed { idx, msg ->
-                msg.copy(text = redactedLines.getOrElse(idx) { msg.text })
-            }
+        val redactedBodyLines = if (redactPii && redactionSession.redactionCount > 0) {
+            redactionSession.redactedText.split("\n")
         } else {
-            rawFinalMessages
+            emptyList()
         }
+
+        // Assign ordered group aliases `群友A(昵称)`, `群友B(昵称)` after PII redaction of nicknames
+        val nicknameToGroupAlias = LinkedHashMap<String, String>()
+        val finalMessages = rawFinalMessages.mapIndexed { i, msg ->
+            val cleanText = if (redactedBodyLines.isNotEmpty()) {
+                redactedBodyLines.getOrElse(i) { msg.text }
+            } else {
+                msg.text
+            }
+            val alias = if (msg.speaker == ChatSpeaker.OTHER && msg.rawNickname.isNotBlank()) {
+                val safeNick = if (redactPii) {
+                    LocalPiiRedactor.redactText(msg.rawNickname, context = context).redactedText.trim()
+                } else {
+                    msg.rawNickname.trim()
+                }.take(16)
+                nicknameToGroupAlias.getOrPut(safeNick) {
+                    val letter = ('A' + nicknameToGroupAlias.size.coerceAtMost(25))
+                    "群友$letter($safeNick)"
+                }
+            } else {
+                ""
+            }
+            ExtractedChatMessage(
+                speaker = msg.speaker,
+                text = cleanText,
+                boundsTop = msg.boundsTop,
+                senderAlias = alias
+            )
+        }
+
+        if (finalMessages.any { it.speaker == ChatSpeaker.OTHER && MENTION_ME_SIGNAL_REGEX.containsMatchIn(it.text) }) {
+            hasExplicitMentionMe = true
+        }
+        val distinctOtherSenders = nicknameToGroupAlias.values.toList()
+        val recentSelfTurns = finalMessages.takeLast(5).count { it.speaker == ChatSpeaker.SELF }
+        val finalTopology = ChatTopology(
+            isGroupChat = isGroupChat,
+            groupMemberCount = groupMemberCount,
+            distinctOtherSenders = distinctOtherSenders,
+            recentSelfTurns = recentSelfTurns,
+            hasExplicitMentionMe = hasExplicitMentionMe,
+            roleMode = resolveRoleMode(
+                isGroupChat = isGroupChat,
+                distinctOtherSendersCount = distinctOtherSenders.size,
+                recentSelfTurns = recentSelfTurns,
+                hasExplicitMentionMe = hasExplicitMentionMe
+            )
+        )
 
         val previewTarget = finalMessages.lastOrNull { it.speaker == ChatSpeaker.OTHER }
             ?: finalMessages.lastOrNull()
@@ -861,7 +1192,12 @@ object ChatScreenContextExtractor {
             } else {
                 previewTarget.text
             }
-            "${previewTarget.speaker.tag} $body"
+            val prefixTag = if (previewTarget.speaker == ChatSpeaker.OTHER && previewTarget.senderAlias.isNotBlank()) {
+                "[${previewTarget.senderAlias}]"
+            } else {
+                previewTarget.speaker.tag
+            }
+            "$prefixTag $body"
         } else {
             ""
         }
@@ -872,7 +1208,8 @@ object ChatScreenContextExtractor {
             messages = finalMessages,
             latestMessagePreview = previewText,
             capturedAtMs = nowMs,
-            redactionSession = redactionSession
+            redactionSession = redactionSession,
+            topology = finalTopology
         )
     }
 }
