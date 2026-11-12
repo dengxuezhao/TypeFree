@@ -760,7 +760,7 @@ class AiPipelineEngine(
             )
         }
         if (imageJpegBase64.isNotBlank()) {
-            if (isKnownPureTextModel(config.model)) {
+            if (isKnownPureTextModel(config.model) || isVisionMarkedUnsupported(config.baseUrl, config.model)) {
                 if (fallbackGeminiConfig != null) {
                     val visionAttempt = runCatching {
                         callGeminiTextOnlyWithDiagnostics(
@@ -788,6 +788,10 @@ class AiPipelineEngine(
                 )
             }
             openAiVisionAttempt.getOrNull()?.let { return it }
+            val visionErrMsg = openAiVisionAttempt.exceptionOrNull()?.message.orEmpty()
+            if (visionErrMsg.contains("(401)") || visionErrMsg.contains("(403)")) {
+                throw openAiVisionAttempt.exceptionOrNull()!!
+            }
             if (fallbackGeminiConfig != null) {
                 val geminiFallback = runCatching {
                     callGeminiTextOnlyWithDiagnostics(
@@ -1102,6 +1106,12 @@ class AiPipelineEngine(
                 }
             }
 
+            if (rawOutput.isBlank()) {
+                return@withContext Result.failure(
+                    IOException("模型返回内容为空，请点「↻ 换一批」重试")
+                )
+            }
+
             val parsed = JevResponseParser.parse(
                 rawModelOutput = rawOutput,
                 redactionSession = redactionSession,
@@ -1109,8 +1119,10 @@ class AiPipelineEngine(
                 redactionCount = redactionSession?.redactionCount ?: 0
             )
             Result.success(parsed to resolvedBottomLine)
-        } catch (e: Exception) {
-            Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Result.failure(t)
         }
     }
 
@@ -1774,11 +1786,12 @@ class AiPipelineEngine(
         )
         var (code, respText) = sendOnce(initialBody)
 
-        // Short-circuit immediately when an endpoint rejects multimodal image_url/array content with HTTP 400
-        // so we NEVER run thinking-hint fallback retries or pollute unsupportedThinkingHintKeys!
-        if (code == 400 && imageJpegBase64.isNotBlank() && isVisionPayloadRejectionHttp400(respText)) {
+        // Short-circuit immediately when an endpoint rejects multimodal image_url/array content with HTTP 400/415/422
+        // so we NEVER run thinking-hint fallback retries or pollute unsupportedThinkingHintKeys, and remember it!
+        if (code in setOf(400, 415, 422) && imageJpegBase64.isNotBlank() && isVisionPayloadRejectionHttp400(respText)) {
+            markVisionUnsupported(config.baseUrl, config.model)
             throw IOException(
-                "当前模型不支持多模态图片输入 (400): ${extractErrorDetail(respText)}\n--- 诊断日志 ---\n${traceLines.joinToString("\n")}"
+                "当前模型不支持多模态图片输入 ($code): ${extractErrorDetail(respText)}\n--- 诊断日志 ---\n${traceLines.joinToString("\n")}"
             )
         }
 
@@ -2059,6 +2072,8 @@ class AiPipelineEngine(
             Collections.newSetFromMap(ConcurrentHashMap())
         private val preferredThinkingSyntaxCache: ConcurrentHashMap<String, String> =
             ConcurrentHashMap()
+        private val runtimeNonVisionModelKeys: MutableSet<String> =
+            Collections.newSetFromMap(ConcurrentHashMap())
 
         fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectionPool(ConnectionPool(6, 90, TimeUnit.SECONDS))
@@ -2088,6 +2103,21 @@ class AiPipelineEngine(
         fun clearUnsupportedThinkingCache() {
             unsupportedThinkingHintKeys.clear()
             preferredThinkingSyntaxCache.clear()
+            runtimeNonVisionModelKeys.clear()
+        }
+
+        private fun visionCacheKey(baseUrl: String, model: String): String =
+            "${baseUrl.trim().lowercase()}|${model.trim().lowercase()}"
+
+        internal fun markVisionUnsupported(baseUrl: String, model: String) {
+            if (model.isNotBlank()) {
+                runtimeNonVisionModelKeys.add(visionCacheKey(baseUrl, model))
+            }
+        }
+
+        fun isVisionMarkedUnsupported(baseUrl: String, model: String): Boolean {
+            if (model.isBlank()) return false
+            return visionCacheKey(baseUrl, model) in runtimeNonVisionModelKeys
         }
 
         fun isThinkingHintMarkedUnsupported(baseUrl: String, model: String, mode: ThinkingMode): Boolean {
@@ -2144,7 +2174,13 @@ class AiPipelineEngine(
                 lower.contains("invalid type: sequence") ||
                 lower.contains("unsupported content type") ||
                 lower.contains("does not support image") ||
-                lower.contains("image input")
+                lower.contains("not support image") ||
+                lower.contains("image input") ||
+                respBody.contains("不支持图片") ||
+                respBody.contains("不支持图像") ||
+                respBody.contains("不支持多模态") ||
+                respBody.contains("不支持视觉") ||
+                (respBody.contains("多模态") && respBody.contains("不支持"))
         }
 
         internal fun alternateThinkingSyntaxForFallback(

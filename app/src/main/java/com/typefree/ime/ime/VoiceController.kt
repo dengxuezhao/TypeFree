@@ -23,6 +23,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.InterruptedIOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 
 /**
  * Controller encapsulating microphone recording, streaming ASR preview / live write,
@@ -223,6 +227,7 @@ class VoiceController(
                 jevCopilotResult = null,
                 selectedJevStrategyIndex = -1,
                 isJevLoading = !shouldPromptDisclosure,
+                jevErrorMessage = null,
                 jevUserBottomLine = "",
                 jevExcludedReplies = emptyList(),
                 isFullScreenPeekCapturing = false,
@@ -308,6 +313,7 @@ class VoiceController(
                 capturedChatContext = refreshedContext,
                 selectedJevStrategyIndex = -1,
                 isJevLoading = true,
+                jevErrorMessage = null,
                 isJevContextInspectorOpen = false,
                 jevExcludedReplies = updatedExcluded
             )
@@ -325,7 +331,8 @@ class VoiceController(
             it.copy(
                 isJevContextInspectorOpen = false,
                 isFullScreenPeekCapturing = true,
-                isJevLoading = true
+                isJevLoading = true,
+                jevErrorMessage = null
             )
         }
 
@@ -335,7 +342,8 @@ class VoiceController(
                     it.copy(
                         isJevContextInspectorOpen = false,
                         isFullScreenPeekCapturing = true,
-                        isJevLoading = true
+                        isJevLoading = true,
+                        jevErrorMessage = null
                     )
                 }
                 onRequestComputeInsets()
@@ -431,67 +439,68 @@ class VoiceController(
         pretranscribedSpeech: String? = null,
         skipViewportRecapture: Boolean = false
     ) {
-        val settingsSnap = host.repository.settings.value
-        val initialSnap = host.stateFlow.value
-        val isPassword = ImeLogic.isPasswordEditorInputType(initialSnap.currentInputType)
+        val result: Result<Pair<com.typefree.ime.ime.jev.JevCopilotResult, String>> = try {
+            val settingsSnap = host.repository.settings.value
+            val initialSnap = host.stateFlow.value
+            val isPassword = ImeLogic.isPasswordEditorInputType(initialSnap.currentInputType)
 
-        host.stateFlow.update {
-            it.copy(
-                isJevLoading = true,
-                isJevContextInspectorOpen = false,
-                selectedJevStrategyIndex = -1
-            )
-        }
+            host.stateFlow.update {
+                it.copy(
+                    isJevLoading = true,
+                    jevErrorMessage = null,
+                    isJevContextInspectorOpen = false,
+                    selectedJevStrategyIndex = -1
+                )
+            }
 
-        val needsViewportCaptureOrOcr = !skipViewportRecapture &&
-            !initialSnap.ignoreChatContextForThisTurn &&
-            !initialSnap.showChatContextDisclosurePrompt &&
-            (
-                (settingsSnap.chatContextSendScreenshot && initialSnap.capturedChatContext.screenshotJpegBase64.isBlank()) ||
-                    ChatScreenContextExtractor.shouldTriggerOcrForCustomCanvas(initialSnap.capturedChatContext)
-                )
-        if (needsViewportCaptureOrOcr) {
-            val capturedOutcome = runCatching {
-                TypeFreeAccessibilityService.captureChatViewportOutcomeIfAvailable(
-                    expectedPackage = initialSnap.targetPackage,
-                    settings = settingsSnap,
-                    isIncognitoMode = initialSnap.isIncognitoMode,
-                    isPasswordInput = isPassword,
-                    ignoreChatContextForTurn = initialSnap.ignoreChatContextForThisTurn,
-                    forJevCopilot = true,
-                    existingMessages = initialSnap.capturedChatContext.formattedMessages,
-                    redactionSession = initialSnap.capturedChatContext.redactionSession
-                )
-            }.getOrNull()
-            if (capturedOutcome != null) {
-                host.stateFlow.update { curr ->
-                    val base = curr.capturedChatContext
-                    curr.copy(
-                        capturedChatContext = base.withViewportOutcome(
-                            outcome = capturedOutcome,
-                            fallbackPackage = initialSnap.targetPackage,
-                            fallbackAppName = initialSnap.targetAppName
-                        )
+            val needsViewportCaptureOrOcr = !skipViewportRecapture &&
+                !initialSnap.ignoreChatContextForThisTurn &&
+                !initialSnap.showChatContextDisclosurePrompt &&
+                (
+                    (settingsSnap.chatContextSendScreenshot && initialSnap.capturedChatContext.screenshotJpegBase64.isBlank()) ||
+                        ChatScreenContextExtractor.shouldTriggerOcrForCustomCanvas(initialSnap.capturedChatContext)
                     )
+            if (needsViewportCaptureOrOcr) {
+                val capturedOutcome = runCatching {
+                    TypeFreeAccessibilityService.captureChatViewportOutcomeIfAvailable(
+                        expectedPackage = initialSnap.targetPackage,
+                        settings = settingsSnap,
+                        isIncognitoMode = initialSnap.isIncognitoMode,
+                        isPasswordInput = isPassword,
+                        ignoreChatContextForTurn = initialSnap.ignoreChatContextForThisTurn,
+                        forJevCopilot = true,
+                        existingMessages = initialSnap.capturedChatContext.formattedMessages,
+                        redactionSession = initialSnap.capturedChatContext.redactionSession
+                    )
+                }.getOrNull()
+                if (capturedOutcome != null) {
+                    host.stateFlow.update { curr ->
+                        val base = curr.capturedChatContext
+                        curr.copy(
+                            capturedChatContext = base.withViewportOutcome(
+                                outcome = capturedOutcome,
+                                fallbackPackage = initialSnap.targetPackage,
+                                fallbackAppName = initialSnap.targetAppName
+                            )
+                        )
+                    }
                 }
             }
-        }
 
-        val latest = host.stateFlow.value
-        val (activeStyle, _) = host.repository.resolveActiveStyle(latest.targetPackage, latest.currentInputType)
-        val domainProfile = if (latest.capturedChatContext.packageName.isNotBlank()) {
-            latest.capturedChatContext.domainProfile
-        } else {
-            JevDomainProfile.fromPackage(latest.targetPackage)
-        }
-        val effectiveBottomLine = overrideBottomLine ?: latest.jevUserBottomLine
-        val effectiveTopology = if (latest.ignoreChatContextForThisTurn) {
-            com.typefree.ime.ime.jev.ChatTopology()
-        } else {
-            latest.capturedChatContext.topology
-        }
+            val latest = host.stateFlow.value
+            val (activeStyle, _) = host.repository.resolveActiveStyle(latest.targetPackage, latest.currentInputType)
+            val domainProfile = if (latest.capturedChatContext.packageName.isNotBlank()) {
+                latest.capturedChatContext.domainProfile
+            } else {
+                JevDomainProfile.fromPackage(latest.targetPackage)
+            }
+            val effectiveBottomLine = overrideBottomLine ?: latest.jevUserBottomLine
+            val effectiveTopology = if (latest.ignoreChatContextForThisTurn) {
+                com.typefree.ime.ime.jev.ChatTopology()
+            } else {
+                latest.capturedChatContext.topology
+            }
 
-        val result = try {
             host.aiEngine.runJevCopilot(
                 settings = settingsSnap,
                 activeStyle = activeStyle,
@@ -507,6 +516,10 @@ class VoiceController(
                 chatTopology = effectiveTopology,
                 targetPackageName = latest.capturedChatContext.packageName.ifBlank { latest.targetPackage }
             )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Result.failure(t)
         } finally {
             // Wall 4: Ephemeral screenshot bytes & audio file wiped immediately after request
             if (wavFile != null) {
@@ -534,20 +547,23 @@ class VoiceController(
                         jevCopilotResult = jevResult,
                         selectedJevStrategyIndex = -1,
                         isJevLoading = false,
+                        jevErrorMessage = null,
                         jevUserBottomLine = resolvedBottomLine
                     )
                 }
             },
             onFailure = { err ->
                 if (err is CancellationException) return
+                val friendlyError = formatJevUserFacingError(err)
                 host.performHaptic(strong = true)
                 host.stateFlow.update { curr ->
                     curr.copy(
                         voicePhase = VoicePhase.Idle,
-                        isJevLoading = false
+                        isJevLoading = false,
+                        jevErrorMessage = friendlyError
                     )
                 }
-                host.showQuickActionToast("⚠ ${(err.message ?: "军师推演失败，请检查 API 配置").take(24)}")
+                host.showQuickActionToast("⚠ ${friendlyError.take(24)}")
             }
         )
     }
@@ -583,6 +599,7 @@ class VoiceController(
                 jevCopilotResult = null,
                 selectedJevStrategyIndex = -1,
                 isJevLoading = false,
+                jevErrorMessage = null,
                 jevUserBottomLine = "",
                 jevExcludedReplies = emptyList(),
                 isFullScreenPeekCapturing = false,
@@ -695,7 +712,8 @@ class VoiceController(
                 capturedChatContext = captured,
                 ignoreChatContextForThisTurn = false,
                 showChatContextDisclosurePrompt = false,
-                isJevLoading = isJev
+                isJevLoading = isJev,
+                jevErrorMessage = if (isJev) null else it.jevErrorMessage
             )
         }
         if (isJev) {
@@ -731,7 +749,8 @@ class VoiceController(
                 ),
                 ignoreChatContextForThisTurn = false,
                 showChatContextDisclosurePrompt = false,
-                isJevLoading = isJev
+                isJevLoading = isJev,
+                jevErrorMessage = if (isJev) null else it.jevErrorMessage
             )
         }
         if (isJev) {
@@ -1350,6 +1369,8 @@ class VoiceController(
             else -> VoiceIntentMode.DICTATE
         }
         if (resolvedIntent == VoiceIntentMode.JEV_COPILOT) {
+            jevInferenceJob?.cancel()
+            jevInferenceJob = null
             activeComposer?.cancelSession(rollbackWrittenText = true)
             activeComposer = null
             host.stateFlow.update {
@@ -1361,6 +1382,7 @@ class VoiceController(
                     streamingPartialPreview = "",
                     liveWriteStatus = LiveWriteUiStatus.INACTIVE,
                     isJevLoading = true,
+                    jevErrorMessage = null,
                     selectedJevStrategyIndex = -1
                 )
             }
@@ -2056,6 +2078,55 @@ class VoiceController(
             threshold: Float = HANDS_FREE_SILENCE_AMPLITUDE_THRESHOLD
         ): Boolean {
             return (amplitudes.lastOrNull() ?: 0.08f) <= threshold
+        }
+
+        fun formatJevUserFacingError(err: Throwable?): String {
+            if (err == null) return "军师推演异常，请点「↻ 换一批」重试"
+            val raw = err.message
+                ?.substringBefore("\n--- 诊断日志 ---")
+                ?.replace(Regex("""\s+"""), " ")
+                ?.trim()
+                .orEmpty()
+            val lower = raw.lowercase()
+            return when {
+                err is SocketTimeoutException ||
+                    err is InterruptedIOException ||
+                    lower.contains("timeout") ||
+                    lower.contains("timed out") ||
+                    raw.contains("超时") ->
+                    "模型请求超时，请点「↻ 换一批」重试"
+                err is UnknownHostException ||
+                    err is ConnectException ||
+                    lower.contains("unable to resolve host") ||
+                    lower.contains("failed to connect") ||
+                    lower.contains("network is unreachable") ||
+                    lower.contains("connection reset") ||
+                    lower.contains("software caused connection abort") ->
+                    "网络连接异常，请检查网络后点「↻ 换一批」重试"
+                raw.contains("API Key", ignoreCase = true) ||
+                    lower.contains("unauthorized") ||
+                    raw.contains("(401)") ||
+                    raw.contains(" 401") ->
+                    if (raw.contains("API Key", ignoreCase = true)) raw else "API Key 鉴权失败 (401)，请前往设置检查"
+                raw.contains("(429)") ||
+                    raw.contains(" 429") ||
+                    lower.contains("rate limit") ||
+                    lower.contains("quota") ||
+                    raw.contains("限流") ->
+                    "模型接口触发限流 (429)，请稍后点「↻ 换一批」重试"
+                raw.contains("(500)") ||
+                    raw.contains("(502)") ||
+                    raw.contains("(503)") ||
+                    raw.contains("(504)") ||
+                    raw.contains("服务端错误") ->
+                    "模型服务端繁忙，请点「↻ 换一批」重试"
+                raw.isBlank() ->
+                    "军师推演异常，请点「↻ 换一批」重试"
+                raw.length > 48 ->
+                    raw.take(46) + "…"
+                else ->
+                    raw
+            }
         }
     }
 }

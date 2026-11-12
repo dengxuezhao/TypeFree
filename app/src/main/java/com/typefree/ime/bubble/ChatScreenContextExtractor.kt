@@ -402,8 +402,26 @@ object ChatScreenContextExtractor {
     )
 
     private val MENTION_ME_SIGNAL_REGEX = Regex(
-        """(?:\[\s*有人@我\s*]|有人@我|\[\s*@我\s*]|@我\b|@所有人|@All\b)""",
+        """(?:\[\s*有人@我\s*]|有人@我|\[\s*@我\s*]|(?:^|[\s\u2005\u2004\u2006，,。？！：；:;.?!（(【\[])@(?:我|所有人|全体成员|All)(?=[\s\u2005\u2004\u2006，,。？！：；:;.?!）)】\]]|$))""",
         RegexOption.IGNORE_CASE
+    )
+
+    private val NON_IM_MENTION_WHITESPACE_REGEX = Regex("""[^\S\u2005]+""")
+    private val IM_MENTION_SPACE_VARIANTS_REGEX = Regex("""[\u2004\u2006]""")
+    private val EXPLICIT_U2005_MENTION_REGEX = Regex(
+        """(^|[\s，,。？！：；:;.?!（(【\[])@([^\u2005\u2004\u2006\n@\[\]]{1,42})[\u2005\u2004\u2006]+\s*"""
+    )
+    private val LEADING_GROUP_MENTION_FALLBACK_REGEX = Regex(
+        """^\s*@([^\s@\u2005\[\]]{1,28}(?:[，,·•_-][^\s@\u2005\[\]]{1,22}){0,2})\s+(?=\S)"""
+    )
+    private val QUOTED_SENDER_TIME_CAPTURE_REGEX = Regex(
+        """^(.{1,36}?)\s+\d{1,2}:\d{2}(?::\d{2})?$"""
+    )
+    private val ASCII_HANDLE_HEADER_REGEX = Regex(
+        """^[A-Za-z][A-Za-z0-9_.-]{1,22}$"""
+    )
+    private val PROTECTED_MENTION_HANDLES = setOf(
+        "我", "所有人", "all", "全体成员", "全体", "here", "channel"
     )
 
     private val STANDALONE_MENTION_BANNER_REGEX = Regex(
@@ -643,10 +661,101 @@ object ChatScreenContextExtractor {
     }
 
     internal fun normalizeMessageForDedup(msg: String): String {
-        val withoutSpeaker = msg.replace(SPEAKER_PREFIX_REGEX, "").trim()
+        val withoutSpeaker = msg
+            .replace(SPEAKER_PREFIX_REGEX, "")
+            .replace(Regex("""^\s*\[@群友[A-Z]?]\s*"""), "")
+            .trim()
         return withoutSpeaker
             .lowercase()
             .replace(NORMALIZE_PUNCT_SPACE_REGEX, "")
+    }
+
+    private fun collapseSpacesPreservingImMentionDelimiter(raw: String): String {
+        if (raw.isEmpty()) return ""
+        return raw
+            .replace(IM_MENTION_SPACE_VARIANTS_REGEX, "\u2005")
+            .replace(NON_IM_MENTION_WHITESPACE_REGEX, " ")
+            .trim { it <= ' ' }
+    }
+
+    private fun isProtectedMentionHandle(handle: String): Boolean {
+        val norm = handle.trim().lowercase()
+        return norm.isEmpty() ||
+            norm in PROTECTED_MENTION_HANDLES ||
+            norm.startsWith("[") ||
+            norm.startsWith("群友")
+    }
+
+    /**
+     * Replaces `@<群友原昵称>` mentions inside chat message bodies (including quoted reply lines)
+     * with structured symbolic tokens (`[@群友A]`, `[@群友B]`, or `[@群友]`) while preserving
+     * `@我` / `@所有人` / `@All`, stripping the literal semantic wording of long sentence-like
+     * handles (e.g. `@我一直在寻找，有下一顿饭钱的世界在哪里 这是什么，能干啥` -> `[@群友A] 这是什么，能干啥`).
+     */
+    fun normalizeGroupMentionsInMessage(
+        rawText: String,
+        isGroupChat: Boolean = true,
+        nicknameToBaseAlias: Map<String, String> = emptyMap()
+    ): String {
+        if (rawText.isBlank()) return rawText.trim()
+        if (!rawText.contains('@') && !rawText.contains('＠')) {
+            return rawText.replace('\u2005', ' ').replace(Regex("""\s+"""), " ").trim()
+        }
+
+        var current = rawText.replace('＠', '@')
+
+        // Layer 1: Exact known group-member nicknames sorted longest-first
+        if (nicknameToBaseAlias.isNotEmpty()) {
+            val sortedEntries = nicknameToBaseAlias.entries
+                .filter { (nick, alias) ->
+                    nick.isNotBlank() && alias.isNotBlank() && !isProtectedMentionHandle(nick)
+                }
+                .sortedByDescending { it.key.length }
+
+            for ((nick, baseAlias) in sortedEntries) {
+                val escapedNick = Regex.escape(nick)
+                val knownMentionRegex = Regex(
+                    """(^|[\s，,。？！：；:;.?!（(【\[])@$escapedNick(?:[\u2005\u2004\u2006]+\s*|\s+|(?=[，,。？！：；:;.?!）)】\]]|$))""",
+                    RegexOption.IGNORE_CASE
+                )
+                current = knownMentionRegex.replace(current) { match ->
+                    val prefix = match.groupValues[1]
+                    val fullMatch = match.value
+                    val lastChar = fullMatch.last()
+                    val trailingSpace = if (lastChar.isWhitespace() || lastChar == '\u2005') " " else ""
+                    "$prefix[@$baseAlias]$trailingSpace"
+                }
+            }
+        }
+
+        // Layer 2: Explicit IM four-per-em space (`\u2005`) mention delimiter inserted by WeChat/QQ/Feishu `@` picker
+        current = EXPLICIT_U2005_MENTION_REGEX.replace(current) { match ->
+            val prefix = match.groupValues[1]
+            val handle = match.groupValues[2].trim()
+            if (isProtectedMentionHandle(handle)) {
+                "$prefix@$handle "
+            } else {
+                "$prefix[@群友] "
+            }
+        }
+
+        // Layer 3: Leading `@<handle> <question>` fallback when OCR flattened `\u2005` to plain space
+        // and the mentioned member's own bubbles have scrolled off-screen
+        if (isGroupChat) {
+            current = LEADING_GROUP_MENTION_FALLBACK_REGEX.replace(current) { match ->
+                val handle = match.groupValues[1].trim()
+                if (handle.length > 36 || isProtectedMentionHandle(handle)) {
+                    match.value
+                } else {
+                    "[@群友] "
+                }
+            }
+        }
+
+        return current
+            .replace('\u2005', ' ')
+            .replace(Regex("""\s+"""), " ")
+            .trim()
     }
 
     fun parseFormattedChatMessage(
@@ -946,6 +1055,7 @@ object ChatScreenContextExtractor {
         val groupHeaderMaxTop = if (screenHeight > 0) (screenHeight * 0.16).toInt().coerceAtLeast(260) else 260
 
         val knownAvatarNicknames = HashSet<String>()
+        val viewportKnownGroupNicknames = LinkedHashSet<String>()
         val roleBadgeRects = ArrayList<RawScreenTextNode>(8)
         val leftAvatarRects = ArrayList<RawScreenTextNode>(8)
         val rightAvatarRects = ArrayList<RawScreenTextNode>(8)
@@ -974,9 +1084,15 @@ object ChatScreenContextExtractor {
                     }
                 }
             }
+            val preScanRolePrefix = ROLE_BADGE_PREFIXED_NICK_REGEX.matchEntire(t)
+            if (preScanRolePrefix != null) {
+                preScanRolePrefix.groupValues.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                    viewportKnownGroupNicknames.add(it)
+                }
+            }
             if (GROUP_AFFILIATION_HEADER_REGEX.matches(t) ||
                 ROLE_BADGE_REGEX.matches(t) ||
-                ROLE_BADGE_PREFIXED_NICK_REGEX.matches(t) ||
+                preScanRolePrefix != null ||
                 t in setOf("群公告", "群主", "管理员", "群管理员")
             ) {
                 isGroupChat = true
@@ -986,6 +1102,7 @@ object ChatScreenContextExtractor {
             }
             AVATAR_PROFILE_CARD_REGEX.matchEntire(t)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }?.let {
                 knownAvatarNicknames.add(it)
+                viewportKnownGroupNicknames.add(it)
             }
             if (ROLE_BADGE_REGEX.matches(t) || LEVEL_BADGE_REGEX.matches(t) || t in listOf("管理员", "群主", "群管理员")) {
                 roleBadgeRects.add(node)
@@ -1031,15 +1148,14 @@ object ChatScreenContextExtractor {
                     node.boundsRight > node.boundsLeft
             }
             .mapNotNull { node ->
-                val clean = node.text
-                    .replace(Regex("""\s+"""), " ")
-                    .trim()
+                val cleanWithImSpace = collapseSpacesPreservingImMentionDelimiter(node.text)
+                val plainClean = cleanWithImSpace.replace('\u2005', ' ').replace(Regex("""\s+"""), " ").trim()
                 val height = node.boundsBottom - node.boundsTop
-                val isAvatarNickname = clean in knownAvatarNicknames && height <= 80
-                if (isNoiseText(clean) || isAvatarNickname) {
+                val isAvatarNickname = plainClean in knownAvatarNicknames && height <= 80
+                if (isNoiseText(plainClean) || isAvatarNickname) {
                     null
                 } else {
-                    node.copy(text = sanitizeChatContextTagEscape(clean))
+                    node.copy(text = sanitizeChatContextTagEscape(cleanWithImSpace))
                 }
             }
             .sortedBy { it.boundsTop }
@@ -1077,16 +1193,59 @@ object ChatScreenContextExtractor {
             isGroupChat = true
         }
 
+        // Pre-strip quoted-reply sender+time headers (`terwer 13:49`) and any immediately attached
+        // gray quoted echo of an earlier visible message BEFORE sender->bubble pairing, so the replier's
+        // nickname header pairs directly with their actual reply line rather than with `terwer 13:49`!
+        val strippedQuoteSpans = ArrayList<Pair<Int, Int>>(4)
+        val candidates = ArrayList<RawScreenTextNode>(rawCandidates.size)
+        var rawIdx = 0
+        while (rawIdx < rawCandidates.size) {
+            val cand = rawCandidates[rawIdx]
+            val plainCand = cand.text.replace('\u2005', ' ').trim()
+            val quoteMatch = QUOTED_SENDER_TIME_CAPTURE_REGEX.matchEntire(plainCand)
+            val quoteSender = quoteMatch?.groupValues?.getOrNull(1)?.trim().orEmpty()
+            val isQuotedSenderTimeHeader = quoteSender.isNotEmpty() && (
+                quoteSender in viewportKnownGroupNicknames ||
+                    leftShortTextFreq.containsKey(quoteSender) ||
+                    ASCII_HANDLE_HEADER_REGEX.matches(quoteSender)
+                )
+            if (isQuotedSenderTimeHeader) {
+                var spanBottom = cand.boundsBottom
+                val maybeEcho = rawCandidates.getOrNull(rawIdx + 1)
+                if (maybeEcho != null && (maybeEcho.boundsTop - cand.boundsBottom) in -10..52) {
+                    val normEcho = normalizeMessageForDedup(maybeEcho.text)
+                    val matchesEarlier = normEcho.isNotEmpty() && candidates.any { earlier ->
+                        val normEarlier = normalizeMessageForDedup(earlier.text)
+                        normEarlier.isNotEmpty() && (normEarlier == normEcho || normEarlier.startsWith(normEcho))
+                    }
+                    if (matchesEarlier) {
+                        spanBottom = maybeEcho.boundsBottom
+                        strippedQuoteSpans.add(cand.boundsTop to spanBottom)
+                        rawIdx += 2
+                        continue
+                    }
+                }
+                strippedQuoteSpans.add(cand.boundsTop to spanBottom)
+                rawIdx += 1
+                continue
+            }
+            candidates.add(cand)
+            rawIdx += 1
+        }
+        if (candidates.isEmpty()) {
+            return buildEmptyCapturedContext()
+        }
+
         // 5-Signal Geometric Pairing & Stripping Loop (`curr` -> `next`):
         // Pairs left-side group sender nicknames (including 19+ char / punctuated nicknames that extend past
         // screenWidth/2, role-badge rows `[群主] 昵称`, and OCR-merged `"群主 昵称"`) with the bubble below,
         // drops standalone role-badge nickname headers above stickers/images, and strips right-side `[我]`
         // self group nicknames (`Balthazar`) above `[我]`'s own bubble.
-        val pairedCandidates = ArrayList<PendingPairedMessage>(rawCandidates.size)
+        val pairedCandidates = ArrayList<PendingPairedMessage>(candidates.size)
         var idx = 0
-        while (idx < rawCandidates.size) {
-            val curr = rawCandidates[idx]
-            val next = rawCandidates.getOrNull(idx + 1)
+        while (idx < candidates.size) {
+            val curr = candidates[idx]
+            val next = candidates.getOrNull(idx + 1)
             val currHeight = curr.boundsBottom - curr.boundsTop
             val currSpeaker = classifySpeaker(curr, screenWidth)
             var pairedWithNext = false
@@ -1107,6 +1266,16 @@ object ChatScreenContextExtractor {
                 val nextSpeaker = classifySpeaker(next, screenWidth)
                 val nextHeight = next.boundsBottom - next.boundsTop
                 val verticalGap = next.boundsTop - curr.boundsBottom
+                val hasStrippedQuoteBetween = strippedQuoteSpans.any { (qTop, qBottom) ->
+                    qTop >= curr.boundsBottom - 16 && qBottom <= next.boundsTop + 16
+                }
+                val quoteGapAllowance = if (hasStrippedQuoteBetween) {
+                    (screenHeight * 0.085).toInt().coerceAtLeast(180)
+                } else {
+                    0
+                }
+                val effectiveMaxVerticalGap = maxVerticalGap + quoteGapAllowance
+                val effectiveMaxCaptionGap = maxCaptionGap + quoteGapAllowance
 
                 // Case A: Left-side sender nickname header above `[对方]`/`[群友X]` bubble.
                 // Note: Do NOT require `currSpeaker == ChatSpeaker.OTHER` because a 19-char left-anchored
@@ -1118,13 +1287,13 @@ object ChatScreenContextExtractor {
                 if (nextSpeaker == ChatSpeaker.OTHER &&
                     isLeftHeaderCandidate &&
                     leftColumnAligned &&
-                    verticalGap in -12..maxVerticalGap
+                    verticalGap in -12..effectiveMaxVerticalGap
                 ) {
                     val alignedWithLeftAvatarSpan = currHeight <= maxNickHeight && leftAvatarRects.any { av ->
                         abs(curr.boundsTop - av.boundsTop) <= 28 &&
                             curr.boundsLeft >= av.boundsRight - 24 &&
                             next.boundsTop > curr.boundsTop + 18 &&
-                            next.boundsTop <= av.boundsBottom + 8
+                            next.boundsTop <= av.boundsBottom + 8 + quoteGapAllowance
                     }
                     val hasClassicShortShape = currSpeaker == ChatSpeaker.OTHER &&
                         curr.boundsLeft <= leftNickColumnLimit &&
@@ -1140,7 +1309,7 @@ object ChatScreenContextExtractor {
                     val hasGroupCaptionFontShape = isGroupChat &&
                         currHeight <= captionFontMaxHeight &&
                         curr.text.length in 1..40 &&
-                        verticalGap <= maxCaptionGap &&
+                        verticalGap <= effectiveMaxCaptionGap &&
                         nextHeight >= (currHeight * 1.18).toInt()
 
                     if (sameRowAsLeftRoleBadge ||
@@ -1149,8 +1318,13 @@ object ChatScreenContextExtractor {
                         hasClassicShortShape ||
                         hasGroupCaptionFontShape
                     ) {
-                        val extractedNick = rolePrefixMatch?.groupValues?.getOrNull(1)?.trim().takeUnless { it.isNullOrEmpty() }
-                            ?: curr.text
+                        val extractedNick = (
+                            rolePrefixMatch?.groupValues?.getOrNull(1)?.trim().takeUnless { it.isNullOrEmpty() }
+                                ?: curr.text
+                            ).replace('\u2005', ' ').trim()
+                        if (extractedNick.isNotEmpty()) {
+                            viewportKnownGroupNicknames.add(extractedNick)
+                        }
                         val hideRawNick = sameRowAsLeftRoleBadge || rolePrefixMatch != null
                         pairedCandidates.add(
                             PendingPairedMessage(
@@ -1212,13 +1386,33 @@ object ChatScreenContextExtractor {
             }
 
             // Standalone role-badge nickname row above a sticker/image (with no text bubble below):
-            // never emit a `[群主] 昵称` / `[管理员] 昵称` header as a spoken chat message!
+            // never emit a `[群主] 昵称` / `[管理员] 昵称` header as a spoken chat message,
+            // while still recording the nickname for `@mention` symbolic normalization!
             if (!pairedWithNext && (sameRowAsRoleBadge || rolePrefixMatch != null)) {
+                val standaloneNick = (
+                    rolePrefixMatch?.groupValues?.getOrNull(1)?.trim().takeUnless { it.isNullOrEmpty() }
+                        ?: curr.text
+                    ).replace('\u2005', ' ').trim()
+                if (standaloneNick.isNotEmpty()) {
+                    viewportKnownGroupNicknames.add(standaloneNick)
+                }
                 idx += 1
                 continue
             }
 
             if (!pairedWithNext) {
+                val plainCurr = curr.text.replace('\u2005', ' ').trim()
+                val quoteHeaderMatch = QUOTED_SENDER_TIME_CAPTURE_REGEX.matchEntire(plainCurr)
+                val quoteSender = quoteHeaderMatch?.groupValues?.getOrNull(1)?.trim().orEmpty()
+                val isQuotedSenderTimeHeader = quoteSender.isNotEmpty() && (
+                    quoteSender in viewportKnownGroupNicknames ||
+                        leftShortTextFreq.containsKey(quoteSender) ||
+                        ASCII_HANDLE_HEADER_REGEX.matches(quoteSender)
+                    )
+                if (isQuotedSenderTimeHeader) {
+                    idx += 1
+                    continue
+                }
                 pairedCandidates.add(
                     PendingPairedMessage(
                         speaker = currSpeaker,
@@ -1282,12 +1476,78 @@ object ChatScreenContextExtractor {
         }
 
         val rawFinalMessages = selectedReversed.asReversed()
-        if (rawFinalMessages.any { it.rawNickname.isNotBlank() }) {
+        if (rawFinalMessages.any { it.rawNickname.isNotBlank() } || viewportKnownGroupNicknames.size >= 2) {
             isGroupChat = true
         }
 
-        val redactionSession = if (redactPii && rawFinalMessages.isNotEmpty()) {
-            val joinedText = rawFinalMessages.joinToString("\n") { it.text }
+        // Pre-assign ordered group aliases (`群友A` / `群友B(terwer)`) and pure base aliases (`群友A` / `群友B`)
+        // across both active speakers and viewport-visible members (e.g. image-only senders above),
+        // then normalize `@<群友原昵称>` inside message bodies BEFORE PII redaction.
+        val nicknameToGroupAlias = LinkedHashMap<String, String>()
+        val rawNickToDisplayAlias = LinkedHashMap<String, String>()
+        val nicknameToBaseAlias = LinkedHashMap<String, String>()
+        var nextAliasOrdinal = 0
+
+        for (msg in rawFinalMessages) {
+            if (msg.speaker == ChatSpeaker.OTHER && msg.rawNickname.isNotBlank()) {
+                val rawKey = msg.rawNickname.replace('\u2005', ' ').replace(Regex("""\s+"""), " ").trim()
+                if (rawKey.isEmpty()) continue
+                if (!rawNickToDisplayAlias.containsKey(rawKey)) {
+                    val sanitizedKey = (
+                        if (redactPii) {
+                            LocalPiiRedactor.redactText(rawKey, context = context).redactedText.trim()
+                        } else {
+                            rawKey
+                        }
+                        )
+                        .replace('[', '‹')
+                        .replace(']', '›')
+                    val shouldOmitRawNick = msg.omitRawNickInAlias ||
+                        sanitizedKey.length > 8 ||
+                        sanitizedKey.any { it in "，。？！：；,.?!～~" }
+                    val existingDisplay = nicknameToGroupAlias[sanitizedKey]
+                    if (existingDisplay != null) {
+                        rawNickToDisplayAlias[rawKey] = existingDisplay
+                        val base = existingDisplay.substringBefore('(')
+                        nicknameToBaseAlias[rawKey] = base
+                        nicknameToBaseAlias[sanitizedKey] = base
+                    } else {
+                        val letter = ('A' + nextAliasOrdinal.coerceAtMost(25))
+                        nextAliasOrdinal += 1
+                        val base = "群友$letter"
+                        val display = if (shouldOmitRawNick) base else "$base($sanitizedKey)"
+                        nicknameToGroupAlias[sanitizedKey] = display
+                        rawNickToDisplayAlias[rawKey] = display
+                        nicknameToBaseAlias[rawKey] = base
+                        nicknameToBaseAlias[sanitizedKey] = base
+                    }
+                }
+            }
+        }
+
+        for (knownNick in viewportKnownGroupNicknames) {
+            val cleanKnown = knownNick.replace('\u2005', ' ').replace(Regex("""\s+"""), " ").trim()
+            if (cleanKnown.isNotEmpty() && !nicknameToBaseAlias.containsKey(cleanKnown)) {
+                val letter = ('A' + nextAliasOrdinal.coerceAtMost(25))
+                nextAliasOrdinal += 1
+                nicknameToBaseAlias[cleanKnown] = "群友$letter"
+            }
+        }
+
+        val mentionNormalizedMessages = rawFinalMessages.map { msg ->
+            val normalizedText = normalizeGroupMentionsInMessage(
+                rawText = msg.text,
+                isGroupChat = isGroupChat || nicknameToBaseAlias.isNotEmpty(),
+                nicknameToBaseAlias = nicknameToBaseAlias
+            )
+            msg.copy(text = normalizedText)
+        }
+        if (mentionNormalizedMessages.any { it.text.contains("[@群友") }) {
+            isGroupChat = true
+        }
+
+        val redactionSession = if (redactPii && mentionNormalizedMessages.isNotEmpty()) {
+            val joinedText = mentionNormalizedMessages.joinToString("\n") { it.text }
             LocalPiiRedactor.redactText(
                 rawText = joinedText,
                 context = context,
@@ -1305,37 +1565,15 @@ object ChatScreenContextExtractor {
             emptyList()
         }
 
-        // Assign ordered group aliases: short clean handles become `群友A(凉意)`, while role-badge rows
-        // or long/punctuated sentence-like group cards (`我一直在寻找，有下一顿饭钱的世界在哪里`) become
-        // pure `群友A` / `群友B` so LLMs never mistake someone's nickname/signature for spoken dialogue.
-        val nicknameToGroupAlias = LinkedHashMap<String, String>()
-        val finalMessages = rawFinalMessages.mapIndexed { i, msg ->
+        val finalMessages = mentionNormalizedMessages.mapIndexed { i, msg ->
             val cleanText = if (redactedBodyLines.isNotEmpty()) {
                 redactedBodyLines.getOrElse(i) { msg.text }
             } else {
                 msg.text
             }
-            val alias = if (msg.speaker == ChatSpeaker.OTHER && msg.rawNickname.isNotBlank()) {
-                val sanitizedKey = (
-                    if (redactPii) {
-                        LocalPiiRedactor.redactText(msg.rawNickname, context = context).redactedText.trim()
-                    } else {
-                        msg.rawNickname.trim()
-                    }
-                    )
-                    .replace('[', '‹')
-                    .replace(']', '›')
-                val shouldOmitRawNick = msg.omitRawNickInAlias ||
-                    sanitizedKey.length > 8 ||
-                    sanitizedKey.any { it in "，。？！：；,.?!～~" }
-                nicknameToGroupAlias.getOrPut(sanitizedKey) {
-                    val letter = ('A' + nicknameToGroupAlias.size.coerceAtMost(25))
-                    if (shouldOmitRawNick) {
-                        "群友$letter"
-                    } else {
-                        "群友$letter($sanitizedKey)"
-                    }
-                }
+            val rawKey = msg.rawNickname.replace('\u2005', ' ').replace(Regex("""\s+"""), " ").trim()
+            val alias = if (msg.speaker == ChatSpeaker.OTHER && rawKey.isNotEmpty()) {
+                rawNickToDisplayAlias[rawKey].orEmpty()
             } else {
                 ""
             }

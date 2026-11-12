@@ -33,9 +33,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -108,6 +111,23 @@ fun JevCopilotPanel(
         rawCaptured
     }
     val jevResult = uiState.jevCopilotResult
+    var hasAutoBootstrapped by remember { mutableStateOf(false) }
+
+    // Safety net: if JevCopilotPanel ever mounts with neither a result, an active request, nor an error,
+    // immediately trigger initial inference once so it never sits idle on static placeholder cards.
+    LaunchedEffect(
+        uiState.showChatContextDisclosurePrompt,
+        jevResult,
+        isProcessing,
+        uiState.jevErrorMessage
+    ) {
+        if (jevResult != null || !uiState.jevErrorMessage.isNullOrBlank()) {
+            hasAutoBootstrapped = true
+        } else if (!uiState.showChatContextDisclosurePrompt && !isProcessing && !hasAutoBootstrapped) {
+            hasAutoBootstrapped = true
+            onAction(ImeUiAction.RefreshJevStrategies)
+        }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -228,6 +248,7 @@ fun JevCopilotPanel(
         JevSubtextRadarBar(
             result = jevResult,
             isLoading = isProcessing,
+            errorMessage = uiState.jevErrorMessage,
             domainBadge = captured.effectiveBadgeTitle
         )
 
@@ -351,6 +372,7 @@ fun JevCopilotPanel(
 private fun JevSubtextRadarBar(
     result: JevCopilotResult?,
     isLoading: Boolean,
+    errorMessage: String? = null,
     domainBadge: String
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
@@ -365,22 +387,26 @@ private fun JevSubtextRadarBar(
         label = "jevDotAlpha"
     )
 
-    val dotColor = when (result?.tensionTier) {
-        JevTensionTier.SAFE_GREEN -> TypeFreeEmerald
-        JevTensionTier.DANGER_ROSE -> TypeFreeRose
-        JevTensionTier.PROBE_AMBER, null -> TypeFreeAmber
+    val hasError = !isLoading && result == null && !errorMessage.isNullOrBlank()
+    val dotColor = when {
+        hasError -> TypeFreeRose
+        result?.tensionTier == JevTensionTier.SAFE_GREEN -> TypeFreeEmerald
+        result?.tensionTier == JevTensionTier.DANGER_ROSE -> TypeFreeRose
+        else -> TypeFreeAmber
     }
 
     val badgeText = when {
         isLoading -> "Lv.-- 局势推演中"
+        hasError -> "Lv.-- 推演未完成"
         result != null -> "Lv.${result.clampedLevel} ${result.tag}"
-        else -> "Lv.4 $domainBadge"
+        else -> "Lv.-- $domainBadge"
     }
 
     val subtext = when {
         isLoading -> "正在结合脱敏上文拆解对方潜台词与三套博弈话术…"
+        hasError -> errorMessage.orEmpty()
         result != null -> result.subtext
-        else -> "点「↻ 换一批」读取上文推演，或按住底栏口述底牌"
+        else -> "正在自动读取上文并推演三套博弈策略…"
     }
 
     val combinedRadarText = remember(badgeText, subtext, palette.keyTextPrimary, palette.keyTextMuted) {
@@ -644,7 +670,7 @@ private fun JevPlaceholderCard(
             )
         }
         Text(
-            text = if (isLoading) defaultHints.getOrElse(index) { "推演中…" } else "点击「↻ 换一批」或按住下方底牌条生成策略",
+            text = if (isLoading) defaultHints.getOrElse(index) { "推演中…" } else "正在读取上文并推演策略…",
             style = TextStyle(
                 color = palette.keyTextMuted,
                 fontSize = 11.sp,
