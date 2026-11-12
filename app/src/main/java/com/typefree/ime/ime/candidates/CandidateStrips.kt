@@ -28,7 +28,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -161,11 +164,71 @@ fun PredictionCandidateBar(
 }
 
 /**
- * Zero-jitter dual-layer Candidate Strip ([CandidateStrip] / `FlypyComposingStrip`) inside the
- * constant `42.dp` top chrome slot:
- * - Top micro-pinyin row (`12.dp`): left-aligned at `X = 12.dp`, `10.5.sp` single-line `displayPreedit` (up to 38 chars).
- * - Bottom candidate row (`26.dp`): 1st candidate riveted at `X = 12.dp` (never pushed right by long pinyin),
- *   followed by scrollable 2..N candidates, right-side `[▾]` expand sheet button and `[×]` clear button.
+ * Lightweight Floating Preedit Capsule rendered in the `28.dp` transparent overhang right above
+ * the keyboard's `1.dp` top divider (zero host viewport resize via `contentTopInsets`):
+ * - Displays segmented pinyin / Flypy code (`yz`, `wo'men'ming'tian`) in a crisp `22.dp` elevated pill
+ *   floating `4.dp` above the keyboard top edge.
+ * - Frees the `34.dp` top bar slot inside the keyboard for a spacious, uncramped single-row candidate strip
+ *   while keeping Candidate #1 permanently riveted at `X = 12.dp` (`0px` horizontal shift).
+ */
+@Composable
+fun FloatingPreeditCapsule(
+    composingCode: String,
+    preeditDisplay: String = composingCode,
+    inputScheme: InputScheme = InputScheme.FLYPY_TABLE
+) {
+    val palette = LocalTypeFreeKeyboardPalette.current
+    val displayPreedit = remember(preeditDisplay, composingCode, inputScheme) {
+        ImeLogic.formatPreeditDisplay(
+            preedit = preeditDisplay,
+            rawCode = composingCode,
+            scheme = inputScheme,
+            maxVisibleChars = 38
+        )
+    }
+    if (displayPreedit.isBlank()) return
+
+    val pillShape = RoundedCornerShape(8.dp)
+    Row(
+        modifier = Modifier
+            .height(22.dp)
+            .shadow(elevation = 2.dp, shape = pillShape, clip = false)
+            .clip(pillShape)
+            .background(palette.keyCapBg)
+            .border(1.dp, palette.keyBorder, pillShape)
+            .padding(horizontal = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Text(
+            text = displayPreedit,
+            style = TextStyle(
+                color = palette.keyTextPrimary,
+                fontSize = 12.sp,
+                lineHeight = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                fontFamily = if (inputScheme.usesRime) FontFamily.Default else FontFamily.Monospace,
+                platformStyle = PlatformTextStyle(includeFontPadding = false)
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Clip
+        )
+        Box(
+            modifier = Modifier
+                .width(1.5.dp)
+                .height(11.dp)
+                .clip(RoundedCornerShape(1.dp))
+                .background(TypeFreeEmerald)
+        )
+    }
+}
+
+/**
+ * Spacious single-row `34.dp` Candidate Strip inside the constant `42.dp` top chrome slot
+ * (paired with [FloatingPreeditCapsule] floating above the keyboard top edge):
+ * - 1st candidate riveted at `X = 12.dp` (never pushed right by long pinyin),
+ * - Comfortable `29.dp` pill height with generous vertical breathing room,
+ * - Followed by scrollable 2..N candidates, right-side `[▾]` expand sheet button and `[×]` clear button.
  */
 @Composable
 fun CandidateStrip(
@@ -181,15 +244,8 @@ fun CandidateStrip(
     onRequestMoreCandidates: () -> Unit = {}
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
     val scrollState = rememberScrollState()
-    val displayPreedit = remember(preeditDisplay, composingCode, inputScheme) {
-        ImeLogic.formatPreeditDisplay(
-            preedit = preeditDisplay,
-            rawCode = composingCode,
-            scheme = inputScheme,
-            maxVisibleChars = 38
-        )
-    }
 
     LaunchedEffect(composingCode) {
         scrollState.scrollTo(0)
@@ -201,122 +257,107 @@ fun CandidateStrip(
         }
     }
 
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(38.dp),
-        verticalArrangement = Arrangement.SpaceBetween
+            .height(metrics.topBarHeight),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // Upper layer (12.dp): Micro-Pinyin / Composing Code row left-aligned at X = 12.dp
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(12.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            Text(
-                text = displayPreedit,
-                color = palette.keyTextPrimary.copy(alpha = 0.78f),
-                fontSize = 10.5.sp,
-                lineHeight = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                fontFamily = if (inputScheme.usesRime) FontFamily.Default else FontFamily.Monospace,
-                maxLines = 1,
-                overflow = TextOverflow.Clip
-            )
-        }
-
-        // Lower layer (26.dp): 1st candidate riveted at X = 12.dp + scrollable 2..N candidates + [▾] + [×]
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(26.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
-        ) {
-            if (candidates.isEmpty()) {
-                val emptyHint = when {
-                    composingCode.all { it == '`' } -> "反查：输双拼查形(如 ji`) 或 输双形查音(如 `bo)"
-                    inputScheme.usesRime -> "无匹配候选 · 按回车上屏编码或空格清屏"
-                    else -> "空码 · 第五码或空格自动清屏"
-                }
-                Text(
-                    text = emptyHint,
-                    color = if (composingCode.all { it == '`' }) palette.keyTextMuted else TypeFreeRose,
-                    fontSize = 11.5.sp,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-            } else {
-                // 1. Primary 1st candidate riveted at X = 12.dp (0px horizontal shift regardless of pinyin length)
-                val firstCand = candidates.first()
-                CandidateChipItem(
-                    index = 0,
-                    cand = firstCand,
-                    isFirst = true,
-                    onClick = { onSelectCandidate(0) }
-                )
-
-                // 2. Scrollable 2..N candidates
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .horizontalScroll(scrollState),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    candidates.drop(1).take(39).forEachIndexed { offsetIdx, cand ->
-                        val actualIdx = offsetIdx + 1
-                        CandidateChipItem(
-                            index = actualIdx,
-                            cand = cand,
-                            isFirst = false,
-                            onClick = { onSelectCandidate(actualIdx) }
-                        )
-                    }
-                }
+        if (candidates.isEmpty()) {
+            val emptyHint = when {
+                composingCode.all { it == '`' } -> "反查：输双拼查形(如 ji`) 或 输双形查音(如 `bo)"
+                inputScheme.usesRime -> "无匹配候选 · 按回车上屏编码或空格清屏"
+                else -> "空码 · 第五码或空格自动清屏"
             }
+            Text(
+                text = emptyHint,
+                style = TextStyle(
+                    color = if (composingCode.all { it == '`' }) palette.keyTextMuted else TypeFreeRose,
+                    fontSize = 12.sp,
+                    lineHeight = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+        } else {
+            // 1. Primary 1st candidate riveted at X = 12.dp (0px horizontal shift regardless of pinyin length)
+            val firstCand = candidates.first()
+            CandidateChipItem(
+                index = 0,
+                cand = firstCand,
+                isFirst = true,
+                onClick = { onSelectCandidate(0) }
+            )
 
-            // 3. Expand All Candidates Grid Toggle (`[▾]`)
-            if (candidates.size > 4 || hasMoreCandidates) {
-                Box(
-                    modifier = Modifier
-                        .size(25.dp)
-                        .clip(RoundedCornerShape(7.dp))
-                        .background(if (isSheetExpanded) palette.capsuleSelectedBg else palette.keyCapSecondaryBg)
-                        .border(1.dp, palette.keyBorder, RoundedCornerShape(7.dp))
-                        .clickable(onClick = onToggleSheet),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = if (isSheetExpanded) "▴" else "▾",
-                        color = palette.keyTextPrimary,
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.Bold
+            // 2. Scrollable 2..N candidates
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .horizontalScroll(scrollState),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                candidates.drop(1).take(39).forEachIndexed { offsetIdx, cand ->
+                    val actualIdx = offsetIdx + 1
+                    CandidateChipItem(
+                        index = actualIdx,
+                        cand = cand,
+                        isFirst = false,
+                        onClick = { onSelectCandidate(actualIdx) }
                     )
                 }
             }
+        }
 
-            // 4. 1-Tap Clear Code (`[×]`)
+        // 3. Expand All Candidates Grid Toggle (`[▾]`)
+        if (candidates.size > 4 || hasMoreCandidates) {
             Box(
                 modifier = Modifier
-                    .size(25.dp)
-                    .clip(RoundedCornerShape(7.dp))
-                    .background(palette.keyCapSecondaryBg)
-                    .border(1.dp, palette.keyBorder, RoundedCornerShape(7.dp))
-                    .clickable(onClick = onClearCode),
+                    .size(28.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (isSheetExpanded) palette.capsuleSelectedBg else palette.keyCapSecondaryBg)
+                    .border(1.dp, palette.keyBorder, RoundedCornerShape(8.dp))
+                    .clickable(onClick = onToggleSheet),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "×",
-                    color = palette.keyTextMuted,
-                    fontSize = 13.5.sp,
-                    fontWeight = FontWeight.Bold
+                    text = if (isSheetExpanded) "▴" else "▾",
+                    style = TextStyle(
+                        color = palette.keyTextPrimary,
+                        fontSize = 12.sp,
+                        lineHeight = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                    )
                 )
             }
+        }
+
+        // 4. 1-Tap Clear Code (`[×]`)
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(palette.keyCapSecondaryBg)
+                .border(1.dp, palette.keyBorder, RoundedCornerShape(8.dp))
+                .clickable(onClick = onClearCode),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "×",
+                style = TextStyle(
+                    color = palette.keyTextMuted,
+                    fontSize = 14.sp,
+                    lineHeight = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                )
+            )
         }
     }
 }
@@ -331,26 +372,30 @@ private fun CandidateChipItem(
     val palette = LocalTypeFreeKeyboardPalette.current
     Row(
         modifier = Modifier
-            .height(25.dp)
-            .clip(RoundedCornerShape(7.dp))
+            .height(29.dp)
+            .clip(RoundedCornerShape(8.dp))
             .background(if (isFirst) palette.capsuleSelectedBg else palette.keyCapBg)
             .border(
                 width = 1.dp,
                 color = if (isFirst) palette.keyTextPrimary.copy(alpha = 0.28f) else palette.keyBorder,
-                shape = RoundedCornerShape(7.dp)
+                shape = RoundedCornerShape(8.dp)
             )
             .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp)
+        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
     ) {
         if (index < 3) {
             Text(
                 text = "${index + 1}",
-                color = palette.keyTextMuted,
-                fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.SemiBold
+                style = TextStyle(
+                    color = palette.keyTextMuted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                )
             )
         }
         val visualCandText = if (cand.text.length > 16 || cand.text.contains('\n')) {
@@ -360,17 +405,25 @@ private fun CandidateChipItem(
         }
         Text(
             text = visualCandText,
-            color = palette.keyTextPrimary,
-            fontSize = 13.5.sp,
-            fontWeight = if (isFirst) FontWeight.Bold else FontWeight.Medium,
+            style = TextStyle(
+                color = palette.keyTextPrimary,
+                fontSize = 14.5.sp,
+                lineHeight = 17.sp,
+                fontWeight = if (isFirst) FontWeight.Bold else FontWeight.Medium,
+                platformStyle = PlatformTextStyle(includeFontPadding = false)
+            ),
             maxLines = 1
         )
         if (cand.codeHint.isNotEmpty()) {
             Text(
                 text = "〔${cand.codeHint}〕",
-                color = palette.keyTextMuted,
-                fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace,
+                style = TextStyle(
+                    color = palette.keyTextMuted,
+                    fontSize = 10.sp,
+                    lineHeight = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                ),
                 maxLines = 1
             )
         }

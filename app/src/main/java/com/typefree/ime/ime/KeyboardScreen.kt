@@ -37,6 +37,7 @@ import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.candidates.CandidateGridOverlay
 import com.typefree.ime.ime.candidates.CandidateStrip
+import com.typefree.ime.ime.candidates.FloatingPreeditCapsule
 import com.typefree.ime.ime.candidates.PredictionCandidateBar
 import com.typefree.ime.ime.chrome.ErrorContextBanner
 import com.typefree.ime.ime.chrome.InlineStyleSelectorStrip
@@ -164,10 +165,32 @@ fun KeyboardScreen(
         modifier = Modifier
             .fillMaxWidth()
             .alpha(if (uiState.isFullScreenPeekCapturing) 0f else 1f)
-            .background(if (uiState.isFullScreenPeekCapturing) androidx.compose.ui.graphics.Color.Transparent else palette.keyboardCanvas)
-            .navigationBarsPadding()
-            .height(metrics.frameHeight)
     ) {
+        // Transparent 28.dp Floating Preedit Overhang above the 1.dp keyboard top divider
+        // (`onComputeInsets` offsets `contentTopInsets` by 28.dp so host app keeps full 252.dp viewport)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(KeyboardMetrics.FLOATING_PREEDIT_OVERHANG_DP.dp)
+                .padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+            contentAlignment = androidx.compose.ui.Alignment.BottomStart
+        ) {
+            if (!uiState.isFullScreenPeekCapturing && isActiveQwertyGrid && uiState.isFlypyComposing) {
+                FloatingPreeditCapsule(
+                    composingCode = uiState.flypyComposingCode,
+                    preeditDisplay = uiState.preeditDisplay,
+                    inputScheme = uiState.activeInputScheme
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(if (uiState.isFullScreenPeekCapturing) androidx.compose.ui.graphics.Color.Transparent else palette.keyboardCanvas)
+                .navigationBarsPadding()
+                .height(metrics.frameHeight)
+        ) {
         // Subtle 1.dp top divider (fixed across all height levels)
         Box(
             modifier = Modifier
@@ -182,8 +205,7 @@ fun KeyboardScreen(
                 .weight(1f)
                 .then(
                     if (isActiveQwertyGrid) {
-                        val qwertyTopPad = if (uiState.isFlypyComposing) 1.dp else 5.dp
-                        Modifier.padding(top = qwertyTopPad, bottom = 0.dp)
+                        Modifier.padding(top = 5.dp, bottom = 0.dp)
                     } else {
                         Modifier.padding(
                             start = 12.dp,
@@ -571,6 +593,7 @@ fun KeyboardScreen(
                         }
                     }
             )
+        }
         }
     }
 }

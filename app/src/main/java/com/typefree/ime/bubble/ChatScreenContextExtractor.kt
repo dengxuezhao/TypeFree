@@ -65,10 +65,13 @@ data class CapturedChatContext(
     val topology: ChatTopology = ChatTopology()
 ) {
     val effectiveBadgeTitle: String
-        get() = if (topology.isGroupChat && domainProfile == JevDomainProfile.IM_CHAT) {
-            "群聊局势"
-        } else {
-            domainProfile.badgeTitle
+        get() = when {
+            ChatScreenContextExtractor.isEnterpriseWorkplaceImPackage(packageName) ->
+                if (topology.isGroupChat) "群聊协同" else "商务协同"
+            topology.isGroupChat && domainProfile == JevDomainProfile.IM_CHAT ->
+                "群聊局势"
+            else ->
+                domainProfile.badgeTitle
         }
 
     val hasScreenshot: Boolean
@@ -277,13 +280,24 @@ object ChatScreenContextExtractor {
         "com.samsung.android.messaging"
     )
 
+    private val ENTERPRISE_WORKPLACE_IM_PACKAGES = setOf(
+        "com.ss.android.lark",
+        "com.larksuite.suite",
+        "com.alibaba.android.rimet",
+        "com.alibaba.aliding",
+        "com.alibaba.work",
+        "com.tencent.wework",
+        "com.Slack"
+    )
+
     private val ENTERPRISE_IM_KEYWORDS = listOf(
         "dingtalk",
         "aliding",
         "rimet",
         "wework",
         "lark",
-        "feishu"
+        "feishu",
+        "slack"
     )
 
     private val MESSAGING_STYLE_IDS = setOf("casual_chat", "work_collab")
@@ -421,7 +435,16 @@ object ChatScreenContextExtractor {
      * Matches bracketed or plain group role badges such as `"[管理员]"`, `"【群主】"`.
      */
     private val ROLE_BADGE_REGEX = Regex(
-        """^[\[【(（]?\s*(?:管理员|群主|群管理员|活跃|龙王|学霸|翰林|潜水|冒泡|群机器人|机器人)\s*[\]】)）]?$"""
+        """^[\[【(（]?\s*(?:管理员|群主|喦主|群王|群管理员|活跃|龙王|学霸|翰林|潜水|冒泡|群机器人|机器人)\s*[\]】)）]?$"""
+    )
+
+    /**
+     * Matches OCR-merged role/level badge + group nickname lines such as
+     * `"[群主]我一直在寻找，有下一顿饭钱的世界在哪里"`, `"群主 我一直在寻找，有下一顿饭钱的世界在哪里"`,
+     * `"喦主 我一直在寻找..."`, `"LV.18 花猫"`, or `"[管理员] 玄冰是仓鼠"`.
+     */
+    private val ROLE_BADGE_PREFIXED_NICK_REGEX = Regex(
+        """^(?:[\[【(（]\s*(?:管理员|群主|喦主|群王|群管理员|活跃|龙王|学霸|翰林|潜水|冒泡|群机器人|机器人|(?:LV|Lv|lv|VIP|vip|SVIP|svip)\.?\s*\d{1,3})\s*[\]】)）]\s*|(?:管理员|群主|喦主|群王|群管理员|活跃|龙王|学霸|翰林|潜水|冒泡|群机器人|机器人|(?:LV|Lv|lv|VIP|vip|SVIP|svip)\.?\s*\d{1,3})\s+)(.{1,42})$"""
     )
 
     private val SPEAKER_PREFIX_REGEX = Regex("""^\s*\[(?:对方|我|未知|群友[A-Z](?:\([^\n]{1,32}\))?)]\s*:?\s*""")
@@ -439,6 +462,14 @@ object ChatScreenContextExtractor {
         if (pkg in SENSITIVE_PACKAGE_EXACT_BLACKLIST) return true
         val lower = pkg.lowercase()
         return SENSITIVE_PACKAGE_KEYWORD_BLACKLIST.any { keyword -> lower.contains(keyword) }
+    }
+
+    fun isEnterpriseWorkplaceImPackage(packageName: String): Boolean {
+        val pkg = packageName.trim()
+        if (pkg.isEmpty() || isSensitiveBlacklistedPackage(pkg)) return false
+        if (pkg in ENTERPRISE_WORKPLACE_IM_PACKAGES) return true
+        val lower = pkg.lowercase()
+        return ENTERPRISE_IM_KEYWORDS.any { lower.contains(it) }
     }
 
     fun isSupportedMessagingApp(
@@ -856,7 +887,8 @@ object ChatScreenContextExtractor {
         val speaker: ChatSpeaker,
         val text: String,
         val boundsTop: Int,
-        val rawNickname: String = ""
+        val rawNickname: String = "",
+        val omitRawNickInAlias: Boolean = false
     )
 
     fun extractChatContext(
@@ -891,16 +923,27 @@ object ChatScreenContextExtractor {
         }
 
         // Pre-extract top-bar group title & memberCount (`大鸽子交流群(8)`), enterprise group tags,
-        // `@我` / `[有人@我]` signals, avatar profile cards, and role badge Y positions BEFORE top-bar filtering.
+        // `@我` / `[有人@我]` signals, avatar profile cards, avatar rects, and role badge rects BEFORE top-bar filtering.
         var isGroupChat = false
         var groupMemberCount = 0
         var hasExplicitMentionMe = false
         val groupHeaderMaxTop = if (screenHeight > 0) (screenHeight * 0.16).toInt().coerceAtLeast(260) else 260
 
         val knownAvatarNicknames = HashSet<String>()
-        val roleBadgeTops = ArrayList<Int>(8)
+        val roleBadgeRects = ArrayList<RawScreenTextNode>(8)
+        val leftAvatarRects = ArrayList<RawScreenTextNode>(8)
+        val rightAvatarRects = ArrayList<RawScreenTextNode>(8)
+        val midScreenX = if (screenWidth > 0) screenWidth / 2 else 540
         for (node in nodes) {
             if (!node.isVisibleToUser) continue
+            if (isLikelyAvatarImageNode(node, screenWidth)) {
+                val centerX = (node.boundsLeft + node.boundsRight) / 2
+                if (centerX <= midScreenX) {
+                    leftAvatarRects.add(node)
+                } else {
+                    rightAvatarRects.add(node)
+                }
+            }
             val t = node.text.replace(Regex("""\s+"""), " ").trim()
             if (t.isEmpty()) continue
             if (node.boundsTop <= groupHeaderMaxTop) {
@@ -917,6 +960,7 @@ object ChatScreenContextExtractor {
             }
             if (GROUP_AFFILIATION_HEADER_REGEX.matches(t) ||
                 ROLE_BADGE_REGEX.matches(t) ||
+                ROLE_BADGE_PREFIXED_NICK_REGEX.matches(t) ||
                 t in setOf("群公告", "群主", "管理员", "群管理员")
             ) {
                 isGroupChat = true
@@ -928,42 +972,11 @@ object ChatScreenContextExtractor {
                 knownAvatarNicknames.add(it)
             }
             if (ROLE_BADGE_REGEX.matches(t) || LEVEL_BADGE_REGEX.matches(t) || t in listOf("管理员", "群主", "群管理员")) {
-                roleBadgeTops.add(node.boundsTop)
+                roleBadgeRects.add(node)
             }
         }
 
-        val rawCandidates = nodes
-            .asSequence()
-            .filter { node ->
-                node.isVisibleToUser &&
-                    !node.isEditable &&
-                    !node.isPassword &&
-                    !isLikelyAvatarImageNode(node, screenWidth) &&
-                    node.boundsBottom > topBarThreshold &&
-                    node.boundsTop < effectiveBottomLimit &&
-                    node.boundsBottom > node.boundsTop &&
-                    node.boundsRight > node.boundsLeft
-            }
-            .mapNotNull { node ->
-                val clean = node.text
-                    .replace(Regex("""\s+"""), " ")
-                    .trim()
-                val height = node.boundsBottom - node.boundsTop
-                val isAvatarNickname = clean in knownAvatarNicknames && height <= 80
-                val isSameRowAsRoleBadge = roleBadgeTops.any { abs(node.boundsTop - it) <= 24 } &&
-                    clean.length <= 16 &&
-                    height <= 64 &&
-                    !clean.any { it in "，。？！：；,.?!" }
-                if (isNoiseText(clean) || isAvatarNickname || isSameRowAsRoleBadge) {
-                    null
-                } else {
-                    node.copy(text = sanitizeChatContextTagEscape(clean))
-                }
-            }
-            .sortedBy { it.boundsTop }
-            .toList()
-
-        if (rawCandidates.isEmpty()) {
+        fun buildEmptyCapturedContext(): CapturedChatContext {
             val emptyNodeSession = if (redactPii) {
                 LocalPiiRedactor.redactText("", context = context, sourceNodes = nodes)
             } else {
@@ -989,29 +1002,70 @@ object ChatScreenContextExtractor {
             )
         }
 
+        val rawCandidates = nodes
+            .asSequence()
+            .filter { node ->
+                node.isVisibleToUser &&
+                    !node.isEditable &&
+                    !node.isPassword &&
+                    !isLikelyAvatarImageNode(node, screenWidth) &&
+                    node.boundsBottom > topBarThreshold &&
+                    node.boundsTop < effectiveBottomLimit &&
+                    node.boundsBottom > node.boundsTop &&
+                    node.boundsRight > node.boundsLeft
+            }
+            .mapNotNull { node ->
+                val clean = node.text
+                    .replace(Regex("""\s+"""), " ")
+                    .trim()
+                val height = node.boundsBottom - node.boundsTop
+                val isAvatarNickname = clean in knownAvatarNicknames && height <= 80
+                if (isNoiseText(clean) || isAvatarNickname) {
+                    null
+                } else {
+                    node.copy(text = sanitizeChatContextTagEscape(clean))
+                }
+            }
+            .sortedBy { it.boundsTop }
+            .toList()
+
+        if (rawCandidates.isEmpty()) {
+            return buildEmptyCapturedContext()
+        }
+
         // Adaptive 1080p / 1.5K / 2K thresholds for group sender nickname -> bubble pairing
         val maxNickHeight = if (screenHeight > 0) (screenHeight * 0.032).toInt().coerceAtLeast(68) else 68
+        val captionFontMaxHeight = if (screenHeight > 0) (screenHeight * 0.019).toInt().coerceAtLeast(44) else 45
         val maxVerticalGap = if (screenHeight > 0) (screenHeight * 0.032).toInt().coerceAtLeast(68) else 68
+        val maxCaptionGap = if (screenHeight > 0) (screenHeight * 0.019).toInt().coerceAtLeast(42) else 44
         val maxLeftDelta = if (screenWidth > 0) (screenWidth * 0.12).toInt().coerceAtLeast(96) else 96
-        val leftNickColumnLimit = if (screenWidth > 0) (screenWidth * 0.34).toInt() else 368
+        val leftNickColumnLimit = if (screenWidth > 0) (screenWidth * 0.36).toInt() else 388
+        val rightNickColumnMinRight = if (screenWidth > 0) (screenWidth * 0.62).toInt() else 670
 
         val leftShortTextFreq = HashMap<String, Int>()
+        val rightShortTextFreq = HashMap<String, Int>()
         for (node in rawCandidates) {
             val h = node.boundsBottom - node.boundsTop
-            if (node.boundsLeft <= leftNickColumnLimit &&
-                classifySpeaker(node, screenWidth) == ChatSpeaker.OTHER &&
+            if (h <= maxNickHeight &&
                 node.text.length in 1..14 &&
-                h <= maxNickHeight &&
                 !node.text.any { it in "，。？！：；,.?!～~" }
             ) {
-                leftShortTextFreq[node.text] = (leftShortTextFreq[node.text] ?: 0) + 1
+                if (node.boundsLeft <= leftNickColumnLimit && classifySpeaker(node, screenWidth) == ChatSpeaker.OTHER) {
+                    leftShortTextFreq[node.text] = (leftShortTextFreq[node.text] ?: 0) + 1
+                } else if (node.boundsRight >= rightNickColumnMinRight && classifySpeaker(node, screenWidth) == ChatSpeaker.SELF) {
+                    rightShortTextFreq[node.text] = (rightShortTextFreq[node.text] ?: 0) + 1
+                }
             }
         }
         if (leftShortTextFreq.values.any { it >= 2 }) {
             isGroupChat = true
         }
 
-        // Pair sender nickname headers sitting immediately above left-aligned bubbles (`curr` -> `next`)
+        // 5-Signal Geometric Pairing & Stripping Loop (`curr` -> `next`):
+        // Pairs left-side group sender nicknames (including 19+ char / punctuated nicknames that extend past
+        // screenWidth/2, role-badge rows `[群主] 昵称`, and OCR-merged `"群主 昵称"`) with the bubble below,
+        // drops standalone role-badge nickname headers above stickers/images, and strips right-side `[我]`
+        // self group nicknames (`Balthazar`) above `[我]`'s own bubble.
         val pairedCandidates = ArrayList<PendingPairedMessage>(rawCandidates.size)
         var idx = 0
         while (idx < rawCandidates.size) {
@@ -1021,37 +1075,131 @@ object ChatScreenContextExtractor {
             val currSpeaker = classifySpeaker(curr, screenWidth)
             var pairedWithNext = false
 
-            if (next != null && currSpeaker == ChatSpeaker.OTHER) {
+            val sameRowAsRoleBadge = currHeight <= maxNickHeight && roleBadgeRects.any { b ->
+                abs(curr.boundsTop - b.boundsTop) <= 26 &&
+                    (curr.boundsLeft >= b.boundsLeft - 24 || curr.boundsRight <= b.boundsRight + 24)
+            }
+            val rolePrefixMatch = if (currHeight <= maxNickHeight) {
+                ROLE_BADGE_PREFIXED_NICK_REGEX.matchEntire(curr.text)
+            } else {
+                null
+            }
+            val sameRowAsLeftRoleBadge = sameRowAsRoleBadge && curr.boundsLeft <= (screenWidth * 0.48).toInt()
+            val sameRowAsRightRoleBadge = sameRowAsRoleBadge && curr.boundsRight >= rightNickColumnMinRight
+
+            if (next != null) {
                 val nextSpeaker = classifySpeaker(next, screenWidth)
                 val nextHeight = next.boundsBottom - next.boundsTop
                 val verticalGap = next.boundsTop - curr.boundsBottom
-                val sameLeftColumn = curr.boundsLeft <= leftNickColumnLimit &&
-                    abs(curr.boundsLeft - next.boundsLeft) <= maxLeftDelta
-                val hasNicknameShape = curr.text.length in 1..14 &&
-                    !curr.text.any { it in "，。？！：；,.?!～~" } &&
-                    currHeight <= maxNickHeight
 
+                // Case A: Left-side sender nickname header above `[对方]`/`[群友X]` bubble.
+                // Note: Do NOT require `currSpeaker == ChatSpeaker.OTHER` because a 19-char left-anchored
+                // nickname (`left=242..888` on 1080p) has `centerX > 540`!
+                val isLeftHeaderCandidate = curr.boundsLeft <= leftNickColumnLimit ||
+                    sameRowAsLeftRoleBadge ||
+                    (rolePrefixMatch != null && curr.boundsLeft <= (screenWidth * 0.48).toInt())
+                val leftColumnAligned = (curr.boundsLeft - next.boundsLeft) in -maxLeftDelta..(maxLeftDelta + 132)
                 if (nextSpeaker == ChatSpeaker.OTHER &&
-                    sameLeftColumn &&
-                    hasNicknameShape &&
-                    verticalGap in -10..maxVerticalGap
+                    isLeftHeaderCandidate &&
+                    leftColumnAligned &&
+                    verticalGap in -12..maxVerticalGap
                 ) {
-                    val isSmallerBoxThanBubble = nextHeight >= (currHeight * 1.18).toInt()
-                    val isRepeatedHeader = (leftShortTextFreq[curr.text] ?: 0) >= 2
-                    val isGroupTightHeader = isGroupChat && nextHeight >= (currHeight * 0.85).toInt()
-                    if (isSmallerBoxThanBubble || isRepeatedHeader || isGroupTightHeader) {
+                    val alignedWithLeftAvatarSpan = currHeight <= maxNickHeight && leftAvatarRects.any { av ->
+                        abs(curr.boundsTop - av.boundsTop) <= 28 &&
+                            curr.boundsLeft >= av.boundsRight - 24 &&
+                            next.boundsTop > curr.boundsTop + 18 &&
+                            next.boundsTop <= av.boundsBottom + 8
+                    }
+                    val hasClassicShortShape = currSpeaker == ChatSpeaker.OTHER &&
+                        curr.boundsLeft <= leftNickColumnLimit &&
+                        abs(curr.boundsLeft - next.boundsLeft) <= maxLeftDelta &&
+                        curr.text.length in 1..14 &&
+                        !curr.text.any { it in "，。？！：；,.?!～~" } &&
+                        currHeight <= maxNickHeight &&
+                        (
+                            nextHeight >= (currHeight * 1.18).toInt() ||
+                                (leftShortTextFreq[curr.text] ?: 0) >= 2 ||
+                                (isGroupChat && nextHeight >= (currHeight * 0.85).toInt())
+                            )
+                    val hasGroupCaptionFontShape = isGroupChat &&
+                        currHeight <= captionFontMaxHeight &&
+                        curr.text.length in 1..40 &&
+                        verticalGap <= maxCaptionGap &&
+                        nextHeight >= (currHeight * 1.18).toInt()
+
+                    if (sameRowAsLeftRoleBadge ||
+                        rolePrefixMatch != null ||
+                        alignedWithLeftAvatarSpan ||
+                        hasClassicShortShape ||
+                        hasGroupCaptionFontShape
+                    ) {
+                        val extractedNick = rolePrefixMatch?.groupValues?.getOrNull(1)?.trim().takeUnless { it.isNullOrEmpty() }
+                            ?: curr.text
+                        val hideRawNick = sameRowAsLeftRoleBadge || rolePrefixMatch != null
                         pairedCandidates.add(
                             PendingPairedMessage(
                                 speaker = ChatSpeaker.OTHER,
                                 text = next.text,
                                 boundsTop = next.boundsTop,
-                                rawNickname = curr.text
+                                rawNickname = extractedNick,
+                                omitRawNickInAlias = hideRawNick
                             )
                         )
                         idx += 2
                         pairedWithNext = true
                     }
                 }
+
+                // Case B: Right-side self group nickname header (`Balthazar`) above `[我]`'s own bubble.
+                if (!pairedWithNext &&
+                    nextSpeaker == ChatSpeaker.SELF &&
+                    curr.boundsRight >= rightNickColumnMinRight &&
+                    abs(curr.boundsRight - next.boundsRight) <= maxLeftDelta &&
+                    verticalGap in -12..maxVerticalGap &&
+                    currHeight <= maxNickHeight
+                ) {
+                    val alignedWithRightAvatarSpan = rightAvatarRects.any { av ->
+                        abs(curr.boundsTop - av.boundsTop) <= 28 &&
+                            curr.boundsRight <= av.boundsLeft + 24 &&
+                            next.boundsTop > curr.boundsTop + 18 &&
+                            next.boundsTop <= av.boundsBottom + 8
+                    }
+                    val hasRightGroupCaptionShape = isGroupChat &&
+                        currHeight <= captionFontMaxHeight &&
+                        curr.text.length in 1..32 &&
+                        verticalGap <= maxCaptionGap &&
+                        nextHeight >= (currHeight * 1.18).toInt()
+                    val isRepeatedRightHeader = isGroupChat &&
+                        curr.text.length in 1..16 &&
+                        !curr.text.any { it in "，。？！：；,.?!～~" } &&
+                        (rightShortTextFreq[curr.text] ?: 0) >= 2 &&
+                        nextHeight >= (currHeight * 1.12).toInt()
+
+                    if (sameRowAsRightRoleBadge ||
+                        rolePrefixMatch != null ||
+                        alignedWithRightAvatarSpan ||
+                        hasRightGroupCaptionShape ||
+                        isRepeatedRightHeader
+                    ) {
+                        pairedCandidates.add(
+                            PendingPairedMessage(
+                                speaker = ChatSpeaker.SELF,
+                                text = next.text,
+                                boundsTop = next.boundsTop,
+                                rawNickname = ""
+                            )
+                        )
+                        idx += 2
+                        pairedWithNext = true
+                    }
+                }
+            }
+
+            // Standalone role-badge nickname row above a sticker/image (with no text bubble below):
+            // never emit a `[群主] 昵称` / `[管理员] 昵称` header as a spoken chat message!
+            if (!pairedWithNext && (sameRowAsRoleBadge || rolePrefixMatch != null)) {
+                idx += 1
+                continue
             }
 
             if (!pairedWithNext) {
@@ -1068,7 +1216,7 @@ object ChatScreenContextExtractor {
         }
 
         if (pairedCandidates.isEmpty()) {
-            return CapturedChatContext(packageName = packageName, appName = appName, capturedAtMs = nowMs)
+            return buildEmptyCapturedContext()
         }
 
         // Deduplicate adjacent identical or substring-overlapping nodes at almost identical Y positions
@@ -1078,13 +1226,19 @@ object ChatScreenContextExtractor {
             if (prev != null && abs(msg.boundsTop - prev.boundsTop) <= 24) {
                 if (prev.text == msg.text || prev.text.contains(msg.text)) {
                     if (prev.rawNickname.isBlank() && msg.rawNickname.isNotBlank()) {
-                        deduplicated[deduplicated.lastIndex] = prev.copy(rawNickname = msg.rawNickname)
+                        deduplicated[deduplicated.lastIndex] = prev.copy(
+                            rawNickname = msg.rawNickname,
+                            omitRawNickInAlias = msg.omitRawNickInAlias
+                        )
                     }
                     continue
                 }
                 if (msg.text.contains(prev.text)) {
                     deduplicated[deduplicated.lastIndex] = if (msg.rawNickname.isBlank() && prev.rawNickname.isNotBlank()) {
-                        msg.copy(rawNickname = prev.rawNickname)
+                        msg.copy(
+                            rawNickname = prev.rawNickname,
+                            omitRawNickInAlias = prev.omitRawNickInAlias
+                        )
                     } else {
                         msg
                     }
@@ -1135,7 +1289,9 @@ object ChatScreenContextExtractor {
             emptyList()
         }
 
-        // Assign ordered group aliases `群友A(昵称)`, `群友B(昵称)` after PII redaction of nicknames
+        // Assign ordered group aliases: short clean handles become `群友A(凉意)`, while role-badge rows
+        // or long/punctuated sentence-like group cards (`我一直在寻找，有下一顿饭钱的世界在哪里`) become
+        // pure `群友A` / `群友B` so LLMs never mistake someone's nickname/signature for spoken dialogue.
         val nicknameToGroupAlias = LinkedHashMap<String, String>()
         val finalMessages = rawFinalMessages.mapIndexed { i, msg ->
             val cleanText = if (redactedBodyLines.isNotEmpty()) {
@@ -1144,14 +1300,25 @@ object ChatScreenContextExtractor {
                 msg.text
             }
             val alias = if (msg.speaker == ChatSpeaker.OTHER && msg.rawNickname.isNotBlank()) {
-                val safeNick = if (redactPii) {
-                    LocalPiiRedactor.redactText(msg.rawNickname, context = context).redactedText.trim()
-                } else {
-                    msg.rawNickname.trim()
-                }.take(16)
-                nicknameToGroupAlias.getOrPut(safeNick) {
+                val sanitizedKey = (
+                    if (redactPii) {
+                        LocalPiiRedactor.redactText(msg.rawNickname, context = context).redactedText.trim()
+                    } else {
+                        msg.rawNickname.trim()
+                    }
+                    )
+                    .replace('[', '‹')
+                    .replace(']', '›')
+                val shouldOmitRawNick = msg.omitRawNickInAlias ||
+                    sanitizedKey.length > 8 ||
+                    sanitizedKey.any { it in "，。？！：；,.?!～~" }
+                nicknameToGroupAlias.getOrPut(sanitizedKey) {
                     val letter = ('A' + nicknameToGroupAlias.size.coerceAtMost(25))
-                    "群友$letter($safeNick)"
+                    if (shouldOmitRawNick) {
+                        "群友$letter"
+                    } else {
+                        "群友$letter($sanitizedKey)"
+                    }
                 }
             } else {
                 ""

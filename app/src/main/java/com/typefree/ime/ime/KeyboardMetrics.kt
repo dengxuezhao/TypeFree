@@ -52,6 +52,19 @@ data class KeyboardMetrics(
         private const val BASE_KEY_AREA_4ROW_DP = 210f
         private const val BASE_KEY_AREA_5ROW_DP = 252f
         const val FIXED_CHROME_DP = 42 // 1.dp divider + 5.dp top pad + 34.dp top bar + 2.dp gap
+        /** Transparent floating preedit capsule overhang above the 1.dp keyboard divider (`0px` host viewport loss via `contentTopInsets`). */
+        const val FLOATING_PREEDIT_OVERHANG_DP = 28
+
+        fun computeFloatingOverhangContentTopInset(
+            baseContentTopInsets: Int,
+            floatingOverhangPx: Int,
+            decorHeight: Int
+        ): Int {
+            if (floatingOverhangPx <= 0 || decorHeight <= floatingOverhangPx) {
+                return baseContentTopInsets
+            }
+            return (baseContentTopInsets + floatingOverhangPx).coerceAtMost(decorHeight)
+        }
 
         val ALL_LEVELS: List<Int> = listOf(-2, -1, 0, 1, 2)
 

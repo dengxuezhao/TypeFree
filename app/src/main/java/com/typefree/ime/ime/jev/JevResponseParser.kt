@@ -105,8 +105,8 @@ object JevResponseParser {
 
         return rawResult.copy(
             level = rawResult.level.coerceIn(1, 9),
-            tag = rawResult.tag.replace(RESIDUAL_JEV_XML_TAG_REGEX, "").trim().ifEmpty { "局势分析" }.take(10),
-            subtext = rawResult.subtext.replace(RESIDUAL_JEV_XML_TAG_REGEX, "").trim().ifEmpty { "已结合当前上下文提炼高筹码回复方案" }.take(46),
+            tag = rawResult.tag.replace(RESIDUAL_JEV_XML_TAG_REGEX, "").trim().ifEmpty { "局势分析" }.take(12),
+            subtext = rawResult.subtext.replace(RESIDUAL_JEV_XML_TAG_REGEX, "").trim().ifEmpty { "已结合当前上下文提炼高筹码回复方案" }.take(96),
             options = finalOptions,
             usedVision = usedVision,
             redactionCount = redactionCount

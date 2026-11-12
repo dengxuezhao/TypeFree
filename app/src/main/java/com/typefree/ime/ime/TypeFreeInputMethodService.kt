@@ -278,14 +278,27 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     override fun onComputeInsets(outInsets: Insets?) {
         super.onComputeInsets(outInsets)
         if (outInsets == null) return
+        val decorHeight = window?.window?.decorView?.height ?: 0
         if (_imeState.value.isFullScreenPeekCapturing) {
-            val decorHeight = window?.window?.decorView?.height ?: 0
             if (decorHeight > 0) {
                 outInsets.contentTopInsets = decorHeight
                 outInsets.visibleTopInsets = decorHeight
                 outInsets.touchableInsets = Insets.TOUCHABLE_INSETS_FRAME
                 outInsets.touchableRegion.setEmpty()
             }
+            return
+        }
+        val floatingOverhangPx = (KeyboardMetrics.FLOATING_PREEDIT_OVERHANG_DP * resources.displayMetrics.density).toInt()
+        if (floatingOverhangPx > 0 && decorHeight > floatingOverhangPx) {
+            val adjustedTop = KeyboardMetrics.computeFloatingOverhangContentTopInset(
+                baseContentTopInsets = outInsets.contentTopInsets,
+                floatingOverhangPx = floatingOverhangPx,
+                decorHeight = decorHeight
+            )
+            outInsets.contentTopInsets = adjustedTop
+            outInsets.visibleTopInsets = adjustedTop
+            outInsets.touchableInsets = Insets.TOUCHABLE_INSETS_CONTENT
+            outInsets.touchableRegion.setEmpty()
         }
     }
 

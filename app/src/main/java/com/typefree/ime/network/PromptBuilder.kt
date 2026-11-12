@@ -77,7 +77,8 @@ object PromptBuilder {
 【核心铁律】
 1. 后置因果效用打分（<weights>）与鲜活标签铁律：必须在完整写完 3 条 <opt> 回复正文之后，在末尾 <weights>W1,W2,W3</weights> 中将 W1,W2,W3 替换为分别对应第 1、2、3 条草稿期望博弈胜率的真实正整数，三者相加严格等于 100，每项 >= 8。严禁强制 W1 > W2 > W3（不限制 W1、W2、W3 的大小顺序）！哪一条策略在当前关系边界与风险等级下真实期望效用最高，就把最高权重赋给哪一条（例如前文有“注意分寸”冷淡划界，或遭遇 Lv.7–8 甩锅/探底压价时，策略2「守界/锁价」或策略3「换框/反客」胜率高于策略1顺接，可诚实打出如 29,53,18 或 24,33,43，客户端会自动将最高分策略夺魁置顶）。信息熵动态校准：严禁总是输出 5 或 10 的整倍数固定比例模板，严禁把 W1,W2,W3 原样输出为字母！局势高度明朗、存在压倒性最优解时最高项可拉高至 66–78；局势微妙两难或筹码胶着时最高项在 41–49、次高项在 32–39。鲜活标签铁律：label="..." 必须结合当前具体剧情现起贴切鲜活的 4 字战术词（如 台阶补票、体面守界、场外递梗、锁死底价），严禁照抄提示词中的理论轴名称（禁用“协同破局”“温和设限”“升维重构”“周全给面”“松弛直给”“锚定闭环”直接作为 label）！严禁嵌套 <opt> 标签，回复正文内绝不可包含任何 XML 标签。
 2. 三态角色拓扑路由铁律（先分清是谁在对谁说话！）：
-   - 必须严格根据 <conversation_topology> 与 <chat_context> 中的发言标签（如 `[对方]` vs `[群友A(昵称)]`/`[群友B(昵称)]`）校准机主 `[我]` 的真实身份：
+   - 必须严格根据 <conversation_topology> 与 <chat_context> 中的发言标签（如 `[对方]` vs `[群友A]`/`[群友A(昵称)]`/`[群友B(昵称)]`）校准机主 `[我]` 的真实身份；
+   - 群名片与发言正文严格隔离：`[群友X(昵称)]` 方括号内以及截图气泡上方与头像顶对齐、`群主`/`管理员`/`活跃`/`LV` 头衔旁的小号灰色文字纯属群昵称/群名片（哪怕起得像一句长签名或感慨），绝非群友说出口的台词！严禁把任何人的昵称当作聊天内容去回复或接梗。
    - 态势 A【1v1私聊对象】：双人私聊且左侧为单一对话者，话语直接冲着机主 `[我]` 而来，直接拆解对方对机主的真实诉求与潜台词。
    - 态势 B【群聊当事人】：多人聊天群中存在 `@我`、引用 `[我]` 或近期 `[我]` 已发言参与对线；`<subtext>` 点破发言群友意图，三策在回应同时兼顾群内公开围观体面（①得体接招给台阶 / ②柔中带刚划界 / ③借群气氛幽默化解）。
    - 态势 C【群聊第三方旁观者】：多人聊天群中 `[群友A]` 与 `[群友B]` 等多名群友正在互相接话或互怼，机主 `[我]` 近期未发言且未被点名；严禁将群友 A 对群友 B 的调侃、直呼其名或辈分占便宜（如“再菜也是你爹”）误判为对机主 `[我]` 说话，严禁替被怼群友认领辈分或把口头便宜往自己头上接！`<subtext>` 必须客观说明是哪两位群友在围绕什么斗嘴/聊事且战火未及机主，未提供 <user_bottom_line> 时三策必须切换为旁观插话三轴：① 场外吃瓜/扇风递梗 · ② 顺题聊事（只聊游戏/事件本身，绝不接辈分梗与私怨） · ③ 幽默打圆/另起话头转场。
@@ -375,20 +376,31 @@ object PromptBuilder {
         surroundingBeforeCursor: String = "",
         style: ToneStyle? = null,
         dictionary: List<DictionaryEntry> = emptyList(),
-        chatTopology: ChatTopology = ChatTopology()
+        chatTopology: ChatTopology = ChatTopology(),
+        targetPackageName: String = ""
     ): Pair<String, String> {
         val effectiveTopology = if (!chatTopology.isGroupChat && chatTopology.distinctOtherSenders.isEmpty()) {
             ChatScreenContextExtractor.inferTopologyFromFormattedMessages(chatContextMessages, chatTopology)
         } else {
             chatTopology
         }
-        val effectiveBadge = if (effectiveTopology.isGroupChat && domainProfile == JevDomainProfile.IM_CHAT) {
-            "群聊局势"
+        val isEnterpriseWorkplace = ChatScreenContextExtractor.isEnterpriseWorkplaceImPackage(targetPackageName) ||
+            targetAppName.trim() in setOf("飞书", "Lark", "钉钉", "DingTalk", "企业微信", "WeCom", "Slack")
+        val effectiveBadge = when {
+            isEnterpriseWorkplace ->
+                if (effectiveTopology.isGroupChat) "群聊协同" else "商务协同"
+            effectiveTopology.isGroupChat && domainProfile == JevDomainProfile.IM_CHAT ->
+                "群聊局势"
+            else ->
+                domainProfile.badgeTitle
+        }
+        val effectiveDirective = if (isEnterpriseWorkplace && domainProfile == JevDomainProfile.IM_CHAT) {
+            JevDomainProfile.FORMAL_WORKFLOW.promptDirective
         } else {
-            domainProfile.badgeTitle
+            domainProfile.promptDirective
         }
         val appPart = if (targetAppName.isNotBlank()) "宿主应用：$targetAppName\n" else ""
-        val domainBlock = "<domain_profile>\n${appPart}战术域：$effectiveBadge\n${domainProfile.promptDirective}\n</domain_profile>\n"
+        val domainBlock = "<domain_profile>\n${appPart}战术域：$effectiveBadge\n$effectiveDirective\n</domain_profile>\n"
         val topologyBlock = buildConversationTopologyXmlBlock(effectiveTopology)
         val sceneBlock = if (style != null) buildSceneAndToneXmlBlock(style, targetAppName) else ""
         val dictBlock = buildDictionaryXmlBlock(
@@ -402,7 +414,7 @@ object PromptBuilder {
         }
         val chatContextPart = buildChatContextXmlBlock(chatContextMessages)
         val visionGuidePart = if (hasChatScreenshot) {
-            "<chat_screen_vision_guide>\n附带图片为当前窗口已脱敏的视口截图（右侧气泡为机主[我]；左侧气泡在双人私聊中为[对方]，在多人聊天群中若出现不同头像与顶栏群昵称则代表不同群成员如[群友A]/[群友B]各自发言；黑色色块为端侧隐私遮挡区）。请结合画面中的头像、昵称、气泡归属、表情包或商品/职位卡片，先分清是谁在对谁说话，绝不可将群友A对群友B的调侃误判为对机主[我]说话。\n</chat_screen_vision_guide>\n"
+            "<chat_screen_vision_guide>\n附带图片为当前窗口已脱敏的视口截图（右侧气泡为机主[我]；左侧气泡在双人私聊中为[对方]，在多人聊天群中若出现不同头像与顶栏群昵称则代表不同群成员如[群友A]/[群友B]各自发言；注意聊天气泡正上方与头像顶对齐、`群主`/`管理员`/`LV`徽章旁的小号灰色文字纯属群昵称/群名片而非发言内容，严禁将长句式群昵称误当成聊天台词；黑色色块为端侧隐私遮挡区）。请结合画面中的头像、气泡归属、表情包或商品/职位卡片，先分清是谁在对谁说话，绝不可将群友A对群友B的调侃误判为对机主[我]说话。\n</chat_screen_vision_guide>\n"
         } else {
             ""
         }

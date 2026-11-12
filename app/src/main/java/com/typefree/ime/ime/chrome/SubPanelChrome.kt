@@ -76,32 +76,37 @@ fun SubPanelHeaderBridgeBar(
     val palette = LocalTypeFreeKeyboardPalette.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         // 1-Tap Jump to Built-in QWERTY (`拼/鹤 打字` / `EN 打字`) to type directly over selection
         Box(
             modifier = Modifier
-                .height(30.dp)
-                .clip(RoundedCornerShape(15.dp))
+                .height(26.dp)
+                .clip(RoundedCornerShape(13.dp))
                 .background(palette.keyCapBg)
-                .border(1.dp, palette.keyBorder, RoundedCornerShape(15.dp))
+                .border(1.dp, palette.keyBorder, RoundedCornerShape(13.dp))
                 .clickable(onClick = onSwitchToQwerty)
-                .padding(horizontal = 10.dp),
+                .padding(horizontal = 8.dp),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = if (isFlypyChineseMode) "$inputSchemeShortBadge 打字" else "EN 打字",
-                color = palette.keyTextPrimary,
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1
+                style = androidx.compose.ui.text.TextStyle(
+                    color = palette.keyTextPrimary,
+                    fontSize = 11.sp,
+                    lineHeight = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false)
+                ),
+                maxLines = 1,
+                softWrap = false
             )
         }
 
         // 1-Tap Jump to Built-in Clipboard to paste over selection
         Box(
             modifier = Modifier
-                .size(30.dp)
+                .size(26.dp)
                 .clip(CircleShape)
                 .background(palette.keyCapBg)
                 .border(1.dp, palette.keyBorder, CircleShape)
@@ -112,13 +117,13 @@ fun SubPanelHeaderBridgeBar(
                 imageVector = TypeFreeIcons.Clipboard,
                 contentDescription = "剪贴板",
                 tint = palette.keyTextPrimary,
-                modifier = Modifier.size(14.5.dp)
+                modifier = Modifier.size(13.5.dp)
             )
             if (hasFreshClipboard) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(3.dp)
+                        .padding(2.5.dp)
                         .size(6.dp)
                         .clip(CircleShape)
                         .background(TypeFreeEmerald)
@@ -128,14 +133,14 @@ fun SubPanelHeaderBridgeBar(
 
         // Dismiss Sub-Panel (`×`)
         CircleFloatingKey(
-            size = 30.dp,
+            size = 26.dp,
             onClick = onClose
         ) {
             Icon(
                 imageVector = TypeFreeIcons.Close,
                 contentDescription = closeDescription,
                 tint = palette.keyTextPrimary,
-                modifier = Modifier.size(14.5.dp)
+                modifier = Modifier.size(13.5.dp)
             )
         }
     }

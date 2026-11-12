@@ -43,11 +43,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -92,7 +96,15 @@ fun JevCopilotPanel(
     val palette = LocalTypeFreeKeyboardPalette.current
     val phase = uiState.voicePhase
     val isProcessing = phase is VoicePhase.Processing || uiState.isJevLoading
-    val captured = uiState.capturedChatContext
+    val rawCaptured = uiState.capturedChatContext
+    val captured = if (rawCaptured.packageName.isBlank() && uiState.targetPackage.isNotBlank()) {
+        rawCaptured.copy(
+            packageName = uiState.targetPackage,
+            domainProfile = com.typefree.ime.ime.jev.JevDomainProfile.fromPackage(uiState.targetPackage)
+        )
+    } else {
+        rawCaptured
+    }
     val jevResult = uiState.jevCopilotResult
 
     Column(
@@ -147,14 +159,19 @@ fun JevCopilotPanel(
                 ) {
                     Text(
                         text = statusLabel,
-                        color = statusTint,
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1
+                        style = TextStyle(
+                            color = statusTint,
+                            fontSize = 9.5.sp,
+                            lineHeight = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        ),
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
 
-                // `[⛶ 全屏深读]` 240ms non-disconnecting peek pill
+                // `[⛶ 深读]` 240ms non-disconnecting peek pill (compact so 360dp narrow screens never crush it)
                 Row(
                     modifier = Modifier
                         .height(22.dp)
@@ -169,11 +186,16 @@ fun JevCopilotPanel(
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
-                        text = if (uiState.isFullScreenPeekCapturing) "取景中…" else "⛶ 全屏深读",
-                        color = palette.keyTextPrimary,
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1
+                        text = if (uiState.isFullScreenPeekCapturing) "取景中" else "⛶ 深读",
+                        style = TextStyle(
+                            color = palette.keyTextPrimary,
+                            fontSize = 9.5.sp,
+                            lineHeight = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        ),
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }
@@ -189,7 +211,7 @@ fun JevCopilotPanel(
             )
         }
 
-        // 2. Subtext Intent Radar Bar (`heightIn(min = 24.dp)`, 2-line adaptive)
+        // 2. Subtext Intent Radar Bar (`heightIn(min = 24.dp)`, multi-line adaptive)
         JevSubtextRadarBar(
             result = jevResult,
             isLoading = isProcessing,
@@ -228,10 +250,14 @@ fun JevCopilotPanel(
                 ) {
                     Text(
                         text = uiState.jevErrorMessage,
-                        color = TypeFreeRose,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 2,
+                        style = TextStyle(
+                            color = TypeFreeRose,
+                            fontSize = 11.sp,
+                            lineHeight = 14.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        ),
+                        maxLines = 3,
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -246,9 +272,13 @@ fun JevCopilotPanel(
                     ) {
                         Text(
                             text = "重试",
-                            color = palette.onPrimaryMic,
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Bold
+                            style = TextStyle(
+                                color = palette.onPrimaryMic,
+                                fontSize = 10.5.sp,
+                                lineHeight = 12.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                platformStyle = PlatformTextStyle(includeFontPadding = false)
+                            )
                         )
                     }
                 }
@@ -371,12 +401,13 @@ private fun JevSubtextRadarBar(
             .clip(RoundedCornerShape(7.dp))
             .background(palette.capsuleTrackBg)
             .border(1.dp, palette.keyBorder, RoundedCornerShape(7.dp))
-            .padding(horizontal = 8.dp, vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
         Box(
             modifier = Modifier
+                .padding(top = 3.5.dp)
                 .size(6.dp)
                 .alpha(dotAlpha)
                 .clip(CircleShape)
@@ -384,8 +415,11 @@ private fun JevSubtextRadarBar(
         )
         Text(
             text = combinedRadarText,
-            lineHeight = 13.5.sp,
-            maxLines = 2,
+            style = TextStyle(
+                lineHeight = 13.5.sp,
+                platformStyle = PlatformTextStyle(includeFontPadding = false)
+            ),
+            maxLines = 4,
             modifier = Modifier.weight(1f)
         )
     }
@@ -400,6 +434,8 @@ private fun JevStrategyKeycapCard(
     onClick: () -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val density = LocalDensity.current
+    val textMeasurer = rememberTextMeasurer()
     val isTopPick = rankIndex == 0
     val bgColor = if (isSelected) palette.capsuleSelectedBg else palette.keyCapBg
     val borderColor = if (isSelected) palette.primaryMicSolid else palette.keyBorder
@@ -426,41 +462,72 @@ private fun JevStrategyKeycapCard(
     }
     val checkColor = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
     val inlinePillId = "jev_strategy_pill"
-    val pillWidthSp = (badgeText.length * 8.2f + 14f).coerceIn(58f, 118f).sp
 
-    val inlineContentMap = remember(badgeText, isSelected, isTopPick, palette) {
+    val badgeFontWeight = if (isTopPick || isSelected) FontWeight.ExtraBold else FontWeight.Bold
+    val badgeTextStyle = remember(pillTextColor, badgeFontWeight) {
+        TextStyle(
+            color = pillTextColor,
+            fontSize = 9.5.sp,
+            lineHeight = 11.5.sp,
+            fontWeight = badgeFontWeight,
+            platformStyle = PlatformTextStyle(includeFontPadding = false)
+        )
+    }
+
+    val measuredBadgeWidthPx = remember(badgeText, badgeTextStyle, textMeasurer) {
+        textMeasurer.measure(
+            text = badgeText,
+            style = badgeTextStyle,
+            maxLines = 1,
+            softWrap = false
+        ).size.width
+    }
+    val pillWidthDp = with(density) { measuredBadgeWidthPx.toDp() + 11.dp }
+    val pillHeightDp = 17.5.dp
+    val placeholderWidthSp = with(density) { (pillWidthDp + 5.dp).toSp() }
+    val placeholderHeightSp = with(density) { 18.5.dp.toSp() }
+
+    val inlineContentMap = remember(
+        badgeText,
+        badgeTextStyle,
+        pillWidthDp,
+        placeholderWidthSp,
+        placeholderHeightSp,
+        isSelected,
+        pillBorderWidth,
+        pillBorderColor,
+        palette
+    ) {
         mapOf(
             inlinePillId to InlineTextContent(
                 placeholder = Placeholder(
-                    width = pillWidthSp,
-                    height = 16.sp,
+                    width = placeholderWidthSp,
+                    height = placeholderHeightSp,
                     placeholderVerticalAlign = PlaceholderVerticalAlign.Center
                 )
             ) {
                 Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(end = 4.dp),
+                    modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.CenterStart
                 ) {
                     Box(
                         modifier = Modifier
+                            .width(pillWidthDp)
+                            .height(pillHeightDp)
                             .clip(RoundedCornerShape(5.dp))
                             .background(if (isSelected) palette.primaryMicSolid else palette.capsuleTrackBg)
                             .border(
                                 width = pillBorderWidth,
                                 color = pillBorderColor,
                                 shape = RoundedCornerShape(5.dp)
-                            )
-                            .padding(horizontal = 5.dp, vertical = 1.dp),
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = badgeText,
-                            color = pillTextColor,
-                            fontSize = 9.5.sp,
-                            fontWeight = if (isTopPick || isSelected) FontWeight.ExtraBold else FontWeight.Bold,
-                            maxLines = 1
+                            style = badgeTextStyle,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }
@@ -468,7 +535,7 @@ private fun JevStrategyKeycapCard(
         )
     }
 
-    val cardAnnotatedText = remember(option.replyText, isSelected, checkColor) {
+    val cardAnnotatedText = remember(option.replyText, isSelected, checkColor, badgeText) {
         buildAnnotatedString {
             appendInlineContent(inlinePillId, "[$badgeText] ")
             append(option.replyText)
@@ -498,10 +565,13 @@ private fun JevStrategyKeycapCard(
         Text(
             text = cardAnnotatedText,
             inlineContent = inlineContentMap,
-            color = palette.keyTextPrimary,
-            fontSize = 11.5.sp,
-            fontWeight = FontWeight.SemiBold,
-            lineHeight = 15.5.sp,
+            style = TextStyle(
+                color = palette.keyTextPrimary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                lineHeight = 17.5.sp,
+                platformStyle = PlatformTextStyle(includeFontPadding = false)
+            ),
             maxLines = Int.MAX_VALUE,
             modifier = Modifier.fillMaxWidth()
         )
@@ -532,24 +602,36 @@ private fun JevPlaceholderCard(
     ) {
         Box(
             modifier = Modifier
+                .height(17.5.dp)
                 .clip(RoundedCornerShape(5.dp))
                 .background(palette.capsuleTrackBg)
                 .border(1.dp, palette.keyBorder, RoundedCornerShape(5.dp))
-                .padding(horizontal = 5.5.dp, vertical = 2.dp)
+                .padding(horizontal = 6.dp),
+            contentAlignment = Alignment.Center
         ) {
             Text(
                 text = defaultTags.getOrElse(index) { "策略 ${index + 1}" },
-                color = palette.keyTextMuted,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold
+                style = TextStyle(
+                    color = palette.keyTextMuted,
+                    fontSize = 9.5.sp,
+                    lineHeight = 11.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                ),
+                maxLines = 1,
+                softWrap = false
             )
         }
         Text(
             text = if (isLoading) defaultHints.getOrElse(index) { "推演中…" } else "点击「↻ 换一批」或按住下方底牌条生成策略",
-            color = palette.keyTextMuted,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
+            style = TextStyle(
+                color = palette.keyTextMuted,
+                fontSize = 11.sp,
+                lineHeight = 14.sp,
+                fontWeight = FontWeight.Medium,
+                platformStyle = PlatformTextStyle(includeFontPadding = false)
+            ),
+            maxLines = 2,
             modifier = Modifier.weight(1f)
         )
     }
@@ -744,9 +826,13 @@ private fun JevBottomControlRow(
 
             Text(
                 text = bottomStatusText,
-                color = if (isRecording || userBottomLine.isNotBlank()) palette.keyTextPrimary else palette.keyTextMuted,
-                fontSize = 10.5.sp,
-                fontWeight = if (isRecording || userBottomLine.isNotBlank()) FontWeight.Bold else FontWeight.SemiBold,
+                style = TextStyle(
+                    color = if (isRecording || userBottomLine.isNotBlank()) palette.keyTextPrimary else palette.keyTextMuted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 13.sp,
+                    fontWeight = if (isRecording || userBottomLine.isNotBlank()) FontWeight.Bold else FontWeight.SemiBold,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                ),
                 maxLines = 1,
                 modifier = Modifier.weight(1f)
             )
@@ -766,9 +852,13 @@ private fun JevBottomControlRow(
             ) {
                 Text(
                     text = "取消",
-                    color = palette.keyTextPrimary,
-                    fontSize = 10.5.sp,
-                    fontWeight = FontWeight.Bold,
+                    style = TextStyle(
+                        color = palette.keyTextPrimary,
+                        fontSize = 10.5.sp,
+                        lineHeight = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                    ),
                     maxLines = 1
                 )
             }
@@ -785,9 +875,13 @@ private fun JevBottomControlRow(
             ) {
                 Text(
                     text = "↻ 换一批",
-                    color = palette.keyTextPrimary,
-                    fontSize = 10.5.sp,
-                    fontWeight = FontWeight.Bold,
+                    style = TextStyle(
+                        color = palette.keyTextPrimary,
+                        fontSize = 10.5.sp,
+                        lineHeight = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                    ),
                     maxLines = 1
                 )
             }

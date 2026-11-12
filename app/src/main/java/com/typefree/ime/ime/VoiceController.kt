@@ -476,7 +476,8 @@ class VoiceController(
                 redactionSession = latest.capturedChatContext.redactionSession,
                 wavFile = wavFile,
                 preTranscribedBottomLine = pretranscribedSpeech,
-                chatTopology = effectiveTopology
+                chatTopology = effectiveTopology,
+                targetPackageName = latest.capturedChatContext.packageName.ifBlank { latest.targetPackage }
             )
         } finally {
             // Wall 4: Ephemeral screenshot bytes & audio file wiped immediately after request

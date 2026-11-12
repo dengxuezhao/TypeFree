@@ -970,7 +970,8 @@ class AiPipelineEngine(
         redactionSession: RedactionSession? = null,
         wavFile: File? = null,
         preTranscribedBottomLine: String? = null,
-        chatTopology: ChatTopology = ChatTopology()
+        chatTopology: ChatTopology = ChatTopology(),
+        targetPackageName: String = ""
     ): Result<Pair<JevCopilotResult, String>> = withContext(Dispatchers.IO) {
         try {
             val resolvedBottomLine = when {
@@ -1036,7 +1037,8 @@ class AiPipelineEngine(
                 surroundingBeforeCursor = surroundingBeforeCursor,
                 style = activeStyle,
                 dictionary = settings.dictionary,
-                chatTopology = chatTopology
+                chatTopology = chatTopology,
+                targetPackageName = targetPackageName
             )
 
             val rawOutput: String = if (dedicatedCfg != null) {
