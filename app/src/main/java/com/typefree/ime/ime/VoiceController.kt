@@ -205,6 +205,7 @@ class VoiceController(
                 jevCopilotResult = null,
                 selectedJevStrategyIndex = -1,
                 isJevLoading = !shouldPromptDisclosure,
+                isJevThinking = false,
                 jevErrorMessage = null,
                 jevUserBottomLine = "",
                 jevExcludedReplies = emptyList(),
@@ -225,6 +226,8 @@ class VoiceController(
 
         if (!shouldPromptDisclosure) {
             triggerJevCopilotInference(isRefresh = false)
+        } else {
+            warmVoiceConnectionsInBackground()
         }
     }
 
@@ -291,6 +294,7 @@ class VoiceController(
                 capturedChatContext = refreshedContext,
                 selectedJevStrategyIndex = -1,
                 isJevLoading = true,
+                isJevThinking = false,
                 jevErrorMessage = null,
                 isJevContextInspectorOpen = false,
                 jevExcludedReplies = updatedExcluded
@@ -310,8 +314,13 @@ class VoiceController(
                 isJevContextInspectorOpen = false,
                 isFullScreenPeekCapturing = true,
                 isJevLoading = true,
+                isJevThinking = false,
                 jevErrorMessage = null
             )
+        }
+
+        if (TypeFreeAccessibilityService.activeInstance != null) {
+            warmVoiceConnectionsInBackground()
         }
 
         jevInferenceJob = host.scope.launch {
@@ -400,6 +409,7 @@ class VoiceController(
         pretranscribedSpeech: String? = null
     ) {
         jevInferenceJob?.cancel()
+
         jevInferenceJob = host.scope.launch {
             executeJevCopilotInferenceSuspend(
                 isRefresh = isRefresh,
@@ -425,20 +435,25 @@ class VoiceController(
             host.stateFlow.update {
                 it.copy(
                     isJevLoading = true,
+                    isJevThinking = false,
                     jevErrorMessage = null,
                     isJevContextInspectorOpen = false,
                     selectedJevStrategyIndex = -1
                 )
             }
 
+            val canUseVision = host.aiEngine.canJevUseVisionScreenshot(settingsSnap)
             val needsViewportCaptureOrOcr = !skipViewportRecapture &&
                 !initialSnap.ignoreChatContextForThisTurn &&
                 !initialSnap.showChatContextDisclosurePrompt &&
                 (
-                    (settingsSnap.chatContextSendScreenshot && initialSnap.capturedChatContext.screenshotJpegBase64.isBlank()) ||
+                    (canUseVision && initialSnap.capturedChatContext.screenshotJpegBase64.isBlank()) ||
                         ChatScreenContextExtractor.shouldTriggerOcrForCustomCanvas(initialSnap.capturedChatContext)
                     )
             if (needsViewportCaptureOrOcr) {
+                if (TypeFreeAccessibilityService.activeInstance != null) {
+                    warmVoiceConnectionsInBackground()
+                }
                 val capturedOutcome = runCatching {
                     TypeFreeAccessibilityService.captureChatViewportOutcomeIfAvailable(
                         expectedPackage = initialSnap.targetPackage,
@@ -492,9 +507,41 @@ class VoiceController(
                 wavFile = wavFile,
                 preTranscribedBottomLine = pretranscribedSpeech,
                 chatTopology = effectiveTopology,
-                targetPackageName = latest.capturedChatContext.packageName.ifBlank { latest.targetPackage }
+                targetPackageName = latest.capturedChatContext.packageName.ifBlank { latest.targetPackage },
+                onThinkingStarted = {
+                    host.stateFlow.update { curr ->
+                        if (curr.isJevLoading && curr.jevCopilotResult == null) {
+                            curr.copy(isJevThinking = true)
+                        } else {
+                            curr
+                        }
+                    }
+                },
+                onPartialResult = { partialResult ->
+                    host.stateFlow.update { curr ->
+                        if (!curr.isJevLoading) {
+                            curr
+                        } else {
+                            val prevSelectedReply = curr.jevCopilotResult?.options
+                                ?.getOrNull(curr.selectedJevStrategyIndex)
+                                ?.replyText
+                            val mappedIndex = if (!prevSelectedReply.isNullOrBlank()) {
+                                partialResult.options.indexOfFirst { it.replyText == prevSelectedReply }
+                            } else {
+                                -1
+                            }
+                            curr.copy(
+                                jevCopilotResult = partialResult,
+                                isJevThinking = false,
+                                jevErrorMessage = null,
+                                selectedJevStrategyIndex = mappedIndex
+                            )
+                        }
+                    }
+                }
             )
         } catch (e: CancellationException) {
+            host.stateFlow.update { it.copy(isJevLoading = false, isJevThinking = false) }
             throw e
         } catch (t: Throwable) {
             Result.failure(t)
@@ -520,11 +567,20 @@ class VoiceController(
             onSuccess = { (jevResult, resolvedBottomLine) ->
                 host.performHaptic(strong = false)
                 host.stateFlow.update { curr ->
+                    val prevSelectedReply = curr.jevCopilotResult?.options
+                        ?.getOrNull(curr.selectedJevStrategyIndex)
+                        ?.replyText
+                    val preservedSelectedIdx = if (!prevSelectedReply.isNullOrBlank()) {
+                        jevResult.options.indexOfFirst { it.replyText == prevSelectedReply }
+                    } else {
+                        -1
+                    }
                     curr.copy(
                         voicePhase = VoicePhase.Idle,
                         jevCopilotResult = jevResult,
-                        selectedJevStrategyIndex = -1,
+                        selectedJevStrategyIndex = preservedSelectedIdx,
                         isJevLoading = false,
+                        isJevThinking = false,
                         jevErrorMessage = null,
                         jevUserBottomLine = resolvedBottomLine
                     )
@@ -538,6 +594,7 @@ class VoiceController(
                     curr.copy(
                         voicePhase = VoicePhase.Idle,
                         isJevLoading = false,
+                        isJevThinking = false,
                         jevErrorMessage = friendlyError
                     )
                 }

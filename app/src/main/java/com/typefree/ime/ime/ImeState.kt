@@ -151,6 +151,7 @@ data class ImeUiState(
     val bigBangClipboardItem: ClipboardEntry? = null,
     val jevCopilotResult: JevCopilotResult? = null,
     val isJevLoading: Boolean = false,
+    val isJevThinking: Boolean = false,
     val jevErrorMessage: String? = null,
     val selectedJevStrategyIndex: Int = -1,
     val jevUserBottomLine: String = "",

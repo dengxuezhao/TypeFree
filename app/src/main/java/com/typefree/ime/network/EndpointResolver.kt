@@ -48,6 +48,32 @@ object EndpointResolver {
         }
     }
 
+    fun resolveGeminiStreamEndpoint(rawBaseUrl: String, model: String, apiKey: String): String {
+        val base = rawBaseUrl.trim().trimEnd('/').ifEmpty {
+            "https://generativelanguage.googleapis.com/v1beta"
+        }
+        val cleanModel = model.trim().removePrefix("models/").ifEmpty { "gemini-2.5-flash" }
+        val urlWithoutSse = when {
+            base.contains(":streamGenerateContent") -> base
+            base.contains(":generateContent") -> base.replace(":generateContent", ":streamGenerateContent")
+            base.endsWith("/v1beta") || base.endsWith("/v1") ->
+                "$base/models/$cleanModel:streamGenerateContent"
+            else ->
+                "$base/v1beta/models/$cleanModel:streamGenerateContent"
+        }
+        var result = if (urlWithoutSse.contains("alt=sse")) {
+            urlWithoutSse
+        } else {
+            val sep = if (urlWithoutSse.contains("?")) "&" else "?"
+            "${urlWithoutSse}${sep}alt=sse"
+        }
+        val trimmedKey = apiKey.trim()
+        if (trimmedKey.isNotEmpty() && !result.contains("key=")) {
+            result = "$result&key=$trimmedKey"
+        }
+        return result
+    }
+
     fun resolveOpenAiModelsEndpoint(rawBaseUrl: String): String {
         var base = rawBaseUrl.trim().trimEnd('/')
         if (base.isEmpty()) return "https://api.openai.com/v1/models"

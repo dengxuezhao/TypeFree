@@ -387,6 +387,7 @@ fun ApiSettingsScreen(
             isLlmEnabled = settings.llmConfig.enabled,
             activeJevProviderId = UnifiedProviderCatalog.inferLlmProviderId(settings.jevLlmConfig),
             isJevDedicatedEnabled = settings.jevUseDedicatedModel,
+            hasConfiguredStt = UnifiedProviderCatalog.hasConfiguredSttCredential(settings.sttConfig),
             onSelectProvider = { selectedVaultProviderId = it },
             onUpdateCredential = { updatedCred ->
                 repository.updateSettings { curr ->
@@ -400,12 +401,17 @@ fun ApiSettingsScreen(
                 testSuccessResult = null
                 testErrorMessage = null
                 val spec = UnifiedProviderCatalog.specFor(providerId)
+                val updatedSnap = repository.settings.value
+                val hasSttReady = UnifiedProviderCatalog.hasConfiguredSttCredential(updatedSnap.sttConfig)
                 Toast.makeText(
                     context,
-                    if (providerId == UnifiedProviderCatalog.ID_DEEPSEEK) {
-                        "✓ 已将 DeepSeek 设为二阶段语义润色引擎"
-                    } else {
-                        "🚀 已切换主力方案：${spec.name}"
+                    when {
+                        providerId == UnifiedProviderCatalog.ID_DEEPSEEK && hasSttReady ->
+                            "✓ 已将 DeepSeek 设为文本大脑（二阶段润色 & 军师）"
+                        providerId == UnifiedProviderCatalog.ID_DEEPSEEK ->
+                            "✓ 已启用 DeepSeek（军师/帮写可用；语音听写请再配一个一阶段听音 Key）"
+                        else ->
+                            "🚀 已切换主力方案：${spec.name}"
                     },
                     Toast.LENGTH_SHORT
                 ).show()
@@ -593,6 +599,7 @@ private fun UnifiedProviderVaultCard(
     isLlmEnabled: Boolean,
     activeJevProviderId: String,
     isJevDedicatedEnabled: Boolean,
+    hasConfiguredStt: Boolean,
     onSelectProvider: (String) -> Unit,
     onUpdateCredential: (ProviderCredential) -> Unit,
     onApplyQuickSetup: (String) -> Unit,
@@ -781,18 +788,39 @@ private fun UnifiedProviderVaultCard(
                     val isAlreadyPrimary = selectedSpec.id == activePrimaryProviderId &&
                         (selectedSpec.id != UnifiedProviderCatalog.ID_GOOGLE ||
                             !isLlmEnabled)
+                    val isDeepSeekActiveLlm = selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK &&
+                        activeLlmProviderId == UnifiedProviderCatalog.ID_DEEPSEEK &&
+                        isLlmEnabled
+                    val useSecondaryButton = isAlreadyPrimary || isDeepSeekActiveLlm
+
+                    if (selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK && !hasConfiguredStt) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                        ) {
+                            Text(
+                                text = "💡 DeepSeek 官方 API 为纯文本模型（✦ 军师、问AI、预设帮写可直接用）；如需按麦语音输入，请再配一个「硅基流动（免费 SenseVoice）」或豆包/千问/Gemini 作为一阶段听音引擎。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                lineHeight = 16.sp,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
 
                     Button(
                         onClick = { onApplyQuickSetup(selectedSpec.id) },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(11.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isAlreadyPrimary) {
+                            containerColor = if (useSecondaryButton) {
                                 MaterialTheme.colorScheme.secondaryContainer
                             } else {
                                 MaterialTheme.colorScheme.primary
                             },
-                            contentColor = if (isAlreadyPrimary) {
+                            contentColor = if (useSecondaryButton) {
                                 MaterialTheme.colorScheme.onSecondaryContainer
                             } else {
                                 MaterialTheme.colorScheme.onPrimary
@@ -800,8 +828,10 @@ private fun UnifiedProviderVaultCard(
                         )
                     ) {
                         val btnText = when {
+                            isDeepSeekActiveLlm ->
+                                "✓ 已设为文本大脑（二阶段润色 & 军师）"
                             selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK ->
-                                "🧠 一键设为二阶段润色引擎"
+                                "🧠 一键设为文本大脑（二阶段润色 & 军师）"
                             isAlreadyPrimary ->
                                 "✓ 当前已是主力方案（点击重置为官方推荐模型）"
                             else ->

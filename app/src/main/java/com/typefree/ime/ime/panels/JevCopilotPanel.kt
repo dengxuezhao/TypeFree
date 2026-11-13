@@ -248,6 +248,7 @@ fun JevCopilotPanel(
         JevSubtextRadarBar(
             result = jevResult,
             isLoading = isProcessing,
+            isThinking = uiState.isJevThinking,
             errorMessage = uiState.jevErrorMessage,
             domainBadge = captured.effectiveBadgeTitle
         )
@@ -340,14 +341,23 @@ fun JevCopilotPanel(
                             )
                         }
                     } else {
-                        options.take(3).forEachIndexed { index, option ->
+                        val shownOptions = options.take(3)
+                        shownOptions.forEachIndexed { index, option ->
                             JevStrategyKeycapCard(
                                 rankIndex = index,
                                 option = option,
                                 isSelected = uiState.selectedJevStrategyIndex == index,
-                                enabled = !isProcessing,
+                                enabled = option.replyText.isNotBlank(),
                                 onClick = { onAction(ImeUiAction.SelectJevStrategyCard(index)) }
                             )
+                        }
+                        if (isProcessing && shownOptions.size < 3) {
+                            repeat(3 - shownOptions.size) { remIdx ->
+                                JevPlaceholderCard(
+                                    index = shownOptions.size + remIdx,
+                                    isLoading = true
+                                )
+                            }
                         }
                     }
                 }
@@ -372,6 +382,7 @@ fun JevCopilotPanel(
 private fun JevSubtextRadarBar(
     result: JevCopilotResult?,
     isLoading: Boolean,
+    isThinking: Boolean = false,
     errorMessage: String? = null,
     domainBadge: String
 ) {
@@ -388,6 +399,7 @@ private fun JevSubtextRadarBar(
     )
 
     val hasError = !isLoading && result == null && !errorMessage.isNullOrBlank()
+    val hasRadarText = result != null && result.subtext.isNotBlank()
     val dotColor = when {
         hasError -> TypeFreeRose
         result?.tensionTier == JevTensionTier.SAFE_GREEN -> TypeFreeEmerald
@@ -396,16 +408,20 @@ private fun JevSubtextRadarBar(
     }
 
     val badgeText = when {
-        isLoading -> "Lv.-- 局势推演中"
+        hasRadarText -> "Lv.${result!!.clampedLevel} ${result.tag}"
+        isLoading -> if (isThinking) "Lv.-- 深度思考中" else "Lv.-- 局势推演中"
         hasError -> "Lv.-- 推演未完成"
-        result != null -> "Lv.${result.clampedLevel} ${result.tag}"
         else -> "Lv.-- $domainBadge"
     }
 
     val subtext = when {
-        isLoading -> "正在结合脱敏上文拆解对方潜台词与三套博弈话术…"
+        hasRadarText -> result!!.subtext
+        isLoading -> if (isThinking) {
+            "正在深度推演对方真实动机与三套高筹码博弈话术…"
+        } else {
+            "正在结合脱敏上文拆解对方潜台词与三套博弈话术…"
+        }
         hasError -> errorMessage.orEmpty()
-        result != null -> result.subtext
         else -> "正在自动读取上文并推演三套博弈策略…"
     }
 

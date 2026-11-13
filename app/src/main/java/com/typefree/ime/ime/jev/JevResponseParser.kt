@@ -19,7 +19,9 @@ import kotlin.math.roundToInt
 object JevResponseParser {
 
     private val THINK_BLOCK_REGEX = Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE)
+    private val UNCLOSED_THINK_SUFFIX_REGEX = Regex("<think>[\\s\\S]*$", RegexOption.IGNORE_CASE)
     private val CODE_FENCE_REGEX = Regex("```(?:xml|json|text)?\\s*([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
+    private val UNCLOSED_CODE_FENCE_PREFIX_REGEX = Regex("^```(?:xml|json|text)?\\s*", RegexOption.IGNORE_CASE)
 
     private val LV_TAG_REGEX = Regex("<lv>\\s*(?:lv\\.?\\s*)?([1-9])\\s*</lv>", RegexOption.IGNORE_CASE)
     private val TAG_ELEM_REGEX = Regex("<tag>([\\s\\S]*?)</tag>", RegexOption.IGNORE_CASE)
@@ -107,6 +109,91 @@ object JevResponseParser {
             level = rawResult.level.coerceIn(1, 9),
             tag = rawResult.tag.replace(RESIDUAL_JEV_XML_TAG_REGEX, "").trim().ifEmpty { "局势分析" }.take(12),
             subtext = rawResult.subtext.replace(RESIDUAL_JEV_XML_TAG_REGEX, "").trim().ifEmpty { "已结合当前上下文提炼高筹码回复方案" }.take(96),
+            options = finalOptions,
+            usedVision = usedVision,
+            redactionCount = redactionCount
+        )
+    }
+
+    fun parseStreamingPreview(
+        rawPartialOutput: String,
+        redactionSession: RedactionSession? = null,
+        usedVision: Boolean = false,
+        redactionCount: Int = redactionSession?.redactionCount ?: 0
+    ): JevCopilotResult? {
+        val cleaned = sanitizeRawOutput(rawPartialOutput)
+        if (cleaned.isBlank()) return null
+
+        val hasCompleteSubtext = SUBTEXT_ELEM_REGEX.containsMatchIn(cleaned)
+        val optMatches = OPT_ELEM_REGEX.findAll(cleaned).toList()
+        if (!hasCompleteSubtext && optMatches.isEmpty()) {
+            return null
+        }
+
+        val level = LV_TAG_REGEX.find(cleaned)?.groupValues?.getOrNull(1)?.toIntOrNull()?.coerceIn(1, 9) ?: 4
+        val tag = TAG_ELEM_REGEX.find(cleaned)?.groupValues?.getOrNull(1)
+            ?.replace("\n", " ")
+            ?.replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
+            ?.trim()
+            .orEmpty()
+            .ifEmpty { "局势分析" }
+            .take(12)
+        val subtext = SUBTEXT_ELEM_REGEX.find(cleaned)?.groupValues?.getOrNull(1)
+            ?.replace("\n", " ")
+            ?.replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
+            ?.trim()
+            .orEmpty()
+            .ifEmpty { "正在拆解对方潜台词与策略..." }
+            .take(96)
+
+        val cleanedOptions = optMatches.take(3).mapIndexedNotNull { idx, m ->
+            val innerAttrs = m.groupValues[1]
+            val prefixBeforeMatch = if (m.range.first > 0) cleaned.substring(0, m.range.first) else ""
+            val outerAttrs = PRECEDING_OPEN_OPT_REGEX.find(prefixBeforeMatch)?.groupValues?.getOrNull(1).orEmpty()
+
+            val rawLabel = extractLabelFromAttrs(innerAttrs)
+                ?: extractLabelFromAttrs(outerAttrs)
+                ?: DEFAULT_FALLBACK_LABELS.getOrElse(idx) { "策略 ${idx + 1}" }
+            val cleanLabel = rawLabel
+                .replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
+                .trim()
+                .removeSurrounding("\"")
+                .removeSurrounding("“", "”")
+                .removeSurrounding("'")
+                .trim()
+                .ifEmpty { DEFAULT_FALLBACK_LABELS.getOrElse(idx) { "策略 ${idx + 1}" } }
+                .take(8)
+            val prob = extractProbFromAttrs(innerAttrs).takeIf { it > 0 }
+                ?: extractProbFromAttrs(outerAttrs)
+            val body = cleanOptionText(m.groupValues[2])
+            if (body.isBlank()) {
+                null
+            } else {
+                val restoredBody = if (redactionSession != null) {
+                    cleanOptionText(redactionSession.restoreSafePlaceholders(body))
+                } else {
+                    body
+                }
+                JevStrategyOption(label = cleanLabel, replyText = restoredBody, probability = prob)
+            }
+        }
+
+        val postHocWeights = extractPostHocWeights(cleaned)
+        val hasClosedWeights = WEIGHTS_ELEM_REGEX.containsMatchIn(cleaned)
+        val finalOptions = if (hasClosedWeights && cleanedOptions.isNotEmpty()) {
+            val weighted = cleanedOptions.mapIndexed { idx, opt ->
+                val postHoc = postHocWeights.getOrNull(idx) ?: 0
+                if (postHoc > 0) opt.copy(probability = postHoc) else opt
+            }
+            normalizeAndSortOptions(weighted)
+        } else {
+            cleanedOptions
+        }
+
+        return JevCopilotResult(
+            level = level,
+            tag = tag,
+            subtext = subtext,
             options = finalOptions,
             usedVision = usedVision,
             redactionCount = redactionCount
@@ -231,13 +318,17 @@ object JevResponseParser {
     }
 
     private fun sanitizeRawOutput(raw: String): String {
-        var text = raw.replace(THINK_BLOCK_REGEX, "").trim()
+        var text = raw.replace(THINK_BLOCK_REGEX, "")
+            .replace(UNCLOSED_THINK_SUFFIX_REGEX, "")
+            .trim()
         val fenceMatch = CODE_FENCE_REGEX.find(text)
         if (fenceMatch != null && (text.startsWith("```") || text.contains("<jev") || text.contains("{"))) {
             val inner = fenceMatch.groupValues[1].trim()
             if (inner.isNotEmpty()) {
                 text = inner
             }
+        } else if (text.startsWith("```")) {
+            text = text.replace(UNCLOSED_CODE_FENCE_PREFIX_REGEX, "")
         }
         return text.trim()
     }

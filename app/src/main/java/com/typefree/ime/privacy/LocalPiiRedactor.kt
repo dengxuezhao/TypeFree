@@ -298,11 +298,13 @@ object LocalPiiRedactor {
 
         // Also scan sourceNodes so any visible node containing PII contributes its screen bounds
         // for screenshot blackout, and any high-risk node triggers screenshot drop even if outside bubble list.
+        // Pass context = null here because full-text TextClassifier already ran on rawText above,
+        // avoiding 40-100 synchronous cross-process TextClassifier Binder IPC calls on the main thread.
         val redactedBounds = mutableListOf<IntArray>()
         if (sourceNodes.isNotEmpty()) {
             for (node in sourceNodes) {
                 if (!node.isVisibleToUser || node.text.isBlank()) continue
-                val nodeMatches = resolveNonOverlappingMatches(collectCandidates(node.text, context))
+                val nodeMatches = resolveNonOverlappingMatches(collectCandidates(node.text, context = null))
                 if (nodeMatches.isNotEmpty()) {
                     if (nodeMatches.any { !it.category.restorable }) {
                         hasHighRisk = true

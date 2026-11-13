@@ -576,13 +576,20 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     cropped
                 }
 
-                val ocrNodes = ViewportOcrExtractor.recognizeViewportNodes(
-                    bitmap = scaledBitmap,
-                    cropX = cropX,
-                    cropY = cropY,
-                    scaleRatio = scaleRatio,
-                    timeoutMs = 750L
-                )
+                val shouldRunOcr = needsOcrForCustomCanvas ||
+                    isFullScreenPeek ||
+                    ViewportOcrExtractor.debugSimulatedOcrNodesForTest != null
+                val ocrNodes = if (shouldRunOcr) {
+                    ViewportOcrExtractor.recognizeViewportNodes(
+                        bitmap = scaledBitmap,
+                        cropX = cropX,
+                        cropY = cropY,
+                        scaleRatio = scaleRatio,
+                        timeoutMs = 750L
+                    )
+                } else {
+                    emptyList()
+                }
                 val fusedExtracted = if (ocrNodes.isNotEmpty()) {
                     val merged2DNodes = ChatScreenContextExtractor.mergeCoordinateNodes(a11yNodes, ocrNodes)
                     ChatScreenContextExtractor.extractChatContext(

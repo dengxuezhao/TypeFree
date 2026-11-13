@@ -88,7 +88,7 @@ object UnifiedProviderCatalog {
             id = ID_DEEPSEEK,
             name = "DeepSeek",
             badge = "中文润色标杆",
-            summary = "擅长二阶段中文口语重组与帮我写，可搭配任意流式听音引擎混搭使用",
+            summary = "纯文本推理大脑 · 擅长二阶段口语润色、帮我写与 ✦ 军师（不含语音转写，按麦需搭配任一听音引擎）",
             defaultBaseUrl = "https://api.deepseek.com/v1",
             supportsStt = false,
             supportsLlm = true,
@@ -211,6 +211,18 @@ object UnifiedProviderCatalog {
             lower.contains("127.0.0.1") ||
             lower.contains("10.0.2.2") ||
             lower.contains("192.168.")
+    }
+
+    fun hasConfiguredSttCredential(stt: SttConfig): Boolean {
+        if (stt.apiKey.isNotBlank()) return true
+        return stt.protocol == SttProtocol.OPENAI_HTTP && isLocalUrl(stt.baseUrl)
+    }
+
+    fun resolveFallbackSttProviderFromVault(vault: Map<String, ProviderCredential>): String? {
+        val priority = listOf(ID_SILICONFLOW, ID_ALIYUN, ID_VOLCENGINE, ID_GOOGLE, ID_CUSTOM)
+        return priority.firstOrNull { id ->
+            specFor(id).supportsStt && isCredentialReady(id, vault[id])
+        }
     }
 
     /**
@@ -466,18 +478,43 @@ object UnifiedProviderCatalog {
             }
 
             ID_DEEPSEEK -> {
-                settings.copy(
+                val effectiveBaseUrl = cred.customBaseUrl.ifBlank { "https://api.deepseek.com/v1" }
+                val syncedJev = if (!settings.jevUseDedicatedModel && settings.jevLlmConfig.apiKey.isBlank()) {
+                    settings.jevLlmConfig.copy(
+                        enabled = true,
+                        presetId = "deepseek",
+                        baseUrl = effectiveBaseUrl,
+                        apiKey = cred.apiKey,
+                        model = "deepseek-chat",
+                        temperature = 0.35f,
+                        thinkingMode = ThinkingMode.AUTO
+                    )
+                } else {
+                    settings.jevLlmConfig
+                }
+                val baseUpdated = settings.copy(
                     providerVault = vault,
                     pipelineMode = PipelineMode.DUAL_STAGE,
                     llmConfig = settings.llmConfig.copy(
                         enabled = true,
                         presetId = "deepseek",
-                        baseUrl = "https://api.deepseek.com/v1",
+                        baseUrl = effectiveBaseUrl,
                         apiKey = cred.apiKey,
                         model = "deepseek-chat",
                         thinkingMode = ThinkingMode.DISABLED
-                    )
+                    ),
+                    jevLlmConfig = syncedJev
                 )
+                if (!hasConfiguredSttCredential(baseUpdated.sttConfig)) {
+                    val fallbackSttId = resolveFallbackSttProviderFromVault(vault)
+                    if (fallbackSttId != null) {
+                        selectSttProvider(baseUpdated, fallbackSttId)
+                    } else {
+                        baseUpdated
+                    }
+                } else {
+                    baseUpdated
+                }
             }
 
             else -> {
