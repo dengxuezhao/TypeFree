@@ -107,6 +107,7 @@ import com.typefree.ime.data.SttProtocol
 import com.typefree.ime.data.UsageStatsSummary
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.network.AiPipelineEngine
+import com.typefree.ime.network.EndpointResolver
 import com.typefree.ime.network.PipelineStage
 import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.ui.AppDestinations
@@ -204,7 +205,7 @@ object SetupStatsHelper {
                 val stt = settings.sttConfig
                 val sttOk = when (stt.protocol) {
                     SttProtocol.OPENAI_HTTP -> stt.baseUrl.isNotBlank() &&
-                        stt.model.isNotBlank() &&
+                        (stt.model.isNotBlank() || EndpointResolver.isDeepSeekAsrEndpoint(stt.baseUrl)) &&
                         (stt.apiKey.isNotBlank() || AiPipelineEngine.isLocalEndpoint(stt.baseUrl))
                     SttProtocol.ALIYUN_DASHSCOPE_WS,
                     SttProtocol.VOLCENGINE_SAUC_WS,
@@ -235,7 +236,13 @@ object SetupStatsHelper {
         return when (settings.pipelineMode) {
             PipelineMode.DUAL_STAGE -> {
                 val sttShort = when (settings.sttConfig.protocol) {
-                    SttProtocol.OPENAI_HTTP -> settings.sttConfig.model.substringAfterLast('/').ifBlank { "STT" }
+                    SttProtocol.OPENAI_HTTP -> if (EndpointResolver.isDeepSeekAsrEndpoint(settings.sttConfig.baseUrl) ||
+                        settings.sttConfig.presetId == "deepseek_asr"
+                    ) {
+                        "DeepSeek ASR"
+                    } else {
+                        settings.sttConfig.model.substringAfterLast('/').ifBlank { "STT" }
+                    }
                     SttProtocol.ALIYUN_DASHSCOPE_WS -> "百炼流式"
                     SttProtocol.VOLCENGINE_SAUC_WS -> "豆包流式"
                     SttProtocol.GEMINI_LIVE_WS -> "Gemini Live"

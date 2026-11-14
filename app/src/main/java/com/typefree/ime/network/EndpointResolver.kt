@@ -3,10 +3,25 @@ package com.typefree.ime.network
 object EndpointResolver {
 
     private val versionedSuffixes = listOf("/v1", "/v2", "/v3", "/v4", "/openai", "/v1beta/openai")
+    const val DEFAULT_DEEPSEEK_ASR_URL = "https://api.deepseek.com/v1/tools/asr"
+
+    fun isOfficialDeepSeekHost(rawUrl: String): Boolean {
+        val origin = extractHttpOrigin(rawUrl)?.lowercase() ?: return false
+        val host = origin.substringAfter("://").substringBefore(":")
+        return host == "api.deepseek.com"
+    }
+
+    fun isDeepSeekAsrEndpoint(rawUrl: String): Boolean {
+        val clean = rawUrl.trim().trimEnd('/')
+        if (clean.isEmpty()) return false
+        return isOfficialDeepSeekHost(clean) || clean.endsWith("/tools/asr", ignoreCase = true)
+    }
 
     fun resolveSttEndpoint(rawBaseUrl: String): String {
         val base = rawBaseUrl.trim().trimEnd('/')
         if (base.isEmpty()) return "https://api.openai.com/v1/audio/transcriptions"
+        if (isOfficialDeepSeekHost(base)) return DEFAULT_DEEPSEEK_ASR_URL
+        if (base.endsWith("/tools/asr", ignoreCase = true)) return base
         if (base.endsWith("/audio/transcriptions")) return base
         val hasVersionPrefix = versionedSuffixes.any { base.endsWith(it, ignoreCase = true) }
         return if (hasVersionPrefix) {
@@ -18,6 +33,8 @@ object EndpointResolver {
 
     fun resolveChatEndpoint(rawBaseUrl: String): String {
         val base = rawBaseUrl.trim().trimEnd('/')
+            .removeSuffix("/tools/asr")
+            .trimEnd('/')
         if (base.isEmpty()) return "https://api.openai.com/v1/chat/completions"
         if (base.endsWith("/chat/completions")) return base
         val hasVersionPrefix = versionedSuffixes.any { base.endsWith(it, ignoreCase = true) }
@@ -80,6 +97,7 @@ object EndpointResolver {
         base = base
             .removeSuffix("/chat/completions")
             .removeSuffix("/audio/transcriptions")
+            .removeSuffix("/tools/asr")
             .removeSuffix("/completions")
             .trimEnd('/')
         if (base.endsWith("/models", ignoreCase = true)) return base

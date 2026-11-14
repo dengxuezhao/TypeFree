@@ -185,7 +185,9 @@ fun ApiSettingsScreen(
             )
             ModelCapabilitySlot.LLM -> {
                 val effKey = settings.llmConfig.apiKey.ifBlank {
-                    if (settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS) settings.sttConfig.apiKey else ""
+                    if (settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS ||
+                        EndpointResolver.isDeepSeekAsrEndpoint(settings.sttConfig.baseUrl)
+                    ) settings.sttConfig.apiKey else ""
                 }
                 Triple(
                     settings.llmConfig.baseUrl,
@@ -247,7 +249,9 @@ fun ApiSettingsScreen(
             ModelCapabilitySlot.LLM -> {
                 activeBaseUrl = settings.llmConfig.baseUrl
                 activeApiKey = settings.llmConfig.apiKey.ifBlank {
-                    if (settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS) settings.sttConfig.apiKey else ""
+                    if (settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS ||
+                        EndpointResolver.isDeepSeekAsrEndpoint(settings.sttConfig.baseUrl)
+                    ) settings.sttConfig.apiKey else ""
                 }
                 currentModel = settings.llmConfig.model
                 activeProtocol = MultimodalProtocol.OPENAI_AUDIO_CHAT
@@ -318,7 +322,7 @@ fun ApiSettingsScreen(
                     fontWeight = FontWeight.ExtraBold
                 )
                 Text(
-                    text = "同一服务商只需填写一次 Key，一键切换 Google Gemini 0.5s 流式、百炼、豆包或自由混搭",
+                    text = "同一服务商只需填写一次 Key，一键切换 Google Gemini 0.5s 流式、DeepSeek 单 Key 闭环、百炼、豆包或自由混搭",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -394,22 +398,24 @@ fun ApiSettingsScreen(
                     UnifiedProviderCatalog.updateProviderCredential(curr, updatedCred)
                 }
             },
-            onApplyQuickSetup = { providerId ->
+            onApplyQuickSetup = { providerId, keepExistingThirdPartyStt ->
                 repository.updateSettings { curr ->
-                    UnifiedProviderCatalog.applyQuickProviderSetup(curr, providerId)
+                    UnifiedProviderCatalog.applyQuickProviderSetup(
+                        settings = curr,
+                        providerId = providerId,
+                        keepExistingThirdPartyStt = keepExistingThirdPartyStt
+                    )
                 }
                 testSuccessResult = null
                 testErrorMessage = null
                 val spec = UnifiedProviderCatalog.specFor(providerId)
-                val updatedSnap = repository.settings.value
-                val hasSttReady = UnifiedProviderCatalog.hasConfiguredSttCredential(updatedSnap.sttConfig)
                 Toast.makeText(
                     context,
                     when {
-                        providerId == UnifiedProviderCatalog.ID_DEEPSEEK && hasSttReady ->
-                            "✓ 已将 DeepSeek 设为文本大脑（二阶段润色 & 军师）"
+                        providerId == UnifiedProviderCatalog.ID_DEEPSEEK && keepExistingThirdPartyStt ->
+                            "✓ 已将 DeepSeek 设为文本大脑（保留当前第三方听音引擎）"
                         providerId == UnifiedProviderCatalog.ID_DEEPSEEK ->
-                            "✓ 已启用 DeepSeek（军师/帮写可用；语音听写请再配一个一阶段听音 Key）"
+                            "🚀 已启用 DeepSeek 单 Key 闭环（官方语音识别 + 二阶段润色 + 军师）"
                         else ->
                             "🚀 已切换主力方案：${spec.name}"
                     },
@@ -602,7 +608,7 @@ private fun UnifiedProviderVaultCard(
     hasConfiguredStt: Boolean,
     onSelectProvider: (String) -> Unit,
     onUpdateCredential: (ProviderCredential) -> Unit,
-    onApplyQuickSetup: (String) -> Unit,
+    onApplyQuickSetup: (String, Boolean) -> Unit,
     onPasteClipboard: () -> String
 ) {
     val selectedSpec = remember(selectedProviderId) {
@@ -787,23 +793,35 @@ private fun UnifiedProviderVaultCard(
 
                     val isAlreadyPrimary = selectedSpec.id == activePrimaryProviderId &&
                         (selectedSpec.id != UnifiedProviderCatalog.ID_GOOGLE ||
-                            !isLlmEnabled)
-                    val isDeepSeekActiveLlm = selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK &&
+                            !isLlmEnabled) &&
+                        (selectedSpec.id != UnifiedProviderCatalog.ID_DEEPSEEK ||
+                            (activeLlmProviderId == UnifiedProviderCatalog.ID_DEEPSEEK && isLlmEnabled))
+                    val isDeepSeekFullLoop = selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK &&
+                        activePrimaryProviderId == UnifiedProviderCatalog.ID_DEEPSEEK &&
                         activeLlmProviderId == UnifiedProviderCatalog.ID_DEEPSEEK &&
                         isLlmEnabled
-                    val useSecondaryButton = isAlreadyPrimary || isDeepSeekActiveLlm
+                    val isDeepSeekLlmWithThirdPartyStt = selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK &&
+                        activePrimaryProviderId != UnifiedProviderCatalog.ID_DEEPSEEK &&
+                        activeLlmProviderId == UnifiedProviderCatalog.ID_DEEPSEEK &&
+                        isLlmEnabled
+                    val hasThirdPartySttReady = (hasConfiguredStt && activePrimaryProviderId != UnifiedProviderCatalog.ID_DEEPSEEK) ||
+                        UnifiedProviderCatalog.resolveFallbackSttProviderFromVault(
+                            vault = vault,
+                            excludeProviderId = UnifiedProviderCatalog.ID_DEEPSEEK
+                        ) != null
+                    val useSecondaryButton = isAlreadyPrimary || isDeepSeekFullLoop
 
-                    if (selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK && !hasConfiguredStt) {
+                    if (selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK) {
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                            color = TypeFreeEmerald.copy(alpha = 0.10f),
+                            border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.38f))
                         ) {
                             Text(
-                                text = "💡 DeepSeek 官方 API 为纯文本模型（✦ 军师、问AI、预设帮写可直接用）；如需按麦语音输入，请再配一个「硅基流动（免费 SenseVoice）」或豆包/千问/Gemini 作为一阶段听音引擎。",
+                                text = "✨ 单 Key 全链路闭环已支持：只填 1 个 DeepSeek API Key 即可跑通「一阶段官方语音识别 (/v1/tools/asr，自动识别中/粤/英/日/韩) + 二阶段口语润色/快译 (deepseek-chat) + ✦ 军师/帮写/问AI」；若已配置 Gemini Live / 豆包 / 百炼 / 硅基流动流式听音，也可在下方一键切换保留第三方听音引擎。",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                color = MaterialTheme.colorScheme.onSurface,
                                 lineHeight = 16.sp,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
                             )
@@ -811,7 +829,7 @@ private fun UnifiedProviderVaultCard(
                     }
 
                     Button(
-                        onClick = { onApplyQuickSetup(selectedSpec.id) },
+                        onClick = { onApplyQuickSetup(selectedSpec.id, false) },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(11.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -828,10 +846,10 @@ private fun UnifiedProviderVaultCard(
                         )
                     ) {
                         val btnText = when {
-                            isDeepSeekActiveLlm ->
-                                "✓ 已设为文本大脑（二阶段润色 & 军师）"
+                            isDeepSeekFullLoop ->
+                                "✓ 已启用 DeepSeek 单 Key 闭环（语音识别 + 润色 & 军师）"
                             selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK ->
-                                "🧠 一键设为文本大脑（二阶段润色 & 军师）"
+                                "🚀 一键启用 DeepSeek 单 Key 闭环（语音识别 + 润色 & 军师）"
                             isAlreadyPrimary ->
                                 "✓ 当前已是主力方案（点击重置为官方推荐模型）"
                             else ->
@@ -841,6 +859,24 @@ private fun UnifiedProviderVaultCard(
                             text = btnText,
                             fontWeight = FontWeight.Bold
                         )
+                    }
+
+                    if (selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK && hasThirdPartySttReady) {
+                        OutlinedButton(
+                            onClick = { onApplyQuickSetup(UnifiedProviderCatalog.ID_DEEPSEEK, true) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(11.dp)
+                        ) {
+                            Text(
+                                text = if (isDeepSeekLlmWithThirdPartyStt) {
+                                    "✓ 当前混搭中：保留第三方听音 + DeepSeek 文本大脑"
+                                } else {
+                                    "🧠 保留当前第三方听音引擎，仅将 DeepSeek 设为文本大脑"
+                                },
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                 }
             }
@@ -1049,6 +1085,23 @@ private fun UnifiedWorkflowRoutingCard(
                                 ) {
                                     Text(
                                         text = "✨ Gemini 3.5 Live SMART 已激活：边说边实时出字，松手 ~0.5s 秒出净稿，原生自带去口癖与改口自纠！日常口述无需开启二阶段润色；使用「帮我写 / 改写 / 快译 / ==问AI」时会自动共享同一把 Gemini Key 调用 Flash-Lite。",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        lineHeight = 16.sp,
+                                        modifier = Modifier.padding(10.dp)
+                                    )
+                                }
+                            } else if (activeSttPid == UnifiedProviderCatalog.ID_DEEPSEEK ||
+                                EndpointResolver.isDeepSeekAsrEndpoint(settings.sttConfig.baseUrl)
+                            ) {
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = TypeFreeEmerald.copy(alpha = 0.10f),
+                                    border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.42f))
+                                ) {
+                                    Text(
+                                        text = "🎙️ DeepSeek 官方语音识别 (/v1/tools/asr) 已激活：与 DeepSeek 文本润色共用单 Key，16kHz 单声道 WAV 直传，服务端自动检测中/粤/英/日/韩等语种（请求体仅上传音频文件，无需传 model 或 language）。",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurface,
                                         lineHeight = 16.sp,

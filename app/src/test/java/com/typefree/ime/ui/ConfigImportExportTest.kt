@@ -165,6 +165,20 @@ class ConfigImportExportTest {
         assertEquals("sk-shared-sf", syncedLlm.apiKey)
         assertEquals("Qwen/Qwen2.5-7B-Instruct", syncedLlm.model)
 
+        // DeepSeek ASR STT credentials reuse for LLM stage
+        val dsStt = SttConfig(
+            presetId = "deepseek_asr",
+            baseUrl = "https://api.deepseek.com/v1/tools/asr",
+            apiKey = "sk-shared-ds",
+            model = "deepseek-asr"
+        )
+        val syncedDsLlm = ApiConfigBackupHelper.reuseSttCredentialsForLlm(dsStt, defaultLlm)
+        assertTrue(syncedDsLlm.enabled)
+        assertEquals("deepseek", syncedDsLlm.presetId)
+        assertEquals("https://api.deepseek.com/v1", syncedDsLlm.baseUrl)
+        assertEquals("sk-shared-ds", syncedDsLlm.apiKey)
+        assertEquals("deepseek-chat", syncedDsLlm.model)
+
         // Switching preset preserves already-entered API key
         val groqPreset = ApiPresets.sttPresets.first { it.id == "groq" }
         val switchedStt = ApiConfigBackupHelper.applyPresetToStt(stt, groqPreset)

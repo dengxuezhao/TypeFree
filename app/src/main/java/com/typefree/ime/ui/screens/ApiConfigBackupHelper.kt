@@ -131,6 +131,28 @@ object ApiConfigBackupHelper {
             )
         }
 
+        if (stt.presetId == "deepseek_asr" ||
+            stt.presetId == "deepseek" ||
+            EndpointResolver.isDeepSeekAsrEndpoint(sttUrl)
+        ) {
+            val chatBaseUrl = sttUrl
+                .removeSuffix("/tools/asr")
+                .trimEnd('/')
+                .ifBlank { "https://api.deepseek.com/v1" }
+            val targetModel = if ((llmLower.contains("deepseek.com") || llm.presetId == "deepseek") && llm.model.isNotBlank()) {
+                llm.model
+            } else {
+                "deepseek-chat"
+            }
+            return llm.copy(
+                enabled = true,
+                presetId = "deepseek",
+                baseUrl = chatBaseUrl,
+                apiKey = stt.apiKey.trim().ifBlank { llm.apiKey },
+                model = targetModel
+            )
+        }
+
         if (stt.protocol == SttProtocol.ALIYUN_DASHSCOPE_WS || sttLower.contains("dashscope.aliyuncs.com")) {
             val targetModel = if (llmLower.contains("dashscope.aliyuncs.com") && llm.model.isNotBlank()) {
                 llm.model
@@ -205,6 +227,7 @@ object ApiConfigBackupHelper {
                 "FunAudioLLM/SenseVoiceSmall",
                 "TeleAI/TeleSpeechASR"
             )
+            "deepseek_asr", "deepseek" -> listOf("deepseek-asr")
             "groq" -> listOf(
                 "whisper-large-v3-turbo",
                 "whisper-large-v3"
@@ -382,14 +405,33 @@ object ApiConfigBackupHelper {
                 val importedSttProto = sttObj.optString("protocol")?.let { p ->
                     SttProtocol.entries.firstOrNull { it.name.equals(p, ignoreCase = true) }
                 }
+                val rawPresetId = sttObj.optString("presetId") ?: existingSettings.sttConfig.presetId
+                val rawBaseUrl = sttObj.optString("baseUrl")?.trim() ?: existingSettings.sttConfig.baseUrl
+                val isDeepSeekStt = rawPresetId == "deepseek_asr" ||
+                    rawPresetId == "deepseek" ||
+                    EndpointResolver.isDeepSeekAsrEndpoint(rawBaseUrl)
+                val normalizedBaseUrl = if (isDeepSeekStt) {
+                    EndpointResolver.resolveSttEndpoint(rawBaseUrl.ifBlank { EndpointResolver.DEFAULT_DEEPSEEK_ASR_URL })
+                } else {
+                    rawBaseUrl
+                }
+                val rawModel = sttObj.optString("model")?.trim() ?: existingSettings.sttConfig.model
+                val normalizedModel = if (
+                    isDeepSeekStt &&
+                    (rawModel.isBlank() || (!sttObj.has("model") && rawModel == "FunAudioLLM/SenseVoiceSmall"))
+                ) {
+                    "deepseek-asr"
+                } else {
+                    rawModel
+                }
                 existingSettings.sttConfig.copy(
-                    presetId = sttObj.optString("presetId") ?: existingSettings.sttConfig.presetId,
+                    presetId = if (isDeepSeekStt && !sttObj.has("presetId")) "deepseek_asr" else rawPresetId,
                     protocol = importedSttProto ?: existingSettings.sttConfig.protocol,
-                    baseUrl = sttObj.optString("baseUrl")?.trim() ?: existingSettings.sttConfig.baseUrl,
+                    baseUrl = normalizedBaseUrl,
                     apiKey = resolveImportedSecret(importedKey, existingSettings.sttConfig.apiKey),
                     appId = sttObj.optString("appId")?.trim() ?: existingSettings.sttConfig.appId,
                     resourceId = sttObj.optString("resourceId")?.trim() ?: existingSettings.sttConfig.resourceId,
-                    model = sttObj.optString("model")?.trim() ?: existingSettings.sttConfig.model,
+                    model = normalizedModel,
                     language = sttObj.optString("language") ?: existingSettings.sttConfig.language
                 )
             } else {
@@ -622,8 +664,35 @@ object ApiConfigBackupHelper {
                 dictionary = mergedDict
             )
 
+            val hydratedVault = UnifiedProviderCatalog.hydrateVaultFromSettings(candidate)
+            val syncedStt = if (candidate.sttConfig.apiKey.isBlank()) {
+                val sttPid = UnifiedProviderCatalog.inferSttProviderId(candidate.sttConfig)
+                val cred = hydratedVault[sttPid]
+                if (cred != null && cred.apiKey.isNotBlank()) {
+                    candidate.sttConfig.copy(apiKey = cred.apiKey)
+                } else {
+                    candidate.sttConfig
+                }
+            } else {
+                candidate.sttConfig
+            }
+            val syncedLlm = if (candidate.llmConfig.apiKey.isBlank()) {
+                val llmPid = UnifiedProviderCatalog.inferLlmProviderId(candidate.llmConfig)
+                val cred = hydratedVault[llmPid]
+                if (cred != null && cred.apiKey.isNotBlank()) {
+                    candidate.llmConfig.copy(apiKey = cred.apiKey)
+                } else {
+                    candidate.llmConfig
+                }
+            } else {
+                candidate.llmConfig
+            }
             Result.success(
-                candidate.copy(providerVault = UnifiedProviderCatalog.hydrateVaultFromSettings(candidate))
+                candidate.copy(
+                    sttConfig = syncedStt,
+                    llmConfig = syncedLlm,
+                    providerVault = hydratedVault
+                )
             )
         } catch (e: Exception) {
             Result.failure(IllegalArgumentException("导入配置时发生异常：${e.message}"))

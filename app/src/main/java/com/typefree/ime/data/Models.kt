@@ -206,6 +206,14 @@ object ApiPresets {
             sttProtocol = SttProtocol.OPENAI_HTTP
         ),
         ApiPreset(
+            id = "deepseek_asr",
+            name = "DeepSeek 官方语音识别",
+            subtitle = "与 DeepSeek 文本共用单 Key，自动检测中/粤/英/日/韩",
+            baseUrl = "https://api.deepseek.com/v1/tools/asr",
+            defaultModel = "deepseek-asr",
+            sttProtocol = SttProtocol.OPENAI_HTTP
+        ),
+        ApiPreset(
             id = "aliyun_asr_ws",
             name = "阿里云百炼实时流式",
             subtitle = "单 sk-Key 边说边识别，松手百毫秒直出",
@@ -279,8 +287,8 @@ object ApiPresets {
         ),
         ApiPreset(
             id = "deepseek",
-            name = "DeepSeek",
-            subtitle = "中文去口癖与语义重组极佳",
+            name = "DeepSeek (可与官方 ASR 共用单 Key)",
+            subtitle = "单 Key 跑通语音识别 + 中文去口癖润色 + 军师/帮写",
             baseUrl = "https://api.deepseek.com/v1",
             defaultModel = "deepseek-chat"
         ),

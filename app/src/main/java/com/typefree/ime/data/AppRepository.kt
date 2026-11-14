@@ -267,14 +267,27 @@ class AppRepository(
                 )
             }
             val rawStt = parsed.sttConfig ?: SttConfig()
+            val rawSttBaseUrl = rawStt.baseUrl ?: "https://api.siliconflow.cn/v1"
+            val rawSttPresetId = rawStt.presetId ?: "siliconflow"
+            val isDeepSeekStt = rawSttPresetId == "deepseek_asr" ||
+                rawSttPresetId == "deepseek" ||
+                com.typefree.ime.network.EndpointResolver.isDeepSeekAsrEndpoint(rawSttBaseUrl)
             val safeStt = rawStt.copy(
-                presetId = rawStt.presetId ?: "siliconflow",
+                presetId = if (isDeepSeekStt && rawSttPresetId.isBlank()) "deepseek_asr" else rawSttPresetId,
                 protocol = rawStt.protocol ?: SttProtocol.OPENAI_HTTP,
-                baseUrl = rawStt.baseUrl ?: "https://api.siliconflow.cn/v1",
+                baseUrl = if (isDeepSeekStt) {
+                    com.typefree.ime.network.EndpointResolver.resolveSttEndpoint(
+                        rawSttBaseUrl.ifBlank { com.typefree.ime.network.EndpointResolver.DEFAULT_DEEPSEEK_ASR_URL }
+                    )
+                } else {
+                    rawSttBaseUrl
+                },
                 apiKey = rawStt.apiKey ?: "",
                 appId = rawStt.appId ?: "",
                 resourceId = (rawStt.resourceId ?: "").ifBlank { "volc.seedasr.sauc.duration" },
-                model = rawStt.model ?: "FunAudioLLM/SenseVoiceSmall",
+                model = (rawStt.model ?: "").ifBlank {
+                    if (isDeepSeekStt) "deepseek-asr" else "FunAudioLLM/SenseVoiceSmall"
+                },
                 language = rawStt.language ?: ""
             )
             val rawLlm = parsed.llmConfig ?: LlmConfig()

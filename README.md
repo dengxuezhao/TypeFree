@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v3.5.0"><img src="https://img.shields.io/badge/Release-v3.5.0-10B981?style=flat-square&logo=github" alt="Release v3.5.0" /></a>
+  <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v3.5.1"><img src="https://img.shields.io/badge/Release-v3.5.1-10B981?style=flat-square&logo=github" alt="Release v3.5.1" /></a>
   <img src="https://img.shields.io/badge/Language-Kotlin_2.0-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" />
   <img src="https://img.shields.io/badge/UI-Jetpack_Compose_1.7-4285F4?style=flat-square&logo=android&logoColor=white" alt="Jetpack Compose" />
   <img src="https://img.shields.io/badge/Design-Material_3-000000?style=flat-square" alt="Material 3" />
@@ -20,13 +20,19 @@
 </p>
 
 <p align="center">
-  📦 <b>最新预编译安装包</b>：<a href="https://github.com/dengxuezhao/TypeFree/releases/download/v3.5.0/TypeFree-v3.5.0-release.apk">下载 TypeFree-v3.5.0-release.apk</a> · <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v3.5.0">查看 v3.5.0 发行说明</a><br/>
+  📦 <b>最新预编译安装包</b>：<a href="https://github.com/dengxuezhao/TypeFree/releases/download/v3.5.1/TypeFree-v3.5.1-release.apk">下载 TypeFree-v3.5.1-release.apk</a> · <a href="https://github.com/dengxuezhao/TypeFree/releases/tag/v3.5.1">查看 v3.5.1 发行说明</a><br/>
   📐 <b>核心架构与配置文档</b>：<a href="docs/domestic-api-setup-guide.md">🔌 国内直连 API 与 DeepSeek 混搭配置指南</a> · <a href="docs/jev-decision-tree.md">✦ Jev 军师五层决策树与反装蠢白皮书</a> · <a href="docs/promo-video-plan.md">🎬 推广视频企划</a>
 </p>
 
 ---
 
-## 🆕 v3.5.0 / v3.4.x 最新升级亮点
+## 🆕 v3.5.1 / v3.5.0 最新升级亮点
+
+### v3.5.1
+- **🎙️ DeepSeek 官方语音识别 (`/v1/tools/asr`) 单 Key 全链路闭环**：
+  - **1 把 DeepSeek Key 通吃全链路**：在「服务商凭证保险箱」填入官方 DeepSeek API Key，一键激活即可同时驱动 **一阶段听音（`POST https://api.deepseek.com/v1/tools/asr`）**、**二阶段口语去口癖润色 / 快译** 以及 **`✍️ 帮写` / `🔍 问AI` / `✦ Jev 军师`**（含军师按住说底牌），无需额外配第二家语音服务商；
+  - **协议级严格适配 `/v1/tools/asr`**：`EndpointResolver` 自动识别 `api.deepseek.com` 及自定义 `/tools/asr` 端点；`AiPipelineEngine` 上传 `16kHz` 单声道 `WAV` 音频时严格仅传 `file` 字段（不传 `model` / `language` / `prompt` / `response_format`），由服务端自动识别中/粤/英/日/韩等语种，同步适配 `1-Token` STT 测速、配置备份导入导出及 `AppRepository` 持久化；
+  - **双模式灵活切换**：同时保留「仅将 DeepSeek 设为文本大脑（保留当前第三方百炼/豆包/硅基/Gemini 实时流式听音）」按钮，单 Key 极简闭环与第三方实时流式混搭自由切换。
 
 ### v3.5.0
 - **🧠 「✦ Jev 军师」升级五层正交决策树（新增 Layer 3 事实筛子与内行平视三轴）**：彻底根治技术群/知识社群探讨时 AI「装傻提问、乱抖谐音烂梗」的降智感！在端侧隐私信号净化（`Layer 1`）与群聊角色拓扑路由（`Layer 2`）之后新增 **议题性质与事实筛查层（`Layer 3`）**——聊人情利害走微表情潜台词雷达，聊技术观点先启动事实筛子审视对方逻辑漏洞，自动切换 **「① 同频升维 · ② 温和勘误 · ③ 极客外推」** 笃定陈述句三轴（架构详解见 **[`docs/jev-decision-tree.md`](docs/jev-decision-tree.md)**）。
@@ -83,7 +89,7 @@
 
 ---
 
-## ✨ 全量 Feature 矩阵概览 (v3.5.0)
+## ✨ 全量 Feature 矩阵概览 (v3.5.1)
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
@@ -96,7 +102,7 @@
 │  - 密码/支付/敏感输入框主动静默避让 │  - ⊞ 4×2 快捷工具面板 & 零抖动帧高统一 │
 ├────────────────────────────────────┴───────────────────────────────────────┤
 │                        🧠 现代 AI 语音与智能创作工作台                      │
-│  - 三大实时流式通道：Gemini Live (45s 预热池) / 豆包 SeedASR / 百炼流式     │
+│  - 三大实时流式 + 单 Key 听音：Gemini Live / 豆包 SeedASR / 百炼 / DeepSeek ASR│
 │  - 流式边说边上屏 (StreamingComposer 默认开启) + 超 60s 长语音静音无感续接  │
 │  - ✦ Jev 军师五层决策树：潜台词破译 + 事实筛子反装蠢 + 按住说底牌 + 端侧脱敏│
 │  - ✍️ 纯净零读屏帮写（7 大体裁/免选中扩写） + 🔍 顶栏问 AI 键盘内安全解答卡 │
@@ -212,6 +218,7 @@
 | 场景需求 | 录音识别引擎 (STT) | 智能润色引擎 (LLM) | 综合延迟 | 成本预估 |
 | :--- | :--- | :--- | :--- | :--- |
 | **单 Key 流式极速直出** | Google `Gemini Live WebSocket` (`SMART` 净写直出) | `gemini-3.5-flash-lite`（写作/改写/识图帮回调用） | **0~500ms** | 极低 API 计费 |
+| **DeepSeek 单 Key 全链路闭环** | DeepSeek 官方 ASR (`POST /v1/tools/asr`) | `deepseek-chat`（润色/帮写/问AI/✦军师） | ~600ms | 单 Key 一把通吃 |
 | **国内双阶段极速** | 阿里云百炼 `paraformer-realtime-v2` / 火山 `SeedASR 2.0` | `doubao-seed-2-0-lite` / `deepseek-chat` | ~500ms | 极低（低至 ¥0.001/千字） |
 | **海外免翻极速** | Groq `whisper-large-v3` | OpenAI `gpt-4o-mini` | ~500ms | 极低或免费 Tier |
 | **多模态整包直出** | Google Gemini `gemini-3.5-flash-lite` (Audio Direct) | 一步直出 | ~600ms | 极低 API 计费 |

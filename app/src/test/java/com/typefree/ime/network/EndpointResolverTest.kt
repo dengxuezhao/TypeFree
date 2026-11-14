@@ -23,6 +23,24 @@ class EndpointResolverTest {
             "https://custom.proxy.com/custom/audio/transcriptions",
             EndpointResolver.resolveSttEndpoint("https://custom.proxy.com/custom/audio/transcriptions")
         )
+        // DeepSeek Official ASR endpoint resolution
+        assertEquals(
+            "https://api.deepseek.com/v1/tools/asr",
+            EndpointResolver.resolveSttEndpoint("https://api.deepseek.com")
+        )
+        assertEquals(
+            "https://api.deepseek.com/v1/tools/asr",
+            EndpointResolver.resolveSttEndpoint("https://api.deepseek.com/v1")
+        )
+        assertEquals(
+            "https://api.deepseek.com/v1/tools/asr",
+            EndpointResolver.resolveSttEndpoint("https://api.deepseek.com/v1/tools/asr/")
+        )
+        // Custom reverse proxy ending with /tools/asr preserved as-is
+        assertEquals(
+            "https://my-deepseek-proxy.example.com/v1/tools/asr",
+            EndpointResolver.resolveSttEndpoint("https://my-deepseek-proxy.example.com/v1/tools/asr/")
+        )
     }
 
     @Test

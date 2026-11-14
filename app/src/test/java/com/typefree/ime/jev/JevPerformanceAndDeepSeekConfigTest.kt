@@ -116,8 +116,7 @@ class JevPerformanceAndDeepSeekConfigTest {
 
     @Test
     fun deepSeekQuickSetup_autoBindsVaultStt_preservesJevThinking_andClarifiesMissingSttError() = runBlocking {
-        // 1. User configures ONLY DeepSeek key -> sets DUAL_STAGE + DeepSeek LLM + Jev synced,
-        //    and attempts to speak without STT key -> explicit clear DeepSeek+STT error message!
+        // 1. User configures ONLY DeepSeek key -> default 1-tap sets full-loop DeepSeek ASR + DeepSeek LLM + Jev synced!
         val onlyDeepSeek = UnifiedProviderCatalog.applyQuickProviderSetup(
             settings = UnifiedProviderCatalog.updateProviderCredential(
                 AppSettings(),
@@ -129,11 +128,30 @@ class JevPerformanceAndDeepSeekConfigTest {
             providerId = UnifiedProviderCatalog.ID_DEEPSEEK
         )
         assertEquals(PipelineMode.DUAL_STAGE, onlyDeepSeek.pipelineMode)
+        assertEquals("deepseek_asr", onlyDeepSeek.sttConfig.presetId)
+        assertEquals(SttProtocol.OPENAI_HTTP, onlyDeepSeek.sttConfig.protocol)
+        assertEquals("https://api.deepseek.com/v1/tools/asr", onlyDeepSeek.sttConfig.baseUrl)
+        assertEquals("sk-ds-only-123", onlyDeepSeek.sttConfig.apiKey)
+        assertEquals("deepseek-asr", onlyDeepSeek.sttConfig.model)
+        assertTrue(UnifiedProviderCatalog.hasConfiguredSttCredential(onlyDeepSeek.sttConfig))
         assertEquals("deepseek-chat", onlyDeepSeek.llmConfig.model)
         assertEquals("sk-ds-only-123", onlyDeepSeek.llmConfig.apiKey)
         assertEquals("sk-ds-only-123", onlyDeepSeek.jevLlmConfig.apiKey)
         assertEquals("deepseek-chat", onlyDeepSeek.jevLlmConfig.model)
-        assertFalse(UnifiedProviderCatalog.hasConfiguredSttCredential(onlyDeepSeek.sttConfig))
+
+        // When user explicitly kept an unconfigured third-party STT slot -> clear missing STT error message!
+        val missingThirdPartyStt = UnifiedProviderCatalog.applyQuickProviderSetup(
+            settings = UnifiedProviderCatalog.updateProviderCredential(
+                AppSettings(),
+                ProviderCredential(
+                    providerId = UnifiedProviderCatalog.ID_DEEPSEEK,
+                    apiKey = "sk-ds-only-123"
+                )
+            ),
+            providerId = UnifiedProviderCatalog.ID_DEEPSEEK,
+            keepExistingThirdPartyStt = true
+        )
+        assertFalse(UnifiedProviderCatalog.hasConfiguredSttCredential(missingThirdPartyStt.sttConfig))
 
         val dummyWav = File.createTempFile("ds_missing_stt_", ".wav").apply {
             writeBytes(ByteArray(128) { 1 })
@@ -142,7 +160,7 @@ class JevPerformanceAndDeepSeekConfigTest {
         val engine = AiPipelineEngine()
         val voiceErr = engine.processVoiceAudio(
             wavFile = dummyWav,
-            settings = onlyDeepSeek,
+            settings = missingThirdPartyStt,
             activeStyle = DefaultPresets.defaultStyles().first(),
             targetAppName = "微信",
             selectedText = "",
@@ -154,18 +172,19 @@ class JevPerformanceAndDeepSeekConfigTest {
             voiceErr.message!!.contains("deepseek-chat") && voiceErr.message!!.contains("一阶段")
         )
 
-        // 2. User already stored SiliconFlow key in Vault, then activates DeepSeek ->
+        // 2. User already stored SiliconFlow key in Vault, then activates DeepSeek with keepExistingThirdPartyStt=true ->
         //    auto-binds SiliconFlow FunAudioLLM/SenseVoiceSmall for Stage-1 STT!
         val withSiliconFlowAndDeepSeek = UnifiedProviderCatalog.applyQuickProviderSetup(
-            settings = onlyDeepSeek.copy(
-                providerVault = onlyDeepSeek.providerVault + (
+            settings = missingThirdPartyStt.copy(
+                providerVault = missingThirdPartyStt.providerVault + (
                     UnifiedProviderCatalog.ID_SILICONFLOW to ProviderCredential(
                         providerId = UnifiedProviderCatalog.ID_SILICONFLOW,
                         apiKey = "sk-sf-stt-999"
                     )
                 )
             ),
-            providerId = UnifiedProviderCatalog.ID_DEEPSEEK
+            providerId = UnifiedProviderCatalog.ID_DEEPSEEK,
+            keepExistingThirdPartyStt = true
         )
         assertEquals(SttProtocol.OPENAI_HTTP, withSiliconFlowAndDeepSeek.sttConfig.protocol)
         assertEquals("FunAudioLLM/SenseVoiceSmall", withSiliconFlowAndDeepSeek.sttConfig.model)

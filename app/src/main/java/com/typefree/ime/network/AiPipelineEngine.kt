@@ -93,12 +93,13 @@ class AiPipelineEngine(
         val candidateUrls = buildList {
             when (settings.pipelineMode) {
                 PipelineMode.DUAL_STAGE -> {
-                    if ((settings.sttConfig.protocol == SttProtocol.OPENAI_HTTP ||
-                            settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS) &&
-                        settings.sttConfig.baseUrl.isNotBlank() &&
-                        !isLocalEndpoint(settings.sttConfig.baseUrl)
+                    val effectiveStt = resolveEffectiveSttConfig(settings)
+                    if ((effectiveStt.protocol == SttProtocol.OPENAI_HTTP ||
+                            effectiveStt.protocol == SttProtocol.GEMINI_LIVE_WS) &&
+                        effectiveStt.baseUrl.isNotBlank() &&
+                        !isLocalEndpoint(effectiveStt.baseUrl)
                     ) {
-                        add(settings.sttConfig.baseUrl)
+                        add(effectiveStt.baseUrl)
                     }
                     val effectiveLlm = resolveEffectiveLlmConfig(settings)
                     if (effectiveLlm.baseUrl.isNotBlank() &&
@@ -252,7 +253,7 @@ class AiPipelineEngine(
         try {
             when (settings.pipelineMode) {
                 PipelineMode.DUAL_STAGE -> {
-                    val sttCfg = settings.sttConfig
+                    val sttCfg = resolveEffectiveSttConfig(settings)
                     val usedLiveStream: Boolean
                     val sttElapsedMs: Long
 
@@ -320,7 +321,14 @@ class AiPipelineEngine(
                     }
 
                     val sttBadge = when (sttCfg.protocol) {
-                        SttProtocol.OPENAI_HTTP -> sttCfg.model.substringAfterLast('/')
+                        SttProtocol.OPENAI_HTTP -> if (EndpointResolver.isDeepSeekAsrEndpoint(sttCfg.baseUrl) ||
+                            sttCfg.presetId == "deepseek_asr" ||
+                            sttCfg.presetId == "deepseek"
+                        ) {
+                            "DeepSeek ASR"
+                        } else {
+                            sttCfg.model.substringAfterLast('/').ifBlank { "HTTP STT" }
+                        }
                         SttProtocol.ALIYUN_DASHSCOPE_WS -> "百炼流式"
                         SttProtocol.VOLCENGINE_SAUC_WS -> "豆包流式"
                         SttProtocol.GEMINI_LIVE_WS -> "Gemini Live"
@@ -610,7 +618,7 @@ class AiPipelineEngine(
             settings.llmConfig.apiKey.isNotBlank() &&
             isKnownPureTextModel(settings.llmConfig.model)
         ) {
-            return "语音听写(一阶段 STT)尚未配置 API Key：当前 ${settings.llmConfig.model} 仅处理文本润色与军师，请在「API 配置」补填硅基流动/豆包/千问或 Gemini 语音密钥"
+            return "语音听写(一阶段 STT)尚未配置 API Key：当前 ${settings.llmConfig.model} 仅处理文本润色与军师，请在「API 配置」启用 DeepSeek 单 Key 语音识别或补填硅基流动/豆包/千问/Gemini 语音密钥"
         }
         return rawError
     }
@@ -674,10 +682,57 @@ class AiPipelineEngine(
         return if (fallbackOut.contains("[EMPTY_SPEECH]")) "" else cleanRawTranscript(fallbackOut)
     }
 
+    internal fun resolveEffectiveSttConfig(settings: AppSettings): SttConfig {
+        val primary = settings.sttConfig
+        if (primary.apiKey.isNotBlank() || isLocalEndpoint(primary.baseUrl)) {
+            return primary
+        }
+        val isDeepSeekStt = primary.presetId == "deepseek_asr" ||
+            primary.presetId == "deepseek" ||
+            EndpointResolver.isDeepSeekAsrEndpoint(primary.baseUrl)
+        if (isDeepSeekStt) {
+            val vaultKey = settings.providerVault[UnifiedProviderCatalog.ID_DEEPSEEK]?.apiKey.orEmpty()
+            val llmKey = settings.llmConfig.apiKey.takeIf {
+                UnifiedProviderCatalog.inferLlmProviderId(settings.llmConfig) == UnifiedProviderCatalog.ID_DEEPSEEK
+            }.orEmpty()
+            val resolvedKey = vaultKey.ifBlank { llmKey }
+            if (resolvedKey.isNotBlank()) {
+                return primary.copy(
+                    apiKey = resolvedKey,
+                    baseUrl = primary.baseUrl.ifBlank { EndpointResolver.DEFAULT_DEEPSEEK_ASR_URL },
+                    model = primary.model.ifBlank { "deepseek-asr" }
+                )
+            }
+        }
+        return primary
+    }
+
     private fun resolveEffectiveLlmConfig(settings: AppSettings): LlmConfig {
         val primary = settings.llmConfig
         if (primary.apiKey.isNotBlank() || isLocalEndpoint(primary.baseUrl)) {
             return primary
+        }
+        // Single-Key DeepSeek fallback when user configured DeepSeek ASR STT or Vault
+        val deepSeekVaultKey = settings.providerVault[UnifiedProviderCatalog.ID_DEEPSEEK]?.apiKey.orEmpty()
+        val deepSeekKey = when {
+            EndpointResolver.isDeepSeekAsrEndpoint(settings.sttConfig.baseUrl) && settings.sttConfig.apiKey.isNotBlank() ->
+                settings.sttConfig.apiKey
+            (primary.presetId == "deepseek" || EndpointResolver.isOfficialDeepSeekHost(primary.baseUrl)) && deepSeekVaultKey.isNotBlank() ->
+                deepSeekVaultKey
+            else -> ""
+        }
+        if (deepSeekKey.isNotBlank()) {
+            val deepSeekBase = settings.providerVault[UnifiedProviderCatalog.ID_DEEPSEEK]?.customBaseUrl
+                ?.takeIf { it.isNotBlank() }
+                ?.removeSuffix("/tools/asr")
+                ?: primary.baseUrl.takeIf { it.isNotBlank() }?.removeSuffix("/tools/asr")
+                ?: "https://api.deepseek.com/v1"
+            return primary.copy(
+                presetId = "deepseek",
+                baseUrl = deepSeekBase,
+                apiKey = deepSeekKey,
+                model = primary.model.ifBlank { "deepseek-chat" }
+            )
         }
         // Single-Key Google Gemini fallback when user configured Gemini Live STT or Vault
         val googleVaultKey = settings.providerVault[UnifiedProviderCatalog.ID_GOOGLE]?.apiKey.orEmpty()
@@ -1171,15 +1226,16 @@ class AiPipelineEngine(
             val resolvedBottomLine = when {
                 !preTranscribedBottomLine.isNullOrBlank() -> cleanRawTranscript(preTranscribedBottomLine)
                 wavFile != null && wavFile.exists() && wavFile.length() > 44L -> {
-                    validateSttConfig(settings.sttConfig, settings)?.let { errMsg ->
+                    val effectiveStt = resolveEffectiveSttConfig(settings)
+                    validateSttConfig(effectiveStt, settings)?.let { errMsg ->
                         return@withContext Result.failure(IllegalStateException(errMsg))
                     }
                     val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
                     val bias = PromptBuilder.buildSttBiasPrompt(settings.dictionary)
-                    if (settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS) {
-                        transcribeGeminiWavWithFastFallback(wavFile, settings.sttConfig, hotwords)
+                    if (effectiveStt.protocol == SttProtocol.GEMINI_LIVE_WS) {
+                        transcribeGeminiWavWithFastFallback(wavFile, effectiveStt, hotwords)
                     } else {
-                        transcribeWithOpenAiStt(wavFile, settings.sttConfig, bias)
+                        transcribeWithOpenAiStt(wavFile, effectiveStt, bias)
                     }
                 }
                 userBottomLine.isNotBlank() -> userBottomLine.trim()
@@ -1678,16 +1734,27 @@ class AiPipelineEngine(
                 slot == ModelCapabilitySlot.STT -> {
                     val url = EndpointResolver.resolveSttEndpoint(baseUrl)
                     val silentWav = WavAudioRecorder.buildWavHeader(6400) + ByteArray(6400)
-                    val body = MultipartBody.Builder()
-                        .setType(MultipartBody.FORM)
-                        .addFormDataPart(
-                            "file",
-                            "probe.wav",
-                            silentWav.toRequestBody("audio/wav".toMediaType())
-                        )
-                        .addFormDataPart("model", cleanModel)
-                        .addFormDataPart("response_format", "json")
-                        .build()
+                    val body = if (EndpointResolver.isDeepSeekAsrEndpoint(url) || EndpointResolver.isDeepSeekAsrEndpoint(baseUrl)) {
+                        MultipartBody.Builder()
+                            .setType(MultipartBody.FORM)
+                            .addFormDataPart(
+                                "file",
+                                "probe.wav",
+                                silentWav.toRequestBody("audio/wav".toMediaType())
+                            )
+                            .build()
+                    } else {
+                        MultipartBody.Builder()
+                            .setType(MultipartBody.FORM)
+                            .addFormDataPart(
+                                "file",
+                                "probe.wav",
+                                silentWav.toRequestBody("audio/wav".toMediaType())
+                            )
+                            .addFormDataPart("model", cleanModel)
+                            .addFormDataPart("response_format", "json")
+                            .build()
+                    }
                     val reqBuilder = Request.Builder().url(url).post(body)
                     if (apiKey.isNotBlank()) {
                         reqBuilder.header("Authorization", "Bearer ${apiKey.trim()}")
@@ -1868,6 +1935,17 @@ class AiPipelineEngine(
         biasPrompt: String
     ): String {
         val url = EndpointResolver.resolveSttEndpoint(config.baseUrl)
+        if (EndpointResolver.isDeepSeekAsrEndpoint(url) ||
+            EndpointResolver.isDeepSeekAsrEndpoint(config.baseUrl) ||
+            config.presetId == "deepseek_asr" ||
+            config.presetId == "deepseek"
+        ) {
+            return transcribeWithDeepSeekAsr(
+                wavFile = wavFile,
+                config = config,
+                resolvedUrl = url
+            )
+        }
         val isLocal = isLocalEndpoint(config.baseUrl)
         val compressedM4a = if (!isLocal) AacAudioCompressor.compressWavToM4aOrNull(wavFile) else null
 
@@ -1921,6 +1999,27 @@ class AiPipelineEngine(
             return parseSttResponse(wavResp)
         } finally {
             runCatching { compressedM4a?.delete() }
+        }
+    }
+
+    internal fun transcribeWithDeepSeekAsr(
+        wavFile: File,
+        config: SttConfig,
+        resolvedUrl: String = EndpointResolver.resolveSttEndpoint(config.baseUrl)
+    ): String {
+        val body = buildDeepSeekAsrMultipartBody(wavFile)
+        val reqBuilder = Request.Builder()
+            .url(resolvedUrl)
+            .post(body)
+        if (config.apiKey.isNotBlank()) {
+            reqBuilder.header("Authorization", "Bearer ${config.apiKey.trim()}")
+        }
+        httpClient.newCall(reqBuilder.build()).execute().use { resp ->
+            val respBody = resp.body?.string().orEmpty()
+            if (resp.code !in 200..299) {
+                throw IOException("STT 接口错误 (${resp.code}): ${extractErrorDetail(respBody)}")
+            }
+            return parseSttResponse(respBody)
         }
     }
 
@@ -2874,6 +2973,22 @@ class AiPipelineEngine(
             val json = JsonParser.parseString(trimmed).asJsonObject
             val text = json.get("text")?.asString.orEmpty()
             return cleanRawTranscript(text)
+        }
+
+        /**
+         * Builds the `multipart/form-data` request body for DeepSeek Official ASR (`POST /v1/tools/asr`).
+         * Strictly uploads ONLY the `file` field (`16-bit PCM WAV`, `audio/wav`) and NEVER includes
+         * `model`, `language`, `prompt`, or `response_format` fields.
+         */
+        fun buildDeepSeekAsrMultipartBody(wavFile: File): MultipartBody {
+            return MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart(
+                    "file",
+                    wavFile.name,
+                    wavFile.asRequestBody("audio/wav".toMediaType())
+                )
+                .build()
         }
 
         fun parseOpenAiChatResponse(respBody: String): String {

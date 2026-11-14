@@ -1,5 +1,7 @@
 package com.typefree.ime.data
 
+import com.typefree.ime.network.EndpointResolver
+
 data class UnifiedProviderSpec(
     val id: String,
     val name: String,
@@ -87,12 +89,14 @@ object UnifiedProviderCatalog {
         UnifiedProviderSpec(
             id = ID_DEEPSEEK,
             name = "DeepSeek",
-            badge = "中文润色标杆",
-            summary = "纯文本推理大脑 · 擅长二阶段口语润色、帮我写与 ✦ 军师（不含语音转写，按麦需搭配任一听音引擎）",
+            badge = "单 Key 闭环 / 润色标杆",
+            summary = "单 Key 通吃：官方语音识别 (/v1/tools/asr) + 二阶段中文润色/快译 + ✦ 军师/帮写/问AI",
             defaultBaseUrl = "https://api.deepseek.com/v1",
-            supportsStt = false,
+            supportsStt = true,
             supportsLlm = true,
             supportsMultimodal = false,
+            defaultSttModel = "deepseek-asr",
+            defaultSttProtocol = SttProtocol.OPENAI_HTTP,
             defaultLlmModel = "deepseek-chat"
         ),
         UnifiedProviderSpec(
@@ -118,6 +122,7 @@ object UnifiedProviderCatalog {
         ID_ALIYUN to listOf("paraformer-realtime-v2", "fun-asr-realtime", "gummy-realtime-v1"),
         ID_VOLCENGINE to listOf("bigmodel"),
         ID_SILICONFLOW to listOf("FunAudioLLM/SenseVoiceSmall", "TeleAI/TeleSpeechASR"),
+        ID_DEEPSEEK to listOf("deepseek-asr"),
         ID_CUSTOM to listOf("gpt-4o-mini-transcribe", "whisper-large-v3-turbo", "whisper-1")
     )
 
@@ -166,12 +171,14 @@ object UnifiedProviderCatalog {
     }
 
     fun inferSttProviderId(stt: SttConfig): String {
-        val url = stt.baseUrl.lowercase()
+        val url = stt.baseUrl.trim().trimEnd('/').lowercase()
         return when {
             stt.protocol == SttProtocol.GEMINI_LIVE_WS || stt.presetId == "gemini_live_ws" -> ID_GOOGLE
             stt.protocol == SttProtocol.ALIYUN_DASHSCOPE_WS || url.contains("aliyuncs.com") || url.contains("dashscope") -> ID_ALIYUN
             stt.protocol == SttProtocol.VOLCENGINE_SAUC_WS || url.contains("bytedance.com") || url.contains("volces.com") -> ID_VOLCENGINE
             stt.presetId == "siliconflow" || url.contains("siliconflow.cn") -> ID_SILICONFLOW
+            stt.presetId == "deepseek" || stt.presetId == "deepseek_asr" ||
+                url.contains("deepseek.com") || url.endsWith("/tools/asr") -> ID_DEEPSEEK
             else -> ID_CUSTOM
         }
     }
@@ -218,10 +225,13 @@ object UnifiedProviderCatalog {
         return stt.protocol == SttProtocol.OPENAI_HTTP && isLocalUrl(stt.baseUrl)
     }
 
-    fun resolveFallbackSttProviderFromVault(vault: Map<String, ProviderCredential>): String? {
-        val priority = listOf(ID_SILICONFLOW, ID_ALIYUN, ID_VOLCENGINE, ID_GOOGLE, ID_CUSTOM)
+    fun resolveFallbackSttProviderFromVault(
+        vault: Map<String, ProviderCredential>,
+        excludeProviderId: String? = null
+    ): String? {
+        val priority = listOf(ID_SILICONFLOW, ID_ALIYUN, ID_VOLCENGINE, ID_GOOGLE, ID_DEEPSEEK, ID_CUSTOM)
         return priority.firstOrNull { id ->
-            specFor(id).supportsStt && isCredentialReady(id, vault[id])
+            id != excludeProviderId && specFor(id).supportsStt && isCredentialReady(id, vault[id])
         }
     }
 
@@ -282,11 +292,13 @@ object UnifiedProviderCatalog {
             )
         } else if (settings.sttConfig.apiKey.isNotBlank() || sttProvider == ID_CUSTOM) {
             val nextKey = sttCurr.apiKey.ifBlank { settings.sttConfig.apiKey }
+            val isDefaultProviderSttUrl = settings.sttConfig.baseUrl == specFor(sttProvider).defaultBaseUrl ||
+                (sttProvider == ID_DEEPSEEK && EndpointResolver.isOfficialDeepSeekHost(settings.sttConfig.baseUrl))
             val nextUrl = if (
                 sttCurr.customBaseUrl.isBlank() &&
                 settings.sttConfig.baseUrl.isNotBlank() &&
                 !settings.sttConfig.baseUrl.startsWith("wss://", ignoreCase = true) &&
-                settings.sttConfig.baseUrl != specFor(sttProvider).defaultBaseUrl
+                !isDefaultProviderSttUrl
             ) {
                 settings.sttConfig.baseUrl
             } else {
@@ -369,7 +381,8 @@ object UnifiedProviderCatalog {
      */
     fun applyQuickProviderSetup(
         settings: AppSettings,
-        providerId: String
+        providerId: String,
+        keepExistingThirdPartyStt: Boolean = false
     ): AppSettings {
         val vault = hydrateVaultFromSettings(settings)
         val cred = vault[providerId] ?: ProviderCredential(providerId)
@@ -478,8 +491,16 @@ object UnifiedProviderCatalog {
             }
 
             ID_DEEPSEEK -> {
-                val effectiveBaseUrl = cred.customBaseUrl.ifBlank { "https://api.deepseek.com/v1" }
-                val syncedJev = if (!settings.jevUseDedicatedModel && settings.jevLlmConfig.apiKey.isBlank()) {
+                val effectiveBaseUrl = cred.customBaseUrl
+                    .removeSuffix("/tools/asr")
+                    .trimEnd('/')
+                    .ifBlank { "https://api.deepseek.com/v1" }
+                val asrEndpointUrl = EndpointResolver.resolveSttEndpoint(
+                    cred.customBaseUrl.ifBlank { EndpointResolver.DEFAULT_DEEPSEEK_ASR_URL }
+                )
+                val syncedJev = if (!settings.jevUseDedicatedModel &&
+                    (settings.jevLlmConfig.apiKey.isBlank() || inferLlmProviderId(settings.jevLlmConfig) == ID_DEEPSEEK)
+                ) {
                     settings.jevLlmConfig.copy(
                         enabled = true,
                         presetId = "deepseek",
@@ -505,15 +526,32 @@ object UnifiedProviderCatalog {
                     ),
                     jevLlmConfig = syncedJev
                 )
-                if (!hasConfiguredSttCredential(baseUpdated.sttConfig)) {
-                    val fallbackSttId = resolveFallbackSttProviderFromVault(vault)
-                    if (fallbackSttId != null) {
-                        selectSttProvider(baseUpdated, fallbackSttId)
-                    } else {
-                        baseUpdated
-                    }
+                if (!keepExistingThirdPartyStt) {
+                    baseUpdated.copy(
+                        sttConfig = baseUpdated.sttConfig.copy(
+                            presetId = "deepseek_asr",
+                            protocol = SttProtocol.OPENAI_HTTP,
+                            baseUrl = asrEndpointUrl,
+                            apiKey = cred.apiKey,
+                            model = "deepseek-asr"
+                        )
+                    )
                 } else {
-                    baseUpdated
+                    val hasReadyThirdPartyStt = hasConfiguredSttCredential(baseUpdated.sttConfig) &&
+                        inferSttProviderId(baseUpdated.sttConfig) != ID_DEEPSEEK
+                    if (hasReadyThirdPartyStt) {
+                        baseUpdated
+                    } else {
+                        val fallbackSttId = resolveFallbackSttProviderFromVault(
+                            vault = vault,
+                            excludeProviderId = ID_DEEPSEEK
+                        )
+                        if (fallbackSttId != null) {
+                            selectSttProvider(baseUpdated, fallbackSttId)
+                        } else {
+                            baseUpdated
+                        }
+                    }
                 }
             }
 
@@ -574,6 +612,16 @@ object UnifiedProviderCatalog {
                 apiKey = cred.apiKey,
                 model = spec.defaultSttModel
             )
+            ID_DEEPSEEK -> {
+                val rawUrl = cred.customBaseUrl.ifBlank { EndpointResolver.DEFAULT_DEEPSEEK_ASR_URL }
+                settings.sttConfig.copy(
+                    presetId = "deepseek_asr",
+                    protocol = SttProtocol.OPENAI_HTTP,
+                    baseUrl = EndpointResolver.resolveSttEndpoint(rawUrl),
+                    apiKey = cred.apiKey,
+                    model = spec.defaultSttModel.ifBlank { "deepseek-asr" }
+                )
+            }
             else -> settings.sttConfig.copy(
                 presetId = "custom_stt",
                 protocol = SttProtocol.OPENAI_HTTP,
@@ -582,17 +630,28 @@ object UnifiedProviderCatalog {
                 model = spec.defaultSttModel
             )
         }
-        val nextLlm = if (providerId == ID_GOOGLE && settings.llmConfig.apiKey.isBlank()) {
-            settings.llmConfig.copy(
-                enabled = false,
-                presetId = "gemini_llm",
-                baseUrl = cred.customBaseUrl.ifBlank { spec.defaultBaseUrl },
-                apiKey = cred.apiKey,
-                model = "gemini-3.5-flash-lite",
-                thinkingMode = ThinkingMode.DISABLED
-            )
-        } else {
-            settings.llmConfig
+        val nextLlm = when {
+            providerId == ID_GOOGLE && settings.llmConfig.apiKey.isBlank() -> {
+                settings.llmConfig.copy(
+                    enabled = false,
+                    presetId = "gemini_llm",
+                    baseUrl = cred.customBaseUrl.ifBlank { spec.defaultBaseUrl },
+                    apiKey = cred.apiKey,
+                    model = "gemini-3.5-flash-lite",
+                    thinkingMode = ThinkingMode.DISABLED
+                )
+            }
+            providerId == ID_DEEPSEEK && settings.llmConfig.apiKey.isBlank() -> {
+                settings.llmConfig.copy(
+                    enabled = true,
+                    presetId = "deepseek",
+                    baseUrl = cred.customBaseUrl.removeSuffix("/tools/asr").trimEnd('/').ifBlank { spec.defaultBaseUrl },
+                    apiKey = cred.apiKey,
+                    model = "deepseek-chat",
+                    thinkingMode = ThinkingMode.DISABLED
+                )
+            }
+            else -> settings.llmConfig
         }
         return settings.copy(providerVault = vault, sttConfig = nextStt, llmConfig = nextLlm)
     }
@@ -701,6 +760,13 @@ object UnifiedProviderCatalog {
                 apiKey = cred.apiKey,
                 baseUrl = cred.customBaseUrl.ifBlank { specFor(ID_GOOGLE).defaultBaseUrl }
             )
+            ID_DEEPSEEK -> stt.copy(
+                apiKey = cred.apiKey,
+                baseUrl = EndpointResolver.resolveSttEndpoint(
+                    cred.customBaseUrl.ifBlank { EndpointResolver.DEFAULT_DEEPSEEK_ASR_URL }
+                ),
+                model = stt.model.ifBlank { "deepseek-asr" }
+            )
             ID_CUSTOM -> stt.copy(
                 apiKey = cred.apiKey,
                 baseUrl = cred.customBaseUrl.ifBlank { stt.baseUrl }
@@ -719,6 +785,12 @@ object UnifiedProviderCatalog {
             ID_GOOGLE -> llm.copy(
                 apiKey = cred.apiKey,
                 baseUrl = cred.customBaseUrl.ifBlank { specFor(ID_GOOGLE).defaultBaseUrl }
+            )
+            ID_DEEPSEEK -> llm.copy(
+                apiKey = cred.apiKey,
+                baseUrl = cred.customBaseUrl.removeSuffix("/tools/asr").trimEnd('/').ifBlank {
+                    specFor(ID_DEEPSEEK).defaultBaseUrl
+                }
             )
             ID_CUSTOM -> llm.copy(
                 apiKey = cred.apiKey,
