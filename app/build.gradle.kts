@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -28,6 +30,41 @@ android {
         }
     }
 
+    val keystoreProperties = Properties().apply {
+        val propsFile = rootProject.file("keystore.properties")
+        if (propsFile.isFile) {
+            propsFile.inputStream().use { load(it) }
+        }
+    }
+
+    fun signingValue(propKey: String, envKey: String): String? {
+        return keystoreProperties.getProperty(propKey)?.trim()?.takeIf { it.isNotEmpty() }
+            ?: System.getenv(envKey)?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    val releaseStorePath = signingValue("storeFile", "TYPEFREE_KEYSTORE_PATH")
+    val releaseStorePassword = signingValue("storePassword", "TYPEFREE_KEYSTORE_PASSWORD")
+    val releaseKeyAlias = signingValue("keyAlias", "TYPEFREE_KEY_ALIAS")
+    val releaseKeyPassword = signingValue("keyPassword", "TYPEFREE_KEY_PASSWORD")
+    val releaseStoreFile = releaseStorePath?.let { path -> rootProject.file(path) }
+
+    signingConfigs {
+        if (
+            releaseStoreFile != null &&
+            releaseStoreFile.isFile &&
+            releaseStorePassword != null &&
+            releaseKeyAlias != null &&
+            releaseKeyPassword != null
+        ) {
+            create("release") {
+                storeFile = releaseStoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -35,7 +72,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
