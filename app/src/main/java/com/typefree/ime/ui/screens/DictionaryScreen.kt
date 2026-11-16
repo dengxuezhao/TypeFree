@@ -758,7 +758,7 @@ fun DictionaryScreen(repository: AppRepository) {
                                 modifier = Modifier.size(17.dp)
                             )
                             Text(
-                                text = "自动学习打字改错 (Auto-learn)",
+                                text = "自动学习打字改错",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
@@ -865,12 +865,12 @@ fun DictionaryScreen(repository: AppRepository) {
                             onClick = { selectedSourceTab = 0 }
                         )
                         DictSourceFilterPill(
-                            label = "自动学习 Auto-added ($autoCount)",
+                            label = "自动学习 ($autoCount)",
                             selected = selectedSourceTab == 1,
                             onClick = { selectedSourceTab = 1 }
                         )
                         DictSourceFilterPill(
-                            label = "手动添加 Manual ($manualCount)",
+                            label = "手动添加 ($manualCount)",
                             selected = selectedSourceTab == 2,
                             onClick = { selectedSourceTab = 2 }
                         )

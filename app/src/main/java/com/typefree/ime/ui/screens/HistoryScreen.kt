@@ -368,7 +368,7 @@ fun HistoryScreen(
                                     modifier = Modifier.size(17.dp)
                                 )
                                 Text(
-                                    text = "保留周期 (Keep history)",
+                                    text = "保留周期",
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold
                                 )

@@ -89,8 +89,8 @@ object UnifiedProviderCatalog {
         UnifiedProviderSpec(
             id = ID_DEEPSEEK,
             name = "DeepSeek",
-            badge = "单 Key 闭环 / 润色标杆",
-            summary = "单 Key 通吃：官方语音识别 (/v1/tools/asr) + 二阶段中文润色/快译 + ✦ 军师/帮写/问AI",
+            badge = "单 Key 通用 / 润色标杆",
+            summary = "单 Key 支持官方语音识别、二阶段中文润色与快译，以及 ✦ 军师、帮写和 🔍 问AI",
             defaultBaseUrl = "https://api.deepseek.com/v1",
             supportsStt = true,
             supportsLlm = true,

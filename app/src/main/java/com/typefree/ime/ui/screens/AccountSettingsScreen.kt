@@ -1,6 +1,7 @@
 package com.typefree.ime.ui.screens
 
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -144,7 +145,7 @@ fun AccountSettingsScreen(
                     color = MaterialTheme.colorScheme.surfaceVariant
                 ) {
                     Text(
-                        text = "Custom API v${BuildConfig.VERSION_NAME}",
+                        text = "v${BuildConfig.VERSION_NAME} · BYOK",
                         style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
@@ -711,7 +712,7 @@ private fun AppearanceAndPreferencesPane(
     val context = LocalContext.current
     val settings by repository.settings.collectAsState()
     val clipboardItems by repository.clipboardItems.collectAsState()
-    var newSnippetText by rememberSaveable { mutableStateOf("") }
+    var showKeyboardGesturesDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -735,7 +736,7 @@ private fun AppearanceAndPreferencesPane(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
-                        text = "外观主题 (Appearance)",
+                        text = "外观主题",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -784,7 +785,7 @@ private fun AppearanceAndPreferencesPane(
             }
         }
 
-        // 2. Built-in Xiaohe Yinxing (小鹤音形) Keyboard Preferences Card
+        // 2. Built-in Keyboard & Input Scheme Preferences Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(18.dp),
@@ -797,22 +798,37 @@ private fun AppearanceAndPreferencesPane(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        text = "打字键盘与小鹤音形 (Flypy v10.13)",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "恒定帧高 零跳变视口 · 1.17:1 黄金键帽比例 · 顶部独立数字行 · 记忆键盘模式",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = "打字键盘与输入方案",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "切换面板高度稳定 · 支持顶部数字行与多种中文输入方案",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(
+                        onClick = { showKeyboardGesturesDialog = true },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text("手势速查", style = MaterialTheme.typography.labelLarge)
+                    }
                 }
 
                 PreferenceSwitchRow(
                     title = "记忆上一次使用的键盘模式",
-                    subtitle = "收起键盘、切换输入框或应用后自动恢复上次使用的面板（语音 / 小鹤 / EN / 快译）；密码框临时切英文后自动还原",
+                    subtitle = "收起键盘或切换应用后自动恢复上次面板；密码框临时切英文后自动还原",
                     checked = settings.rememberLastKeyboardMode,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(rememberLastKeyboardMode = enabled) }
@@ -823,7 +839,7 @@ private fun AppearanceAndPreferencesPane(
 
                 PreferenceSwitchRow(
                     title = "顶部独立数字行 (1–0)",
-                    subtitle = "默认关闭（4 行 252dp 黄金紧凑高度，Q–P 长按或上滑直输 1–0）；开启后显示顶部独立数字行（294dp）",
+                    subtitle = "默认关闭（Q–P 长按或上滑直输 1–0）；开启后显示顶部独立数字行",
                     checked = settings.qwertyShowNumberRow,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(qwertyShowNumberRow = enabled) }
@@ -832,7 +848,7 @@ private fun AppearanceAndPreferencesPane(
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
-                // Unified Keyboard Bottom Cushion (底部垫高 0 / 8 / 16 / 24 / 32dp)
+                // Unified Keyboard Bottom Cushion
                 val currentLiftLevel = settings.keyboardLiftLevel.coerceIn(
                     KeyboardMetrics.MIN_LIFT_LEVEL,
                     KeyboardMetrics.MAX_LIFT_LEVEL
@@ -853,7 +869,7 @@ private fun AppearanceAndPreferencesPane(
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "按键保持 46dp 黄金高度不变，仅在底部增加防误触留白托起键盘；所有面板同步生效",
+                                text = "仅在键盘底部增加防误触留白托起按键区，所有面板同步生效",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -973,7 +989,7 @@ private fun AppearanceAndPreferencesPane(
 
                 PreferenceSwitchRow(
                     title = "按键按下气泡放大预览",
-                    subtitle = "按下字母或符号键时在键帽上方浮现清晰预览气泡（对齐 Gboard / iOS 触控反馈）",
+                    subtitle = "按下字母或符号键时在键帽上方浮现放大预览气泡",
                     checked = settings.qwertyKeyPopupPreview,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(qwertyKeyPopupPreview = enabled) }
@@ -983,49 +999,75 @@ private fun AppearanceAndPreferencesPane(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
                 PreferenceSwitchRow(
-                    title = "启用小鹤音形中文模式（「鹤」）",
-                    subtitle = "开启后打字面板支持中文小鹤音形；键盘中长按空格或点顶部「鹤/EN」随时切换中英并自动记忆",
+                    title = "打字面板默认开启中文输入",
+                    subtitle = "长按空格或点顶栏中/英按钮可随时切换",
                     checked = settings.flypyEnabled,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(flypyEnabled = enabled) }
                     }
                 )
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+                AnimatedVisibility(visible = settings.inputScheme == InputScheme.FLYPY_TABLE) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
-                PreferenceSwitchRow(
-                    title = "候选状态下「, / .」快捷选第 2 / 第 3 候选",
-                    subtitle = "对齐小鹤安卓版习惯：有重码时底排「,」上屏次选、「.」上屏三选；关闭则改为鼠须管逗号/句号顶字上屏",
-                    checked = settings.flypyCommaPeriodQuickSelect,
-                    onCheckedChange = { enabled ->
-                        repository.updateSettings { it.copy(flypyCommaPeriodQuickSelect = enabled) }
+                        PreferenceSwitchRow(
+                            title = "候选状态下「, / .」快捷选第 2 / 第 3 候选",
+                            subtitle = "有重码时底排「,」上屏次选、「.」上屏三选；关闭则用逗号/句号顶字上屏",
+                            checked = settings.flypyCommaPeriodQuickSelect,
+                            onCheckedChange = { enabled ->
+                                repository.updateSettings { it.copy(flypyCommaPeriodQuickSelect = enabled) }
+                            }
+                        )
                     }
-                )
-
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                ) {
-                    Text(
-                        text = "快捷手势速查：四码唯一自动上屏 · 第五码顶字上屏 · Shift 有码清码 · 长按空格切中英 · 长按 Z 输入 ` 通配反查（如 ji` 知音查形、`bo 知形查音）· 长按 L 输入分号快符（;q ：“、;w ？、;f 重复上屏）· orq 日期 / ouj 时间 · 长按 A/X/C/V 全选/剪切/复制/粘贴 · 退格键上划撤回上屏",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        lineHeight = 18.sp,
-                        modifier = Modifier.padding(12.dp)
-                    )
                 }
             }
         }
 
-        // 3. Built-in IME Clipboard & Pinned Snippets Card
+        if (showKeyboardGesturesDialog) {
+            AlertDialog(
+                onDismissRequest = { showKeyboardGesturesDialog = false },
+                title = { Text("打字键盘快捷手势速查") },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val gestureTips = listOf(
+                            "编码与上屏：四码唯一自动上屏；第五码顶字上屏；Shift 有码时清码",
+                            "中英切换：长按空格键或点顶栏中/英按钮随时切换",
+                            "通配反查：长按 Z 输入 ` 反查（如 ji` 知音查形、`bo 知形查音）",
+                            "分号快符：长按 L 输入分号快符（;q ：“、;w ？、;f 重复上屏）",
+                            "快捷日期时间：orq 输出日期，ouj 输出时间",
+                            "编辑与撤回：长按 A/X/C/V 全选/剪切/复制/粘贴；退格键上滑撤回上屏"
+                        )
+                        gestureTips.forEach { tip ->
+                            Text(
+                                text = "• $tip",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                lineHeight = 18.sp
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showKeyboardGesturesDialog = false }) {
+                        Text("知道了")
+                    }
+                }
+            )
+        }
+
+        // 3. Built-in IME Clipboard Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(18.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
         ) {
-            val pinnedItems = remember(clipboardItems) { clipboardItems.filter { it.isPinned } }
             val unpinnedCount = remember(clipboardItems) { clipboardItems.count { !it.isPinned } }
 
             Column(
@@ -1044,12 +1086,12 @@ private fun AppearanceAndPreferencesPane(
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         Text(
-                            text = "剪贴板与常用语 (Clipboard)",
+                            text = "剪贴板与常用语",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "键盘顶栏一键唤起双列剪贴板，支持验证码/链接智能提取与常用语永久置顶",
+                            text = "键盘顶栏可唤起双列剪贴板，可在剪贴板面板内直接置顶常用语",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1068,7 +1110,7 @@ private fun AppearanceAndPreferencesPane(
 
                 PreferenceSwitchRow(
                     title = "自动记录剪贴板历史",
-                    subtitle = "自动收纳最近 40 条复制文本（自动过滤 Android 13+ 密码管理器敏感剪贴板）",
+                    subtitle = "自动收纳最近 40 条复制文本，自动过滤密码管理器敏感内容",
                     checked = settings.clipboardEnabled,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(clipboardEnabled = enabled) }
@@ -1078,104 +1120,17 @@ private fun AppearanceAndPreferencesPane(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
                 PreferenceSwitchRow(
-                    title = "顶栏刚复制内容 / 验证码一键粘贴提示",
-                    subtitle = "复制短信验证码、链接或文本后在键盘顶栏浮现 45 秒快捷胶囊，无需展开面板一键填入",
+                    title = "顶栏刚复制内容一键粘贴提示",
+                    subtitle = "复制短信验证码、链接或文本后在键盘顶栏浮现快捷胶囊，一键填入",
                     checked = settings.clipboardQuickPasteSuggestion,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(clipboardQuickPasteSuggestion = enabled) }
                     }
                 )
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
-
-                // Add Custom Pinned Phrase Inline Input
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "添加永久置顶常用短语（共 ${pinnedItems.size} 条置顶 / ${clipboardItems.size} 条记录）",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = newSnippetText,
-                            onValueChange = { newSnippetText = it },
-                            modifier = Modifier.weight(1f),
-                            maxLines = 2,
-                            shape = RoundedCornerShape(12.dp),
-                            placeholder = { Text("输入收货地址、邮箱、微信号或常用回复…") }
-                        )
-                        FilledTonalButton(
-                            enabled = newSnippetText.trim().isNotEmpty(),
-                            onClick = {
-                                val added = repository.recordClipboardText(newSnippetText, pinned = true)
-                                if (added != null) {
-                                    newSnippetText = ""
-                                    Toast.makeText(context, "📌 已添加置顶常用语", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("置顶")
-                        }
-                    }
-
-                    if (pinnedItems.isNotEmpty()) {
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            pinnedItems.forEach { pinned ->
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
-                                    border = BorderStroke(
-                                        1.dp,
-                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
-                                    )
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 5.dp, bottom = 5.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Text(
-                                            text = "📌 " + pinned.text.replace("\n", " ").take(24) +
-                                                if (pinned.text.length > 24) "…" else "",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        IconButton(
-                                            onClick = { repository.deleteClipboardItem(pinned.id) },
-                                            modifier = Modifier.size(22.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Close,
-                                                contentDescription = "删除常用语",
-                                                modifier = Modifier.size(13.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
 
-        // 3. Sound, Haptics & Context Preferences Card
+        // 4A. Voice Capture & Commit Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(18.dp),
@@ -1189,7 +1144,7 @@ private fun AppearanceAndPreferencesPane(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "输入与感知偏好",
+                    text = "语音收音与上屏",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -1207,7 +1162,7 @@ private fun AppearanceAndPreferencesPane(
 
                 PreferenceSwitchRow(
                     title = "🎵 录音时自动暂停外放媒体",
-                    subtitle = "按下麦克风瞬间自动向系统请求短暂独占焦点暂停音乐/视频外放（防止歌词串音识别），松手后立即恢复播放",
+                    subtitle = "录音时自动暂停正在播放的音乐或视频，松手后恢复",
                     checked = settings.pauseMediaWhileRecording,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(pauseMediaWhileRecording = enabled) }
@@ -1217,44 +1172,41 @@ private fun AppearanceAndPreferencesPane(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
                 PreferenceSwitchRow(
-                    title = "🤫 轻声耳语高灵敏收音模式",
-                    subtitle = "适合深夜、图书馆、工位贴近麦克风轻声说话；自动下调 VAD 门限并启用防削波软限幅增益（语音面板右上角亦可一键切换）",
+                    title = "🤫 轻声高灵敏收音",
+                    subtitle = "适合安静环境下贴近麦克风轻声说话，语音面板也可切换",
                     checked = settings.whisperModeEnabled,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(whisperModeEnabled = enabled) }
                     }
                 )
+            }
+        }
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+        // 4B. AI Assistance & Screen-Reading Privacy Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "AI 辅助与读屏隐私",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
 
                 PreferenceSwitchRow(
                     title = "🔍 顶栏「问AI」随手查胶囊",
-                    subtitle = "在普通输入框打字满 2 个字后，键盘顶栏自动浮现「🔍 问AI」，点击在键盘内弹出安全解答卡片，不擅自修改输入框内容",
+                    subtitle = "在普通输入框打字满 2 个字后，键盘顶栏自动浮现「🔍 问AI」，点击在键盘内弹出解答卡片",
                     checked = settings.equalEqualAskAiEnabled,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(equalEqualAskAiEnabled = enabled) }
-                    }
-                )
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
-
-                PreferenceSwitchRow(
-                    title = "按键与录音提示音",
-                    subtitle = "点击麦克风开始聆听、结束录音及按键反馈轻音效",
-                    checked = settings.interactionSounds,
-                    onCheckedChange = { enabled ->
-                        repository.updateSettings { it.copy(interactionSounds = enabled) }
-                    }
-                )
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
-
-                PreferenceSwitchRow(
-                    title = "触觉振动反馈",
-                    subtitle = "按下说话键、弧形转盘选词及文字上屏时提供细腻清脆震动",
-                    checked = settings.hapticFeedback,
-                    onCheckedChange = { enabled ->
-                        repository.updateSettings { it.copy(hapticFeedback = enabled) }
                     }
                 )
 
@@ -1275,7 +1227,7 @@ private fun AppearanceAndPreferencesPane(
 
                 PreferenceSwitchRow(
                     title = "✦ 启用 Jev 军师模式",
-                    subtitle = "在键盘顶栏、语音面板与帮写顶栏启用潜台词雷达（Lv.1–9）与 3 张高筹码策略键帽草稿",
+                    subtitle = "在键盘顶栏、语音面板与帮写顶栏启用潜台词分析与多策略回复草稿",
                     checked = settings.jevCopilotEnabled,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(jevCopilotEnabled = enabled) }
@@ -1331,8 +1283,8 @@ private fun AppearanceAndPreferencesPane(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
                 PreferenceSwitchRow(
-                    title = "💬 AI 帮回与军师读取屏幕上文",
-                    subtitle = "仅在你主动点 ✍️ 或 ✦ 军师时按需读取当前窗口上文，端侧脱敏后发给你配置的 AI 模型；密码框、全屏含可见密码节点、无痕模式与金融支付类软件一票否决永不读取",
+                    title = "✦ Jev 军师读取聊天上文",
+                    subtitle = "仅在你主动点击 ✦ 军师时按需读取当前窗口可见聊天记录，端侧脱敏后发给你配置的模型，不保存、不写入历史；密码框、无痕模式与支付类应用自动屏蔽",
                     checked = settings.chatContextReplyEnabled,
                     onCheckedChange = { enabled ->
                         if (enabled && !settings.chatContextDisclosureAccepted) {
@@ -1348,8 +1300,8 @@ private fun AppearanceAndPreferencesPane(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
                 PreferenceSwitchRow(
-                    title = "🖼️ 读屏时允许附带脱敏视口截图",
-                    subtitle = "开启后多模态模型可识别表情包与图片上下文（端侧自动 #18181B 涂黑联系信息，检测到验证码/密码/身份证/银行卡/密钥时自动弃图）；关闭则仅发送脱敏纯文本",
+                    title = "🖼️ 读屏允许附带脱敏截图",
+                    subtitle = "开启后可识别表情包与图片内容，端侧自动遮挡敏感信息；关闭则仅发送纯文本",
                     checked = settings.chatContextSendScreenshot,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(chatContextSendScreenshot = enabled) }
@@ -1359,10 +1311,10 @@ private fun AppearanceAndPreferencesPane(
                 if (showChatContextDisclosureDialog) {
                     AlertDialog(
                         onDismissRequest = { showChatContextDisclosureDialog = false },
-                        title = { Text("开启「💬 AI 帮回读取屏幕上文」说明") },
+                        title = { Text("开启「✦ Jev 军师读取聊天上文」说明") },
                         text = {
                             Text(
-                                "仅在你点 ✍️ 时读取当前聊天最近几条消息，发送给你配置的 AI 模型生成回复；不保存、不写入历史或词库。\n\n无痕模式、密码输入框与金融支付/认证类软件永不读取，退出面板后内存立即清空。"
+                                "仅在你主动点击 ✦ 军师时按需读取当前窗口可见聊天记录，端侧脱敏后发给你配置的模型，不保存、不写入历史。\n\n密码框、无痕模式与支付类应用自动屏蔽，退出面板后内存立即清空。"
                             )
                         },
                         confirmButton = {
@@ -1388,15 +1340,45 @@ private fun AppearanceAndPreferencesPane(
                         }
                     )
                 }
+            }
+        }
+
+        // 4C. Sound, Haptics & Floating Bubble Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "声音触感与悬浮球",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                PreferenceSwitchRow(
+                    title = "按键与录音提示音",
+                    subtitle = "点击麦克风开始聆听、结束录音及按键反馈轻音效",
+                    checked = settings.interactionSounds,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(interactionSounds = enabled) }
+                    }
+                )
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
                 PreferenceSwitchRow(
-                    title = "自动学习打字改错",
-                    subtitle = "口述上屏后若用内置键盘手动修正专有名词，自动收录至个人词典",
-                    checked = settings.autoLearnDictionary,
+                    title = "触觉振动反馈",
+                    subtitle = "按下说话键、弧形转盘选词及文字上屏时提供振动反馈",
+                    checked = settings.hapticFeedback,
                     onCheckedChange = { enabled ->
-                        repository.updateSettings { it.copy(autoLearnDictionary = enabled) }
+                        repository.updateSettings { it.copy(hapticFeedback = enabled) }
                     }
                 )
 
@@ -1448,7 +1430,7 @@ private fun AppearanceAndPreferencesPane(
             }
         }
 
-        // 3. OpenTypeFree Custom-API Architecture & Privacy About Card
+        // 5. TypeFree About & Privacy Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(18.dp),
@@ -1481,12 +1463,12 @@ private fun AppearanceAndPreferencesPane(
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "OpenTypeFree Custom-API",
+                            text = "TypeFree",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.ExtraBold
                         )
                         Text(
-                            text = "Version ${BuildConfig.VERSION_NAME} · 开源自定义接口致敬版",
+                            text = "v${BuildConfig.VERSION_NAME} · BYOK 自有接口版",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1513,13 +1495,13 @@ private fun AppearanceAndPreferencesPane(
                                 modifier = Modifier.size(16.dp)
                             )
                             Text(
-                                text = "零中转直连 · 本机隐私优先架构",
+                                text = "自有 API 直连 · 数据仅存本机",
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold
                             )
                         }
                         Text(
-                            text = "• 自有 API 直连：音频与文本由手机直接加密发送至你配置的硅基流动、DeepSeek、Groq、Gemini、OpenAI 或局域网 Ollama 接口，无任何第三方中转服务器。\n• 本机零云端留存：API Key、历史记录、个人词典与场景风格 100% 存储于当前设备沙盒。\n• 全场景生产力闭环：完整支持口述净写、左下角语音笔 Help me write、选中文字 Speak to edit、长按弧形快译、免切键盘悬浮胶囊与改错自学习词典。",
+                            text = "• 自有接口直连：音频与文本由手机直接发送至你配置的 Gemini、DeepSeek、阿里云百炼、火山豆包、硅基流动或自定义网关接口，无第三方中转。\n• 本机存储：API Key、历史记录、个人词典、剪贴板与风格配置均保存在当前设备本地。\n• v3.5 主要功能：支持流式语音输入、雾凇/小鹤中文键盘、✦ Jev 军师、✍️ 帮写与选中改写、🔍 问AI、弧形快译与智能剪贴板。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 19.sp
@@ -1538,7 +1520,7 @@ private fun AppearanceAndPreferencesPane(
                         modifier = Modifier.size(14.dp)
                     )
                     Text(
-                        text = "Built with Jetpack Compose · 16kHz PCM/WAV Low-Latency Pipeline",
+                        text = "TypeFree Android · v${BuildConfig.VERSION_NAME}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

@@ -322,7 +322,7 @@ fun ApiSettingsScreen(
                     fontWeight = FontWeight.ExtraBold
                 )
                 Text(
-                    text = "同一服务商只需填写一次 Key，一键切换 Google Gemini 0.5s 流式、DeepSeek 单 Key 闭环、百炼、豆包或自由混搭",
+                    text = "同一服务商只需填写一次 Key，一键切换 Google Gemini 0.5s 流式、DeepSeek 单 Key 方案、百炼、豆包或自由混搭",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -415,7 +415,7 @@ fun ApiSettingsScreen(
                         providerId == UnifiedProviderCatalog.ID_DEEPSEEK && keepExistingThirdPartyStt ->
                             "✓ 已将 DeepSeek 设为文本大脑（保留当前第三方听音引擎）"
                         providerId == UnifiedProviderCatalog.ID_DEEPSEEK ->
-                            "🚀 已启用 DeepSeek 单 Key 闭环（官方语音识别 + 二阶段润色 + 军师）"
+                            "✓ 已启用 DeepSeek 单 Key 方案（语音识别 + 润色与军师）"
                         else ->
                             "🚀 已切换主力方案：${spec.name}"
                     },
@@ -811,23 +811,6 @@ private fun UnifiedProviderVaultCard(
                         ) != null
                     val useSecondaryButton = isAlreadyPrimary || isDeepSeekFullLoop
 
-                    if (selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK) {
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp),
-                            color = TypeFreeEmerald.copy(alpha = 0.10f),
-                            border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.38f))
-                        ) {
-                            Text(
-                                text = "✨ 单 Key 全链路闭环已支持：只填 1 个 DeepSeek API Key 即可跑通「一阶段官方语音识别 (/v1/tools/asr，自动识别中/粤/英/日/韩) + 二阶段口语润色/快译 (deepseek-chat) + ✦ 军师/帮写/问AI」；若已配置 Gemini Live / 豆包 / 百炼 / 硅基流动流式听音，也可在下方一键切换保留第三方听音引擎。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                lineHeight = 16.sp,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
-                            )
-                        }
-                    }
-
                     Button(
                         onClick = { onApplyQuickSetup(selectedSpec.id, false) },
                         modifier = Modifier.fillMaxWidth(),
@@ -847,9 +830,9 @@ private fun UnifiedProviderVaultCard(
                     ) {
                         val btnText = when {
                             isDeepSeekFullLoop ->
-                                "✓ 已启用 DeepSeek 单 Key 闭环（语音识别 + 润色 & 军师）"
+                                "✓ 已启用 DeepSeek 单 Key 方案（语音识别 + 润色与军师）"
                             selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK ->
-                                "🚀 一键启用 DeepSeek 单 Key 闭环（语音识别 + 润色 & 军师）"
+                                "🚀 一键启用 DeepSeek 单 Key 方案（语音识别 + 润色与军师）"
                             isAlreadyPrimary ->
                                 "✓ 当前已是主力方案（点击重置为官方推荐模型）"
                             else ->
@@ -1084,7 +1067,7 @@ private fun UnifiedWorkflowRoutingCard(
                                     border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.42f))
                                 ) {
                                     Text(
-                                        text = "✨ Gemini 3.5 Live SMART 已激活：边说边实时出字，松手 ~0.5s 秒出净稿，原生自带去口癖与改口自纠！日常口述无需开启二阶段润色；使用「帮我写 / 改写 / 快译 / ==问AI」时会自动共享同一把 Gemini Key 调用 Flash-Lite。",
+                                        text = "✨ Gemini 3.5 Live SMART 已激活：边说边实时出字，松手 ~0.5s 秒出净稿，原生自带去口癖与改口自纠！日常口述无需开启二阶段润色；使用「帮我写 / 改写 / 快译 / 🔍 问AI」时会自动共享同一把 Gemini Key 调用 Flash-Lite。",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurface,
                                         lineHeight = 16.sp,
@@ -1101,7 +1084,7 @@ private fun UnifiedWorkflowRoutingCard(
                                     border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.42f))
                                 ) {
                                     Text(
-                                        text = "🎙️ DeepSeek 官方语音识别 (/v1/tools/asr) 已激活：与 DeepSeek 文本润色共用单 Key，16kHz 单声道 WAV 直传，服务端自动检测中/粤/英/日/韩等语种（请求体仅上传音频文件，无需传 model 或 language）。",
+                                        text = "🎙️ DeepSeek 官方语音识别已激活：与 DeepSeek 文本润色共用单 Key，自动检测中/粤/英/日/韩等语种。",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurface,
                                         lineHeight = 16.sp,
@@ -1233,12 +1216,12 @@ private fun UnifiedWorkflowRoutingCard(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Text(
-                                text = "🎙️ 多模态音频一步直出（已启用 .m4a 硬件极速压缩）",
+                                text = "🎙️ 多模态音频一步直出",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "录音结束后硬件压缩体积缩小约 87%，单次请求完成听音理解、语气适配与翻译（注：若追求松手 0.5s 秒出体验，推荐切回上方「实时流式」使用 Gemini Live）。",
+                                text = "录音结束后单次请求直接完成听音理解、语气适配与翻译（如需边说边出字，可在上方切换「实时流式」）。",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 lineHeight = 16.sp
@@ -2748,36 +2731,15 @@ private fun TemperatureSliderSection(
     }
 
     if (isTempDeprecated) {
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            color = TypeFreeEmerald.copy(alpha = 0.09f),
-            border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.38f))
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text(
-                    text = "✓ 已启用最新推理模型参数自适应",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = TypeFreeEmerald
-                )
-                Text(
-                    text = if (thinkingLevel != null) {
-                        "检测到 ${model.trim()}：请求时将自动移除已废弃的 temperature 参数，并适配思考档位控制（若网关不支持将无感自动回退）。"
-                    } else {
-                        "检测到 ${model.trim()}：已按官方最新规范自动移除废弃的 temperature 采样参数，确保直连与聚合网关零报错极速响应。"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    lineHeight = 16.sp
-                )
-            }
-        }
+        Text(
+            text = if (thinkingLevel != null) {
+                "当前模型（${model.trim()}）自动管理采样温度与思考档位，无需手动调节。"
+            } else {
+                "当前模型（${model.trim()}）自动管理采样参数，无需手动调节温度。"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     } else {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(

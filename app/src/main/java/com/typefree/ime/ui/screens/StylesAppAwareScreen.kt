@@ -78,7 +78,6 @@ import androidx.compose.ui.unit.sp
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppToneRule
 import com.typefree.ime.data.DefaultPresets
-import com.typefree.ime.data.ReplyAttitudePreset
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.ui.components.TypeFreeIcons
 import kotlinx.coroutines.Dispatchers
@@ -115,9 +114,6 @@ fun StylesAppAwareScreen(
     var showRestoreStylesConfirm by remember { mutableStateOf(false) }
     var showRestoreRulesConfirm by remember { mutableStateOf(false) }
     var showAddAppRuleDialog by remember { mutableStateOf(false) }
-    var showAttitudeEditor by remember { mutableStateOf(false) }
-    var editingAttitude by remember { mutableStateOf<ReplyAttitudePreset?>(null) }
-    val replyAttitudes = settings.replyAttitudePresets.ifEmpty { DefaultPresets.defaultReplyAttitudes() }
 
     val filteredRules = remember(appRules, ruleSearchQuery) {
         val q = ruleSearchQuery.trim()
@@ -174,7 +170,7 @@ fun StylesAppAwareScreen(
             }
         }
 
-        // Top App-Aware Switch + Default Mode Selector Card
+        // Top Default Mode Selector Card
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -188,224 +184,80 @@ fun StylesAppAwareScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                    Text(
+                        text = "默认模式选择",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(end = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Text(
-                                text = "开启应用感知自动切换风格 (App-Aware Context)",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = "在微信、飞书、邮箱、终端等不同宿主应用唤起键盘时自动适配语气",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = settings.appAwareToneEnabled,
-                            onCheckedChange = { enabled ->
-                                repository.updateSettings { it.copy(appAwareToneEnabled = enabled) }
-                            }
-                        )
-                    }
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            text = "默认模式选择",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            item {
-                                FilterChip(
-                                    selected = settings.selectedManualStyleId == "auto",
-                                    onClick = {
-                                        repository.updateSettings {
-                                            it.copy(selectedManualStyleId = "auto")
-                                        }
-                                    },
-                                    label = { Text("🧭 自动感知宿主应用") },
-                                    leadingIcon = if (settings.selectedManualStyleId == "auto") {
-                                        {
-                                            Icon(
-                                                imageVector = Icons.Default.Check,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    } else null
-                                )
-                            }
-
-                            items(styles, key = { "lock_${it.id}" }) { style ->
-                                val isLocked = settings.selectedManualStyleId == style.id
-                                FilterChip(
-                                    selected = isLocked,
-                                    onClick = {
-                                        repository.updateSettings {
-                                            it.copy(selectedManualStyleId = style.id)
-                                        }
-                                    },
-                                    label = { Text("${style.emoji} 锁定：${style.name}") },
-                                    leadingIcon = if (isLocked) {
-                                        {
-                                            Icon(
-                                                imageVector = Icons.Default.Check,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    } else null
-                                )
-                            }
-                        }
-
-                        val statusSummary = when {
-                            lockedStyle != null ->
-                                "当前已全局锁定「${lockedStyle.emoji} ${lockedStyle.name}」，所有应用都将固定使用该风格（切回「自动感知宿主应用」可恢复自动匹配）。"
-                            settings.appAwareToneEnabled ->
-                                "当前处于自动感知模式：优先匹配下方 $enabledRuleCount 条启用中的应用规则，未命中时智能回退至通用灵动风格。"
-                            else ->
-                                "应用感知开关已关闭：所有应用统一使用默认「✨ 通用灵动」风格。"
-                        }
-
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-                        ) {
-                            Text(
-                                text = statusSummary,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 10.dp, vertical = 8.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Custom AI Reply Attitude Chips Card (`💬 AI 帮回快捷态度芯片`)
-        item(key = "reply_attitude_presets_card") {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                ),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Text(
-                                text = "💬 AI 帮回快捷态度芯片 (${replyAttitudes.size})",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "键盘「✍️ 帮我写 / AI 帮回」面板顶部的快捷态度（点选态度后可继续按住说话补充细节，或直接生成）；轻点任意芯片即可编辑或删除。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        replyAttitudes.forEach { preset ->
+                        item {
                             FilterChip(
-                                selected = false,
+                                selected = settings.selectedManualStyleId == "auto",
                                 onClick = {
-                                    editingAttitude = preset
-                                    showAttitudeEditor = true
+                                    repository.updateSettings {
+                                        it.copy(
+                                            selectedManualStyleId = "auto",
+                                            appAwareToneEnabled = true
+                                        )
+                                    }
                                 },
-                                label = { Text(preset.label) },
-                                trailingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Default.Edit,
-                                        contentDescription = "编辑态度",
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
+                                label = { Text("🧭 自动匹配宿主应用") },
+                                leadingIcon = if (settings.selectedManualStyleId == "auto") {
+                                    {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                } else null
+                            )
+                        }
+
+                        items(styles, key = { "lock_${it.id}" }) { style ->
+                            val isLocked = settings.selectedManualStyleId == style.id
+                            FilterChip(
+                                selected = isLocked,
+                                onClick = {
+                                    repository.updateSettings {
+                                        it.copy(selectedManualStyleId = style.id)
+                                    }
+                                },
+                                label = { Text("${style.emoji} 锁定：${style.name}") },
+                                leadingIcon = if (isLocked) {
+                                    {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                } else null
                             )
                         }
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        FilledTonalButton(
-                            onClick = {
-                                editingAttitude = null
-                                showAttitudeEditor = true
-                            },
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("新增态度芯片", style = MaterialTheme.typography.labelLarge)
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                repository.updateSettings {
-                                    it.copy(replyAttitudePresets = DefaultPresets.defaultReplyAttitudes())
-                                }
-                                Toast.makeText(context, "已恢复 6 个默认平视态度芯片", Toast.LENGTH_SHORT).show()
-                            },
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = null,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("恢复默认", style = MaterialTheme.typography.labelLarge)
-                        }
+                    val statusSummary = when {
+                        lockedStyle != null ->
+                            "已全局锁定「${lockedStyle.emoji} ${lockedStyle.name}」，所有应用固定使用该风格"
+                        settings.appAwareToneEnabled ->
+                            "自动匹配宿主应用（已启用 $enabledRuleCount 条规则，未命中时使用通用风格）"
+                        else ->
+                            "当前统一使用「✨ 通用灵动」风格，点选「自动匹配宿主应用」可恢复自动切换"
                     }
+
+                    Text(
+                        text = statusSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
@@ -491,7 +343,12 @@ fun StylesAppAwareScreen(
                     },
                     onToggleLock = {
                         val nextId = if (settings.selectedManualStyleId == style.id) "auto" else style.id
-                        repository.updateSettings { it.copy(selectedManualStyleId = nextId) }
+                        repository.updateSettings {
+                            it.copy(
+                                selectedManualStyleId = nextId,
+                                appAwareToneEnabled = if (nextId == "auto") true else it.appAwareToneEnabled
+                            )
+                        }
                     },
                     onDelete = if (!style.isBuiltIn) {
                         { stylePendingDelete = style }
@@ -809,126 +666,6 @@ fun StylesAppAwareScreen(
             }
         )
     }
-
-    if (showAttitudeEditor) {
-        ReplyAttitudeEditorDialog(
-            initialPreset = editingAttitude,
-            canDelete = editingAttitude != null && replyAttitudes.size > 1,
-            onDismiss = { showAttitudeEditor = false },
-            onDelete = { toDelete ->
-                repository.updateSettings { current ->
-                    val existing = current.replyAttitudePresets.ifEmpty { DefaultPresets.defaultReplyAttitudes() }
-                    current.copy(
-                        replyAttitudePresets = existing.filterNot { it.id == toDelete.id }
-                            .ifEmpty { DefaultPresets.defaultReplyAttitudes() }
-                    )
-                }
-                showAttitudeEditor = false
-                Toast.makeText(context, "已删除态度芯片「${toDelete.label}」", Toast.LENGTH_SHORT).show()
-            },
-            onConfirm = { savedPreset ->
-                repository.updateSettings { current ->
-                    val existing = current.replyAttitudePresets.ifEmpty { DefaultPresets.defaultReplyAttitudes() }
-                    val updated = if (existing.any { it.id == savedPreset.id }) {
-                        existing.map { if (it.id == savedPreset.id) savedPreset else it }
-                    } else {
-                        existing + savedPreset
-                    }
-                    current.copy(replyAttitudePresets = updated)
-                }
-                showAttitudeEditor = false
-                Toast.makeText(
-                    context,
-                    if (editingAttitude == null) "已新增态度芯片「${savedPreset.label}」" else "已更新态度芯片「${savedPreset.label}」",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        )
-    }
-}
-
-@Composable
-private fun ReplyAttitudeEditorDialog(
-    initialPreset: ReplyAttitudePreset?,
-    canDelete: Boolean,
-    onDismiss: () -> Unit,
-    onDelete: (ReplyAttitudePreset) -> Unit,
-    onConfirm: (ReplyAttitudePreset) -> Unit
-) {
-    var label by remember(initialPreset) {
-        mutableStateOf(initialPreset?.label ?: "😎 随便聊聊")
-    }
-    var instruction by remember(initialPreset) {
-        mutableStateOf(
-            initialPreset?.instruction
-                ?: "结合聊天上下文（及画面截图），用自然、平等、不卑不亢的日常语气直接生成一句得体的回复正文。"
-        )
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(if (initialPreset == null) "新增 AI 帮回态度芯片" else "编辑 AI 帮回态度芯片")
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = label,
-                    onValueChange = { label = it },
-                    label = { Text("芯片按钮名称（含 Emoji）*") },
-                    placeholder = { Text("如：👌 行 / 好的、⚡ 硬气回怼") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = instruction,
-                    onValueChange = { instruction = it },
-                    label = { Text("AI 回复态度指令 (Prompt) *") },
-                    placeholder = { Text("描述该态度下希望 AI 以什么样的立场与语气生成回复") },
-                    minLines = 3,
-                    maxLines = 5,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                if (canDelete && initialPreset != null) {
-                    OutlinedButton(
-                        onClick = { onDelete(initialPreset) },
-                        modifier = Modifier.fillMaxWidth(),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.6f))
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("删除此态度芯片", color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                enabled = label.trim().isNotEmpty() && instruction.trim().isNotEmpty(),
-                onClick = {
-                    onConfirm(
-                        ReplyAttitudePreset(
-                            id = initialPreset?.id ?: "att_${System.currentTimeMillis()}",
-                            label = label.trim(),
-                            instruction = instruction.trim()
-                        )
-                    )
-                }
-            ) {
-                Text("保存")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
-        }
-    )
 }
 
 @Composable
@@ -1766,7 +1503,7 @@ private fun AddAppRuleDialog(
                     OutlinedTextField(
                         value = packageName,
                         onValueChange = { packageName = it },
-                        label = { Text("应用包名 (Package Name) *") },
+                        label = { Text("应用包名 *") },
                         placeholder = { Text("如：com.tencent.mm") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
