@@ -196,8 +196,9 @@ fun StylesAppAwareScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         item {
+                            val isAutoMatched = settings.selectedManualStyleId == "auto" && settings.appAwareToneEnabled
                             FilterChip(
-                                selected = settings.selectedManualStyleId == "auto",
+                                selected = isAutoMatched,
                                 onClick = {
                                     repository.updateSettings {
                                         it.copy(
@@ -207,7 +208,7 @@ fun StylesAppAwareScreen(
                                     }
                                 },
                                 label = { Text("🧭 自动匹配宿主应用") },
-                                leadingIcon = if (settings.selectedManualStyleId == "auto") {
+                                leadingIcon = if (isAutoMatched) {
                                     {
                                         Icon(
                                             imageVector = Icons.Default.Check,
