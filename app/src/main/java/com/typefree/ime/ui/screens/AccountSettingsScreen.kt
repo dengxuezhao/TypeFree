@@ -1843,7 +1843,7 @@ private fun AppUpdateDialog(
                             onDismiss()
                         }
                     ) {
-                        Text("前往 GitHub Releases 页面手动查看")
+                        Text("手动查看 Releases")
                     }
                 },
                 dismissButton = {

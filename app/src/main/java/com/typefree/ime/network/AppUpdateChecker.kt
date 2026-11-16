@@ -5,8 +5,10 @@ import com.google.gson.JsonParser
 import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -59,10 +61,15 @@ object AppUpdateChecker {
     private const val DEFAULT_EMPTY_RELEASE_NOTES =
         "暂无详细更新说明，可前往 GitHub Releases 页面查看完整变更记录。"
 
+    private const val MAX_FETCH_ATTEMPTS = 3
+    private val RETRY_BACKOFF_MS = longArrayOf(250L, 600L)
+    private val TRANSIENT_HTTP_CODES = setOf(502, 503, 504)
+
     private val gson = Gson()
 
     private val defaultClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .protocols(listOf(Protocol.HTTP_1_1))
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
             .build()
@@ -170,45 +177,77 @@ object AppUpdateChecker {
         client: OkHttpClient = defaultClient,
         apiUrl: String = GITHUB_LATEST_RELEASE_API
     ): Result<UpdateCheckInfo> = withContext(Dispatchers.IO) {
-        try {
-            val request = Request.Builder()
+        val userAgent = "TypeFree-Android/${normalizeVersionTag(currentVersion)}"
+        var lastError: IllegalStateException? = null
+
+        for (attempt in 0 until MAX_FETCH_ATTEMPTS) {
+            val isRetry = attempt > 0
+            if (isRetry) {
+                delay(RETRY_BACKOFF_MS.getOrElse(attempt - 1) { RETRY_BACKOFF_MS.last() })
+                runCatching { client.connectionPool.evictAll() }
+            }
+
+            val requestBuilder = Request.Builder()
                 .url(apiUrl)
                 .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "TypeFree-Android/${normalizeVersionTag(currentVersion)}")
+                .header("User-Agent", userAgent)
                 .get()
-                .build()
-
-            client.newCall(request).execute().use { response ->
-                val bodyString = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    val message = when (response.code) {
-                        403, 429 -> "GitHub API 请求受限 (HTTP ${response.code})，请稍后重试或前往 Releases 页面手动查看"
-                        404 -> "未找到已发布的 Release 版本 (HTTP 404)，可前往 Releases 页面查看"
-                        else -> "检查更新失败 (HTTP ${response.code})"
-                    }
-                    return@withContext Result.failure(IllegalStateException(message))
-                }
-                if (bodyString.isBlank()) {
-                    return@withContext Result.failure(IllegalStateException("服务器返回空响应，请稍后重试"))
-                }
-                val info = parseLatestReleaseJson(
-                    json = bodyString,
-                    currentVersion = currentVersion,
-                    isPrivateDictBuild = isPrivateDictBuild
-                )
-                Result.success(info)
+            if (isRetry) {
+                // Force a fresh socket on retry instead of reusing a half-closed Keep-Alive/HTTP2 connection.
+                requestBuilder.header("Connection", "close")
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: SocketTimeoutException) {
-            Result.failure(IllegalStateException("连接 GitHub 超时，请检查网络或代理设置后重试", e))
-        } catch (e: UnknownHostException) {
-            Result.failure(IllegalStateException("无法连接 GitHub，请检查网络连接", e))
-        } catch (e: IOException) {
-            Result.failure(IllegalStateException("网络请求失败：${e.message ?: "请检查网络后重试"}", e))
-        } catch (e: Exception) {
-            Result.failure(IllegalStateException(e.message ?: "解析版本信息失败，可前往 GitHub Releases 查看", e))
+            val request = requestBuilder.build()
+
+            val terminalResult: Result<UpdateCheckInfo>? = try {
+                client.newCall(request).execute().use { response ->
+                    val bodyString = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        if (response.code in TRANSIENT_HTTP_CODES && attempt < MAX_FETCH_ATTEMPTS - 1) {
+                            lastError = IllegalStateException("检查更新失败 (HTTP ${response.code})")
+                            return@use null
+                        }
+                        val message = when (response.code) {
+                            403, 429 -> "GitHub API 请求受限 (HTTP ${response.code})，请稍后重试或前往 Releases 页面手动查看"
+                            404 -> "未找到已发布的 Release 版本 (HTTP 404)，可前往 Releases 页面查看"
+                            else -> "检查更新失败 (HTTP ${response.code})"
+                        }
+                        return@use Result.failure(IllegalStateException(message))
+                    }
+                    if (bodyString.isBlank()) {
+                        return@use Result.failure(IllegalStateException("服务器返回空响应，请稍后重试"))
+                    }
+                    val info = parseLatestReleaseJson(
+                        json = bodyString,
+                        currentVersion = currentVersion,
+                        isPrivateDictBuild = isPrivateDictBuild
+                    )
+                    Result.success(info)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                lastError = mapIoException(e)
+                null
+            } catch (e: Exception) {
+                Result.failure(
+                    IllegalStateException(e.message ?: "解析版本信息失败，可前往 GitHub Releases 查看", e)
+                )
+            }
+
+            if (terminalResult != null) {
+                return@withContext terminalResult
+            }
         }
+
+        Result.failure(
+            lastError ?: IllegalStateException("网络请求失败：请检查网络后重试")
+        )
+    }
+
+    private fun mapIoException(e: IOException): IllegalStateException = when (e) {
+        is SocketTimeoutException -> IllegalStateException("连接 GitHub 超时，请检查网络或代理设置后重试", e)
+        is UnknownHostException -> IllegalStateException("无法连接 GitHub，请检查网络连接", e)
+        else -> IllegalStateException("网络请求失败：${e.message ?: "请检查网络后重试"}", e)
     }
 
     private fun parseSemVer(raw: String): ParsedSemVer {
