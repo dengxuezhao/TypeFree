@@ -55,5 +55,13 @@ release/
 # Local private dictionaries & Rime backups (contains personal local tables)
 local_private/
 
+# Xiaohe exclusive flavor private Rime assets & precompiled binary tables (EULA strictly isolated)
+app/src/xiaohe/assets/rime/
+*.table.bin
+*.prism.bin
+*.reverse.bin
+*.brief.idx
+xiaohe_flypy_*.zip
+
 # Log files
 *.log

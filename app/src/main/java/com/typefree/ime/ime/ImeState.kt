@@ -694,6 +694,11 @@ object ImeLogic {
         maxVisibleChars: Int = 38
     ): String {
         if (!scheme.usesRime) {
+            if (preedit.startsWith("[") ||
+                (rawCode.length in 3..4 && preedit == "${rawCode.substring(0, 2)}'${rawCode.substring(2)}")
+            ) {
+                return preedit
+            }
             return rawCode.ifEmpty { preedit }
         }
         val base = preedit.ifEmpty { rawCode }

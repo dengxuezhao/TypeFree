@@ -12,6 +12,7 @@ import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.SnippetEntry
 import com.typefree.ime.data.SnippetMatcher
+import com.typefree.ime.ime.engine.CodetableEnhancedInputEngine
 import com.typefree.ime.ime.engine.EngineResult
 import com.typefree.ime.ime.engine.FlypyInputEngine
 import com.typefree.ime.ime.engine.InputEngine
@@ -58,6 +59,7 @@ interface ImeHostCallbacks {
     fun readSystemClipboardText(): String
     fun syncSystemClipboardIfNeeded(allowFreshBanner: Boolean)
     fun copyTextToClipboard(text: String) {}
+    fun openJevCopilotFromCommand() {}
 
     fun archiveWavForHistory(wavFile: File, retention: HistoryRetention): File
     fun getLastRecordingWavFile(): File
@@ -80,6 +82,12 @@ class TypingController(
         private set
 
     var rimeInputEngine: InputEngine? = null
+        set(value) {
+            field = value
+            value?.setIncognitoMode(isIncognitoMode)
+        }
+
+    var codetableEnhancedEngine: CodetableEnhancedInputEngine? = null
         set(value) {
             field = value
             value?.setIncognitoMode(isIncognitoMode)
@@ -121,12 +129,27 @@ class TypingController(
     val activeEngine: InputEngine
         get() {
             val scheme = safeSettings().inputScheme
+            val enhanced = codetableEnhancedEngine
+            if (enhanced != null && isRimeReady &&
+                (scheme == InputScheme.FLYPY_TABLE || scheme == InputScheme.RIME_CUSTOM)
+            ) {
+                return enhanced
+            }
             val rime = rimeInputEngine
             return if (scheme.usesRime && isRimeReady && rime != null) {
                 rime
             } else {
                 flypyInputEngine
             }
+        }
+
+    val activeAllowsAutoLearn: Boolean
+        get() {
+            val eng = activeEngine
+            if (eng is CodetableEnhancedInputEngine) {
+                return eng.activeProfile.allowAutoLearn
+            }
+            return safeSettings().inputScheme != InputScheme.FLYPY_TABLE
         }
 
     val isDictionaryLoaded: Boolean
@@ -231,7 +254,7 @@ class TypingController(
                     host.commitDirectText(
                         text = result.text,
                         recordUndo = true,
-                        markManualEdit = true,
+                        markManualEdit = activeAllowsAutoLearn,
                         playFeedback = false
                     )
                     predictionCoordinator.onWordCommitted(

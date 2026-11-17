@@ -398,10 +398,11 @@ private fun CandidateChipItem(
                 )
             )
         }
-        val visualCandText = if (cand.text.length > 16 || cand.text.contains('\n')) {
-            cand.text.replace('\n', '↵').take(16) + "…"
+        val rawDisplay = cand.displayText.ifEmpty { cand.text }
+        val visualCandText = if (rawDisplay.length > 16 || rawDisplay.contains('\n')) {
+            rawDisplay.replace('\n', '↵').take(16) + "…"
         } else {
-            cand.text
+            rawDisplay
         }
         Text(
             text = visualCandText,
@@ -501,10 +502,11 @@ fun CandidateGridOverlay(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
-                        val gridCandText = if (cand.text.length > 22 || cand.text.contains('\n')) {
-                            cand.text.replace('\n', '↵').take(22) + "…"
+                        val rawGridDisplay = cand.displayText.ifEmpty { cand.text }
+                        val gridCandText = if (rawGridDisplay.length > 22 || rawGridDisplay.contains('\n')) {
+                            rawGridDisplay.replace('\n', '↵').take(22) + "…"
                         } else {
-                            cand.text
+                            rawGridDisplay
                         }
                         Text(
                             text = gridCandText,

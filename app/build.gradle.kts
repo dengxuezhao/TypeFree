@@ -18,6 +18,7 @@ android {
         versionCode = 28
         versionName = "3.5.1"
         buildConfigField("boolean", "USE_PRIVATE_DICT", usePrivateDict.toString())
+        buildConfigField("boolean", "IS_XIAOHE_FLAVOR", "false")
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -25,6 +26,23 @@ android {
 
         vectorDrawables {
             useSupportLibrary = true
+        }
+    }
+
+    flavorDimensions += "edition"
+
+    productFlavors {
+        create("standard") {
+            dimension = "edition"
+            isDefault = true
+        }
+
+        create("xiaohe") {
+            dimension = "edition"
+            applicationIdSuffix = ".xiaohe"
+            versionNameSuffix = "-xiaohe"
+            buildConfigField("boolean", "USE_PRIVATE_DICT", "true")
+            buildConfigField("boolean", "IS_XIAOHE_FLAVOR", "true")
         }
     }
 
@@ -87,6 +105,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core"))
     implementation(project(":rime"))
 
     val composeBom = platform("androidx.compose:compose-bom:2025.04.01")
@@ -111,4 +130,5 @@ dependencies {
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation(project(":core"))
 }

@@ -1,0 +1,142 @@
+name: Build TypeFree Xiaohe Exclusive APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      xiaohe_dict_url:
+        description: "Optional direct download URL for xiaohe_flypy_typefree_ready.zip (falls back to XIAOHE_READY_ZIP_URL / XIAOHE_READY_ZIP_B64 / GDRIVE_ACCESS_TOKEN secrets)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build-xiaohe-apk:
+    name: QA Gate Matrix + Assemble Xiaohe Exclusive APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout TypeFree branch
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Accept Android SDK licenses for NDK & CMake
+        run: |
+          if [ -n "${ANDROID_HOME:-}" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          fi
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Cache upstream librime 1.17.0 C++ dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            rime/src/main/cpp/librime
+            rime/src/main/cpp/boost
+            rime/src/main/cpp/snappy
+            rime/src/main/cpp/librime-lua
+            rime/src/main/cpp/librime-lua-deps
+            rime/src/main/cpp/librime-octagram
+            rime/src/main/cpp/librime-predict
+          key: librime-1.17.0-deps-${{ hashFiles('rime/src/main/cpp/fetch_librime_deps.sh') }}
+
+      - name: Fetch upstream librime 1.17.0 dependencies
+        run: bash rime/src/main/cpp/fetch_librime_deps.sh
+
+      - name: Inject untracked Xiaohe dictionary bundle into app/src/xiaohe/assets/rime/
+        env:
+          INPUT_URL: ${{ inputs.xiaohe_dict_url }}
+          SECRET_URL: ${{ secrets.XIAOHE_READY_ZIP_URL }}
+          SECRET_B64: ${{ secrets.XIAOHE_READY_ZIP_B64 }}
+          GDRIVE_FILE_ID: ${{ secrets.XIAOHE_GDRIVE_FILE_ID }}
+          GDRIVE_ACCESS_TOKEN: ${{ secrets.GDRIVE_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/xiaohe_bundle app/src/xiaohe/assets/rime
+
+          download_url_or_gdrive() {
+            local url="$1"
+            local out="$2"
+            curl -fsSL -L "$url" -o "$out" || true
+            if unzip -tq "$out" >/dev/null 2>&1; then
+              return 0
+            fi
+            # Auto-upgrade Google Drive sharing/uc URLs to direct usercontent endpoint when needed
+            local fid=""
+            if [[ "$url" =~ [?\&]id=([a-zA-Z0-9_-]+) ]]; then
+              fid="${BASH_REMATCH[1]}"
+            elif [[ "$url" =~ /file/d/([a-zA-Z0-9_-]+) ]]; then
+              fid="${BASH_REMATCH[1]}"
+            fi
+            if [ -n "$fid" ]; then
+              echo "Retrying via drive.usercontent.google.com direct binary endpoint..."
+              curl -fsSL -L "https://drive.usercontent.google.com/download?id=${fid}&export=download&confirm=t" -o "$out"
+            fi
+            unzip -tq "$out" >/dev/null
+          }
+
+          if [ -n "$INPUT_URL" ]; then
+            echo "Downloading Xiaohe bundle from workflow input URL..."
+            download_url_or_gdrive "$INPUT_URL" /tmp/xiaohe_bundle/xiaohe.zip
+          elif [ -n "$SECRET_URL" ]; then
+            echo "Downloading Xiaohe bundle from XIAOHE_READY_ZIP_URL secret..."
+            download_url_or_gdrive "$SECRET_URL" /tmp/xiaohe_bundle/xiaohe.zip
+          elif [ -n "$SECRET_B64" ]; then
+            echo "Decoding Xiaohe bundle from XIAOHE_READY_ZIP_B64 secret..."
+            printf '%s' "$SECRET_B64" | base64 -d > /tmp/xiaohe_bundle/xiaohe.zip
+            unzip -tq /tmp/xiaohe_bundle/xiaohe.zip >/dev/null
+          elif [ -n "$GDRIVE_ACCESS_TOKEN" ]; then
+            FILE_ID="${GDRIVE_FILE_ID:-1-XzQCyYfKqWpWbPTkQbsE6HAuFCSIt8o}"
+            echo "Downloading xiaohe_flypy_typefree_ready.zip ($FILE_ID) via Google Drive API..."
+            curl -fsSL               -H "Authorization: Bearer ${GDRIVE_ACCESS_TOKEN}"               "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media"               -o /tmp/xiaohe_bundle/xiaohe.zip
+            unzip -tq /tmp/xiaohe_bundle/xiaohe.zip >/dev/null
+          else
+            echo "::error::Missing private dictionary source. Pass -f xiaohe_dict_url=... or configure secret XIAOHE_READY_ZIP_URL."
+            exit 1
+          fi
+
+          unzip -oq /tmp/xiaohe_bundle/xiaohe.zip -d app/src/xiaohe/assets/rime/
+          rm -rf /tmp/xiaohe_bundle
+
+          echo "Injected files in app/src/xiaohe/assets/rime/:"
+          ls -lh app/src/xiaohe/assets/rime/
+
+          # Enforce EULA compliance gate: git status MUST ignore app/src/xiaohe/assets/rime/
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Git working tree polluted after injecting private dictionary!"
+            git status
+            exit 1
+          fi
+          echo "EULA Git isolation verified: 0 untracked dictionary files visible to Git."
+
+      - name: Run Section 6.2 8-Gate Automated QA Unit Tests
+        run: ./gradlew :core:test testXiaoheDebugUnitTest --no-daemon --stacktrace
+
+      - name: Assemble Xiaohe Exclusive Debug APK
+        run: |
+          ./gradlew assembleXiaoheDebug --no-daemon --stacktrace
+          APK_PATH=$(find app/build/outputs/apk/xiaohe/debug -name "*.apk" | head -n 1)
+          test -f "$APK_PATH"
+          cp "$APK_PATH" TypeFree-xiaohe-debug.apk
+          sha256sum TypeFree-xiaohe-debug.apk | tee TypeFree-xiaohe-debug.apk.sha256
+
+      - name: Upload TypeFree-xiaohe-debug.apk & QA Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: TypeFree-xiaohe-debug-apk
+          path: |
+            TypeFree-xiaohe-debug.apk
+            TypeFree-xiaohe-debug.apk.sha256
+            core/build/reports/tests/test/
+            app/build/reports/tests/testXiaoheDebugUnitTest/
+          if-no-files-found: error
+          retention-days: 30
