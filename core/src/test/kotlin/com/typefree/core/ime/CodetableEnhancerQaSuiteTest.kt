@@ -498,7 +498,7 @@ class CodetableEnhancerQaSuiteTest {
         assertEquals(1, cands.size)
         assertEquals(extBFish, cands[0].commitText)
         val commit = coord.onSpace() as CoordinatorKeyOutcome.Commit
-        assertEquals(CommitAction.PlainText(extBFish, fromRimeNative = false), commit.action)
+        assertEquals(CommitAction.PlainText(extBFish, fromRimeNative = true), commit.action)
     }
 
     @Test
