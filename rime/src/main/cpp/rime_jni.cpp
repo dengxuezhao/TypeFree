@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2015 - 2026 Rime community / TypeFree v2.7
+// SPDX-FileCopyrightText: 2015 - 2026 Rime community / TypeFree v3.6
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <jni.h>
@@ -6,6 +6,7 @@
 #include <android/log.h>
 
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -37,6 +38,31 @@ std::string g_active_schema = "rime_ice";
 std::string g_pending_commit;
 bool g_incognito = false;
 bool g_fixed_candidate_order = false;
+
+/**
+ * Standard UTF-8 ByteArray <-> std::string JNI helpers.
+ * Bypasses Android JNI Modified UTF-8 string conversion so 4-byte
+ * supplementary CJK Extension B~I codepoints (e.g. U+29F7E `𩽾` = F0 A9 BD BE) cross the
+ * JNI boundary losslessly without corruption or ART abort.
+ */
+std::string jbyteArrayToStdString(JNIEnv* env, jbyteArray bytes) {
+  if (!bytes) return "";
+  const jsize len = env->GetArrayLength(bytes);
+  if (len <= 0) return "";
+  std::string out(static_cast<size_t>(len), '\0');
+  env->GetByteArrayRegion(bytes, 0, len, reinterpret_cast<jbyte*>(out.data()));
+  return out;
+}
+
+jbyteArray stdStringToJByteArray(JNIEnv* env, const std::string& utf8) {
+  const jsize len = static_cast<jsize>(utf8.size());
+  jbyteArray arr = env->NewByteArray(len);
+  if (!arr) return nullptr;
+  if (len > 0) {
+    env->SetByteArrayRegion(arr, 0, len, reinterpret_cast<const jbyte*>(utf8.data()));
+  }
+  return arr;
+}
 
 std::string jstringToStdString(JNIEnv* env, jstring jstr) {
   if (!jstr) return "";
@@ -184,6 +210,24 @@ void drainCommitLocked(RimeApi* api, RimeSessionId sid) {
   }
 }
 
+std::vector<std::string> collectCandidateItemsLocked(RimeApi* api, RimeSessionId sid, int maxCount) {
+  std::vector<std::string> items;
+  if (!api || !sid || maxCount <= 0) return items;
+  items.reserve(static_cast<size_t>(maxCount));
+  RimeCandidateListIterator iter{};
+  if (api->candidate_list_from_index(sid, &iter, 0)) {
+    int count = 0;
+    while (count < maxCount && api->candidate_list_next(&iter)) {
+      std::string text = iter.candidate.text ? iter.candidate.text : "";
+      std::string comment = iter.candidate.comment ? iter.candidate.comment : "";
+      items.push_back(text + "\t" + comment);
+      ++count;
+    }
+    api->candidate_list_end(&iter);
+  }
+  return items;
+}
+
 }  // namespace
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* /* jvm */, void* /* reserved */) {
@@ -210,10 +254,10 @@ Java_com_typefree_rime_RimeBridge_nativeInitialize(
   RIME_STRUCT(RimeTraits, traits);
   traits.shared_data_dir = g_shared_dir.c_str();
   traits.user_data_dir = g_user_dir.c_str();
-  traits.log_dir = "";  // log to Android logcat only
+  traits.log_dir = "";
   traits.distribution_name = "TypeFree";
   traits.distribution_code_name = "typefree";
-  traits.distribution_version = "2.7.0";
+  traits.distribution_version = "3.6.0";
   traits.app_name = "rime.typefree";
 
   if (!g_setup_done) {
@@ -351,6 +395,26 @@ Java_com_typefree_rime_RimeBridge_nativeGetPreedit(
   return stdStringToJstring(env, preedit);
 }
 
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_typefree_rime_RimeBridge_nativeGetPreeditUtf8(
+    JNIEnv* env,
+    jobject /* thiz */) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  RimeApi* api = rime_get_api();
+  RimeSessionId sid = ensureSessionLocked(api);
+  if (!sid) return stdStringToJByteArray(env, "");
+
+  std::string preedit;
+  RIME_STRUCT(RimeContext, ctx);
+  if (api->get_context(sid, &ctx)) {
+    if (ctx.composition.preedit) {
+      preedit = ctx.composition.preedit;
+    }
+    api->free_context(&ctx);
+  }
+  return stdStringToJByteArray(env, preedit);
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_typefree_rime_RimeBridge_nativeGetRawInput(
     JNIEnv* env,
@@ -362,6 +426,19 @@ Java_com_typefree_rime_RimeBridge_nativeGetRawInput(
 
   const char* input = api->get_input(sid);
   return stdStringToJstring(env, input ? input : "");
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_typefree_rime_RimeBridge_nativeGetRawInputUtf8(
+    JNIEnv* env,
+    jobject /* thiz */) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  RimeApi* api = rime_get_api();
+  RimeSessionId sid = ensureSessionLocked(api);
+  if (!sid) return stdStringToJByteArray(env, "");
+
+  const char* input = api->get_input(sid);
+  return stdStringToJByteArray(env, input ? input : "");
 }
 
 extern "C" JNIEXPORT jobjectArray JNICALL
@@ -377,25 +454,105 @@ Java_com_typefree_rime_RimeBridge_nativeGetCandidates(
     return env->NewObjectArray(0, strCls, nullptr);
   }
 
-  std::vector<std::string> items;
-  items.reserve(static_cast<size_t>(maxCount));
-  RimeCandidateListIterator iter{};
-  if (api->candidate_list_from_index(sid, &iter, 0)) {
-    int count = 0;
-    while (count < maxCount && api->candidate_list_next(&iter)) {
-      std::string text = iter.candidate.text ? iter.candidate.text : "";
-      std::string comment = iter.candidate.comment ? iter.candidate.comment : "";
-      items.push_back(text + "\t" + comment);
-      ++count;
-    }
-    api->candidate_list_end(&iter);
-  }
-
+  auto items = collectCandidateItemsLocked(api, sid, static_cast<int>(maxCount));
   jobjectArray arr = env->NewObjectArray(static_cast<jsize>(items.size()), strCls, nullptr);
   for (size_t i = 0; i < items.size(); ++i) {
     jstring js = stdStringToJstring(env, items[i]);
     env->SetObjectArrayElement(arr, static_cast<jsize>(i), js);
     env->DeleteLocalRef(js);
+  }
+  return arr;
+}
+
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_typefree_rime_RimeBridge_nativeGetCandidatesUtf8(
+    JNIEnv* env,
+    jobject /* thiz */,
+    jint maxCount) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  jclass byteArrCls = env->FindClass("[B");
+  RimeApi* api = rime_get_api();
+  RimeSessionId sid = ensureSessionLocked(api);
+  if (!sid || maxCount <= 0) {
+    return env->NewObjectArray(0, byteArrCls, nullptr);
+  }
+
+  auto items = collectCandidateItemsLocked(api, sid, static_cast<int>(maxCount));
+  jobjectArray arr = env->NewObjectArray(static_cast<jsize>(items.size()), byteArrCls, nullptr);
+  for (size_t i = 0; i < items.size(); ++i) {
+    jbyteArray jb = stdStringToJByteArray(env, items[i]);
+    env->SetObjectArrayElement(arr, static_cast<jsize>(i), jb);
+    env->DeleteLocalRef(jb);
+  }
+  return arr;
+}
+
+/**
+ * Isolated read-only candidate prober for Track 5.2 702-slot (`26 + 676`) dynamic index building:
+ * creates a temporary `_incognito` session so probing never disturbs active typing or `*.userdb`.
+ */
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_typefree_rime_RimeBridge_nativeProbeCandidatesForCodeUtf8(
+    JNIEnv* env,
+    jobject /* thiz */,
+    jbyteArray codeUtf8,
+    jint maxCount) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  jclass byteArrCls = env->FindClass("[B");
+  RimeApi* api = rime_get_api();
+  if (!api || !g_initialized || maxCount <= 0) {
+    return env->NewObjectArray(0, byteArrCls, nullptr);
+  }
+
+  std::string code = jbyteArrayToStdString(env, codeUtf8);
+  if (code.empty()) {
+    return env->NewObjectArray(0, byteArrCls, nullptr);
+  }
+
+  RimeSessionId probeSid = api->create_session();
+  if (!probeSid) {
+    return env->NewObjectArray(0, byteArrCls, nullptr);
+  }
+
+  if (!g_active_schema.empty()) {
+    api->select_schema(probeSid, g_active_schema.c_str());
+  }
+  api->set_option(probeSid, "_incognito", True);
+  api->set_option(probeSid, "fixed_candidate_order", True);
+
+  // Send characters without auto-commit side effects where possible; capture either menu or immediate commit
+  for (char c : code) {
+    api->process_key(probeSid, static_cast<unsigned char>(c), 0);
+  }
+
+  std::vector<std::string> texts;
+  texts.reserve(static_cast<size_t>(maxCount));
+
+  RIME_STRUCT(RimeCommit, commit);
+  if (api->get_commit(probeSid, &commit)) {
+    if (commit.text && commit.text[0] != '\0') {
+      texts.emplace_back(commit.text);
+    }
+    api->free_commit(&commit);
+  }
+
+  RimeCandidateListIterator iter{};
+  if (api->candidate_list_from_index(probeSid, &iter, 0)) {
+    while (static_cast<int>(texts.size()) < maxCount && api->candidate_list_next(&iter)) {
+      if (iter.candidate.text && iter.candidate.text[0] != '\0') {
+        texts.emplace_back(iter.candidate.text);
+      }
+    }
+    api->candidate_list_end(&iter);
+  }
+
+  api->destroy_session(probeSid);
+
+  jobjectArray arr = env->NewObjectArray(static_cast<jsize>(texts.size()), byteArrCls, nullptr);
+  for (size_t i = 0; i < texts.size(); ++i) {
+    jbyteArray jb = stdStringToJByteArray(env, texts[i]);
+    env->SetObjectArrayElement(arr, static_cast<jsize>(i), jb);
+    env->DeleteLocalRef(jb);
   }
   return arr;
 }
@@ -423,6 +580,29 @@ Java_com_typefree_rime_RimeBridge_nativeSelectCandidate(
   return nullptr;
 }
 
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_typefree_rime_RimeBridge_nativeSelectCandidateUtf8(
+    JNIEnv* env,
+    jobject /* thiz */,
+    jint index) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  RimeApi* api = rime_get_api();
+  RimeSessionId sid = ensureSessionLocked(api);
+  if (!sid || index < 0) return nullptr;
+
+  g_pending_commit.clear();
+  if (!api->select_candidate(sid, static_cast<size_t>(index))) {
+    return nullptr;
+  }
+  drainCommitLocked(api, sid);
+  if (!g_pending_commit.empty()) {
+    std::string out = g_pending_commit;
+    g_pending_commit.clear();
+    return stdStringToJByteArray(env, out);
+  }
+  return nullptr;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_typefree_rime_RimeBridge_nativeCommitComposition(
     JNIEnv* env,
@@ -443,6 +623,26 @@ Java_com_typefree_rime_RimeBridge_nativeCommitComposition(
   return nullptr;
 }
 
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_typefree_rime_RimeBridge_nativeCommitCompositionUtf8(
+    JNIEnv* env,
+    jobject /* thiz */) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  RimeApi* api = rime_get_api();
+  RimeSessionId sid = ensureSessionLocked(api);
+  if (!sid) return nullptr;
+
+  g_pending_commit.clear();
+  api->commit_composition(sid);
+  drainCommitLocked(api, sid);
+  if (!g_pending_commit.empty()) {
+    std::string out = g_pending_commit;
+    g_pending_commit.clear();
+    return stdStringToJByteArray(env, out);
+  }
+  return nullptr;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_typefree_rime_RimeBridge_nativeGetCommit(
     JNIEnv* env,
@@ -457,6 +657,22 @@ Java_com_typefree_rime_RimeBridge_nativeGetCommit(
   std::string out = g_pending_commit;
   g_pending_commit.clear();
   return stdStringToJstring(env, out);
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_typefree_rime_RimeBridge_nativeGetCommitUtf8(
+    JNIEnv* env,
+    jobject /* thiz */) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  RimeApi* api = rime_get_api();
+  RimeSessionId sid = ensureSessionLocked(api);
+  if (sid) {
+    drainCommitLocked(api, sid);
+  }
+  if (g_pending_commit.empty()) return nullptr;
+  std::string out = g_pending_commit;
+  g_pending_commit.clear();
+  return stdStringToJByteArray(env, out);
 }
 
 extern "C" JNIEXPORT void JNICALL

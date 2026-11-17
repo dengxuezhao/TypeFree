@@ -14,7 +14,8 @@ import java.util.zip.GZIPInputStream
 
 data class FlypyCandidate(
     val text: String,
-    val codeHint: String = ""
+    val codeHint: String = "",
+    val displayText: String = text
 )
 
 data class FlypyReverseEntry(

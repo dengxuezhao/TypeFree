@@ -27,6 +27,9 @@ import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.core.ime.coordinator.DirectCommandType
+import com.typefree.ime.commit.AndroidCommitExecutor
+import com.typefree.ime.ime.engine.CodetableEnhancedInputEngine
 import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.ui.AppDestinations
@@ -113,6 +116,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         TypeFreeApp.instance.ensureFlypyDictionaryLoaded()
         typingController.rimeInputEngine = TypeFreeApp.instance.rimeInputEngine
         typingController.isRimeReady = TypeFreeApp.instance.rimeDataManager.isReady
+        bindCodetableEnhancedEngineIfAvailable()
         TypeFreeApp.instance.ensureRimeDeployed()
         serviceScope.launch {
             TypeFreeApp.instance.flypyDictionary.collect { dict ->
@@ -125,6 +129,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             TypeFreeApp.instance.rimeDataManager.deploymentState.collect { deployState ->
                 val ready = deployState is RimeDeploymentState.Ready
                 typingController.isRimeReady = ready
+                if (ready) {
+                    bindCodetableEnhancedEngineIfAvailable()
+                }
                 _imeState.update { prev ->
                     prev.copy(
                         isRimeDeploying = prev.activeInputScheme.usesRime && !ready
@@ -826,7 +833,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     }
 
     override fun tryAutoLearnFromRecentEdit() {
-        if (_imeState.value.isIncognitoMode) {
+        if (_imeState.value.isIncognitoMode || !typingController.activeAllowsAutoLearn) {
             clearAutoLearnBaseline()
             return
         }
@@ -1319,6 +1326,58 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
             cm.setPrimaryClip(android.content.ClipData.newPlainText("TypeFree AskAI", text))
         }
+    }
+
+    override fun openJevCopilotFromCommand() {
+        voiceController.openJevCopilotPanel()
+    }
+
+    private fun bindCodetableEnhancedEngineIfAvailable() {
+        val dm = TypeFreeApp.instance.rimeDataManager
+        val flypySchema = File(dm.sharedDir, "flypy.schema.yaml")
+        if (!flypySchema.exists() && !dm.hasCustomSchemaImported()) return
+        val executor = AndroidCommitExecutor.fromInputConnection(
+            inputConnectionProvider = { currentInputConnection() },
+            onCopyClipboard = { code, toast ->
+                copyTextToClipboard(code)
+                showQuickActionToast(toast)
+            },
+            onDirectCommand = { cmd ->
+                when (cmd) {
+                    DirectCommandType.OPEN_JEV_COPILOT ->
+                        openJevCopilotFromCommand()
+                    DirectCommandType.TOGGLE_FULL_CODE_DICT -> {
+                        val next = typingController.codetableEnhancedEngine
+                            ?.subDictToggleManager
+                            ?.toggleFullCodeDict(dm.activeSchemaProfile.schemaId) ?: false
+                        showQuickActionToast(if (next) "✓ 全码字词库已开启 (oqm)" else "✓ 全码字词库已关闭 (oqm)")
+                    }
+                    DirectCommandType.TOGGLE_ASCII_PUNCT -> {
+                        val next = !dm.rimeBridge.getOption("ascii_punct")
+                        dm.rimeBridge.setOption("ascii_punct", next)
+                        showQuickActionToast(if (next) "英文标点 (.)" else "中文标点 (。)")
+                    }
+                    DirectCommandType.TOGGLE_SIMPLIFICATION -> {
+                        val next = !dm.rimeBridge.getOption("simplification")
+                        dm.rimeBridge.setOption("simplification", next)
+                        showQuickActionToast(if (next) "繁體中文模式" else "简体中文模式")
+                    }
+                }
+            },
+            onAutoLearnEligibleCommit = { recordManualEditTouch() }
+        )
+        typingController.codetableEnhancedEngine = CodetableEnhancedInputEngine(
+            rimeClient = dm.rimeBridge,
+            initialProfile = dm.activeSchemaProfile,
+            symbolTrie = dm.activeSymbolTrie,
+            briefIndex = dm.activeBriefIndex,
+            reverseLookupMap = dm.activeReverseLookupMap,
+            schemaDir = dm.sharedDir,
+            clipboardReader = { readSystemClipboardText() },
+            commitExecutor = executor,
+            onToast = { msg -> showQuickActionToast(msg) },
+            onOpenJevCopilot = { openJevCopilotFromCommand() }
+        )
     }
 
     private fun syncCurrentEditorText() {
