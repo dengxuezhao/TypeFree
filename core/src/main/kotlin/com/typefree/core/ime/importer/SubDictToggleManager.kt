@@ -4,7 +4,7 @@ import java.io.File
 
 /**
  * Manages hot-pluggable sub-dictionaries (Layer +1, e.g. `flypy_full` for `oqm` 全码字出简让全
- * and user `ext/*.dict.yaml` domain lexicons) by writing `<schemaId>.custom.yaml` patches and
+ * and user `ext/<name>.dict.yaml` domain lexicons) by writing `<schemaId>.custom.yaml` patches and
  * triggering fast session reloads without altering Layer 0 main dictionary order.
  */
 class SubDictToggleManager(
