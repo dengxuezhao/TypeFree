@@ -93,6 +93,7 @@ import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.DictionaryEntry
 import com.typefree.ime.data.DictionarySource
 import com.typefree.ime.data.DiscoveredModelItem
+import com.typefree.ime.ime.jev.memory.AndroidKeystoreSaltProvider
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
@@ -169,6 +170,9 @@ fun ApiSettingsScreen(
     // Backup / Import status banner
     var backupStatusMsg by remember { mutableStateOf<String?>(null) }
     var backupIsError by remember { mutableStateOf(false) }
+    var includeEncryptedJevMemory by remember { mutableStateOf(false) }
+    var backupMemoryPassphrase by remember { mutableStateOf("") }
+    var showImportMemorySkipAction by remember { mutableStateOf(false) }
 
     // Universal Provider Model Discovery state (STT / LLM / Multimodal)
     var fetchingSlot by remember { mutableStateOf<ModelCapabilitySlot?>(null) }
@@ -552,18 +556,48 @@ fun ApiSettingsScreen(
         // Layer 3C: Collapsible JSON Config Backup / Migration Drawer
         CollapsibleStudioDrawer(
             title = "📦 配置 JSON 备份与跨机迁移",
-            subtitle = "一键导出完整或脱敏 JSON，跨设备恢复所有密钥、短语与词典",
+            subtitle = "一键导出完整或脱敏 JSON，跨设备恢复所有密钥、短语、词典与加密军师记忆",
             expanded = showBackupDrawer,
             onToggle = { showBackupDrawer = !showBackupDrawer }
         ) {
             ConfigBackupContent(
                 statusMessage = backupStatusMsg,
                 statusIsError = backupIsError,
+                includeEncryptedJevMemory = includeEncryptedJevMemory,
+                onIncludeEncryptedJevMemoryChange = { checked ->
+                    includeEncryptedJevMemory = checked
+                    if (!checked && !showImportMemorySkipAction) {
+                        backupMemoryPassphrase = ""
+                    }
+                },
+                memoryPassphrase = backupMemoryPassphrase,
+                onMemoryPassphraseChange = { backupMemoryPassphrase = it },
+                showPassphraseField = includeEncryptedJevMemory || showImportMemorySkipAction,
+                showSkipMemoryImportButton = showImportMemorySkipAction,
                 onExportFullJson = {
-                    val json = ApiConfigBackupHelper.exportSettingsJson(settings, includeSecrets = true)
-                    writeToClipboard(context, "TypeFree Config Backup", json)
-                    backupIsError = false
-                    backupStatusMsg = "✓ 完整配置 JSON 已复制到剪贴板（包含服务商密钥库，请妥善保管）"
+                    if (includeEncryptedJevMemory) {
+                        if (backupMemoryPassphrase.isBlank()) {
+                            backupIsError = true
+                            backupStatusMsg = "✕ 请先输入军师记忆加密密码再导出"
+                        } else {
+                            val json = ApiConfigBackupHelper.exportBackupWithJevMemory(
+                                settings = settings,
+                                includeSecrets = true,
+                                memoryRepository = repository.jevMemoryRepository,
+                                memoryPassphrase = backupMemoryPassphrase.toCharArray(),
+                                wipePassphraseAfterUse = true
+                            )
+                            backupMemoryPassphrase = ""
+                            writeToClipboard(context, "TypeFree Full Encrypted Backup", json)
+                            backupIsError = false
+                            backupStatusMsg = "✓ 完整配置 + 端到端加密军师记忆已复制到剪贴板"
+                        }
+                    } else {
+                        val json = ApiConfigBackupHelper.exportSettingsJson(settings, includeSecrets = true)
+                        writeToClipboard(context, "TypeFree Config Backup", json)
+                        backupIsError = false
+                        backupStatusMsg = "✓ 完整配置 JSON 已复制到剪贴板（包含服务商密钥库，请妥善保管）"
+                    }
                 },
                 onExportRedactedJson = {
                     val json = ApiConfigBackupHelper.exportSettingsJson(settings, includeSecrets = false)
@@ -573,16 +607,54 @@ fun ApiSettingsScreen(
                 },
                 onImportFromClipboard = {
                     val clipText = readFromClipboard(context)
-                    ApiConfigBackupHelper.parseAndMergeConfigJson(clipText, settings)
-                        .onSuccess { merged ->
-                            repository.updateSettings { merged }
+                    val hasEncryptedMemory = ApiConfigBackupHelper.hasEncryptedJevMemoryArchive(clipText)
+                    if (hasEncryptedMemory && backupMemoryPassphrase.isBlank()) {
+                        showImportMemorySkipAction = true
+                        backupIsError = true
+                        backupStatusMsg = "检测到备份内含加密的军师记忆：请输入备份密码再点导入，或点击「跳过记忆仅导配置」"
+                    } else {
+                        ApiConfigBackupHelper.importBackupWithJevMemory(
+                            rawJson = clipText,
+                            existingSettings = settings,
+                            memoryRepository = repository.jevMemoryRepository,
+                            memoryPassphrase = backupMemoryPassphrase.takeIf { it.isNotBlank() }?.toCharArray(),
+                            adoptSaltProvider = repository.jevMemorySaltProvider as? AndroidKeystoreSaltProvider,
+                            skipMemoryIfNoPassphrase = false,
+                            wipePassphraseAfterUse = true
+                        ).onSuccess { outcome ->
+                            repository.updateSettings { outcome.settings }
+                            backupMemoryPassphrase = ""
+                            showImportMemorySkipAction = false
                             backupIsError = false
-                            backupStatusMsg = "✓ 配置 JSON 导入成功！已同步服务商密钥库、模型路由、短语与个人词典"
-                        }
-                        .onFailure { err ->
+                            val memMsg = outcome.memorySummary?.let {
+                                "，并解锁恢复 ${it.importedSessions} 条会话记忆与 ${it.mergedBuckets} 组风格规则"
+                            }.orEmpty()
+                            backupStatusMsg = "✓ 配置 JSON 导入成功！已同步密钥库、短语与个人词典$memMsg"
+                        }.onFailure { err ->
                             backupIsError = true
                             backupStatusMsg = "✕ ${err.message ?: "导入配置失败"}"
                         }
+                    }
+                },
+                onImportSkipEncryptedMemory = {
+                    val clipText = readFromClipboard(context)
+                    ApiConfigBackupHelper.importBackupWithJevMemory(
+                        rawJson = clipText,
+                        existingSettings = settings,
+                        memoryRepository = repository.jevMemoryRepository,
+                        memoryPassphrase = null,
+                        adoptSaltProvider = repository.jevMemorySaltProvider as? AndroidKeystoreSaltProvider,
+                        skipMemoryIfNoPassphrase = true
+                    ).onSuccess { outcome ->
+                        repository.updateSettings { outcome.settings }
+                        backupMemoryPassphrase = ""
+                        showImportMemorySkipAction = false
+                        backupIsError = false
+                        backupStatusMsg = "✓ 已导入常规配置 JSON（已按要求跳过加密军师记忆）"
+                    }.onFailure { err ->
+                        backupIsError = true
+                        backupStatusMsg = "✕ ${err.message ?: "导入配置失败"}"
+                    }
                 }
             )
         }
@@ -1941,10 +2013,54 @@ private fun LiveApiTesterContent(
 private fun ConfigBackupContent(
     statusMessage: String?,
     statusIsError: Boolean,
+    includeEncryptedJevMemory: Boolean = false,
+    onIncludeEncryptedJevMemoryChange: (Boolean) -> Unit = {},
+    memoryPassphrase: String = "",
+    onMemoryPassphraseChange: (String) -> Unit = {},
+    showPassphraseField: Boolean = false,
+    showSkipMemoryImportButton: Boolean = false,
     onExportFullJson: () -> Unit,
     onExportRedactedJson: () -> Unit,
-    onImportFromClipboard: () -> Unit
+    onImportFromClipboard: () -> Unit,
+    onImportSkipEncryptedMemory: () -> Unit = {}
 ) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "附带端到端加密的 Jev 军师记忆",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = "导出完整配置时使用密码 AES-GCM 加密打包关系与风格记忆；脱敏导出绝不包含记忆",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(
+            checked = includeEncryptedJevMemory,
+            onCheckedChange = onIncludeEncryptedJevMemoryChange
+        )
+    }
+
+    AnimatedVisibility(visible = showPassphraseField) {
+        OutlinedTextField(
+            value = memoryPassphrase,
+            onValueChange = onMemoryPassphraseChange,
+            label = { Text("军师记忆加密 / 解锁密码") },
+            placeholder = { Text("仅在本地用于 PBKDF2-AES-256 加密，不会保存") },
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp)
+        )
+    }
+
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1960,7 +2076,7 @@ private fun ConfigBackupContent(
                 modifier = Modifier.size(15.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
-            Text("导出完整配置 JSON")
+            Text(if (includeEncryptedJevMemory) "加密导出完整 JSON" else "导出完整配置 JSON")
         }
 
         OutlinedButton(
@@ -1975,6 +2091,15 @@ private fun ConfigBackupContent(
             shape = RoundedCornerShape(11.dp)
         ) {
             Text("从剪贴板导入 JSON")
+        }
+
+        if (showSkipMemoryImportButton) {
+            OutlinedButton(
+                onClick = onImportSkipEncryptedMemory,
+                shape = RoundedCornerShape(11.dp)
+            ) {
+                Text("跳过记忆仅导配置")
+            }
         }
     }
 

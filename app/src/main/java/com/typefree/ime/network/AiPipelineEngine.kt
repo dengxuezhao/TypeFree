@@ -24,6 +24,7 @@ import com.typefree.ime.ime.jev.ChatTopology
 import com.typefree.ime.ime.jev.JevCopilotResult
 import com.typefree.ime.ime.jev.JevDomainProfile
 import com.typefree.ime.ime.jev.JevResponseParser
+import com.typefree.ime.ime.jev.memory.JevMemoryPromptPayload
 import com.typefree.ime.privacy.RedactionSession
 import com.typefree.ime.network.asr.AsrSessionLimits
 import com.typefree.ime.network.asr.DashScopeStreamingAsrClient
@@ -1219,6 +1220,9 @@ class AiPipelineEngine(
         preTranscribedBottomLine: String? = null,
         chatTopology: ChatTopology = ChatTopology(),
         targetPackageName: String = "",
+        memoryPayload: JevMemoryPromptPayload? = null,
+        priorWeightFuser: ((List<Int>, String) -> List<Int>)? = null,
+        shouldLockOptionOrder: () -> Boolean = { false },
         onThinkingStarted: (() -> Unit)? = null,
         onPartialResult: ((JevCopilotResult) -> Unit)? = null
     ): Result<Pair<JevCopilotResult, String>> = withContext(Dispatchers.IO) {
@@ -1291,7 +1295,8 @@ class AiPipelineEngine(
                 style = activeStyle,
                 dictionary = settings.dictionary,
                 chatTopology = chatTopology,
-                targetPackageName = targetPackageName
+                targetPackageName = targetPackageName,
+                memoryPayload = memoryPayload
             )
 
             var lastSubtextClosed = false
@@ -1320,7 +1325,9 @@ class AiPipelineEngine(
                             rawPartialOutput = partialText,
                             redactionSession = redactionSession,
                             usedVision = effectiveScreenshotB64.isNotBlank(),
-                            redactionCount = redactionSession?.redactionCount ?: 0
+                            redactionCount = redactionSession?.redactionCount ?: 0,
+                            priorWeightFuser = priorWeightFuser,
+                            lockVisualOrder = shouldLockOptionOrder()
                         )?.let { preview ->
                             onPartialResult(preview)
                         }
@@ -1427,9 +1434,100 @@ class AiPipelineEngine(
                 rawModelOutput = rawOutput,
                 redactionSession = redactionSession,
                 usedVision = effectiveScreenshotB64.isNotBlank(),
-                redactionCount = redactionSession?.redactionCount ?: 0
+                redactionCount = redactionSession?.redactionCount ?: 0,
+                priorWeightFuser = priorWeightFuser,
+                lockVisualOrder = shouldLockOptionOrder()
             )
             Result.success(parsed to resolvedBottomLine)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Result.failure(t)
+        }
+    }
+
+    suspend fun transcribeNoteAudio(
+        wavFile: File,
+        settings: AppSettings,
+        activeStyle: ToneStyle
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            if (!wavFile.exists() || wavFile.length() <= 44L) {
+                return@withContext Result.failure(IllegalArgumentException("未检测到有效语音，请贴近麦克风说话"))
+            }
+            when (settings.pipelineMode) {
+                PipelineMode.DUAL_STAGE -> {
+                    val effectiveStt = resolveEffectiveSttConfig(settings)
+                    validateSttConfig(effectiveStt, settings)?.let { errMsg ->
+                        return@withContext Result.failure(IllegalStateException(errMsg))
+                    }
+                    val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
+                    val bias = PromptBuilder.buildSttBiasPrompt(settings.dictionary)
+                    val text = if (effectiveStt.protocol == SttProtocol.GEMINI_LIVE_WS) {
+                        transcribeGeminiWavWithFastFallback(wavFile, effectiveStt, hotwords)
+                    } else {
+                        transcribeWithOpenAiStt(wavFile, effectiveStt, bias)
+                    }
+                    val cleaned = cleanRawTranscript(text).trim()
+                    if (cleaned.isBlank()) {
+                        Result.failure(IllegalArgumentException("未识别到清晰人声，请重试"))
+                    } else {
+                        Result.success(cleaned)
+                    }
+                }
+                PipelineMode.MULTIMODAL_DIRECT -> {
+                    val mmCfg = settings.multimodalConfig
+                    if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
+                        return@withContext Result.failure(IllegalStateException("请先在「API 配置」中填写多模态模型 API Key"))
+                    }
+                    val prompt = PromptBuilder.buildMultimodalDirectPrompt(
+                        intentMode = VoiceIntentMode.DICTATE,
+                        selectedText = "",
+                        translateTargetLanguage = "",
+                        style = activeStyle,
+                        targetAppName = "",
+                        dictionary = settings.dictionary,
+                        surroundingBeforeCursor = ""
+                    )
+                    val output = when (mmCfg.protocol) {
+                        MultimodalProtocol.GEMINI_NATIVE -> {
+                            val compressedM4a = AacAudioCompressor.compressWavToM4aOrNull(wavFile)
+                            try {
+                                val (uploadBytes, uploadMime) = if (compressedM4a != null) {
+                                    compressedM4a.readBytes() to "audio/mp4"
+                                } else {
+                                    wavFile.readBytes() to "audio/wav"
+                                }
+                                val b64 = java.util.Base64.getEncoder().encodeToString(uploadBytes)
+                                callGeminiMultimodalAudio(
+                                    config = mmCfg,
+                                    prompt = prompt,
+                                    base64Wav = b64,
+                                    mimeType = uploadMime,
+                                    imageJpegBase64 = ""
+                                )
+                            } finally {
+                                if (compressedM4a != null) {
+                                    runCatching { compressedM4a.delete() }
+                                }
+                            }
+                        }
+                        MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
+                            val b64 = java.util.Base64.getEncoder().encodeToString(wavFile.readBytes())
+                            callOpenAiMultimodalAudio(
+                                config = mmCfg,
+                                prompt = prompt,
+                                base64Wav = b64
+                            )
+                        }
+                    }.trim()
+                    if (output.isBlank() || output.contains("[EMPTY_SPEECH]")) {
+                        Result.failure(IllegalArgumentException("未识别到清晰人声，请重试"))
+                    } else {
+                        Result.success(output)
+                    }
+                }
+            }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (t: Throwable) {

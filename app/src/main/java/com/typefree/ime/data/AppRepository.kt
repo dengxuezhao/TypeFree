@@ -6,6 +6,13 @@ import android.text.InputType
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.reflect.TypeToken
+import com.typefree.ime.ime.jev.memory.AnchorSaltProvider
+import com.typefree.ime.ime.jev.memory.AndroidKeystoreSaltProvider
+import com.typefree.ime.ime.jev.memory.ConversationAnchorExtractor
+import com.typefree.ime.ime.jev.memory.InMemoryAnchorSaltProvider
+import com.typefree.ime.ime.jev.memory.InMemoryJevMemoryBackend
+import com.typefree.ime.ime.jev.memory.JevMemoryRepository
+import com.typefree.ime.ime.jev.memory.SqliteJevMemoryBackend
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,6 +34,29 @@ class AppRepository(
     )
 
     private val gson: Gson = GsonBuilder().setPrettyPrinting().create()
+
+    internal val jevMemorySaltProvider: AnchorSaltProvider = if (appContext != null) {
+        AndroidKeystoreSaltProvider(appContext, secretVault)
+    } else {
+        InMemoryAnchorSaltProvider()
+    }
+
+    val jevMemoryRepository: JevMemoryRepository = JevMemoryRepository(
+        backend = if (appContext != null) {
+            SqliteJevMemoryBackend(appContext)
+        } else {
+            InMemoryJevMemoryBackend()
+        },
+        saltProvider = jevMemorySaltProvider
+    ).also { repo ->
+        if (appContext != null) {
+            repo.warmUpAsync()
+        }
+    }
+
+    val jevAnchorExtractor: ConversationAnchorExtractor = ConversationAnchorExtractor(
+        saltProvider = jevMemorySaltProvider
+    )
 
     private val _settings = MutableStateFlow(loadSettingsInternal())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
@@ -227,6 +257,16 @@ class AppRepository(
             } else {
                 true
             }
+            val resolvedJevMemoryEnabled = if (raw.contains("\"jevMemoryEnabled\"")) {
+                parsed.jevMemoryEnabled
+            } else {
+                true
+            }
+            val resolvedJevMaskTitleHintEnabled = if (raw.contains("\"jevMaskTitleHintEnabled\"")) {
+                parsed.jevMaskTitleHintEnabled
+            } else {
+                true
+            }
             val resolvedManualIncognitoMode = if (raw.contains("\"manualIncognitoMode\"")) {
                 parsed.manualIncognitoMode
             } else {
@@ -353,6 +393,8 @@ class AppRepository(
                 chatContextDisclosureDismissed = resolvedChatContextDisclosureDismissed,
                 jevCopilotEnabled = resolvedJevCopilotEnabled,
                 chatContextSendScreenshot = resolvedChatContextSendScreenshot,
+                jevMemoryEnabled = resolvedJevMemoryEnabled,
+                jevMaskTitleHintEnabled = resolvedJevMaskTitleHintEnabled,
                 manualIncognitoMode = resolvedManualIncognitoMode,
                 replyAttitudePresets = safeReplyAttitudes,
                 providerVault = safeVault,

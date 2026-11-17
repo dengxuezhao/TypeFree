@@ -25,6 +25,10 @@ import com.typefree.ime.data.ThemePreference
 import com.typefree.ime.data.ThinkingMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.UnifiedProviderCatalog
+import com.typefree.ime.ime.jev.memory.AndroidKeystoreSaltProvider
+import com.typefree.ime.ime.jev.memory.EncryptedJevMemoryArchive
+import com.typefree.ime.ime.jev.memory.JevMemoryImportSummary
+import com.typefree.ime.ime.jev.memory.JevMemoryRepository
 import com.typefree.ime.network.EndpointResolver
 import com.typefree.ime.network.asr.VolcengineSaucAsrClient
 
@@ -57,6 +61,9 @@ object ApiConfigBackupHelper {
         "jevUseDedicatedModel",
         "jevLlmConfig",
         "chatContextSendScreenshot",
+        "jevMemoryEnabled",
+        "jevMaskTitleHintEnabled",
+        "jevMemoryArchive",
         "themePreference",
         "appAwareToneEnabled",
         "selectedManualStyleId",
@@ -346,6 +353,86 @@ object ApiConfigBackupHelper {
             )
         }
         return prettyGson.toJson(target)
+    }
+
+    data class FullBackupImportOutcome(
+        val settings: AppSettings,
+        val memorySummary: JevMemoryImportSummary? = null
+    )
+
+    fun hasEncryptedJevMemoryArchive(rawJson: String): Boolean {
+        val cleaned = unwrapCodeFence(rawJson)
+        if (cleaned.isBlank()) return false
+        return runCatching {
+            val el = JsonParser.parseString(cleaned)
+            if (!el.isJsonObject) return@runCatching false
+            val archive = el.asJsonObject.get("jevMemoryArchive")
+            archive != null && archive.isJsonObject
+        }.getOrDefault(false)
+    }
+
+    fun exportBackupWithJevMemory(
+        settings: AppSettings,
+        includeSecrets: Boolean = true,
+        memoryRepository: JevMemoryRepository? = null,
+        memoryPassphrase: CharArray? = null,
+        wipePassphraseAfterUse: Boolean = true
+    ): String {
+        val baseJson = exportSettingsJson(settings, includeSecrets = includeSecrets)
+        if (!includeSecrets || memoryRepository == null || memoryPassphrase == null || memoryPassphrase.isEmpty()) {
+            return baseJson
+        }
+        val rootObj = JsonParser.parseString(baseJson).asJsonObject
+        val encrypted = memoryRepository.exportEncryptedArchive(
+            passphrase = memoryPassphrase,
+            wipePassphraseAfterUse = wipePassphraseAfterUse
+        )
+        rootObj.add("jevMemoryArchive", prettyGson.toJsonTree(encrypted))
+        return prettyGson.toJson(rootObj)
+    }
+
+    fun importBackupWithJevMemory(
+        rawJson: String,
+        existingSettings: AppSettings = AppSettings(),
+        memoryRepository: JevMemoryRepository? = null,
+        memoryPassphrase: CharArray? = null,
+        adoptSaltProvider: AndroidKeystoreSaltProvider? = null,
+        skipMemoryIfNoPassphrase: Boolean = false,
+        wipePassphraseAfterUse: Boolean = true
+    ): Result<FullBackupImportOutcome> {
+        val mergedSettings = parseAndMergeConfigJson(rawJson, existingSettings)
+            .getOrElse { return Result.failure(it) }
+        val cleaned = unwrapCodeFence(rawJson)
+        val rootObj = JsonParser.parseString(cleaned).asJsonObject
+        val archiveEl = rootObj.get("jevMemoryArchive")
+        if (archiveEl == null || archiveEl.isJsonNull || !archiveEl.isJsonObject || memoryRepository == null) {
+            return Result.success(FullBackupImportOutcome(settings = mergedSettings, memorySummary = null))
+        }
+        if (memoryPassphrase == null || memoryPassphrase.isEmpty()) {
+            return if (skipMemoryIfNoPassphrase) {
+                Result.success(FullBackupImportOutcome(settings = mergedSettings, memorySummary = null))
+            } else {
+                Result.failure(IllegalArgumentException("该备份包含加密的军师记忆，请输入备份密码解锁导入"))
+            }
+        }
+        val archive = runCatching {
+            prettyGson.fromJson(archiveEl, EncryptedJevMemoryArchive::class.java)
+        }.getOrNull() ?: return Result.failure(IllegalArgumentException("军师记忆载荷格式无效"))
+
+        val memRes = memoryRepository.importEncryptedArchive(
+            archive = archive,
+            passphrase = memoryPassphrase,
+            adoptDeviceSaltCallback = adoptSaltProvider?.let { provider ->
+                { newSalt -> provider.adoptSalt(newSalt) }
+            },
+            wipePassphraseAfterUse = wipePassphraseAfterUse
+        )
+        return memRes.fold(
+            onSuccess = { summary ->
+                Result.success(FullBackupImportOutcome(settings = mergedSettings, memorySummary = summary))
+            },
+            onFailure = { err -> Result.failure(err) }
+        )
     }
 
     fun unwrapCodeFence(raw: String): String {
@@ -641,6 +728,10 @@ object ApiConfigBackupHelper {
                 jevLlmConfig = mergedJevLlm,
                 chatContextSendScreenshot = rootObj.optBoolean("chatContextSendScreenshot")
                     ?: existingSettings.chatContextSendScreenshot,
+                jevMemoryEnabled = rootObj.optBoolean("jevMemoryEnabled")
+                    ?: existingSettings.jevMemoryEnabled,
+                jevMaskTitleHintEnabled = rootObj.optBoolean("jevMaskTitleHintEnabled")
+                    ?: existingSettings.jevMaskTitleHintEnabled,
                 themePreference = themePref,
                 appAwareToneEnabled = rootObj.optBoolean("appAwareToneEnabled")
                     ?: existingSettings.appAwareToneEnabled,

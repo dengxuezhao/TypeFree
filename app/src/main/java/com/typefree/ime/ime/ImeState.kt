@@ -12,6 +12,9 @@ import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.flypy.FlypyCandidate
 import com.typefree.ime.ime.jev.JevCopilotResult
+import com.typefree.ime.ime.jev.memory.GroupSceneTag
+import com.typefree.ime.ime.jev.memory.PrivateRelationTag
+import com.typefree.ime.ime.jev.memory.SessionMemoryRecord
 import com.typefree.ime.network.PipelineStage
 import java.util.Locale
 import kotlin.math.abs
@@ -158,6 +161,15 @@ data class ImeUiState(
     val jevExcludedReplies: List<String> = emptyList(),
     val isFullScreenPeekCapturing: Boolean = false,
     val isJevContextInspectorOpen: Boolean = false,
+    val isJevRelationOverlayOpen: Boolean = false,
+    val jevActiveSessionUid: String? = null,
+    val jevIsEphemeralSession: Boolean = false,
+    val jevPrivateRelationTag: PrivateRelationTag = PrivateRelationTag.UNSET,
+    val jevGroupSceneTag: GroupSceneTag = GroupSceneTag.UNSET,
+    val jevCustomRelationNote: String = "",
+    val jevRecentReusableSessions: List<SessionMemoryRecord> = emptyList(),
+    val jevMemoryBypassedByPrivacy: Boolean = false,
+    val jevAutoRelinkedNotice: String? = null,
     val currentEditorText: String = "",
     val askAiQuery: String = "",
     val askAiAnswer: String = "",

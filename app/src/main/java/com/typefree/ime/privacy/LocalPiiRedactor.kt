@@ -361,6 +361,32 @@ object LocalPiiRedactor {
     }
 
     /**
+     * Sanitizes and redacts a short user-entered relation note (max 40 Unicode code points)
+     * before local persistence and prompt injection: strips control characters and XML angle
+     * brackets, redacts phones, ID cards, bank cards, passwords, OTPs, emails, and addresses.
+     */
+    fun redactRelationNote(
+        rawNote: String,
+        maxCodePoints: Int = 40
+    ): String {
+        val cleaned = rawNote
+            .replace(Regex("""[\r\n\t]+"""), " ")
+            .replace(Regex("""[<>]"""), "")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+        if (cleaned.isEmpty()) return ""
+        val redacted = redactText(cleaned, context = null, sourceNodes = emptyList()).redactedText.trim()
+        val limit = maxCodePoints.coerceAtLeast(1)
+        val cpCount = redacted.codePointCount(0, redacted.length)
+        return if (cpCount <= limit) {
+            redacted
+        } else {
+            val endOffset = redacted.offsetByCodePoints(0, limit)
+            redacted.substring(0, endOffset).trim()
+        }
+    }
+
+    /**
      * Checks whether [text] contains any high-risk credential (`!category.restorable`).
      */
     fun containsHighRiskCredentials(text: String, context: Context? = null): Boolean {

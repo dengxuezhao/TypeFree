@@ -616,6 +616,44 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     )
                 }
                 val combinedNodes = if (ocrNodes.isNotEmpty()) a11yNodes + ocrNodes else a11yNodes
+                val headerMaxTop = (rawBitmap.height * 0.16f).toInt().coerceAtLeast(260)
+                val statusBottomCut = (rawBitmap.height * 0.042f).toInt()
+                val existingHeaderNodes = combinedNodes.filter {
+                    it.isVisibleToUser &&
+                        !it.isEditable &&
+                        !it.isPassword &&
+                        it.boundsTop <= headerMaxTop &&
+                        it.boundsBottom > statusBottomCut &&
+                        it.text.isNotBlank()
+                }
+                val ocrHeaderNodes = if (existingHeaderNodes.none {
+                        it.boundsLeft < rawBitmap.width * 0.80f && it.boundsRight > rawBitmap.width * 0.14f
+                    }
+                ) {
+                    val hTop = (rawBitmap.height * 0.036f).toInt().coerceIn(0, rawBitmap.height - 2)
+                    val hBottom = (rawBitmap.height * 0.145f).toInt().coerceIn(hTop + 1, rawBitmap.height)
+                    val hStrip = runCatching {
+                        Bitmap.createBitmap(rawBitmap, 0, hTop, rawBitmap.width, hBottom - hTop)
+                    }.getOrNull()
+                    if (hStrip != null) {
+                        try {
+                            ViewportOcrExtractor.recognizeViewportNodes(
+                                bitmap = hStrip,
+                                cropX = 0,
+                                cropY = hTop,
+                                scaleRatio = 1.0f,
+                                timeoutMs = 450L
+                            )
+                        } finally {
+                            if (!hStrip.isRecycled) hStrip.recycle()
+                        }
+                    } else {
+                        emptyList()
+                    }
+                } else {
+                    emptyList()
+                }
+                val finalHeaderNodes = (existingHeaderNodes + ocrHeaderNodes).filter { it.boundsTop <= headerMaxTop }
                 val (redactedMergedMessages, mergedRedactionSession) = LocalPiiRedactor.redactMessages(
                     messages = rawMergedMessages,
                     context = this@TypeFreeAccessibilityService,
@@ -640,7 +678,10 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                         height = 0,
                         mergedMessages = redactedMergedMessages,
                         redactionSession = mergedRedactionSession,
-                        topology = resolvedTopology
+                        topology = resolvedTopology,
+                        rawHeaderNodes = finalHeaderNodes,
+                        screenWidth = rawBitmap.width,
+                        screenHeight = rawBitmap.height
                     )
                 }
 
@@ -674,7 +715,10 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     height = if (b64.isNotBlank()) outHeight else 0,
                     mergedMessages = redactedMergedMessages,
                     redactionSession = mergedRedactionSession,
-                    topology = resolvedTopology
+                    topology = resolvedTopology,
+                    rawHeaderNodes = finalHeaderNodes,
+                    screenWidth = rawBitmap.width,
+                    screenHeight = rawBitmap.height
                 )
             } catch (_: Throwable) {
                 null
@@ -1070,13 +1114,19 @@ class TypeFreeAccessibilityService : AccessibilityService() {
                     isBlacklistedPackage = ChatScreenContextExtractor.isSensitiveBlacklistedPackage(expectedPackage)
                 )
                 val finalShot = if (!dropShot && !simShot.isNullOrBlank()) simShot else ""
+                val simHeaderNodes = combinedNodes.filter {
+                    it.isVisibleToUser && !it.isEditable && !it.isPassword && it.boundsTop <= 384 && it.text.isNotBlank()
+                }
                 return ViewportCaptureOutcome(
                     screenshotJpegBase64 = finalShot,
                     width = if (finalShot.isNotBlank()) 720 else 0,
                     height = if (finalShot.isNotBlank()) 960 else 0,
                     mergedMessages = redactedMerged,
                     redactionSession = mergedSession.copy(hasHighRiskCredentials = effectiveHighRisk),
-                    topology = resolvedTopology
+                    topology = resolvedTopology,
+                    rawHeaderNodes = simHeaderNodes,
+                    screenWidth = 1080,
+                    screenHeight = 2400
                 )
             }
             val instance = activeInstance ?: return null

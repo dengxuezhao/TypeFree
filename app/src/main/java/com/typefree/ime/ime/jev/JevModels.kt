@@ -46,7 +46,9 @@ data class ChatTopology(
 data class JevStrategyOption(
     val label: String,
     val replyText: String,
-    val probability: Int = 0
+    val probability: Int = 0,
+    val rawSlotIndex: Int = 0,
+    val isTopRecommended: Boolean = false
 )
 
 /**
@@ -58,7 +60,8 @@ data class JevCopilotResult(
     val subtext: String,
     val options: List<JevStrategyOption>,
     val usedVision: Boolean = false,
-    val redactionCount: Int = 0
+    val redactionCount: Int = 0,
+    val routeCode: String = ""
 ) {
     val clampedLevel: Int
         get() = level.coerceIn(1, 9)

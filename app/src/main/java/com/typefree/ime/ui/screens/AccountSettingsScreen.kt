@@ -1378,6 +1378,46 @@ private fun AppearanceAndPreferencesPane(
                     }
                 )
 
+                var showJevMemoryDialog by remember { mutableStateOf(false) }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+
+                PreferenceSwitchRow(
+                    title = "🧠 Jev 关系记忆与个人口癖自学习",
+                    subtitle = "采用设备本地 HMAC-SHA256 匿名锚点，记忆不同对话的身份定位与你习惯的句末标点/称谓风格，不存明文姓名或聊天内容；密码框、无痕模式与支付类应用自动旁路",
+                    checked = settings.jevMemoryEnabled,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(jevMemoryEnabled = enabled) }
+                    }
+                )
+
+                AnimatedVisibility(visible = settings.jevMemoryEnabled) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PreferenceSwitchRow(
+                            title = "保存首尾字掩码提示（如 张*三）",
+                            subtitle = "仅用于在管理列表中区分会话，关闭后只保留不可逆哈希",
+                            checked = settings.jevMaskTitleHintEnabled,
+                            onCheckedChange = { enabled ->
+                                repository.updateSettings { it.copy(jevMaskTitleHintEnabled = enabled) }
+                            }
+                        )
+                        OutlinedButton(
+                            onClick = { showJevMemoryDialog = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("管理已学风格规则与会话记忆")
+                        }
+                    }
+                }
+
+                if (showJevMemoryDialog) {
+                    JevMemoryManagementDialog(
+                        repository = repository,
+                        onDismiss = { showJevMemoryDialog = false }
+                    )
+                }
+
                 if (showChatContextDisclosureDialog) {
                     AlertDialog(
                         onDismissRequest = { showChatContextDisclosureDialog = false },

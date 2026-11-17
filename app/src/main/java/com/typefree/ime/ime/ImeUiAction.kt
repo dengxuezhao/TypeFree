@@ -3,6 +3,8 @@ package com.typefree.ime.ime
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.ime.jev.memory.GroupSceneTag
+import com.typefree.ime.ime.jev.memory.PrivateRelationTag
 
 /**
  * Unidirectional UI action bus for TypeFree v3.1.0+ keyboard panels.
@@ -30,6 +32,15 @@ sealed interface ImeUiAction {
     data object RefreshJevStrategies : ImeUiAction
     data object TriggerFullScreenPeekCapture : ImeUiAction
     data object ToggleJevContextInspector : ImeUiAction
+
+    // v3.6.0 Jev Relationship Memory actions
+    data object ToggleJevRelationOverlay : ImeUiAction
+    data class SelectJevPrivateRelation(val tag: PrivateRelationTag) : ImeUiAction
+    data class SelectJevGroupScene(val scene: GroupSceneTag) : ImeUiAction
+    data class AppendJevNoteQuickChip(val chipText: String) : ImeUiAction
+    data object PasteJevNoteFromClipboard : ImeUiAction
+    data object ClearJevRelationNote : ImeUiAction
+    data class RebindJevSessionAlias(val targetSessionUid: String) : ImeUiAction
 
     // Voice recording & Arc Translate
     data object StartVoiceRecording : ImeUiAction

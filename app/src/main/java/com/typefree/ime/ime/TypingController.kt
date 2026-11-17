@@ -2,6 +2,7 @@ package com.typefree.ime.ime
 
 import android.content.Context
 import android.view.KeyEvent
+import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
 import kotlin.math.abs
@@ -51,6 +52,10 @@ interface ImeHostCallbacks {
     fun tryAutoLearnFromRecentEdit()
     fun onDictationCommittedForAutoLearn(fullBufferAfterCommit: String)
     fun clearAutoLearnBaseline()
+    fun onUserDeleteOrCutForJev(remainingTextLengthHint: Int = -1) {}
+    fun onUserUndoForJev() {}
+    fun onExplicitImeSendForJev(currentEditorText: String?) {}
+    fun readClipboardTextForJevNote(): String? = null
 
     fun readSelectedTextSafely(): String
     fun readSurroundingBeforeCursor(maxChars: Int): String
@@ -475,6 +480,7 @@ class TypingController(
                 ic.deleteSurroundingText(deleteLen, 0)
             }
             host.recordManualEditTouch()
+            host.onUserDeleteOrCutForJev()
         } catch (_: Exception) {
         }
     }
@@ -509,10 +515,19 @@ class TypingController(
         )
         val actionId = actionInfo.performEditorActionId
         if (actionId != null) {
+            val preSendText = host.stateFlow.value.currentEditorText
             val handled = try {
                 ic.performEditorAction(actionId)
             } catch (_: Exception) {
                 false
+            }
+            if (handled && actionId in setOf(
+                    EditorInfo.IME_ACTION_SEND,
+                    EditorInfo.IME_ACTION_DONE,
+                    EditorInfo.IME_ACTION_GO
+                )
+            ) {
+                host.onExplicitImeSendForJev(preSendText)
             }
             if (!handled) {
                 ic.commitText("\n", 1)
@@ -534,6 +549,7 @@ class TypingController(
             EditorShortcutAction.CUT -> {
                 runCatching { ic.performContextMenuAction(android.R.id.cut) }
                 host.recordManualEditTouch()
+                host.onUserDeleteOrCutForJev()
                 host.syncSystemClipboardIfNeeded(allowFreshBanner = true)
                 host.showQuickActionToast("✓ 已剪切")
             }

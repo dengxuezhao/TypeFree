@@ -11,12 +11,24 @@ import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.HistoryRecord
 import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.ime.jev.ChatTopology
 import com.typefree.ime.ime.jev.InputConnectionDraftTarget
 import com.typefree.ime.ime.jev.JevDomainProfile
 import com.typefree.ime.ime.jev.JevDraftSession
+import com.typefree.ime.ime.jev.memory.AnchorResolution
+import com.typefree.ime.ime.jev.memory.CanonicalAppResolver
+import com.typefree.ime.ime.jev.memory.GroupSceneTag
+import com.typefree.ime.ime.jev.memory.JevDraftFeedbackMonitor
+import com.typefree.ime.ime.jev.memory.JevPreferenceLearner
+import com.typefree.ime.ime.jev.memory.JevPrivacyGuard
+import com.typefree.ime.ime.jev.memory.PrivateRelationTag
+import com.typefree.ime.ime.jev.memory.RelationPragmaticMapper
+import com.typefree.ime.ime.jev.memory.ResolvedJevMemoryContext
+import com.typefree.ime.ime.jev.memory.TrackedJevDraftContext
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PipelineStage
 import com.typefree.ime.network.asr.StreamingAsrSession
+import com.typefree.ime.privacy.LocalPiiRedactor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -61,6 +73,45 @@ class VoiceController(
     private var chatScreenshotJob: Job? = null
     private var jevInferenceJob: Job? = null
     private val jevDraftSession = JevDraftSession()
+    private var activeJevAnchor: AnchorResolution = AnchorResolution.EphemeralUnanchored("unknown")
+    private var activeJevInitialPrefix: String = ""
+    private val jevFeedbackMonitor = JevDraftFeedbackMonitor(
+        onLearningEvent = { event ->
+            val stateSnap = host.stateFlow.value
+            val settingsSnap = host.repository.settings.value
+            val bypassed = JevPrivacyGuard.shouldBypassMemory(
+                packageName = stateSnap.targetPackage,
+                inputType = stateSnap.currentInputType,
+                imeOptions = stateSnap.currentImeOptions,
+                isIncognitoMode = stateSnap.isIncognitoMode,
+                manualIncognitoMode = settingsSnap.manualIncognitoMode,
+                jevMemoryEnabled = settingsSnap.jevMemoryEnabled
+            )
+            if (!bypassed) {
+                host.repository.jevMemoryRepository.recordFeedbackLearning(
+                    anchor = event.anchor,
+                    topology = event.topology,
+                    ephemeralPrivateTag = event.ephemeralPrivateTag,
+                    ephemeralGroupTag = event.ephemeralGroupTag,
+                    adoptedAxisGroup = event.adoptedAxisGroup,
+                    adoptedRawIndex = event.adoptedRawIndex,
+                    wasTopPinnedSlot = event.wasTopPinnedSlot,
+                    featureObservations = event.featureObservations,
+                    includeMaskedHint = event.includeMaskedHint
+                )
+            }
+        },
+        onDirectSendDuringPreview = {
+            jevDraftSession.resetSessionOnly()
+            host.stateFlow.update { curr ->
+                if (curr.selectedJevStrategyIndex != -1) {
+                    curr.copy(selectedJevStrategyIndex = -1)
+                } else {
+                    curr
+                }
+            }
+        }
+    )
     private var activeStreamingSession: StreamingAsrSession? = null
     private var streamingPreviewJob: Job? = null
     private var handsFreeSilenceJob: Job? = null
@@ -211,6 +262,15 @@ class VoiceController(
                 jevExcludedReplies = emptyList(),
                 isFullScreenPeekCapturing = false,
                 isJevContextInspectorOpen = false,
+                isJevRelationOverlayOpen = false,
+                jevActiveSessionUid = null,
+                jevIsEphemeralSession = false,
+                jevPrivateRelationTag = PrivateRelationTag.UNSET,
+                jevGroupSceneTag = GroupSceneTag.UNSET,
+                jevCustomRelationNote = "",
+                jevRecentReusableSessions = emptyList(),
+                jevMemoryBypassedByPrivacy = false,
+                jevAutoRelinkedNotice = null,
                 selectedHelpWritePreset = null,
                 bigBangClipboardItem = null,
                 isClipboardOpen = false,
@@ -225,6 +285,11 @@ class VoiceController(
         }
 
         if (!shouldPromptDisclosure) {
+            resolveAndSyncJevMemoryState(
+                captured = capturedContext,
+                stateSnap = host.stateFlow.value,
+                settingsSnap = settingsSnap
+            )
             triggerJevCopilotInference(isRefresh = false)
         } else {
             warmVoiceConnectionsInBackground()
@@ -238,19 +303,61 @@ class VoiceController(
         if (stateSnap.isFlypyComposing) {
             onResetComposing()
         }
+        if (!jevDraftSession.hasActiveDraft) {
+            activeJevInitialPrefix = stateSnap.currentEditorText
+        }
         val ic = host.currentInputConnection()
+        var injected = ""
         if (ic != null) {
-            jevDraftSession.applyStrategyCard(
-                target = InputConnectionDraftTarget(ic),
-                cardIndex = index,
-                rawStrategyText = option.replyText,
-                redactionSession = stateSnap.capturedChatContext.redactionSession
-            )
+            jevFeedbackMonitor.beginCardApplyTransition()
+            try {
+                injected = jevDraftSession.applyStrategyCard(
+                    target = InputConnectionDraftTarget(ic),
+                    cardIndex = index,
+                    rawStrategyText = option.replyText,
+                    redactionSession = stateSnap.capturedChatContext.redactionSession
+                )
+            } finally {
+                jevFeedbackMonitor.endCardApplyTransition()
+            }
         }
         host.stateFlow.update {
             it.copy(
                 selectedJevStrategyIndex = index,
-                isJevContextInspectorOpen = false
+                isJevContextInspectorOpen = false,
+                isJevRelationOverlayOpen = false
+            )
+        }
+        if (!stateSnap.jevMemoryBypassedByPrivacy && injected.isNotEmpty()) {
+            val effectiveTopology = stateSnap.capturedChatContext.topology
+            val axisGroup = RelationPragmaticMapper.resolveActiveAxisGroup(
+                userBottomLine = stateSnap.jevUserBottomLine,
+                routeCode = stateSnap.jevCopilotResult?.routeCode,
+                roleMode = effectiveTopology.roleMode
+            )
+            val activeFeatures = host.repository.jevMemoryRepository.getActiveStyleFeaturesForSession(
+                anchor = activeJevAnchor,
+                topology = effectiveTopology,
+                ephemeralPrivateTag = stateSnap.jevPrivateRelationTag,
+                ephemeralGroupTag = stateSnap.jevGroupSceneTag
+            )
+            jevFeedbackMonitor.onPreviewCardApplied(
+                TrackedJevDraftContext(
+                    anchor = activeJevAnchor,
+                    topology = effectiveTopology,
+                    ephemeralPrivateTag = stateSnap.jevPrivateRelationTag,
+                    ephemeralGroupTag = stateSnap.jevGroupSceneTag,
+                    axisGroup = axisGroup,
+                    rawSlotIndex = option.rawSlotIndex,
+                    wasTopPinnedSlot = (index == 0 && option.isTopRecommended),
+                    draftText = injected,
+                    initialInputPrefix = activeJevInitialPrefix,
+                    activeStyleFeatures = activeFeatures,
+                    includeMaskedHint = host.repository.settings.value.jevMaskTitleHintEnabled,
+                    targetPackage = stateSnap.targetPackage,
+                    fieldId = 0,
+                    startedAtMs = System.currentTimeMillis()
+                )
             )
         }
     }
@@ -258,8 +365,267 @@ class VoiceController(
     fun toggleJevContextInspector() {
         host.performKeyFeedback(strong = false)
         host.stateFlow.update {
-            it.copy(isJevContextInspectorOpen = !it.isJevContextInspectorOpen)
+            val willOpen = !it.isJevContextInspectorOpen
+            it.copy(
+                isJevContextInspectorOpen = willOpen,
+                isJevRelationOverlayOpen = if (willOpen) false else it.isJevRelationOverlayOpen
+            )
         }
+    }
+
+    fun toggleJevRelationOverlay() {
+        host.performKeyFeedback(strong = false)
+        host.stateFlow.update {
+            val willOpen = !it.isJevRelationOverlayOpen
+            it.copy(
+                isJevRelationOverlayOpen = willOpen,
+                isJevContextInspectorOpen = if (willOpen) false else it.isJevContextInspectorOpen
+            )
+        }
+    }
+
+    fun selectJevPrivateRelation(tag: PrivateRelationTag) {
+        host.performKeyFeedback(strong = false)
+        val stateSnap = host.stateFlow.value
+        val settingsSnap = host.repository.settings.value
+        val cleanNote = stateSnap.jevCustomRelationNote.ifBlank { null }
+        host.stateFlow.update {
+            it.copy(
+                jevPrivateRelationTag = tag,
+                isJevRelationOverlayOpen = false
+            )
+        }
+        persistRelationStateToMemory(
+            stateSnap = stateSnap,
+            settingsSnap = settingsSnap,
+            privateTag = tag,
+            groupTag = stateSnap.jevGroupSceneTag,
+            redactedNote = cleanNote
+        )
+        if (!stateSnap.isJevLoading && !stateSnap.showChatContextDisclosurePrompt) {
+            triggerJevCopilotInference(isRefresh = false)
+        }
+    }
+
+    fun selectJevGroupScene(scene: GroupSceneTag) {
+        host.performKeyFeedback(strong = false)
+        val stateSnap = host.stateFlow.value
+        val settingsSnap = host.repository.settings.value
+        val cleanNote = stateSnap.jevCustomRelationNote.ifBlank { null }
+        host.stateFlow.update {
+            it.copy(
+                jevGroupSceneTag = scene,
+                isJevRelationOverlayOpen = false
+            )
+        }
+        persistRelationStateToMemory(
+            stateSnap = stateSnap,
+            settingsSnap = settingsSnap,
+            privateTag = stateSnap.jevPrivateRelationTag,
+            groupTag = scene,
+            redactedNote = cleanNote
+        )
+        if (!stateSnap.isJevLoading && !stateSnap.showChatContextDisclosurePrompt) {
+            triggerJevCopilotInference(isRefresh = false)
+        }
+    }
+
+    fun appendJevNoteQuickChip(chipText: String) {
+        val cleanChip = chipText.trim()
+        if (cleanChip.isEmpty()) return
+        host.performKeyFeedback(strong = false)
+        val stateSnap = host.stateFlow.value
+        val settingsSnap = host.repository.settings.value
+        val prevNote = stateSnap.jevCustomRelationNote.trim()
+        val combined = when {
+            prevNote.isEmpty() -> cleanChip
+            prevNote.contains(cleanChip) -> prevNote
+            else -> "$prevNote；$cleanChip"
+        }
+        val safeNote = LocalPiiRedactor.redactRelationNote(combined, maxCodePoints = 40)
+        host.stateFlow.update {
+            it.copy(jevCustomRelationNote = safeNote)
+        }
+        persistRelationStateToMemory(
+            stateSnap = stateSnap,
+            settingsSnap = settingsSnap,
+            privateTag = stateSnap.jevPrivateRelationTag,
+            groupTag = stateSnap.jevGroupSceneTag,
+            redactedNote = safeNote.ifBlank { null }
+        )
+        host.showQuickActionToast("✓ 备忘已更新")
+    }
+
+    fun pasteJevNoteFromClipboard() {
+        host.performKeyFeedback(strong = false)
+        val clipText = host.readClipboardTextForJevNote()?.trim().orEmpty()
+        if (clipText.isEmpty()) {
+            host.showQuickActionToast("剪贴板暂无可用文本")
+            return
+        }
+        val safeNote = LocalPiiRedactor.redactRelationNote(clipText, maxCodePoints = 40)
+        if (safeNote.isEmpty()) {
+            host.showQuickActionToast("粘贴内容为空或已完全脱敏")
+            return
+        }
+        val stateSnap = host.stateFlow.value
+        val settingsSnap = host.repository.settings.value
+        host.stateFlow.update {
+            it.copy(
+                jevCustomRelationNote = safeNote,
+                isJevRelationOverlayOpen = false
+            )
+        }
+        persistRelationStateToMemory(
+            stateSnap = stateSnap,
+            settingsSnap = settingsSnap,
+            privateTag = stateSnap.jevPrivateRelationTag,
+            groupTag = stateSnap.jevGroupSceneTag,
+            redactedNote = safeNote
+        )
+        host.showQuickActionToast("✓ 已脱敏导入备忘")
+        if (!stateSnap.isJevLoading && !stateSnap.showChatContextDisclosurePrompt) {
+            triggerJevCopilotInference(isRefresh = false)
+        }
+    }
+
+    fun clearJevRelationNote() {
+        host.performKeyFeedback(strong = false)
+        val stateSnap = host.stateFlow.value
+        val settingsSnap = host.repository.settings.value
+        host.stateFlow.update { it.copy(jevCustomRelationNote = "") }
+        persistRelationStateToMemory(
+            stateSnap = stateSnap,
+            settingsSnap = settingsSnap,
+            privateTag = stateSnap.jevPrivateRelationTag,
+            groupTag = stateSnap.jevGroupSceneTag,
+            redactedNote = null
+        )
+        host.showQuickActionToast("已清空关系备忘")
+    }
+
+    fun rebindJevSessionAlias(targetSessionUid: String) {
+        host.performKeyFeedback(strong = false)
+        val stateSnap = host.stateFlow.value
+        if (stateSnap.jevMemoryBypassedByPrivacy) return
+        val rebound = host.repository.jevMemoryRepository.rebindAnchorToExistingSession(
+            anchor = activeJevAnchor,
+            targetSessionUid = targetSessionUid
+        ) ?: return
+        host.stateFlow.update {
+            it.copy(
+                jevActiveSessionUid = rebound.sessionUid,
+                jevPrivateRelationTag = rebound.privateTag,
+                jevGroupSceneTag = rebound.groupTag,
+                jevCustomRelationNote = rebound.redactedCustomNote.orEmpty(),
+                jevRecentReusableSessions = emptyList(),
+                isJevRelationOverlayOpen = false,
+                jevAutoRelinkedNotice = null
+            )
+        }
+        host.showQuickActionToast("✓ 已沿用原会话记忆")
+        if (!stateSnap.isJevLoading && !stateSnap.showChatContextDisclosurePrompt) {
+            triggerJevCopilotInference(isRefresh = false)
+        }
+    }
+
+    private fun persistRelationStateToMemory(
+        stateSnap: ImeUiState,
+        settingsSnap: AppSettings,
+        privateTag: PrivateRelationTag,
+        groupTag: GroupSceneTag,
+        redactedNote: String?
+    ) {
+        if (stateSnap.jevMemoryBypassedByPrivacy || stateSnap.jevIsEphemeralSession) return
+        val saved = host.repository.jevMemoryRepository.saveExplicitRelation(
+            anchor = activeJevAnchor,
+            topology = stateSnap.capturedChatContext.topology,
+            privateTag = privateTag,
+            groupTag = groupTag,
+            redactedCustomNote = redactedNote,
+            includeMaskedHint = settingsSnap.jevMaskTitleHintEnabled
+        )
+        if (saved != null) {
+            host.stateFlow.update { curr ->
+                curr.copy(
+                    jevActiveSessionUid = saved.sessionUid,
+                    jevRecentReusableSessions = emptyList()
+                )
+            }
+        }
+    }
+
+    private fun resolveAndSyncJevMemoryState(
+        captured: CapturedChatContext,
+        stateSnap: ImeUiState,
+        settingsSnap: AppSettings
+    ): ResolvedJevMemoryContext? {
+        val targetPkg = captured.packageName.ifBlank { stateSnap.targetPackage }
+        val bypassed = JevPrivacyGuard.shouldBypassMemory(
+            packageName = targetPkg,
+            inputType = stateSnap.currentInputType,
+            imeOptions = stateSnap.currentImeOptions,
+            isIncognitoMode = stateSnap.isIncognitoMode,
+            manualIncognitoMode = settingsSnap.manualIncognitoMode,
+            jevMemoryEnabled = settingsSnap.jevMemoryEnabled
+        )
+        if (bypassed) {
+            activeJevAnchor = AnchorResolution.EphemeralUnanchored(
+                canonicalApp = CanonicalAppResolver.resolve(targetPkg)
+            )
+            host.stateFlow.update { prev ->
+                prev.copy(
+                    jevMemoryBypassedByPrivacy = true,
+                    jevActiveSessionUid = null,
+                    jevIsEphemeralSession = true,
+                    jevRecentReusableSessions = emptyList(),
+                    jevAutoRelinkedNotice = null
+                )
+            }
+            return null
+        }
+
+        val anchor = host.repository.jevAnchorExtractor.extractAnchor(
+            nodes = captured.rawHeaderNodes,
+            screenWidth = captured.screenWidth,
+            screenHeight = captured.screenHeight,
+            packageName = targetPkg,
+            includeMaskedHint = settingsSnap.jevMaskTitleHintEnabled,
+            hintIsGroup = captured.topology.isGroupChat,
+            hintGroupMemberCount = captured.topology.groupMemberCount,
+            inputSessionToken = stateSnap.inputSessionToken
+        )
+        activeJevAnchor = anchor
+        val resolved = host.repository.jevMemoryRepository.resolveContext(
+            anchor = anchor,
+            topology = captured.topology,
+            recentFormattedMessages = captured.formattedMessages,
+            ephemeralPrivateTag = stateSnap.jevPrivateRelationTag,
+            ephemeralGroupTag = stateSnap.jevGroupSceneTag,
+            ephemeralCustomNote = stateSnap.jevCustomRelationNote.ifBlank { null }
+        )
+        val isEphemeral = anchor !is AnchorResolution.Resolved || anchor.isAmbiguousGeneric
+        host.stateFlow.update { prev ->
+            val updatedCaptured = if (resolved.correctedTopology != prev.capturedChatContext.topology &&
+                prev.capturedChatContext.packageName == captured.packageName
+            ) {
+                prev.capturedChatContext.copy(topology = resolved.correctedTopology)
+            } else {
+                prev.capturedChatContext
+            }
+            prev.copy(
+                capturedChatContext = updatedCaptured,
+                jevMemoryBypassedByPrivacy = false,
+                jevActiveSessionUid = resolved.session?.sessionUid,
+                jevIsEphemeralSession = isEphemeral,
+                jevPrivateRelationTag = resolved.session?.privateTag ?: if (isEphemeral) prev.jevPrivateRelationTag else PrivateRelationTag.UNSET,
+                jevGroupSceneTag = resolved.session?.groupTag ?: if (isEphemeral) prev.jevGroupSceneTag else GroupSceneTag.UNSET,
+                jevCustomRelationNote = resolved.session?.redactedCustomNote ?: if (isEphemeral) prev.jevCustomRelationNote else "",
+                jevRecentReusableSessions = resolved.recentReusableSessions,
+                jevAutoRelinkedNotice = if (resolved.autoRelinkedAlias) "已自动续接改名会话记忆" else prev.jevAutoRelinkedNotice
+            )
+        }
+        return resolved
     }
 
     fun refreshJevStrategies() {
@@ -297,9 +663,11 @@ class VoiceController(
                 isJevThinking = false,
                 jevErrorMessage = null,
                 isJevContextInspectorOpen = false,
+                isJevRelationOverlayOpen = false,
                 jevExcludedReplies = updatedExcluded
             )
         }
+        resolveAndSyncJevMemoryState(refreshedContext, host.stateFlow.value, settingsSnap)
         triggerJevCopilotInference(isRefresh = true)
     }
 
@@ -312,6 +680,7 @@ class VoiceController(
         host.stateFlow.update {
             it.copy(
                 isJevContextInspectorOpen = false,
+                isJevRelationOverlayOpen = false,
                 isFullScreenPeekCapturing = true,
                 isJevLoading = true,
                 isJevThinking = false,
@@ -481,33 +850,57 @@ class VoiceController(
             }
 
             val latest = host.stateFlow.value
-            val (activeStyle, _) = host.repository.resolveActiveStyle(latest.targetPackage, latest.currentInputType)
-            val domainProfile = if (latest.capturedChatContext.packageName.isNotBlank()) {
-                latest.capturedChatContext.domainProfile
+            val memCtx = if (!latest.ignoreChatContextForThisTurn) {
+                resolveAndSyncJevMemoryState(latest.capturedChatContext, latest, settingsSnap)
             } else {
-                JevDomainProfile.fromPackage(latest.targetPackage)
+                null
             }
-            val effectiveBottomLine = overrideBottomLine ?: latest.jevUserBottomLine
-            val effectiveTopology = if (latest.ignoreChatContextForThisTurn) {
-                com.typefree.ime.ime.jev.ChatTopology()
+            val syncedState = host.stateFlow.value
+            val (activeStyle, _) = host.repository.resolveActiveStyle(syncedState.targetPackage, syncedState.currentInputType)
+            val domainProfile = if (syncedState.capturedChatContext.packageName.isNotBlank()) {
+                syncedState.capturedChatContext.domainProfile
             } else {
-                latest.capturedChatContext.topology
+                JevDomainProfile.fromPackage(syncedState.targetPackage)
+            }
+            val effectiveBottomLine = overrideBottomLine ?: syncedState.jevUserBottomLine
+            val effectiveTopology = if (syncedState.ignoreChatContextForThisTurn) {
+                ChatTopology()
+            } else {
+                memCtx?.correctedTopology ?: syncedState.capturedChatContext.topology
+            }
+            val priorWeightFuser: ((List<Int>, String) -> List<Int>)? = memCtx?.let { ctx ->
+                { rawWeights: List<Int>, routeCode: String ->
+                    val axisGroup = RelationPragmaticMapper.resolveActiveAxisGroup(
+                        userBottomLine = effectiveBottomLine,
+                        routeCode = routeCode,
+                        roleMode = ctx.correctedTopology.roleMode
+                    )
+                    JevPreferenceLearner.fuseUtilityWeights(
+                        rawModelWeights = rawWeights,
+                        sessionStats = ctx.session?.axisStats?.get(axisGroup),
+                        bucketStats = ctx.bucketProfile?.axisStats?.get(axisGroup),
+                        nowMs = System.currentTimeMillis()
+                    )
+                }
             }
 
             host.aiEngine.runJevCopilot(
                 settings = settingsSnap,
                 activeStyle = activeStyle,
-                targetAppName = latest.targetAppName,
+                targetAppName = syncedState.targetAppName,
                 domainProfile = domainProfile,
-                chatContextMessages = latest.effectiveChatContextMessages,
-                chatContextScreenshotBase64 = latest.effectiveChatScreenshotBase64,
+                chatContextMessages = syncedState.effectiveChatContextMessages,
+                chatContextScreenshotBase64 = syncedState.effectiveChatScreenshotBase64,
                 userBottomLine = effectiveBottomLine,
-                excludedPreviousReplies = latest.jevExcludedReplies,
-                redactionSession = latest.capturedChatContext.redactionSession,
+                excludedPreviousReplies = syncedState.jevExcludedReplies,
+                redactionSession = syncedState.capturedChatContext.redactionSession,
                 wavFile = wavFile,
                 preTranscribedBottomLine = pretranscribedSpeech,
                 chatTopology = effectiveTopology,
-                targetPackageName = latest.capturedChatContext.packageName.ifBlank { latest.targetPackage },
+                targetPackageName = syncedState.capturedChatContext.packageName.ifBlank { syncedState.targetPackage },
+                memoryPayload = memCtx?.promptPayload,
+                priorWeightFuser = priorWeightFuser,
+                shouldLockOptionOrder = { host.stateFlow.value.selectedJevStrategyIndex >= 0 },
                 onThinkingStarted = {
                     host.stateFlow.update { curr ->
                         if (curr.isJevLoading && curr.jevCopilotResult == null) {
@@ -606,6 +999,7 @@ class VoiceController(
     fun finalizeJevDraftAndClearMemory(clearContext: Boolean = true) {
         jevInferenceJob?.cancel()
         jevInferenceJob = null
+        var committedText: String? = null
         if (jevDraftSession.hasActiveDraft) {
             val ic = host.currentInputConnection()
             val committed = if (ic != null) {
@@ -616,6 +1010,7 @@ class VoiceController(
                 draft
             }
             if (!committed.isNullOrEmpty()) {
+                committedText = committed
                 onExternalCommitToEngine(committed)
                 val undo = ImeLogic.createUndoSnapshot(
                     committedText = committed,
@@ -629,6 +1024,12 @@ class VoiceController(
         } else {
             jevDraftSession.resetSessionOnly()
         }
+        if (!committedText.isNullOrEmpty()) {
+            jevFeedbackMonitor.onDraftCommittedOnExit(committedText)
+        } else if (jevFeedbackMonitor.phase == JevDraftFeedbackMonitor.MonitorPhase.PREVIEW_IN_EDITOR) {
+            jevFeedbackMonitor.clearSession()
+        }
+        activeJevInitialPrefix = ""
         host.stateFlow.update { prev ->
             prev.copy(
                 jevCopilotResult = null,
@@ -639,6 +1040,8 @@ class VoiceController(
                 jevExcludedReplies = emptyList(),
                 isFullScreenPeekCapturing = false,
                 isJevContextInspectorOpen = false,
+                isJevRelationOverlayOpen = false,
+                jevAutoRelinkedNotice = null,
                 capturedChatContext = if (clearContext) CapturedChatContext() else prev.capturedChatContext
             )
         }
@@ -832,6 +1235,15 @@ class VoiceController(
                 ignoreChatContextForThisTurn = false,
                 showChatContextDisclosurePrompt = false,
                 isJevContextInspectorOpen = false,
+                isJevRelationOverlayOpen = false,
+                jevActiveSessionUid = null,
+                jevIsEphemeralSession = false,
+                jevPrivateRelationTag = PrivateRelationTag.UNSET,
+                jevGroupSceneTag = GroupSceneTag.UNSET,
+                jevCustomRelationNote = "",
+                jevRecentReusableSessions = emptyList(),
+                jevMemoryBypassedByPrivacy = false,
+                jevAutoRelinkedNotice = null,
                 selectedHelpWritePreset = null
             )
         }
@@ -1402,6 +1814,64 @@ class VoiceController(
             snapshot.activeIntentMode == VoiceIntentMode.HELP_ME_WRITE -> VoiceIntentMode.HELP_ME_WRITE
             effectiveSelected.isNotBlank() -> VoiceIntentMode.SPEAK_TO_EDIT
             else -> VoiceIntentMode.DICTATE
+        }
+        if (resolvedIntent == VoiceIntentMode.JEV_COPILOT && snapshot.isJevRelationOverlayOpen) {
+            activeComposer?.cancelSession(rollbackWrittenText = true)
+            activeComposer = null
+            try {
+                val noteResult = if (!preTranscribedText.isNullOrBlank()) {
+                    Result.success(preTranscribedText.trim())
+                } else {
+                    host.aiEngine.transcribeNoteAudio(
+                        wavFile = wavFile,
+                        settings = settings,
+                        activeStyle = activeStyle
+                    )
+                }
+                noteResult.fold(
+                    onSuccess = { spokenNote ->
+                        val safeNote = LocalPiiRedactor.redactRelationNote(spokenNote, maxCodePoints = 40)
+                        if (safeNote.isBlank()) {
+                            host.stateFlow.update { it.copy(voicePhase = VoicePhase.Idle) }
+                            host.showQuickActionToast("未识别到有效备忘")
+                        } else {
+                            val latestSnap = host.stateFlow.value
+                            host.stateFlow.update {
+                                it.copy(
+                                    voicePhase = VoicePhase.Idle,
+                                    isArcTranslateActive = false,
+                                    arcStartedFromHandsFree = false,
+                                    isArcCancelHovered = false,
+                                    streamingPartialPreview = "",
+                                    liveWriteStatus = LiveWriteUiStatus.INACTIVE,
+                                    jevCustomRelationNote = safeNote,
+                                    isJevRelationOverlayOpen = false
+                                )
+                            }
+                            persistRelationStateToMemory(
+                                stateSnap = latestSnap,
+                                settingsSnap = settings,
+                                privateTag = latestSnap.jevPrivateRelationTag,
+                                groupTag = latestSnap.jevGroupSceneTag,
+                                redactedNote = safeNote
+                            )
+                            host.performHaptic(strong = false)
+                            host.showQuickActionToast("✓ 备忘已记录")
+                            if (!latestSnap.isJevLoading && !latestSnap.showChatContextDisclosurePrompt) {
+                                triggerJevCopilotInference(isRefresh = false)
+                            }
+                        }
+                    },
+                    onFailure = { err ->
+                        host.stateFlow.update { it.copy(voicePhase = VoicePhase.Idle) }
+                        host.performHaptic(strong = true)
+                        host.showQuickActionToast("⚠ ${(err.message ?: "备忘转写失败").take(20)}")
+                    }
+                )
+            } finally {
+                runCatching { wavFile.delete() }
+            }
+            return
         }
         if (resolvedIntent == VoiceIntentMode.JEV_COPILOT) {
             jevInferenceJob?.cancel()
@@ -2309,18 +2779,46 @@ class VoiceController(
     }
 
     @Suppress("UNUSED_PARAMETER")
+    fun onUserDeleteOrCutForJev(remainingTextLengthHint: Int = -1) {
+        jevFeedbackMonitor.onUserDeleteOrCutTriggered(remainingTextLengthHint)
+    }
+
+    fun onUserUndoForJev() {
+        jevFeedbackMonitor.onUserUndoTriggered()
+    }
+
+    fun onExplicitImeSendForJev(currentEditorText: String?) {
+        jevFeedbackMonitor.onExplicitImeSendAction(currentEditorText)
+    }
+
+    fun onEditorTargetChanged(pkg: String, fieldId: Int, restarting: Boolean) {
+        if (!restarting) {
+            jevFeedbackMonitor.onInputTargetChanged(pkg, fieldId)
+        }
+    }
+
     fun onSelectionUpdated(
         oldSelStart: Int,
         oldSelEnd: Int,
         newSelStart: Int,
         newSelEnd: Int,
         candidatesStart: Int,
-        candidatesEnd: Int
+        candidatesEnd: Int,
+        isComposing: Boolean = false,
+        editorTextSnapshot: String? = null
     ) {
         if (newSelStart >= 0 && newSelEnd >= 0) {
             lastKnownSelectionStart = newSelStart
             lastKnownSelectionEnd = newSelEnd
         }
+        jevFeedbackMonitor.onSelectionOrTextUpdated(
+            newSelStart = newSelStart,
+            newSelEnd = newSelEnd,
+            candidatesStart = candidatesStart,
+            candidatesEnd = candidatesEnd,
+            isComposing = isComposing,
+            editorTextSnapshot = editorTextSnapshot
+        )
         val composer = activeComposer ?: return
         if (!composer.isActive) return
         composer.onUpdateSelection(newSelStart, newSelEnd, candidatesStart, candidatesEnd)

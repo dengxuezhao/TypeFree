@@ -62,7 +62,10 @@ data class CapturedChatContext(
     val redactionCount: Int = redactionSession.redactionCount,
     val hasHighRiskRedaction: Boolean = redactionSession.hasHighRiskCredentials,
     val domainProfile: JevDomainProfile = JevDomainProfile.fromPackage(packageName),
-    val topology: ChatTopology = ChatTopology()
+    val topology: ChatTopology = ChatTopology(),
+    val rawHeaderNodes: List<RawScreenTextNode> = emptyList(),
+    val screenWidth: Int = 1080,
+    val screenHeight: Int = 2400
 ) {
     val effectiveBadgeTitle: String
         get() = when {
@@ -181,7 +184,10 @@ data class CapturedChatContext(
             redactionCount = updatedSession.redactionCount,
             hasHighRiskRedaction = updatedSession.hasHighRiskCredentials,
             domainProfile = if (resolvedPkg.isNotBlank()) JevDomainProfile.fromPackage(resolvedPkg) else domainProfile,
-            topology = mergedTopology
+            topology = mergedTopology,
+            rawHeaderNodes = if (outcome.rawHeaderNodes.isNotEmpty()) outcome.rawHeaderNodes else rawHeaderNodes,
+            screenWidth = if (outcome.screenWidth > 0) outcome.screenWidth else screenWidth,
+            screenHeight = if (outcome.screenHeight > 0) outcome.screenHeight else screenHeight
         )
     }
 
@@ -196,7 +202,10 @@ data class ViewportCaptureOutcome(
     val height: Int = 0,
     val mergedMessages: List<String> = emptyList(),
     val redactionSession: RedactionSession = RedactionSession.EMPTY,
-    val topology: ChatTopology = ChatTopology()
+    val topology: ChatTopology = ChatTopology(),
+    val rawHeaderNodes: List<RawScreenTextNode> = emptyList(),
+    val screenWidth: Int = 0,
+    val screenHeight: Int = 0
 )
 
 /**
@@ -1109,6 +1118,18 @@ object ChatScreenContextExtractor {
             }
         }
 
+        val safeWidth = screenWidth.takeIf { it > 0 } ?: 1080
+        val safeHeight = screenHeight.takeIf { it > 0 } ?: 2400
+        val headerNodes = nodes.filter {
+            it.isVisibleToUser &&
+                !it.isEditable &&
+                !it.isPassword &&
+                it.boundsTop <= groupHeaderMaxTop &&
+                it.boundsBottom > it.boundsTop &&
+                it.boundsRight > it.boundsLeft &&
+                it.text.isNotBlank()
+        }
+
         fun buildEmptyCapturedContext(): CapturedChatContext {
             val emptyNodeSession = if (redactPii) {
                 LocalPiiRedactor.redactText("", context = context, sourceNodes = nodes)
@@ -1131,7 +1152,10 @@ object ChatScreenContextExtractor {
                 appName = appName,
                 capturedAtMs = nowMs,
                 redactionSession = emptyNodeSession,
-                topology = emptyTopology
+                topology = emptyTopology,
+                rawHeaderNodes = headerNodes,
+                screenWidth = safeWidth,
+                screenHeight = safeHeight
             )
         }
 
@@ -1630,7 +1654,10 @@ object ChatScreenContextExtractor {
             latestMessagePreview = previewText,
             capturedAtMs = nowMs,
             redactionSession = redactionSession,
-            topology = finalTopology
+            topology = finalTopology,
+            rawHeaderNodes = headerNodes,
+            screenWidth = safeWidth,
+            screenHeight = safeHeight
         )
     }
 }

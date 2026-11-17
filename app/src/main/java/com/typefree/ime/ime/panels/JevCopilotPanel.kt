@@ -39,6 +39,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import com.typefree.ime.ime.jev.memory.GroupSceneTag
+import com.typefree.ime.ime.jev.memory.PrivateRelationTag
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -156,11 +158,11 @@ fun JevCopilotPanel(
                 // Redaction / Domain / Context status pill (toggles read-only JevContextInspectorCard)
                 val statusLabel = when {
                     captured.redactionCount > 0 ->
-                        "🛡已脱敏${captured.redactionCount}处 ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
+                        "🛡${captured.redactionCount} ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
                     captured.hasContext ->
-                        "${captured.effectiveBadgeTitle}·${captured.messageCount}条 ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
+                        "文·${captured.messageCount} ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
                     else ->
-                        "${captured.effectiveBadgeTitle} ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
+                        "${captured.effectiveBadgeTitle.take(3)} ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
                 }
                 val statusTint = when {
                     uiState.isJevContextInspectorOpen -> palette.primaryMicSolid
@@ -187,13 +189,58 @@ fun JevCopilotPanel(
                         .clickable(enabled = !uiState.isFullScreenPeekCapturing) {
                             onAction(ImeUiAction.ToggleJevContextInspector)
                         }
-                        .padding(horizontal = 6.dp),
+                        .padding(horizontal = 5.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = statusLabel,
                         style = TextStyle(
                             color = statusTint,
+                            fontSize = 9.5.sp,
+                            lineHeight = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        ),
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+
+                // Relationship / Scene / Note Overlay pill (`ToggleJevRelationOverlay`)
+                val relationLabel = when {
+                    uiState.jevMemoryBypassedByPrivacy -> "🔒无痕"
+                    captured.topology.isGroupChat && uiState.jevGroupSceneTag != GroupSceneTag.UNSET ->
+                        "${uiState.jevGroupSceneTag.badgeEmoji}${uiState.jevGroupSceneTag.shortLabel.take(2)}"
+                    !captured.topology.isGroupChat && uiState.jevPrivateRelationTag != PrivateRelationTag.UNSET ->
+                        "${uiState.jevPrivateRelationTag.badgeEmoji}${uiState.jevPrivateRelationTag.shortLabel.take(2)}"
+                    else -> "⚡关系${if (uiState.isJevRelationOverlayOpen) "▴" else "▾"}"
+                }
+                val relationHasSelection = uiState.isJevRelationOverlayOpen ||
+                    (!uiState.jevMemoryBypassedByPrivacy && (
+                        uiState.jevPrivateRelationTag != PrivateRelationTag.UNSET ||
+                            uiState.jevGroupSceneTag != GroupSceneTag.UNSET ||
+                            uiState.jevCustomRelationNote.isNotBlank()
+                        ))
+                Row(
+                    modifier = Modifier
+                        .height(22.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(if (uiState.isJevRelationOverlayOpen) palette.capsuleSelectedBg else palette.keyCapBg)
+                        .border(
+                            1.dp,
+                            if (relationHasSelection) palette.primaryMicSolid else palette.keyBorder,
+                            RoundedCornerShape(11.dp)
+                        )
+                        .clickable(enabled = !uiState.isFullScreenPeekCapturing) {
+                            onAction(ImeUiAction.ToggleJevRelationOverlay)
+                        }
+                        .padding(horizontal = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = relationLabel,
+                        style = TextStyle(
+                            color = if (relationHasSelection) palette.primaryMicSolid else palette.keyTextPrimary,
                             fontSize = 9.5.sp,
                             lineHeight = 11.5.sp,
                             fontWeight = FontWeight.Bold,
@@ -214,7 +261,7 @@ fun JevCopilotPanel(
                         .clickable(enabled = !isProcessing && !uiState.isFullScreenPeekCapturing) {
                             onAction(ImeUiAction.TriggerFullScreenPeekCapture)
                         }
-                        .padding(horizontal = 6.dp),
+                        .padding(horizontal = 5.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
@@ -263,6 +310,13 @@ fun JevCopilotPanel(
                 JevFirstTimeDisclosureCard(
                     onAccept = { onAction(ImeUiAction.AcceptChatContextDisclosure) },
                     onDecline = { onAction(ImeUiAction.DeclineChatContextDisclosure) }
+                )
+            } else if (uiState.isJevRelationOverlayOpen) {
+                JevRelationQuickOverlay(
+                    uiState = uiState,
+                    settings = settings,
+                    isBusy = isProcessing || uiState.isFullScreenPeekCapturing,
+                    onAction = onAction
                 )
             } else if (uiState.isJevContextInspectorOpen) {
                 JevContextInspectorCard(
@@ -369,6 +423,8 @@ fun JevCopilotPanel(
             phase = phase,
             isJevLoading = uiState.isJevLoading,
             userBottomLine = uiState.jevUserBottomLine,
+            isRelationOverlayOpen = uiState.isJevRelationOverlayOpen,
+            customRelationNote = uiState.jevCustomRelationNote,
             onStartRecording = { onAction(ImeUiAction.MicPressDown(VoiceIntentMode.JEV_COPILOT)) },
             onReleaseRecording = { onAction(ImeUiAction.MicPressUp) },
             onFinishHandsFree = { onAction(ImeUiAction.FinishHandsFree) },
@@ -1014,6 +1070,8 @@ private fun JevBottomControlRow(
     phase: VoicePhase,
     isJevLoading: Boolean,
     userBottomLine: String,
+    isRelationOverlayOpen: Boolean = false,
+    customRelationNote: String = "",
     onStartRecording: () -> Unit,
     onReleaseRecording: () -> Unit,
     onFinishHandsFree: () -> Unit,
@@ -1040,11 +1098,20 @@ private fun JevBottomControlRow(
         label = "jevPulseScale"
     )
 
-    val bottomStatusText = when {
-        isRecording -> "正在聆听底牌 · 松手重算"
-        isProcessing -> "军师推演中…"
-        userBottomLine.isNotBlank() -> "底牌：$userBottomLine"
-        else -> "按住说底牌 · 如：底价800 / 周六补约"
+    val bottomStatusText = if (isRelationOverlayOpen) {
+        when {
+            isRecording -> "正在聆听备忘 · 松手脱敏保存"
+            isProcessing -> "军师推演中…"
+            customRelationNote.isNotBlank() -> "备忘：$customRelationNote"
+            else -> "按住说备忘 · 如：甲方总监忌催进度"
+        }
+    } else {
+        when {
+            isRecording -> "正在聆听底牌 · 松手重算"
+            isProcessing -> "军师推演中…"
+            userBottomLine.isNotBlank() -> "底牌：$userBottomLine"
+            else -> "按住说底牌 · 如：底价800 / 周六补约"
+        }
     }
 
     Row(
