@@ -28,14 +28,14 @@ enum class ImportMode {
     /** 5.1 明文 `.dict.yaml` 离线 Staging 编译轨 */
     PLAIN_DICT_COMPILE,
 
-    /** 5.2 官方预编译挂接包 `build/*.table.bin` 免源码免重编直通轨 */
+    /** 5.2 官方预编译挂接包 `build/<schema>.table.bin` 免源码免重编直通轨 */
     PRECOMPILED_BIN
 }
 
 fun interface RimeStagingCompiler {
     /**
-     * Compiles plain-text `.schema.yaml` + `.dict.yaml` inside [stagingDir] into `build/*.bin`.
-     * NEVER invoked in [ImportMode.PRECOMPILED_BIN] so precompiled `build/*.table.bin` stays untouched.
+     * Compiles plain-text `.schema.yaml` + `.dict.yaml` inside [stagingDir] into `build/<schema>.bin`.
+     * NEVER invoked in [ImportMode.PRECOMPILED_BIN] so precompiled `build/<schema>.table.bin` stays untouched.
      */
     fun compilePlainSchema(stagingDir: File, schemaId: String): Boolean
 }
@@ -62,8 +62,8 @@ data class SchemaImportResult(
  *   UTF-8/UTF-8-BOM/GB18030 transcoding, `\r\n` & standalone `\r` normalization, `...` separator check,
  *   Lua & desktop config sanitization, `;` quick-symbol extraction, `ok_mode` completion, offline
  *   staging compilation, and `BriefPrefixIndex` `.brief.idx` snapshot serialization.
- * - Track 5.2 (`PRECOMPILED_BIN`): Official Xiaohe Squirrel/Weasel hang-up package (`build/*.table.bin`
- *   without `.dict.yaml`) passthrough — validates `Rime::Table` binary header, preserves `build/*.table.bin`
+ * - Track 5.2 (`PRECOMPILED_BIN`): Official Xiaohe Squirrel/Weasel hang-up package (`build/<schema>.table.bin`
+ *   without `.dict.yaml`) passthrough — validates `Rime::Table` binary header, preserves `build/<schema>.table.bin`
  *   byte-for-byte without recompiling, generates missing `.txt` stabledb placeholders, and builds
  *   `BriefPrefixIndex` in `< 15ms` via 702-slot (`26 + 676`) dynamic probing.
  */
@@ -215,7 +215,7 @@ class SchemaPackageImporter(
 
                 atomicReplaceDirectory(realRoot, targetDir)
             } else {
-                // Track 5.2: Precompiled-Bin Passthrough (`build/*.table.bin` kept byte-identical!)
+                // Track 5.2: Precompiled-Bin Passthrough (`build/<schema>.table.bin` kept byte-identical!)
                 val binBeforeSha = sha256Hex(precompiledTableBin!!)
                 atomicReplaceDirectory(realRoot, targetDir)
                 val installedBin = File(targetDir, "build/${precompiledTableBin.name}")

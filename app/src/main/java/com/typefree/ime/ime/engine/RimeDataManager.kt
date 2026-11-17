@@ -438,7 +438,7 @@ class RimeDataManager(
 
     /**
      * Dual-track `.zip` schema package import (5.1 Plain `.dict.yaml` Staging Compile +
-     * 5.2 Precompiled `build/*.table.bin` Passthrough with 702-slot JNI dynamic probing).
+     * 5.2 Precompiled `build/<schema>.table.bin` Passthrough with 702-slot JNI dynamic probing).
      */
     fun importEnhancedSchemaPackageSync(zipInputStream: InputStream): SchemaImportResult {
         val stagingRoot = File(appContext?.cacheDir ?: File(sharedDir.parentFile, "cache"), "schema_staging")
