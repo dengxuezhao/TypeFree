@@ -1,6 +1,9 @@
 name: Build TypeFree Xiaohe Exclusive APK
 
 on:
+  push:
+    branches:
+      - feat/codetable-enhancer-xiaohe
   workflow_dispatch:
     inputs:
       xiaohe_dict_url:
@@ -100,8 +103,8 @@ jobs:
             curl -fsSL               -H "Authorization: Bearer ${GDRIVE_ACCESS_TOKEN}"               "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media"               -o /tmp/xiaohe_bundle/xiaohe.zip
             unzip -tq /tmp/xiaohe_bundle/xiaohe.zip >/dev/null
           else
-            echo "::error::Missing private dictionary source. Pass -f xiaohe_dict_url=... or configure secret XIAOHE_READY_ZIP_URL."
-            exit 1
+            FILE_ID="${GDRIVE_FILE_ID:-1-XzQCyYfKqWpWbPTkQbsE6HAuFCSIt8o}"
+            download_url_or_gdrive "https://drive.usercontent.google.com/download?id=${FILE_ID}&export=download&confirm=t" /tmp/xiaohe_bundle/xiaohe.zip
           fi
 
           unzip -oq /tmp/xiaohe_bundle/xiaohe.zip -d app/src/xiaohe/assets/rime/
