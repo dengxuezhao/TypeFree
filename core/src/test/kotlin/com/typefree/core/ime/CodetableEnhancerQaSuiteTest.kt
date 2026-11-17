@@ -11,11 +11,14 @@ import com.typefree.core.ime.enhancer.ReverseSplitEngine
 import com.typefree.core.ime.enhancer.Utf8Safety
 import com.typefree.core.ime.importer.ImportMode
 import com.typefree.core.ime.importer.SchemaPackageImporter
+import com.typefree.core.ime.importer.SubDictToggleManager
 import com.typefree.core.ime.overlay.OverlaySymbolController
 import com.typefree.core.ime.overlay.SymbolTrie
 import com.typefree.core.ime.profile.SchemaArchetype
 import com.typefree.core.ime.profile.SchemaInspector
 import com.typefree.core.ime.profile.SchemaProfile
+import com.typefree.core.ime.profile.TypeFreeTomlParser
+import java.time.LocalDate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -629,5 +632,271 @@ class CodetableEnhancerQaSuiteTest {
         } finally {
             tempRoot.deleteRecursively()
         }
+    }
+
+    @Test
+    fun `QA-SPLIT-03 exact gt4 table releases okkn and 702-slot probe conservatively guards 3-code prefixes`() {
+        val (_, plainIdx) = loadXiaoheDictAndIndex()
+        val profile = SchemaProfile.defaultXiaoheFlypy()
+        val plainSplit = ReverseSplitEngine(plainIdx)
+
+        // Exact gt4PackedTable blocks `okhg` (because `okhguu -> 丁` exists)
+        assertTrue(plainIdx.hasGt4Prefix("okhg"))
+        assertNull(plainSplit.tryReverseSplit("okhg", rimeHasCandidates = false, profile = profile))
+
+        // Exact gt4PackedTable releases `okkn` when no 5-code `okkn*` entry exists
+        assertFalse(plainIdx.hasGt4Prefix("okkn"))
+        val okknSplit = plainSplit.tryReverseSplit("okkn", rimeHasCandidates = false, profile = profile)
+        assertNotNull("okkn without 5-code successor must allow 2+2 reverse split", okknSplit)
+        assertEquals("👌可能", okknSplit!!.candidates[0].commitText)
+
+        // 702-slot probe without explicit threeCodeDeadEnds defaults has4Bits=true (no premature 3-code split)
+        var batchCalls = 0
+        var batchSize = 0
+        val probedIdx = BriefPrefixIndex.buildFrom702SlotProbing(
+            prober = object : com.typefree.core.ime.enhancer.RimeCodeProber {
+                override fun probeCandidates(code: String, maxCount: Int): List<String> = emptyList()
+                override fun probeBatch(codes: List<String>, maxCount: Int): List<List<String>> {
+                    batchCalls++
+                    batchSize = codes.size
+                    return codes.map { c ->
+                        when (c) {
+                            "h" -> listOf("和")
+                            "hf" -> listOf("很")
+                            "kn" -> listOf("可能")
+                            else -> emptyList()
+                        }
+                    }
+                }
+            }
+        )
+        assertEquals(1, batchCalls)
+        assertEquals(702, batchSize)
+        assertTrue("3-code prefix `hfk` must NOT prematurely split in 702-slot mode", probedIdx.hasLongerFrom3("hfk"))
+        val probedSplit = ReverseSplitEngine(probedIdx)
+        assertNull(probedSplit.tryReverseSplit("hfk", rimeHasCandidates = false, profile = profile))
+        val probed4 = probedSplit.tryReverseSplit("hfkn", rimeHasCandidates = false, profile = profile)
+        assertNotNull(probed4)
+        assertEquals("很可能", probed4!!.candidates[0].commitText)
+    }
+
+    @Test
+    fun `QA-IMPORTER-SANITIZE-01 strips default yaml and trime yaml and persists extracted semicolon quick symbols`() {
+        val zipBytes = ByteArrayOutputStream().use { baos ->
+            ZipOutputStream(baos, StandardCharsets.UTF_8).use { zos ->
+                fun addEntry(name: String, text: String) {
+                    zos.putNextEntry(ZipEntry(name))
+                    zos.write(text.toByteArray(StandardCharsets.UTF_8))
+                    zos.closeEntry()
+                }
+                addEntry("default.yaml", "schema_list:\n  - schema: flypy\n")
+                addEntry("flypy.trime.yaml", "style:\n  key_height: 40\n")
+                addEntry(
+                    "flypy.schema.yaml",
+                    """
+                    schema:
+                      schema_id: flypy
+                      name: 小鹤音形
+                    engine:
+                      translators:
+                        - table_translator
+                    speller:
+                      alphabet: "abcdefghijklmnopqrstuvwxyz;'"
+                      max_code_length: 4
+                    translator:
+                      dictionary: flypy
+                    """.trimIndent()
+                )
+                addEntry(
+                    "flypy.dict.yaml",
+                    """
+                    ---
+                    name: flypy
+                    ...
+                    啊	a
+                    很	hf
+                    可能	kn
+                    ★	;qq
+                    """.trimIndent()
+                )
+            }
+            baos.toByteArray()
+        }
+
+        val tempRoot = Files.createTempDirectory("qa_sanitize_").toFile()
+        try {
+            val importer = SchemaPackageImporter(
+                stagingParentDir = File(tempRoot, "staging"),
+                targetSchemasRootDir = File(tempRoot, "schemas")
+            )
+            val result = importer.importZip(ByteArrayInputStream(zipBytes))
+            assertTrue("default.yaml" in result.strippedDesktopFiles)
+            assertTrue("flypy.trime.yaml" in result.strippedDesktopFiles)
+            assertFalse(File(result.installedDir, "default.yaml").exists())
+            assertFalse(File(result.installedDir, "flypy.trime.yaml").exists())
+
+            val quickFile = File(result.installedDir, "quick_symbols.yaml")
+            assertTrue("Extracted ;qq must be persisted to quick_symbols.yaml", quickFile.exists())
+            val reparsed = SymbolTrie.parseQuickSymbolsYaml(quickFile.readText(StandardCharsets.UTF_8))
+            assertEquals("★", reparsed.collectCandidates("qq").first().commitText)
+            assertTrue(
+                "Paired bracket ;o must be preserved in quick_symbols.yaml",
+                reparsed.collectCandidates("o").first().action is CommitAction.PairedText
+            )
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `QA-COORD-GUARD-01 Stage 4 direct command precedes Stage 5 auto-commit and single-char suppresses multi-char commit`() {
+        val autoCommitPort = object : RimeCoreSessionPort {
+            private val buf = StringBuilder()
+            override fun sendChar(ch: Char): RimeDecodeFrame {
+                buf.append(ch)
+                val raw = buf.toString()
+                if (raw == "date") {
+                    buf.clear()
+                    return RimeDecodeFrame(rawInput = "", preedit = "", candidates = emptyList(), autoCommittedText = "大特")
+                }
+                if (raw == "abcd") {
+                    buf.clear()
+                    return RimeDecodeFrame(rawInput = "", preedit = "", candidates = emptyList(), autoCommittedText = "可能")
+                }
+                return RimeDecodeFrame(rawInput = raw, preedit = raw, candidates = listOf("字$raw" to ""))
+            }
+            override fun sendBackspace(): RimeDecodeFrame {
+                if (buf.isNotEmpty()) buf.deleteCharAt(buf.length - 1)
+                val raw = buf.toString()
+                return RimeDecodeFrame(rawInput = raw, preedit = raw, candidates = listOf("字$raw" to ""))
+            }
+            override fun selectCandidate(index: Int): Pair<String?, RimeDecodeFrame> = null to RimeDecodeFrame()
+            override fun commitCurrentComposition(): String? = null
+            override fun clearComposition() { buf.clear() }
+            override fun currentFrame(maxCandidates: Int): RimeDecodeFrame {
+                val raw = buf.toString()
+                return RimeDecodeFrame(rawInput = raw, preedit = raw, candidates = listOf("字$raw" to ""))
+            }
+            override fun setOption(option: String, value: Boolean) {}
+            override fun getOption(option: String): Boolean = false
+        }
+
+        val coord = TypeFreeKeyCoordinator(
+            profile = SchemaProfile.defaultXiaoheFlypy(),
+            rimePort = autoCommitPort
+        )
+        coord.onCharKey('d')
+        coord.onCharKey('a')
+        coord.onCharKey('t')
+        val dateOut = coord.onCharKey('e')
+        assertTrue("date command must NOT auto-commit librime candidate", dateOut is CoordinatorKeyOutcome.Consumed)
+        assertTrue((dateOut as CoordinatorKeyOutcome.Consumed).ui.candidates.any { it.commitText.contains("年") })
+
+        // Backspace from `date` restores `dat` native Rime candidates cleanly
+        val backOut = coord.onBackspace() as CoordinatorKeyOutcome.Consumed
+        assertEquals("dat", backOut.ui.rawCode)
+        assertEquals("字dat", backOut.ui.candidates.first().commitText)
+        coord.reset()
+
+        // Single-char mode intercepts multi-char autoCommittedText (`可能`)
+        coord.setSingleCharModeEnabled(true)
+        coord.onCharKey('a')
+        coord.onCharKey('b')
+        coord.onCharKey('c')
+        val abcdOut = coord.onCharKey('d')
+        assertTrue("Multi-char auto-commit must be blocked in single-char mode", abcdOut is CoordinatorKeyOutcome.Consumed)
+    }
+
+    @Test
+    fun `QA-P2-FIXES-01 ofi preview isolation, toml speller_alphabet, lunar 2105 bounds, and SubDict YAML list`() {
+        // 1) `ofi` CopyToClipboard must NOT overwrite lastCommittedPreview
+        val coord = TypeFreeKeyCoordinator(
+            profile = SchemaProfile.defaultXiaoheFlypy(),
+            rimePort = InMemoryTableRimePort(mapOf("an" to listOf("安"))),
+            directCommandEngine = DirectCommandEngine(
+                reverseLookupMap = mapOf("鹤" to listOf("hebn")),
+                clipboardReader = { "鹤" }
+            )
+        )
+        coord.recordCommittedPreview("你好")
+        coord.onCharKey('o')
+        coord.onCharKey('f')
+        coord.onCharKey('i')
+        val copyOutcome = coord.selectCandidate(0) as CoordinatorKeyOutcome.Commit
+        assertTrue(copyOutcome.action is CommitAction.CopyToClipboard)
+        assertEquals("你好", coord.lastCommittedPreview)
+
+        // 2) TypeFreeTomlParser round-trips spellerAlphabet
+        val customProfile = SchemaProfile.defaultXiaoheFlypy().copy(spellerAlphabet = "abcdefghijklmnopqrstuvwxyz;'")
+        val serialized = TypeFreeTomlParser.serialize(customProfile)
+        assertTrue(serialized.contains("speller_alphabet = \"abcdefghijklmnopqrstuvwxyz;'\""))
+        val reparsed = TypeFreeTomlParser.parse(serialized)
+        assertEquals("abcdefghijklmnopqrstuvwxyz;'", reparsed.spellerAlphabet)
+
+        // 3) ChineseLunarCalendar safe beyond 2100
+        val lunar2105 = com.typefree.core.ime.enhancer.ChineseLunarCalendar.formatGanZhiLunar(LocalDate.of(2105, 6, 1))
+        assertEquals("2105年", lunar2105)
+
+        // 4) SubDictToggleManager valid YAML list for multiple ext dicts + disk persistence reload
+        val tempDir = Files.createTempDirectory("qa_subdict_").toFile()
+        try {
+            val mgr1 = SubDictToggleManager(tempDir)
+            mgr1.setSubDictEnabled("flypy", "flypy_full", false)
+            mgr1.setSubDictEnabled("flypy", "ext/medical", true)
+            mgr1.setSubDictEnabled("flypy", "ext/legal", true)
+            val yaml = File(tempDir, "flypy.custom.yaml").readText(StandardCharsets.UTF_8)
+            assertEquals(1, Regex(""""engine/translators/\+":""").findAll(yaml).count())
+            assertTrue(yaml.contains("    - table_translator@ext_dict_0"))
+            assertTrue(yaml.contains("    - table_translator@ext_dict_1"))
+
+            val mgr2 = SubDictToggleManager(tempDir)
+            assertFalse(mgr2.isSubDictEnabled("flypy_full", defaultEnabled = true, schemaId = "flypy"))
+            assertTrue(mgr2.isSubDictEnabled("ext/medical", defaultEnabled = false, schemaId = "flypy"))
+            assertTrue(mgr2.isSubDictEnabled("ext/legal", defaultEnabled = false, schemaId = "flypy"))
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `QA-REAL-XIAOHE-BUNDLE-01 validates real injected xiaohe dictionary assets when present`() {
+        val realDir = resolveXiaoheAssetDir() ?: return
+        val schemaText = File(realDir, "flypy.schema.yaml").readText(StandardCharsets.UTF_8)
+        val dictText = File(realDir, "flypy.dict.yaml").readText(StandardCharsets.UTF_8)
+        val tomlText = File(realDir, "typefree.toml").readText(StandardCharsets.UTF_8)
+
+        val profile = SchemaInspector.inspect(
+            schemaYaml = schemaText,
+            dictYamlContent = dictText,
+            tomlOverrideContent = tomlText
+        )
+        assertEquals("flypy", profile.schemaId)
+        assertEquals(SchemaArchetype.FIXED_YINXING, profile.archetype)
+        assertTrue(profile.lockNaturalOrder)
+        assertFalse(profile.allowAutoLearn)
+
+        val briefIdx = BriefPrefixIndex.buildFromDictLines(
+            mainDictLines = File(realDir, "flypy.dict.yaml").readLines(StandardCharsets.UTF_8).asSequence(),
+            topDictLines = File(realDir, "flypy_top.txt").readLines(StandardCharsets.UTF_8).asSequence(),
+            userDictLines = File(realDir, "flypy_user.txt").readLines(StandardCharsets.UTF_8).asSequence(),
+            gt4GuardTwoPrefixes = profile.gt4GuardPrefixes
+        )
+        assertTrue("Real brief1 must be populated", briefIdx.totalBrief1Entries >= 26)
+        assertTrue("Real brief2 must cover >500 slots", briefIdx.populatedBrief2Slots > 500)
+        assertTrue("Real okhg must be guarded", briefIdx.hasGt4Prefix("okhg"))
+
+        val split = ReverseSplitEngine(briefIdx).tryReverseSplit("hfkn", rimeHasCandidates = false, profile = profile)
+        assertNotNull(split)
+        assertEquals("很可能", split!!.candidates.first().commitText)
+
+        val dzMap = DirectCommandEngine.loadReverseLookupFromDictLines(
+            File(realDir, "flypydz.dict.yaml").readLines(StandardCharsets.UTF_8).asSequence()
+        )
+        assertTrue("Real flypydz reverse lookup must load > 5000 chars", dzMap.size > 5_000)
+
+        val quickTrie = SymbolTrie.parseQuickSymbolsYaml(
+            File(realDir, "quick_symbols.yaml").readText(StandardCharsets.UTF_8)
+        )
+        assertTrue("Real quick_symbols.yaml must have >= 36 entries", quickTrie.size >= 36)
     }
 }

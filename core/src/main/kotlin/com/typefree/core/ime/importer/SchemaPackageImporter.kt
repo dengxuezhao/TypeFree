@@ -90,7 +90,7 @@ class SchemaPackageImporter(
 
             // Remove desktop-only config files if any remained in nested folders
             realRoot.walkTopDown().filter { it.isFile }.forEach { f ->
-                if (f.name.lowercase() in DESKTOP_FRONTEND_FILES) {
+                if (isDesktopFrontendFile(f.name)) {
                     strippedDesktopFiles.add(f.name)
                     f.delete()
                 }
@@ -137,10 +137,15 @@ class SchemaPackageImporter(
             val sanitizedSchemaText = sanitizeSchemaYaml(
                 rawYaml = rawSchemaText,
                 meta = initialMeta,
-                importMode = importMode,
                 sanitizedLuaOut = sanitizedLua
             )
             schemaFile.writeText(sanitizedSchemaText, StandardCharsets.UTF_8)
+            if (importMode == ImportMode.PRECOMPILED_BIN) {
+                val prebuiltSchema = File(realRoot, "build/${schemaFile.name}")
+                if (prebuiltSchema.exists()) {
+                    prebuiltSchema.writeText(sanitizedSchemaText, StandardCharsets.UTF_8)
+                }
+            }
 
             // Ensure all referenced custom_phrase user_dict .txt files exist so librime never warns
             val updatedMeta = SchemaInspector.parseSchemaYaml(sanitizedSchemaText)
@@ -155,11 +160,18 @@ class SchemaPackageImporter(
                 }
             }
 
-            // Build or load quick_symbols.yaml
-            val quickTrie = if (quickSymbolsFile.exists()) {
+            // Build or load quick_symbols.yaml (persisting any `;` entries extracted from `.dict.yaml`)
+            val baseTrie = if (quickSymbolsFile.exists()) {
                 SymbolTrie.parseQuickSymbolsYaml(quickSymbolsFile.readText(StandardCharsets.UTF_8))
             } else {
                 SymbolTrie.defaultXiaohe()
+            }
+            val quickTrie = if (extractedQuickEntries.isNotEmpty()) {
+                baseTrie.mergeExtractedEntries(extractedQuickEntries).also { merged ->
+                    quickSymbolsFile.writeText(merged.serializeQuickSymbolsYaml(), StandardCharsets.UTF_8)
+                }
+            } else {
+                baseTrie
             }
 
             val tomlFile = File(realRoot, "typefree.toml")
@@ -315,7 +327,7 @@ class SchemaPackageImporter(
                 if (!entry.isDirectory && rawName.isNotEmpty()) {
                     val baseName = rawName.substringAfterLast('/')
                     if (!baseName.startsWith("._") && baseName != ".DS_Store") {
-                        if (baseName.lowercase() in DESKTOP_FRONTEND_FILES) {
+                        if (isDesktopFrontendFile(baseName)) {
                             strippedDesktopFiles.add(baseName)
                         } else {
                             val outFile = File(destRoot, rawName)
@@ -487,7 +499,6 @@ class SchemaPackageImporter(
     private fun sanitizeSchemaYaml(
         rawYaml: String,
         meta: SchemaInspector.ParsedSchemaMetadata,
-        importMode: ImportMode,
         sanitizedLuaOut: MutableList<String>
     ): String {
         val isXiaohe = meta.schemaId == "flypy" || meta.displayName.contains("小鹤音形")
@@ -511,7 +522,7 @@ class SchemaPackageImporter(
                 continue
             }
 
-            if (isXiaohe && inSpeller && importMode == ImportMode.PLAIN_DICT_COMPILE) {
+            if (isXiaohe && inSpeller) {
                 if (trimmed.startsWith("alphabet:")) {
                     outLines.add("  alphabet: \"abcdefghijklmnopqrstuvwxyz'\"")
                     continue
@@ -570,13 +581,19 @@ class SchemaPackageImporter(
     companion object {
         const val MAX_UNZIPPED_BYTES = 150L * 1024L * 1024L
         val DESKTOP_FRONTEND_FILES = setOf(
+            "default.yaml",
+            "default.custom.yaml",
             "squirrel.yaml",
             "squirrel.custom.yaml",
             "weasel.yaml",
             "weasel.custom.yaml",
-            "default.custom.yaml",
             "rime.lua"
         )
+
+        fun isDesktopFrontendFile(fileName: String): Boolean {
+            val lower = fileName.lowercase()
+            return lower in DESKTOP_FRONTEND_FILES || lower.endsWith(".trime.yaml")
+        }
 
         fun sha256Hex(file: File): String {
             val md = MessageDigest.getInstance("SHA-256")

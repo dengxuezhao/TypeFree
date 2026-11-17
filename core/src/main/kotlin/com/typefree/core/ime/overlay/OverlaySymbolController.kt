@@ -46,6 +46,11 @@ class OverlaySymbolController(
         buffer = ""
     }
 
+    fun updateTrie(newTrie: SymbolTrie) {
+        trie = newTrie
+        reset()
+    }
+
     fun currentCandidates(lastCommittedPreview: String = ""): List<EnhancedCandidate> {
         if (!isActive) return emptyList()
         return trie.collectCandidates(buffer, lastCommittedPreview)

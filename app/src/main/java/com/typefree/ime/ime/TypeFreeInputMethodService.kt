@@ -44,6 +44,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks {
@@ -71,6 +72,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     }
 
     private val undoStack = ArrayDeque<UndoSnapshot>()
+    private var androidCommitExecutor: AndroidCommitExecutor? = null
 
     // Auto-Learned Dictionary (`Auto-added`) tracking state
     private var lastDictatedFullText: String? = null
@@ -115,6 +117,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         }
         TypeFreeApp.instance.ensureFlypyDictionaryLoaded()
         typingController.rimeInputEngine = TypeFreeApp.instance.rimeInputEngine
+        typingController.enhancedSchemePredicate = { scheme ->
+            TypeFreeApp.instance.rimeDataManager.isSchemeHandledByEnhancedEngine(scheme)
+        }
         typingController.isRimeReady = TypeFreeApp.instance.rimeDataManager.isReady
         bindCodetableEnhancedEngineIfAvailable()
         TypeFreeApp.instance.ensureRimeDeployed()
@@ -130,7 +135,17 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 val ready = deployState is RimeDeploymentState.Ready
                 typingController.isRimeReady = ready
                 if (ready) {
+                    val activeScheme = repository.settings.value.inputScheme
+                    val dm = TypeFreeApp.instance.rimeDataManager
+                    if (dm.isSchemeHandledByEnhancedEngine(activeScheme)) {
+                        dm.activateEnhancedSchemeSync(activeScheme)
+                    }
                     bindCodetableEnhancedEngineIfAvailable()
+                    if (!dm.isSchemeHandledByEnhancedEngine(activeScheme)) {
+                        TypeFreeApp.instance.rimeInputEngine.setInputScheme(activeScheme)
+                    }
+                    typingController.setFixedCandidateOrder(repository.settings.value.fixedCandidateOrder)
+                    typingController.setIncognitoMode(_imeState.value.isIncognitoMode)
                 }
                 _imeState.update { prev ->
                     prev.copy(
@@ -146,10 +161,18 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             var lastFlypySetting: Boolean? = null
             var lastScheme = initialSettings.inputScheme
             repository.settings.collect { currentSettings ->
+                val dm = TypeFreeApp.instance.rimeDataManager
+                val schemeChanged = lastScheme != currentSettings.inputScheme
                 TypeFreeApp.instance.rimeInputEngine.setInputScheme(currentSettings.inputScheme)
+                if (dm.isSchemeHandledByEnhancedEngine(currentSettings.inputScheme) &&
+                    (schemeChanged || typingController.codetableEnhancedEngine == null)
+                ) {
+                    dm.activateEnhancedSchemeSync(currentSettings.inputScheme)
+                    bindCodetableEnhancedEngineIfAvailable()
+                }
                 typingController.updateSnippets(currentSettings.snippets)
                 typingController.setFixedCandidateOrder(currentSettings.fixedCandidateOrder)
-                if (lastScheme != currentSettings.inputScheme) {
+                if (schemeChanged) {
                     lastScheme = currentSettings.inputScheme
                     typingController.resetComposing()
                 }
@@ -426,6 +449,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             )
         }
         val isFlypyComposing = _imeState.value.isFlypyComposing
+        androidCommitExecutor?.notifyExternalCursorChange(newSelStart, newSelEnd)
         if (!isFlypyComposing) {
             syncCurrentEditorText()
         }
@@ -1334,8 +1358,19 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
 
     private fun bindCodetableEnhancedEngineIfAvailable() {
         val dm = TypeFreeApp.instance.rimeDataManager
-        val flypySchema = File(dm.sharedDir, "flypy.schema.yaml")
-        if (!flypySchema.exists() && !dm.hasCustomSchemaImported()) return
+        if (!dm.hasXiaoheSchemaInstalled() && !dm.hasCustomSchemaImported()) return
+
+        val existing = typingController.codetableEnhancedEngine
+        if (existing != null) {
+            existing.refreshFromMetadata(
+                profile = dm.activeSchemaProfile,
+                symbolTrie = dm.activeSymbolTrie,
+                briefIndex = dm.activeBriefIndex,
+                reverseLookupMap = dm.activeReverseLookupMap
+            )
+            return
+        }
+
         val executor = AndroidCommitExecutor.fromInputConnection(
             inputConnectionProvider = { currentInputConnection() },
             onCopyClipboard = { code, toast ->
@@ -1364,8 +1399,15 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     }
                 }
             },
-            onAutoLearnEligibleCommit = { recordManualEditTouch() }
+            onAutoLearnEligibleCommit = { recordManualEditTouch() },
+            onTextCommitted = { committedText, allowAutoLearn ->
+                onEnhancedEngineCommitted(committedText, allowAutoLearn)
+            },
+            onUndoExecuted = {
+                onEnhancedEngineUndo()
+            }
         )
+        androidCommitExecutor = executor
         typingController.codetableEnhancedEngine = CodetableEnhancedInputEngine(
             rimeClient = dm.rimeBridge,
             initialProfile = dm.activeSchemaProfile,
@@ -1376,8 +1418,57 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             clipboardReader = { readSystemClipboardText() },
             commitExecutor = executor,
             onToast = { msg -> showQuickActionToast(msg) },
-            onOpenJevCopilot = { openJevCopilotFromCommand() }
+            onOpenJevCopilot = { openJevCopilotFromCommand() },
+            onAsyncReloadSchema = { schemaId ->
+                serviceScope.launch(Dispatchers.IO) {
+                    dm.rimeBridge.deploy(schemaId)
+                    withContext(Dispatchers.Main) {
+                        typingController.codetableEnhancedEngine?.let { eng ->
+                            if (typingController.activeEngine === eng) {
+                                eng.coordinator.updateProfile(eng.activeProfile)
+                                eng.setIncognitoMode(_imeState.value.isIncognitoMode)
+                                eng.setFixedCandidateOrder(repository.settings.value.fixedCandidateOrder)
+                            }
+                        }
+                    }
+                }
+            },
+            isActiveEnginePredicate = {
+                typingController.activeEngine === typingController.codetableEnhancedEngine
+            }
         )
+    }
+
+    private fun onEnhancedEngineCommitted(committedText: String, @Suppress("UNUSED_PARAMETER") allowAutoLearn: Boolean) {
+        if (committedText.isNotEmpty()) {
+            typingController.recordExternalCommit(committedText)
+            val undo = ImeLogic.createUndoSnapshot(
+                committedText = committedText,
+                replacedSelection = ""
+            )
+            pushUndoSnapshot(undo)
+            _imeState.update {
+                it.copy(
+                    undoSnapshot = undoStack.firstOrNull(),
+                    rawSelectedText = "",
+                    ignoreSelectionForThisTurn = false
+                )
+            }
+        }
+        syncCurrentEditorText()
+        if (committedText.isNotEmpty()) {
+            typingController.predictionCoordinator.onWordCommitted(
+                committedText = committedText,
+                isComposing = typingController.isComposing
+            )
+        }
+    }
+
+    private fun onEnhancedEngineUndo() {
+        undoStack.removeFirstOrNull()
+        _imeState.update { it.copy(undoSnapshot = undoStack.firstOrNull()) }
+        onUserUndoForJev()
+        syncCurrentEditorText()
     }
 
     private fun syncCurrentEditorText() {

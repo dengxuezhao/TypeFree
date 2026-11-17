@@ -3,6 +3,7 @@ package com.typefree.ime.ime.engine
 import android.content.Context
 import com.typefree.core.ime.enhancer.BriefPrefixIndex
 import com.typefree.core.ime.enhancer.DirectCommandEngine
+import com.typefree.core.ime.enhancer.RimeCodeProber
 import com.typefree.core.ime.importer.ImportMode
 import com.typefree.core.ime.importer.SchemaImportResult
 import com.typefree.core.ime.importer.SchemaPackageImporter
@@ -103,6 +104,59 @@ class RimeDataManager(
         return meta.exists() && meta.length() > 0L
     }
 
+    fun hasXiaoheSchemaInstalled(): Boolean = File(sharedDir, "flypy.schema.yaml").exists()
+
+    fun resolveCustomSchemaId(): String {
+        val idFile = File(sharedDir, CUSTOM_SCHEMA_ID_FILENAME)
+        if (idFile.exists()) {
+            val saved = runCatching { idFile.readText(Charsets.UTF_8).trim() }.getOrNull()
+            if (!saved.isNullOrBlank()) return saved
+        }
+        val builtinSchemas = setOf(
+            "rime_ice.schema.yaml",
+            "double_pinyin_flypy.schema.yaml",
+            "flypy.schema.yaml"
+        )
+        val customSchemaFile = sharedDir.listFiles().orEmpty()
+            .filter {
+                it.isFile &&
+                    it.name.endsWith(".schema.yaml") &&
+                    it.name !in builtinSchemas &&
+                    !it.name.endsWith("dz.schema.yaml")
+            }
+            .sortedBy { it.name }
+            .firstOrNull()
+        if (customSchemaFile != null) {
+            val parsedId = parseSchemaMetadata(customSchemaFile).first
+            if (!parsedId.isNullOrBlank()) return parsedId
+        }
+        val activeId = activeSchemaProfile.schemaId
+        if (activeId.isNotBlank() && activeId != "rime_ice" && activeId != "double_pinyin_flypy") {
+            return activeId
+        }
+        return if (hasXiaoheSchemaInstalled()) "flypy" else "custom"
+    }
+
+    fun isSchemeHandledByEnhancedEngine(scheme: InputScheme): Boolean {
+        return when (scheme) {
+            InputScheme.FLYPY_TABLE -> hasXiaoheSchemaInstalled()
+            InputScheme.RIME_CUSTOM -> hasCustomSchemaImported()
+            else -> false
+        }
+    }
+
+    fun activateEnhancedSchemeSync(scheme: InputScheme): Boolean {
+        if (!isSchemeHandledByEnhancedEngine(scheme)) return false
+        val targetSchemaId = when (scheme) {
+            InputScheme.FLYPY_TABLE -> "flypy"
+            InputScheme.RIME_CUSTOM -> resolveCustomSchemaId()
+            else -> return false
+        }
+        refreshEnhancedMetadataFromDir(sharedDir, targetSchemaId)
+        rimeBridge.selectSchema(targetSchemaId)
+        return true
+    }
+
     fun readCustomSchemaName(): String? {
         val meta = File(sharedDir, CUSTOM_SCHEMA_META_FILENAME)
         if (!meta.exists()) return null
@@ -123,9 +177,10 @@ class RimeDataManager(
             extractBuiltInAssetsIfNeeded(forceOverwrite = false)
 
             _deploymentState.value = RimeDeploymentState.Deploying(0.55f, "正在编译 librime 音节棱镜与词典表…")
-            val hasXiaoheBundle = File(sharedDir, "flypy.schema.yaml").exists()
+            val hasXiaoheBundle = hasXiaoheSchemaInstalled()
             val schemaId = when {
                 initialScheme == InputScheme.FLYPY_TABLE && hasXiaoheBundle -> "flypy"
+                initialScheme == InputScheme.RIME_CUSTOM && hasCustomSchemaImported() -> resolveCustomSchemaId()
                 initialScheme.rimeSchemaId.isNotBlank() -> initialScheme.rimeSchemaId
                 hasXiaoheBundle && BuildConfig.IS_XIAOHE_FLAVOR -> "flypy"
                 else -> "rime_ice"
@@ -241,6 +296,7 @@ class RimeDataManager(
 
             _deploymentState.value = RimeDeploymentState.Deploying(0.75f, "正在重新部署 Rime 方案「$metaLabel」…")
             val targetSchema = detectedSchemaId ?: rimeBridge.activeSchemaId
+            File(sharedDir, CUSTOM_SCHEMA_ID_FILENAME).writeText(targetSchema, Charsets.UTF_8)
             invalidateCompiledTableFiles()
             rimeBridge.initialize(sharedDir.absolutePath, userDir.absolutePath)
             rimeBridge.deploy(targetSchema)
@@ -391,6 +447,7 @@ class RimeDataManager(
     fun restoreDefaultRimeDataSync(scheme: InputScheme = InputScheme.RIME_PINYIN): RimeDeploymentState {
         File(sharedDir, FULL_DICT_MARKER_FILENAME).delete()
         File(sharedDir, CUSTOM_SCHEMA_META_FILENAME).delete()
+        File(sharedDir, CUSTOM_SCHEMA_ID_FILENAME).delete()
         val builtinSet = BUILTIN_ASSET_FILES.toSet()
         sharedDir.listFiles().orEmpty().forEach { f ->
             if (f.isFile && f.name !in builtinSet) {
@@ -441,51 +498,81 @@ class RimeDataManager(
      * 5.2 Precompiled `build/<schema>.table.bin` Passthrough with 702-slot JNI dynamic probing).
      */
     fun importEnhancedSchemaPackageSync(zipInputStream: InputStream): SchemaImportResult {
-        val stagingRoot = File(appContext?.cacheDir ?: File(sharedDir.parentFile, "cache"), "schema_staging")
-        val schemasRoot = File(sharedDir.parentFile ?: sharedDir, "schemas")
-        val importer = SchemaPackageImporter(
-            stagingParentDir = stagingRoot,
-            targetSchemasRootDir = schemasRoot,
-            stagingCompiler = { dir, sid ->
-                rimeBridge.initialize(dir.absolutePath, userDir.absolutePath)
-                if (rimeBridge.isNativeLoaded) rimeBridge.deploy(sid) else true
-            },
-            codeProberFactory = { dir, sid ->
-                rimeBridge.initialize(dir.absolutePath, userDir.absolutePath)
-                rimeBridge.selectSchema(sid)
-                com.typefree.core.ime.enhancer.RimeCodeProber { code, maxCount ->
+        val t0 = System.currentTimeMillis()
+        return try {
+            _deploymentState.value = RimeDeploymentState.Deploying(0.50f, "正在导入并校验方案包…")
+            sharedDir.mkdirs()
+            userDir.mkdirs()
+            extractBuiltInAssetsIfNeeded(forceOverwrite = false)
+
+            val stagingRoot = File(appContext?.cacheDir ?: File(sharedDir.parentFile, "cache"), "schema_staging")
+            val schemasRoot = File(sharedDir.parentFile ?: sharedDir, "schemas")
+            val batchProber = object : RimeCodeProber {
+                override fun probeCandidates(code: String, maxCount: Int): List<String> =
                     rimeBridge.probeCandidatesForCode(code, maxCount)
-                }
+
+                override fun probeBatch(codes: List<String>, maxCount: Int): List<List<String>> =
+                    rimeBridge.probeBatchCandidatesForCodes(codes, maxCount)
             }
-        )
-        val result = importer.importZip(zipInputStream)
-        // Sync imported schema files into active sharedDir without touching precompiled build/*.bin
-        result.installedDir.walkTopDown().filter { it.isFile }.forEach { src ->
-            val rel = src.relativeTo(result.installedDir).invariantSeparatorsPath
-            val dst = File(sharedDir, rel)
-            dst.parentFile?.mkdirs()
-            src.copyTo(dst, overwrite = true)
+            val importer = SchemaPackageImporter(
+                stagingParentDir = stagingRoot,
+                targetSchemasRootDir = schemasRoot,
+                stagingCompiler = { dir, sid ->
+                    rimeBridge.initialize(dir.absolutePath, userDir.absolutePath)
+                    if (rimeBridge.isNativeLoaded) rimeBridge.deploy(sid) else true
+                },
+                codeProberFactory = { dir, sid ->
+                    rimeBridge.initialize(dir.absolutePath, userDir.absolutePath)
+                    rimeBridge.selectSchema(sid)
+                    batchProber
+                }
+            )
+            val result = importer.importZip(zipInputStream)
+            // Sync imported schema files into active sharedDir without invalidating staging or precompiled build/*.bin
+            result.installedDir.walkTopDown().filter { it.isFile }.forEach { src ->
+                val rel = src.relativeTo(result.installedDir).invariantSeparatorsPath
+                val dst = File(sharedDir, rel)
+                dst.parentFile?.mkdirs()
+                src.copyTo(dst, overwrite = true)
+            }
+            if (result.importMode == ImportMode.PLAIN_DICT_COMPILE) {
+                rimeBridge.initialize(sharedDir.absolutePath, userDir.absolutePath)
+                rimeBridge.deploy(result.schemaId)
+            } else {
+                val sanitizedRootSchema = File(sharedDir, "${result.schemaId}.schema.yaml")
+                val prebuiltSchema = File(sharedDir, "build/${result.schemaId}.schema.yaml")
+                if (sanitizedRootSchema.exists() && prebuiltSchema.exists()) {
+                    sanitizedRootSchema.copyTo(prebuiltSchema, overwrite = true)
+                }
+                rimeBridge.initialize(sharedDir.absolutePath, userDir.absolutePath)
+                rimeBridge.selectSchema(result.schemaId)
+            }
+            activeSchemaProfile = result.profile
+            activeBriefIndex = result.briefIndex
+            activeSymbolTrie = result.quickSymbolTrie
+            activeReverseLookupMap = emptyMap()
+            refreshReverseLookupFromDir(result.installedDir, result.profile.reverseLookupDict)
+            File(sharedDir, CUSTOM_SCHEMA_META_FILENAME).writeText(result.displayName, Charsets.UTF_8)
+            File(sharedDir, CUSTOM_SCHEMA_ID_FILENAME).writeText(result.schemaId, Charsets.UTF_8)
+            val elapsed = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+            _deploymentState.value = RimeDeploymentState.Ready(
+                wordCount = rimeBridge.wordCount,
+                hasFullRimeIce = hasFullRimeIceDictionary(),
+                activeSchemaId = result.schemaId,
+                customSchemaName = result.displayName,
+                deployDurationMs = elapsed
+            )
+            result
+        } catch (e: Exception) {
+            _deploymentState.value = RimeDeploymentState.Error(e.message ?: "导入方案包失败")
+            throw e
         }
-        if (result.importMode == ImportMode.PLAIN_DICT_COMPILE) {
-            invalidateCompiledTableFiles()
-            rimeBridge.initialize(sharedDir.absolutePath, userDir.absolutePath)
-            rimeBridge.deploy(result.schemaId)
-        } else {
-            rimeBridge.initialize(sharedDir.absolutePath, userDir.absolutePath)
-            rimeBridge.selectSchema(result.schemaId)
+    }
+
+    suspend fun importEnhancedSchemaPackage(zipInputStream: InputStream): SchemaImportResult {
+        return withContext(Dispatchers.IO) {
+            importEnhancedSchemaPackageSync(zipInputStream)
         }
-        activeSchemaProfile = result.profile
-        activeBriefIndex = result.briefIndex
-        activeSymbolTrie = result.quickSymbolTrie
-        refreshReverseLookupFromDir(result.installedDir, result.profile.reverseLookupDict)
-        File(sharedDir, CUSTOM_SCHEMA_META_FILENAME).writeText(result.displayName, Charsets.UTF_8)
-        _deploymentState.value = RimeDeploymentState.Ready(
-            wordCount = rimeBridge.wordCount,
-            hasFullRimeIce = hasFullRimeIceDictionary(),
-            activeSchemaId = result.schemaId,
-            customSchemaName = result.displayName
-        )
-        return result
     }
 
     private fun refreshEnhancedMetadataFromDir(dir: File, schemaId: String) {
@@ -495,10 +582,12 @@ class RimeDataManager(
         val quickFile = File(dir, "quick_symbols.yaml")
         val briefSnap = File(dir, "$schemaId.brief.idx")
 
-        if (quickFile.exists()) {
+        activeSymbolTrie = if (quickFile.exists()) {
             runCatching {
-                activeSymbolTrie = SymbolTrie.parseQuickSymbolsYaml(quickFile.readText(Charsets.UTF_8))
-            }
+                SymbolTrie.parseQuickSymbolsYaml(quickFile.readText(Charsets.UTF_8))
+            }.getOrDefault(SymbolTrie.defaultXiaohe())
+        } else {
+            SymbolTrie.defaultXiaohe()
         }
         if (schemaFile.exists()) {
             runCatching {
@@ -508,10 +597,16 @@ class RimeDataManager(
                     tomlOverrideContent = if (tomlFile.exists()) tomlFile.readText(Charsets.UTF_8) else null
                 )
             }
+        } else {
+            activeSchemaProfile = if (BuildConfig.IS_XIAOHE_FLAVOR && schemaId == "flypy") {
+                SchemaProfile.defaultXiaoheFlypy()
+            } else {
+                SchemaProfile.defaultSentencePinyin(schemaId = schemaId)
+            }
         }
-        if (activeSchemaProfile.reverseSplitEnabled) {
+        activeBriefIndex = if (activeSchemaProfile.reverseSplitEnabled) {
             runCatching {
-                activeBriefIndex = when {
+                when {
                     briefSnap.exists() -> BriefPrefixIndex.readSnapshot(briefSnap)
                     dictFile.exists() -> {
                         val built = BriefPrefixIndex.buildFromDictLines(
@@ -526,12 +621,21 @@ class RimeDataManager(
                         built
                     }
                     else -> BriefPrefixIndex.buildFrom702SlotProbing(
-                        prober = { code, maxCount -> rimeBridge.probeCandidatesForCode(code, maxCount) },
+                        prober = object : RimeCodeProber {
+                            override fun probeCandidates(code: String, maxCount: Int): List<String> =
+                                rimeBridge.probeCandidatesForCode(code, maxCount)
+
+                            override fun probeBatch(codes: List<String>, maxCount: Int): List<List<String>> =
+                                rimeBridge.probeBatchCandidatesForCodes(codes, maxCount)
+                        },
                         affixGuardPrefixes = activeSchemaProfile.gt4GuardPrefixes
                     )
                 }
-            }
+            }.getOrDefault(BriefPrefixIndex.empty())
+        } else {
+            BriefPrefixIndex.empty()
         }
+        activeReverseLookupMap = emptyMap()
         refreshReverseLookupFromDir(dir, activeSchemaProfile.reverseLookupDict)
     }
 
@@ -624,6 +728,7 @@ class RimeDataManager(
         const val CHAR_DICT_RELATIVE_PATH = "cn_dicts/8105.dict.yaml"
         const val FULL_DICT_MARKER_FILENAME = ".full_rime_ice_sha256"
         const val CUSTOM_SCHEMA_META_FILENAME = ".custom_schema_name"
+        const val CUSTOM_SCHEMA_ID_FILENAME = ".custom_schema_id"
 
         val BUILTIN_ASSET_FILES = listOf(
             "default.yaml",

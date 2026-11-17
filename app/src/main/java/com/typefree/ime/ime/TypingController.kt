@@ -81,7 +81,8 @@ class TypingController(
     val predictionStore: PredictionStore = PredictionStore.fromContextOrInMemory { host as? Context },
     val staticPredictor: StaticPredictor = StaticPredictor(),
     aiSentenceCompleter: AiSentenceCompleter? = null,
-    predictionIdleDismissMs: Long = PredictionCoordinator.IDLE_DISMISS_MS
+    predictionIdleDismissMs: Long = PredictionCoordinator.IDLE_DISMISS_MS,
+    private val settingsOverride: (() -> AppSettings)? = null
 ) {
     var isIncognitoMode: Boolean = false
         private set
@@ -95,8 +96,18 @@ class TypingController(
     var codetableEnhancedEngine: CodetableEnhancedInputEngine? = null
         set(value) {
             field = value
-            value?.setIncognitoMode(isIncognitoMode)
+            value?.isActiveEnginePredicate = { activeEngine === value }
+            if (value != null && activeEngine === value) {
+                value.setIncognitoMode(isIncognitoMode)
+                value.setFixedCandidateOrder(safeSettings().fixedCandidateOrder)
+            }
+            value?.updateSnippets(safeSettings().snippets)
         }
+
+    var enhancedSchemePredicate: (InputScheme) -> Boolean = { scheme ->
+        (scheme == InputScheme.FLYPY_TABLE && codetableEnhancedEngine?.activeProfile?.schemaId == "flypy") ||
+            scheme == InputScheme.RIME_CUSTOM
+    }
 
     var isRimeReady: Boolean = false
 
@@ -128,16 +139,15 @@ class TypingController(
     )
 
     private fun safeSettings(): AppSettings {
-        return runCatching { host.repository.settings.value }.getOrDefault(AppSettings())
+        return settingsOverride?.invoke()
+            ?: runCatching { host.repository.settings.value }.getOrDefault(AppSettings())
     }
 
     val activeEngine: InputEngine
         get() {
             val scheme = safeSettings().inputScheme
             val enhanced = codetableEnhancedEngine
-            if (enhanced != null && isRimeReady &&
-                (scheme == InputScheme.FLYPY_TABLE || scheme == InputScheme.RIME_CUSTOM)
-            ) {
+            if (enhanced != null && isRimeReady && enhancedSchemePredicate(scheme)) {
                 return enhanced
             }
             val rime = rimeInputEngine
@@ -171,6 +181,7 @@ class TypingController(
     fun updateSnippets(snippets: List<SnippetEntry>) {
         flypyInputEngine.updateSnippets(snippets)
         rimeInputEngine?.updateSnippets(snippets)
+        codetableEnhancedEngine?.updateSnippets(snippets)
         if (isComposing) {
             syncEngineStateToUi()
         }
@@ -180,17 +191,20 @@ class TypingController(
         isIncognitoMode = incognito
         flypyInputEngine.setIncognitoMode(incognito)
         rimeInputEngine?.setIncognitoMode(incognito)
+        codetableEnhancedEngine?.setIncognitoMode(incognito)
         predictionCoordinator.setIncognitoMode(incognito)
     }
 
     fun setFixedCandidateOrder(fixedOrder: Boolean?) {
         flypyInputEngine.setFixedCandidateOrder(fixedOrder)
         rimeInputEngine?.setFixedCandidateOrder(fixedOrder)
+        codetableEnhancedEngine?.setFixedCandidateOrder(fixedOrder)
     }
 
     fun resetComposing() {
         flypyInputEngine.clear()
         rimeInputEngine?.clear()
+        codetableEnhancedEngine?.clear()
         predictionCoordinator.onPanelSwitched()
         syncEngineStateToUi()
     }
@@ -208,6 +222,7 @@ class TypingController(
         if (text.isNotBlank()) {
             flypyInputEngine.recordExternalCommit(text)
             rimeInputEngine?.recordExternalCommit(text)
+            codetableEnhancedEngine?.recordExternalCommit(text)
         }
     }
 

@@ -171,13 +171,14 @@ fun DictionaryScreen(repository: AppRepository) {
         if (uri != null) {
             rimeScope.launch {
                 try {
-                    val readyState = withContext(Dispatchers.IO) {
+                    val importResult = withContext(Dispatchers.IO) {
                         context.contentResolver.openInputStream(uri)?.use { stream ->
-                            TypeFreeApp.instance.rimeDataManager.importRimeSchemaZipSync(stream)
+                            TypeFreeApp.instance.rimeDataManager.importEnhancedSchemaPackage(stream)
                         } ?: throw IllegalArgumentException("无法读取所选 ZIP 文件")
                     }
+                    TypeFreeApp.instance.rimeInputEngine.setInputScheme(InputScheme.RIME_CUSTOM)
                     repository.updateSettings { it.copy(inputScheme = InputScheme.RIME_CUSTOM) }
-                    val label = (readyState as? RimeDeploymentState.Ready)?.customSchemaName ?: "自定义 Rime 方案"
+                    val label = importResult.displayName.ifBlank { "自定义 Rime 方案" }
                     Toast.makeText(context, "✓ 已导入并部署「$label」", Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     Toast.makeText(

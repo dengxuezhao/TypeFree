@@ -21,7 +21,9 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class RimeInputEngine(
     val rimeBridge: RimeSessionClient = RimeBridge(),
-    initialScheme: InputScheme = InputScheme.RIME_PINYIN
+    initialScheme: InputScheme = InputScheme.RIME_PINYIN,
+    var externalEnhancedSchemePredicate: (InputScheme) -> Boolean = { it == InputScheme.FLYPY_TABLE },
+    var customSchemaIdProvider: () -> String = { "custom" }
 ) : InputEngine {
 
     var inputScheme: InputScheme = initialScheme
@@ -47,11 +49,20 @@ class RimeInputEngine(
         get() = currentRawCode.isNotEmpty()
 
     init {
-        applySchemeToBridge(initialScheme)
+        if (!externalEnhancedSchemePredicate(initialScheme)) {
+            applySchemeToBridge(initialScheme)
+        }
     }
 
     fun setInputScheme(scheme: InputScheme) {
-        if (inputScheme == scheme && rimeBridge.activeSchemaId == resolveSchemaId(scheme)) {
+        if (externalEnhancedSchemePredicate(scheme)) {
+            inputScheme = scheme
+            currentRawCode = ""
+            _state.value = EngineState()
+            return
+        }
+        val targetSchema = resolveSchemaId(scheme)
+        if (inputScheme == scheme && rimeBridge.activeSchemaId == targetSchema) {
             return
         }
         inputScheme = scheme
@@ -62,7 +73,7 @@ class RimeInputEngine(
     private fun resolveSchemaId(scheme: InputScheme): String {
         return when (scheme) {
             InputScheme.RIME_DOUBLE_PINYIN_FLYPY -> "double_pinyin_flypy"
-            InputScheme.RIME_CUSTOM -> "custom"
+            InputScheme.RIME_CUSTOM -> customSchemaIdProvider().ifBlank { "custom" }
             else -> "rime_ice"
         }
     }
@@ -103,6 +114,7 @@ class RimeInputEngine(
 
     override fun setIncognitoMode(incognito: Boolean) {
         isIncognito = incognito
+        if (externalEnhancedSchemePredicate(inputScheme)) return
         rimeBridge.setOption("_incognito", incognito)
         rimeBridge.setOption("enable_user_dict", !incognito)
         if (currentRawCode.isNotEmpty()) {
@@ -113,6 +125,7 @@ class RimeInputEngine(
     override fun setFixedCandidateOrder(fixedOrder: Boolean?) {
         val resolved = fixedOrder ?: false
         isFixedCandidateOrder = resolved
+        if (externalEnhancedSchemePredicate(inputScheme)) return
         rimeBridge.setOption("fixed_candidate_order", resolved)
         if (currentRawCode.isNotEmpty()) {
             syncState()
@@ -157,10 +170,13 @@ class RimeInputEngine(
     }
 
     override fun clear() {
+        val wasComposing = currentRawCode.isNotEmpty()
         currentRawCode = ""
         currentMaxCandidates = DEFAULT_PAGE_SIZE
-        rimeBridge.pageSize = DEFAULT_PAGE_SIZE
-        rimeBridge.clearComposition()
+        if (!externalEnhancedSchemePredicate(inputScheme) || wasComposing) {
+            rimeBridge.pageSize = DEFAULT_PAGE_SIZE
+            rimeBridge.clearComposition()
+        }
         _state.value = EngineState()
     }
 

@@ -99,6 +99,9 @@ object TypeFreeTomlParser {
             if (profile.gt4GuardPrefixes.isNotEmpty()) {
                 appendLine("gt4_guard_prefixes = [$prefixes]")
             }
+            if (profile.spellerAlphabet.isNotEmpty()) {
+                appendLine("speller_alphabet = \"${escape(profile.spellerAlphabet)}\"")
+            }
         }
     }
 

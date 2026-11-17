@@ -45,6 +45,79 @@ class SymbolTrie(
     val size: Int
         get() = orderedEntries.size
 
+    fun entriesList(): List<OverlaySymbolEntry> = orderedEntries
+
+    fun mergeExtractedEntries(extraEntries: List<OverlaySymbolEntry>): SymbolTrie {
+        if (extraEntries.isEmpty()) return this
+        val mergedMap = LinkedHashMap<String, OverlaySymbolEntry>(orderedEntries.size + extraEntries.size)
+        for (existing in orderedEntries) {
+            mergedMap[existing.key] = existing
+        }
+        for (extra in extraEntries) {
+            if (extra.key.isEmpty()) continue
+            val current = mergedMap[extra.key]
+            if (current == null || current.action is CommitAction.PlainText) {
+                mergedMap[extra.key] = extra
+            }
+        }
+        return SymbolTrie(
+            guideKey = guideKey,
+            doubleTapCommit = doubleTapCommit,
+            doubleTapAsciiCommit = doubleTapAsciiCommit,
+            showAllOnEnter = showAllOnEnter,
+            entries = mergedMap.values.toList()
+        )
+    }
+
+    fun serializeQuickSymbolsYaml(): String {
+        fun quoteYaml(s: String): String {
+            val escaped = buildString(s.length + 4) {
+                for (ch in s) {
+                    when (ch) {
+                        '\\' -> append("\\\\")
+                        '"' -> append("\\\"")
+                        '\t' -> append("\\t")
+                        '\n' -> append("\\n")
+                        '\r' -> append("\\r")
+                        else -> append(ch)
+                    }
+                }
+            }
+            return "\"$escaped\""
+        }
+
+        return buildString {
+            appendLine("# TypeFree Overlay Quick Symbols")
+            appendLine("guide_key: ${quoteYaml(guideKey.toString())}")
+            appendLine("double_tap_commit: ${quoteYaml(doubleTapCommit)}")
+            appendLine("double_tap_ascii_commit: ${quoteYaml(doubleTapAsciiCommit)}")
+            appendLine("show_all_on_enter: $showAllOnEnter")
+            appendLine()
+            appendLine("entries:")
+            for (item in orderedEntries) {
+                val labelPart = if (item.label.isNotEmpty()) ", label: ${quoteYaml(item.label)}" else ""
+                val body = when (val act = item.action) {
+                    is CommitAction.PairedText ->
+                        "type: \"pair\", left: ${quoteYaml(act.left)}, right: ${quoteYaml(act.right)}$labelPart"
+                    CommitAction.UndoLastCommit ->
+                        "type: \"undo_last_commit\"$labelPart"
+                    CommitAction.RepeatLastCommit ->
+                        "type: \"repeat_last_commit\"$labelPart"
+                    is CommitAction.Command -> if (act.commandType == DirectCommandType.OPEN_JEV_COPILOT) {
+                        "type: \"open_jev_copilot\"$labelPart"
+                    } else {
+                        "type: \"plain\", text: ${quoteYaml(item.displayText)}$labelPart"
+                    }
+                    is CommitAction.PlainText ->
+                        "type: \"plain\", text: ${quoteYaml(act.text)}$labelPart"
+                    else ->
+                        "type: \"plain\", text: ${quoteYaml(item.displayText)}$labelPart"
+                }
+                appendLine("  ${item.key}: { $body }")
+            }
+        }
+    }
+
     fun findNode(prefix: String): Node? {
         var cur = root
         for (ch in prefix) {

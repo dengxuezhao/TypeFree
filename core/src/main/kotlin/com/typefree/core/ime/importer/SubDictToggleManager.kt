@@ -12,12 +12,38 @@ class SubDictToggleManager(
     private val onReloadSession: (schemaId: String) -> Unit = {}
 ) {
     private val enabledSubDicts = LinkedHashMap<String, Boolean>()
+    private val loadedSchemas = HashSet<String>()
 
-    fun isSubDictEnabled(subDictName: String, defaultEnabled: Boolean = true): Boolean {
+    private fun ensureLoadedFromDisk(schemaId: String) {
+        if (schemaId.isBlank() || !loadedSchemas.add(schemaId)) return
+        val customFile = File(schemaRootDir, "$schemaId.custom.yaml")
+        if (!customFile.isFile) return
+        val text = runCatching { customFile.readText(Charsets.UTF_8) }.getOrDefault("")
+        if (text.isEmpty()) return
+
+        if (text.contains("table_translator@custom_phraseQMZ") && "flypy_full" !in enabledSubDicts) {
+            enabledSubDicts["flypy_full"] = false
+        }
+        val extDictRegex = Regex("""^\s*"ext_dict_\d+/dictionary":\s*(.+?)\s*$""", RegexOption.MULTILINE)
+        extDictRegex.findAll(text).forEach { match ->
+            val dictName = match.groupValues[1].trim().trim('"', '\'')
+            if (dictName.isNotEmpty() && dictName !in enabledSubDicts) {
+                enabledSubDicts[dictName] = true
+            }
+        }
+    }
+
+    fun isSubDictEnabled(
+        subDictName: String,
+        defaultEnabled: Boolean = true,
+        schemaId: String = "flypy"
+    ): Boolean {
+        ensureLoadedFromDisk(schemaId)
         return enabledSubDicts[subDictName] ?: defaultEnabled
     }
 
     fun setSubDictEnabled(schemaId: String, subDictName: String, enabled: Boolean) {
+        ensureLoadedFromDisk(schemaId)
         enabledSubDicts[subDictName] = enabled
         writeCustomYamlPatch(schemaId)
         onReloadSession(schemaId)
@@ -27,7 +53,7 @@ class SubDictToggleManager(
      * Flips `flypy_full` (`custom_phraseQMZ`) for Xiaohe `oqm` command and returns the new state.
      */
     fun toggleFullCodeDict(schemaId: String = "flypy"): Boolean {
-        val next = !isSubDictEnabled("flypy_full", defaultEnabled = true)
+        val next = !isSubDictEnabled("flypy_full", defaultEnabled = true, schemaId = schemaId)
         setSubDictEnabled(schemaId, "flypy_full", next)
         return next
     }
@@ -35,7 +61,7 @@ class SubDictToggleManager(
     private fun writeCustomYamlPatch(schemaId: String) {
         schemaRootDir.mkdirs()
         val customFile = File(schemaRootDir, "$schemaId.custom.yaml")
-        val fullEnabled = isSubDictEnabled("flypy_full", defaultEnabled = true)
+        val fullEnabled = enabledSubDicts["flypy_full"] ?: true
         val extraEnabled = enabledSubDicts.entries
             .filter { it.key != "flypy_full" && it.value }
             .map { it.key }
@@ -46,13 +72,18 @@ class SubDictToggleManager(
             if (!fullEnabled) {
                 appendLine("  \"engine/translators/-\": table_translator@custom_phraseQMZ")
             }
-            extraEnabled.forEachIndexed { idx, extDict ->
-                val tag = "ext_dict_$idx"
-                appendLine("  \"engine/translators/+\": table_translator@$tag")
-                appendLine("  \"$tag/dictionary\": $extDict")
-                appendLine("  \"$tag/enable_user_dict\": false")
-                appendLine("  \"$tag/enable_sentence\": false")
-                appendLine("  \"$tag/initial_quality\": -1")
+            if (extraEnabled.isNotEmpty()) {
+                appendLine("  \"engine/translators/+\":")
+                extraEnabled.forEachIndexed { idx, _ ->
+                    appendLine("    - table_translator@ext_dict_$idx")
+                }
+                extraEnabled.forEachIndexed { idx, extDict ->
+                    val tag = "ext_dict_$idx"
+                    appendLine("  \"$tag/dictionary\": $extDict")
+                    appendLine("  \"$tag/enable_user_dict\": false")
+                    appendLine("  \"$tag/enable_sentence\": false")
+                    appendLine("  \"$tag/initial_quality\": -1")
+                }
             }
         }
         customFile.writeText(content, Charsets.UTF_8)

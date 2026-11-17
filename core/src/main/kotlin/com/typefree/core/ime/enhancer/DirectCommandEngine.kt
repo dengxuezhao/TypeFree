@@ -476,6 +476,7 @@ object ChineseLunarCalendar {
             offset -= daysInYear
             year++
         }
+        if (year > 2100) return "${date.year}年"
 
         val leap = leapMonth(year)
         var isLeap = false

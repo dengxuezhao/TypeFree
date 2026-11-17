@@ -32,12 +32,14 @@ std::mutex g_mutex;
 bool g_setup_done = false;
 bool g_initialized = false;
 RimeSessionId g_session_id = 0;
+RimeSessionId g_probe_session_id = 0;
 std::string g_shared_dir;
 std::string g_user_dir;
 std::string g_active_schema = "rime_ice";
 std::string g_pending_commit;
 bool g_incognito = false;
 bool g_fixed_candidate_order = false;
+bool g_enable_user_dict = true;
 
 /**
  * Standard UTF-8 ByteArray <-> std::string JNI helpers.
@@ -185,6 +187,74 @@ void applySessionOptionsLocked(RimeApi* api, RimeSessionId sid) {
   if (!api || !sid) return;
   api->set_option(sid, "_incognito", g_incognito ? True : False);
   api->set_option(sid, "fixed_candidate_order", g_fixed_candidate_order ? True : False);
+  api->set_option(sid, "enable_user_dict", g_enable_user_dict ? True : False);
+}
+
+void destroyProbeSessionLocked(RimeApi* api) {
+  if (api && g_probe_session_id != 0) {
+    if (api->find_session(g_probe_session_id)) {
+      api->destroy_session(g_probe_session_id);
+    }
+    g_probe_session_id = 0;
+  }
+}
+
+RimeSessionId ensureProbeSessionLocked(RimeApi* api) {
+  if (!api || !g_initialized) return 0;
+  if (g_probe_session_id == 0 || !api->find_session(g_probe_session_id)) {
+    g_probe_session_id = api->create_session();
+    if (g_probe_session_id != 0) {
+      if (!g_active_schema.empty()) {
+        api->select_schema(g_probe_session_id, g_active_schema.c_str());
+      }
+      api->set_option(g_probe_session_id, "_incognito", True);
+      api->set_option(g_probe_session_id, "fixed_candidate_order", True);
+      api->set_option(g_probe_session_id, "enable_user_dict", False);
+    }
+  }
+  return g_probe_session_id;
+}
+
+std::vector<std::string> probeSingleCodeOnSessionLocked(
+    RimeApi* api,
+    RimeSessionId probeSid,
+    const std::string& code,
+    int maxCount) {
+  std::vector<std::string> texts;
+  if (!api || !probeSid || code.empty() || maxCount <= 0) return texts;
+
+  api->clear_composition(probeSid);
+  // Drain any stale commit before probing
+  RIME_STRUCT(RimeCommit, staleCommit);
+  if (api->get_commit(probeSid, &staleCommit)) {
+    api->free_commit(&staleCommit);
+  }
+
+  for (char c : code) {
+    api->process_key(probeSid, static_cast<unsigned char>(c), 0);
+  }
+
+  texts.reserve(static_cast<size_t>(maxCount));
+  RIME_STRUCT(RimeCommit, commit);
+  if (api->get_commit(probeSid, &commit)) {
+    if (commit.text && commit.text[0] != '\0') {
+      texts.emplace_back(commit.text);
+    }
+    api->free_commit(&commit);
+  }
+
+  RimeCandidateListIterator iter{};
+  if (api->candidate_list_from_index(probeSid, &iter, 0)) {
+    while (static_cast<int>(texts.size()) < maxCount && api->candidate_list_next(&iter)) {
+      if (iter.candidate.text && iter.candidate.text[0] != '\0') {
+        texts.emplace_back(iter.candidate.text);
+      }
+    }
+    api->candidate_list_end(&iter);
+  }
+
+  api->clear_composition(probeSid);
+  return texts;
 }
 
 RimeSessionId ensureSessionLocked(RimeApi* api) {
@@ -267,6 +337,7 @@ Java_com_typefree_rime_RimeBridge_nativeInitialize(
   }
 
   if (g_initialized) {
+    destroyProbeSessionLocked(api);
     if (g_session_id != 0) {
       api->destroy_session(g_session_id);
       g_session_id = 0;
@@ -298,6 +369,7 @@ Java_com_typefree_rime_RimeBridge_nativeDeploy(
     g_active_schema = requestedSchema;
   }
 
+  destroyProbeSessionLocked(api);
   if (g_session_id != 0) {
     api->destroy_session(g_session_id);
     g_session_id = 0;
@@ -335,6 +407,12 @@ Java_com_typefree_rime_RimeBridge_nativeSelectSchema(
   if (!sid) return JNI_FALSE;
   Bool ok = api->select_schema(sid, g_active_schema.c_str());
   applySessionOptionsLocked(api, sid);
+  if (g_probe_session_id != 0 && api->find_session(g_probe_session_id)) {
+    api->select_schema(g_probe_session_id, g_active_schema.c_str());
+    api->set_option(g_probe_session_id, "_incognito", True);
+    api->set_option(g_probe_session_id, "fixed_candidate_order", True);
+    api->set_option(g_probe_session_id, "enable_user_dict", False);
+  }
   return ok ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -489,7 +567,8 @@ Java_com_typefree_rime_RimeBridge_nativeGetCandidatesUtf8(
 
 /**
  * Isolated read-only candidate prober for Track 5.2 702-slot (`26 + 676`) dynamic index building:
- * creates a temporary `_incognito` session so probing never disturbs active typing or `*.userdb`.
+ * reuses a persistent `_incognito` probe session with `clear_composition` so probing never disturbs
+ * active typing or `*.userdb`, and avoids repeated session creation / schema loading overhead.
  */
 extern "C" JNIEXPORT jobjectArray JNICALL
 Java_com_typefree_rime_RimeBridge_nativeProbeCandidatesForCodeUtf8(
@@ -509,45 +588,12 @@ Java_com_typefree_rime_RimeBridge_nativeProbeCandidatesForCodeUtf8(
     return env->NewObjectArray(0, byteArrCls, nullptr);
   }
 
-  RimeSessionId probeSid = api->create_session();
+  RimeSessionId probeSid = ensureProbeSessionLocked(api);
   if (!probeSid) {
     return env->NewObjectArray(0, byteArrCls, nullptr);
   }
 
-  if (!g_active_schema.empty()) {
-    api->select_schema(probeSid, g_active_schema.c_str());
-  }
-  api->set_option(probeSid, "_incognito", True);
-  api->set_option(probeSid, "fixed_candidate_order", True);
-
-  // Send characters without auto-commit side effects where possible; capture either menu or immediate commit
-  for (char c : code) {
-    api->process_key(probeSid, static_cast<unsigned char>(c), 0);
-  }
-
-  std::vector<std::string> texts;
-  texts.reserve(static_cast<size_t>(maxCount));
-
-  RIME_STRUCT(RimeCommit, commit);
-  if (api->get_commit(probeSid, &commit)) {
-    if (commit.text && commit.text[0] != '\0') {
-      texts.emplace_back(commit.text);
-    }
-    api->free_commit(&commit);
-  }
-
-  RimeCandidateListIterator iter{};
-  if (api->candidate_list_from_index(probeSid, &iter, 0)) {
-    while (static_cast<int>(texts.size()) < maxCount && api->candidate_list_next(&iter)) {
-      if (iter.candidate.text && iter.candidate.text[0] != '\0') {
-        texts.emplace_back(iter.candidate.text);
-      }
-    }
-    api->candidate_list_end(&iter);
-  }
-
-  api->destroy_session(probeSid);
-
+  auto texts = probeSingleCodeOnSessionLocked(api, probeSid, code, static_cast<int>(maxCount));
   jobjectArray arr = env->NewObjectArray(static_cast<jsize>(texts.size()), byteArrCls, nullptr);
   for (size_t i = 0; i < texts.size(); ++i) {
     jbyteArray jb = stdStringToJByteArray(env, texts[i]);
@@ -555,6 +601,67 @@ Java_com_typefree_rime_RimeBridge_nativeProbeCandidatesForCodeUtf8(
     env->DeleteLocalRef(jb);
   }
   return arr;
+}
+
+/**
+ * Single-session batch prober for Track 5.2 702-slot (`26 + 676`) dynamic index building:
+ * creates one temporary `_incognito` session, selects schema once, probes all codes in a single
+ * JNI crossing with `clear_composition` between slots, and destroys the temporary session.
+ * Each slot result is returned as UTF-8 bytes joined by ASCII Unit Separator (`0x1F`).
+ */
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_typefree_rime_RimeBridge_nativeProbeBatchCodesUtf8(
+    JNIEnv* env,
+    jobject /* thiz */,
+    jobjectArray codesUtf8,
+    jint maxCount) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  jclass byteArrCls = env->FindClass("[B");
+  RimeApi* api = rime_get_api();
+  if (!api || !g_initialized || !codesUtf8 || maxCount <= 0) {
+    return env->NewObjectArray(0, byteArrCls, nullptr);
+  }
+
+  const jsize total = env->GetArrayLength(codesUtf8);
+  if (total <= 0) {
+    return env->NewObjectArray(0, byteArrCls, nullptr);
+  }
+
+  RimeSessionId probeSid = api->create_session();
+  if (!probeSid) {
+    return env->NewObjectArray(0, byteArrCls, nullptr);
+  }
+  if (!g_active_schema.empty()) {
+    api->select_schema(probeSid, g_active_schema.c_str());
+  }
+  api->set_option(probeSid, "_incognito", True);
+  api->set_option(probeSid, "fixed_candidate_order", True);
+  api->set_option(probeSid, "enable_user_dict", False);
+
+  jobjectArray resultArr = env->NewObjectArray(total, byteArrCls, nullptr);
+  const int limit = static_cast<int>(maxCount);
+  for (jsize i = 0; i < total; ++i) {
+    auto* codeElem = static_cast<jbyteArray>(env->GetObjectArrayElement(codesUtf8, i));
+    std::string code = jbyteArrayToStdString(env, codeElem);
+    if (codeElem) {
+      env->DeleteLocalRef(codeElem);
+    }
+
+    auto texts = probeSingleCodeOnSessionLocked(api, probeSid, code, limit);
+    std::string joined;
+    for (size_t k = 0; k < texts.size(); ++k) {
+      if (k > 0) joined.push_back('\x1f');
+      joined.append(texts[k]);
+    }
+    jbyteArray jb = stdStringToJByteArray(env, joined);
+    env->SetObjectArrayElement(resultArr, i, jb);
+    if (jb) {
+      env->DeleteLocalRef(jb);
+    }
+  }
+
+  api->destroy_session(probeSid);
+  return resultArr;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -701,6 +808,8 @@ Java_com_typefree_rime_RimeBridge_nativeSetOption(
     g_incognito = val;
   } else if (opt == "fixed_candidate_order") {
     g_fixed_candidate_order = val;
+  } else if (opt == "enable_user_dict") {
+    g_enable_user_dict = val;
   }
   RimeApi* api = rime_get_api();
   RimeSessionId sid = ensureSessionLocked(api);
@@ -718,6 +827,7 @@ Java_com_typefree_rime_RimeBridge_nativeGetOption(
   std::string opt = jstringToStdString(env, option);
   if (opt == "_incognito") return g_incognito ? JNI_TRUE : JNI_FALSE;
   if (opt == "fixed_candidate_order") return g_fixed_candidate_order ? JNI_TRUE : JNI_FALSE;
+  if (opt == "enable_user_dict") return g_enable_user_dict ? JNI_TRUE : JNI_FALSE;
   RimeApi* api = rime_get_api();
   RimeSessionId sid = ensureSessionLocked(api);
   if (!sid || opt.empty()) return JNI_FALSE;

@@ -59,7 +59,9 @@ class AndroidCommitExecutor(
     private val connectionProvider: () -> EditorBatchConnection?,
     private val onCopyClipboard: (text: String, toast: String) -> Unit = { _, _ -> },
     private val onDirectCommand: (DirectCommandType) -> Unit = {},
-    private val onAutoLearnEligibleCommit: (String) -> Unit = {}
+    private val onAutoLearnEligibleCommit: (String) -> Unit = {},
+    private val onTextCommitted: (text: String, feedToAutoLearn: Boolean) -> Unit = { _, _ -> },
+    private val onUndoExecuted: () -> Unit = {}
 ) {
     var lastCommittedText: String = ""
         private set
@@ -68,6 +70,11 @@ class AndroidCommitExecutor(
         private set
 
     private var centeredPairUnits: Pair<Int, Int>? = null
+
+    var expectedCenteredCursor: Int? = null
+        private set
+
+    private var isExecutingInternalCommit: Boolean = false
 
     var autoLearnCommitCount: Int = 0
         private set
@@ -88,22 +95,42 @@ class AndroidCommitExecutor(
                 lastCommittedText = action.text
                 lastCommittedCodeUnits = action.text.length
                 centeredPairUnits = null
+                expectedCenteredCursor = null
 
-                if (profile.allowAutoLearn && feedToAutoLearn) {
+                val allowLearn = profile.allowAutoLearn && feedToAutoLearn
+                if (allowLearn) {
                     autoLearnCommitCount++
                     onAutoLearnEligibleCommit(action.text)
+                }
+                isExecutingInternalCommit = true
+                try {
+                    onTextCommitted(action.text, allowLearn)
+                } finally {
+                    isExecutingInternalCommit = false
                 }
             }
 
             is CommitAction.PairedText -> {
                 val ic = connectionProvider() ?: return
                 val combined = action.left + action.right
+                val cursorBefore = ic.getExtractedSelectionStart()
                 ic.beginBatchEdit()
                 ic.commitText(combined, 1)
-                val cursor = ic.getExtractedSelectionStart()
-                if (cursor != null && cursor >= action.right.length) {
-                    val target = cursor - action.right.length
-                    ic.setSelection(target, target)
+                val cursorAfter = ic.getExtractedSelectionStart()
+                // Guard against async custom-drawn editors (e.g. WeChat / Feishu) returning stale
+                // pre-commit cursor inside beginBatchEdit(): fall back to `cursorBefore + left.length`.
+                val targetCursor: Int? = when {
+                    cursorBefore != null && cursorAfter != null &&
+                        cursorAfter != cursorBefore && cursorAfter >= action.right.length ->
+                        cursorAfter - action.right.length
+                    cursorBefore != null ->
+                        cursorBefore + action.left.length
+                    cursorAfter != null && cursorAfter >= combined.length ->
+                        cursorAfter - action.right.length
+                    else -> null
+                }
+                if (targetCursor != null && targetCursor >= 0) {
+                    ic.setSelection(targetCursor, targetCursor)
                 } else {
                     repeat(action.right.codePointCount(0, action.right.length).coerceAtLeast(1)) {
                         ic.sendDpadLeftKeyEvent()
@@ -114,6 +141,19 @@ class AndroidCommitExecutor(
                 lastCommittedText = combined
                 lastCommittedCodeUnits = combined.length
                 centeredPairUnits = action.left.length to action.right.length
+                expectedCenteredCursor = targetCursor
+
+                val allowLearn = profile.allowAutoLearn && feedToAutoLearn
+                if (allowLearn) {
+                    autoLearnCommitCount++
+                    onAutoLearnEligibleCommit(combined)
+                }
+                isExecutingInternalCommit = true
+                try {
+                    onTextCommitted(combined, allowLearn)
+                } finally {
+                    isExecutingInternalCommit = false
+                }
             }
 
             CommitAction.RepeatLastCommit -> {
@@ -139,6 +179,8 @@ class AndroidCommitExecutor(
 
                 lastCommittedCodeUnits = 0
                 centeredPairUnits = null
+                expectedCenteredCursor = null
+                onUndoExecuted()
             }
 
             is CommitAction.CopyToClipboard -> {
@@ -157,8 +199,32 @@ class AndroidCommitExecutor(
         }
     }
 
-    fun notifyExternalCursorChange() {
+    fun recordExternalCommit(text: String) {
+        if (isExecutingInternalCommit || text.isEmpty()) return
+        lastCommittedText = text
+        lastCommittedCodeUnits = text.length
         centeredPairUnits = null
+        expectedCenteredCursor = null
+    }
+
+    fun notifyExternalCursorChange(newSelStart: Int = -1, newSelEnd: Int = -1) {
+        if (newSelStart < 0 && newSelEnd < 0) {
+            if (centeredPairUnits != null) {
+                lastCommittedCodeUnits = 0
+            }
+            centeredPairUnits = null
+            expectedCenteredCursor = null
+            return
+        }
+        val movedAway = newSelStart != newSelEnd ||
+            (expectedCenteredCursor != null && newSelStart != expectedCenteredCursor)
+        if (movedAway) {
+            if (centeredPairUnits != null) {
+                lastCommittedCodeUnits = 0
+            }
+            centeredPairUnits = null
+            expectedCenteredCursor = null
+        }
     }
 
     companion object {
@@ -166,13 +232,17 @@ class AndroidCommitExecutor(
             inputConnectionProvider: () -> InputConnection?,
             onCopyClipboard: (text: String, toast: String) -> Unit = { _, _ -> },
             onDirectCommand: (DirectCommandType) -> Unit = {},
-            onAutoLearnEligibleCommit: (String) -> Unit = {}
+            onAutoLearnEligibleCommit: (String) -> Unit = {},
+            onTextCommitted: (text: String, feedToAutoLearn: Boolean) -> Unit = { _, _ -> },
+            onUndoExecuted: () -> Unit = {}
         ): AndroidCommitExecutor {
             return AndroidCommitExecutor(
                 connectionProvider = { inputConnectionProvider()?.let(::RealInputConnectionAdapter) },
                 onCopyClipboard = onCopyClipboard,
                 onDirectCommand = onDirectCommand,
-                onAutoLearnEligibleCommit = onAutoLearnEligibleCommit
+                onAutoLearnEligibleCommit = onAutoLearnEligibleCommit,
+                onTextCommitted = onTextCommitted,
+                onUndoExecuted = onUndoExecuted
             )
         }
     }

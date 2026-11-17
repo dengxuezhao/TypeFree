@@ -16,6 +16,9 @@ import java.util.BitSet
  */
 fun interface RimeCodeProber {
     fun probeCandidates(code: String, maxCount: Int): List<String>
+
+    fun probeBatch(codes: List<String>, maxCount: Int): List<List<String>> =
+        codes.map { probeCandidates(it, maxCount) }
 }
 
 /**
@@ -33,6 +36,8 @@ class BriefPrefixIndex(
     private val gt4PackedTable: IntArray,
     private val gt4GuardTwoPrefixes: Set<String> = emptySet()
 ) {
+    private val hasExactGt4Table: Boolean = gt4PackedTable.any { it != EMPTY_SLOT }
+
     init {
         require(brief1.size == 26) { "brief1 must have length 26" }
         require(brief2.size == 676) { "brief2 must have length 676" }
@@ -92,7 +97,11 @@ class BriefPrefixIndex(
         }
         val packed = pack4(code4[0], code4[1], code4[2], code4[3])
         if (containsPacked(gt4PackedTable, packed)) return true
-        return gt4GuardTwoPrefixes.contains(code4.substring(0, 2))
+        return if (hasExactGt4Table) {
+            false
+        } else {
+            gt4GuardTwoPrefixes.contains(code4.substring(0, 2))
+        }
     }
 
     /**
@@ -293,28 +302,32 @@ class BriefPrefixIndex(
                 }
             }
 
-            // 26 1-brief probes
+            // Single-batch 702-slot probe (`26` 1-brief + `676` 2-brief)
+            val allCodes = ArrayList<String>(702)
             for (i in 0 until 26) {
-                val ch = ('a' + i)
-                val cands = prober.probeCandidates(ch.toString(), 6)
+                allCodes.add(('a' + i).toString())
+            }
+            for (i in 0 until 26) {
+                val c0 = ('a' + i)
+                for (j in 0 until 26) {
+                    val c1 = ('a' + j)
+                    allCodes.add("$c0$c1")
+                }
+            }
+            val probedSlots = prober.probeBatch(allCodes, 6)
+            for (i in 0 until 26) {
+                val cands = probedSlots.getOrNull(i).orEmpty()
                 for (w in cands) {
                     if (w.isNotEmpty() && !w.contains('$') && !w.contains('{') && w !in b1[i]) {
                         b1[i].add(w)
                     }
                 }
             }
-
-            // 676 2-brief probes
-            for (i in 0 until 26) {
-                val c0 = ('a' + i)
-                for (j in 0 until 26) {
-                    val c1 = ('a' + j)
-                    val slotIdx = i * 26 + j
-                    val cands = prober.probeCandidates("$c0$c1", 6)
-                    for (w in cands) {
-                        if (w.isNotEmpty() && !w.contains('$') && !w.contains('{') && w !in b2[slotIdx]) {
-                            b2[slotIdx].add(w)
-                        }
+            for (slotIdx in 0 until 676) {
+                val cands = probedSlots.getOrNull(26 + slotIdx).orEmpty()
+                for (w in cands) {
+                    if (w.isNotEmpty() && !w.contains('$') && !w.contains('{') && w !in b2[slotIdx]) {
+                        b2[slotIdx].add(w)
                     }
                 }
             }
@@ -329,13 +342,13 @@ class BriefPrefixIndex(
             }
 
             val has4Bits = BitSet(17_576)
-            if (threeCodeDeadEnds != null) {
-                has4Bits.set(0, 17_576)
-                for (dead in threeCodeDeadEnds) {
-                    if (dead.length == 3 && dead.all { it in 'a'..'z' }) {
-                        val idx = ((dead[0] - 'a') * 26 + (dead[1] - 'a')) * 26 + (dead[2] - 'a')
-                        has4Bits.clear(idx)
-                    }
+            // Conservative guard in Track 5.2 precompiled probing: unless explicitly marked as dead-end,
+            // assume 3-code prefixes still have 4-code continuations so we don't prematurely 2+1 split at key 3.
+            has4Bits.set(0, 17_576)
+            for (dead in threeCodeDeadEnds.orEmpty()) {
+                if (dead.length == 3 && dead.all { it in 'a'..'z' }) {
+                    val idx = ((dead[0] - 'a') * 26 + (dead[1] - 'a')) * 26 + (dead[2] - 'a')
+                    has4Bits.clear(idx)
                 }
             }
 

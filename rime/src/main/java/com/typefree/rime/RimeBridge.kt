@@ -52,6 +52,13 @@ interface RimeSessionClient {
         clearComposition()
         return snap.candidates.take(maxCount).map { it.text }
     }
+
+    /**
+     * Single-session batch probe over all requested codes (e.g. 702 slots in one JNI crossing).
+     */
+    fun probeBatchCandidatesForCodes(codes: List<String>, maxCount: Int = 6): List<List<String>> {
+        return codes.map { probeCandidatesForCode(it, maxCount) }
+    }
 }
 
 /**
@@ -180,6 +187,31 @@ class RimeBridge : RimeSessionClient {
     }
 
     @Synchronized
+    override fun probeBatchCandidatesForCodes(codes: List<String>, maxCount: Int): List<List<String>> {
+        if (codes.isEmpty() || maxCount <= 0 || !nativeLibraryLoaded) {
+            return List(codes.size) { emptyList() }
+        }
+        val codeByteArray = Array(codes.size) { i ->
+            codes[i].toByteArray(StandardCharsets.UTF_8)
+        }
+        return runCatching {
+            val rawSlots = nativeProbeBatchCodesUtf8(codeByteArray, maxCount)
+            List(codes.size) { idx ->
+                val rawBytes = rawSlots.getOrNull(idx) ?: return@List emptyList()
+                if (rawBytes.isEmpty()) {
+                    emptyList()
+                } else {
+                    String(rawBytes, StandardCharsets.UTF_8)
+                        .split('\u001F')
+                        .filter { it.isNotEmpty() }
+                }
+            }
+        }.getOrElse {
+            codes.map { probeCandidatesForCode(it, maxCount) }
+        }
+    }
+
+    @Synchronized
     override fun selectCandidate(index: Int): String? {
         if (!nativeLibraryLoaded) return null
         return runCatching {
@@ -272,6 +304,7 @@ class RimeBridge : RimeSessionClient {
     private external fun nativeGetCandidates(maxCount: Int): Array<String>
     private external fun nativeGetCandidatesUtf8(maxCount: Int): Array<ByteArray>
     private external fun nativeProbeCandidatesForCodeUtf8(codeUtf8: ByteArray, maxCount: Int): Array<ByteArray>
+    private external fun nativeProbeBatchCodesUtf8(codesUtf8: Array<ByteArray>, maxCount: Int): Array<ByteArray>
     private external fun nativeSelectCandidate(index: Int): String?
     private external fun nativeSelectCandidateUtf8(index: Int): ByteArray?
     private external fun nativeCommitComposition(): String?

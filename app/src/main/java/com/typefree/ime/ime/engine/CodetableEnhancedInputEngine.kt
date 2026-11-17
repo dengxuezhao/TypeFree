@@ -99,14 +99,22 @@ class CodetableEnhancedInputEngine(
     private val clipboardReader: () -> String = { "" },
     private val commitExecutor: AndroidCommitExecutor? = null,
     private val onToast: (String) -> Unit = {},
-    private val onOpenJevCopilot: () -> Unit = {}
+    private val onOpenJevCopilot: () -> Unit = {},
+    private val onAsyncReloadSchema: ((String) -> Unit)? = null,
+    var isActiveEnginePredicate: () -> Boolean = { true }
 ) : InputEngine {
 
     private val portAdapter = RimeSessionClientPortAdapter(rimeClient)
+    private var currentMaxCandidates: Int = RimeInputEngine.DEFAULT_PAGE_SIZE
 
     val subDictToggleManager: SubDictToggleManager? = schemaDir?.let { dir ->
         SubDictToggleManager(dir) { schemaId ->
-            rimeClient.deploy(schemaId)
+            if (onAsyncReloadSchema != null) {
+                onAsyncReloadSchema.invoke(schemaId)
+            } else {
+                rimeClient.deploy(schemaId)
+                coordinator.updateProfile(coordinator.profile)
+            }
         }
     }
 
@@ -119,11 +127,16 @@ class CodetableEnhancedInputEngine(
             reverseLookupMap = reverseLookupMap,
             clipboardReader = clipboardReader,
             fullCodeEnabledStateProvider = {
-                subDictToggleManager?.isSubDictEnabled("flypy_full", true) ?: true
+                subDictToggleManager?.isSubDictEnabled(
+                    subDictName = "flypy_full",
+                    defaultEnabled = true,
+                    schemaId = activeProfile.schemaId
+                ) ?: true
             },
             asciiPunctStateProvider = { rimeClient.getOption("ascii_punct") },
             simplificationStateProvider = { rimeClient.getOption("simplification") }
-        )
+        ),
+        applyInitialIsolationOptions = isActiveEnginePredicate()
     )
 
     private val _state = MutableStateFlow(EngineState())
@@ -131,6 +144,27 @@ class CodetableEnhancedInputEngine(
 
     val activeProfile: SchemaProfile
         get() = coordinator.profile
+
+    fun refreshFromMetadata(
+        profile: SchemaProfile,
+        symbolTrie: SymbolTrie,
+        briefIndex: BriefPrefixIndex,
+        reverseLookupMap: Map<String, List<String>>
+    ) {
+        currentMaxCandidates = RimeInputEngine.DEFAULT_PAGE_SIZE
+        coordinator.overlayController.updateTrie(symbolTrie)
+        coordinator.reverseSplitEngine = ReverseSplitEngine(briefIndex)
+        coordinator.directCommandEngine.updateReverseLookupMap(reverseLookupMap)
+        if (isActiveEnginePredicate()) {
+            rimeClient.pageSize = currentMaxCandidates
+            rimeClient.selectSchema(profile.schemaId)
+            coordinator.updateProfile(profile)
+        } else {
+            coordinator.profile = profile
+            coordinator.reset()
+        }
+        syncUiState()
+    }
 
     override fun onKey(key: KeyInput): EngineResult {
         return when (key) {
@@ -169,14 +203,18 @@ class CodetableEnhancedInputEngine(
     }
 
     override fun clear() {
+        currentMaxCandidates = RimeInputEngine.DEFAULT_PAGE_SIZE
+        rimeClient.pageSize = currentMaxCandidates
         coordinator.reset()
         syncUiState()
     }
 
     override fun flush(): String {
-        val snap = coordinator.snapshotUi()
+        val snap = coordinator.snapshotUi(maxCandidates = currentMaxCandidates)
         if (!snap.isComposing) return ""
         val first = snap.candidates.firstOrNull()?.commitText ?: snap.rawCode
+        currentMaxCandidates = RimeInputEngine.DEFAULT_PAGE_SIZE
+        rimeClient.pageSize = currentMaxCandidates
         coordinator.reset()
         syncUiState()
         return first
@@ -184,9 +222,20 @@ class CodetableEnhancedInputEngine(
 
     override fun recordExternalCommit(text: String) {
         coordinator.recordCommittedPreview(text)
+        commitExecutor?.recordExternalCommit(text)
+    }
+
+    override fun requestMoreCandidates(minCount: Int) {
+        val target = maxOf(currentMaxCandidates, minCount)
+        currentMaxCandidates = target
+        rimeClient.pageSize = target
+        if (coordinator.isComposing) {
+            syncUiState()
+        }
     }
 
     override fun setIncognitoMode(incognito: Boolean) {
+        if (!isActiveEnginePredicate()) return
         if (coordinator.profile.lockNaturalOrder) {
             rimeClient.setOption("_incognito", true)
             rimeClient.setOption("enable_user_dict", false)
@@ -197,6 +246,7 @@ class CodetableEnhancedInputEngine(
     }
 
     override fun setFixedCandidateOrder(fixedOrder: Boolean?) {
+        if (!isActiveEnginePredicate()) return
         val lock = fixedOrder ?: coordinator.profile.lockNaturalOrder
         rimeClient.setOption("fixed_candidate_order", lock)
     }
@@ -300,7 +350,9 @@ class CodetableEnhancedInputEngine(
     }
 
     private fun syncUiState() {
-        val barState = CandidateBarViewModel.mapSnapshot(coordinator.snapshotUi())
+        val barState = CandidateBarViewModel.mapSnapshot(
+            coordinator.snapshotUi(maxCandidates = currentMaxCandidates)
+        )
         _state.value = EngineState(
             preedit = barState.preeditText,
             rawCode = barState.rawCode,

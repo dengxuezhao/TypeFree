@@ -72,7 +72,8 @@ class TypeFreeKeyCoordinator(
     private val rimePort: RimeCoreSessionPort,
     val overlayController: OverlaySymbolController = OverlaySymbolController(),
     var reverseSplitEngine: ReverseSplitEngine? = null,
-    val directCommandEngine: DirectCommandEngine = DirectCommandEngine()
+    val directCommandEngine: DirectCommandEngine = DirectCommandEngine(),
+    applyInitialIsolationOptions: Boolean = true
 ) {
     var singleCharMode: Boolean = false
         private set
@@ -85,7 +86,9 @@ class TypeFreeKeyCoordinator(
     private var activeDirectCandidates: List<EnhancedCandidate> = emptyList()
 
     init {
-        applyProfileIsolationOptions()
+        if (applyInitialIsolationOptions) {
+            applyProfileIsolationOptions()
+        }
     }
 
     fun updateProfile(newProfile: SchemaProfile) {
@@ -218,28 +221,48 @@ class TypeFreeKeyCoordinator(
             }
         }
 
+        // Stage 4b (Pre-check): DirectCommandEngine priority before Stage 5 librime auto-commit
+        val nextCandidateCode = rawBuffer + ch
+        if (profile.directCommandsEnabled && !nextCandidateCode.contains('`')) {
+            val preDirect = directCommandEngine.evaluate(
+                code = nextCandidateCode,
+                nowMillis = nowMillis,
+                enabled = true
+            )
+            if (preDirect.isNotEmpty()) {
+                rawBuffer = nextCandidateCode
+                activeSplit = null
+                activeDirectCandidates = preDirect
+                rimePort.clearComposition()
+                val syntheticFrame = RimeDecodeFrame(rawInput = rawBuffer, preedit = rawBuffer)
+                return CoordinatorKeyOutcome.Consumed(snapshotUi(nowMillis, syntheticFrame))
+            }
+        }
+
         // Stage 5: Send regular code char to librime (handles native speller & PUSH_TOPUP_CODE 3-code/4-code push)
         val frame = rimePort.sendChar(ch)
         if (!frame.autoCommittedText.isNullOrEmpty()) {
             val committed = frame.autoCommittedText
-            rawBuffer = frame.rawInput
-            activeSplit = null
-            activeDirectCandidates = if (rawBuffer.isNotEmpty()) {
-                directCommandEngine.evaluate(rawBuffer, nowMillis, profile.directCommandsEnabled)
-            } else {
-                emptyList()
+            if (!singleCharMode || Utf8Safety.isSingleCharacter(committed)) {
+                rawBuffer = frame.rawInput
+                activeSplit = null
+                activeDirectCandidates = if (rawBuffer.isNotEmpty()) {
+                    directCommandEngine.evaluate(rawBuffer, nowMillis, profile.directCommandsEnabled)
+                } else {
+                    emptyList()
+                }
+                recordCommittedPreview(committed)
+                return CoordinatorKeyOutcome.Commit(
+                    action = CommitAction.PlainText(committed, fromRimeNative = true),
+                    ui = snapshotUi(nowMillis, frame),
+                    feedToAutoLearn = profile.allowAutoLearn
+                )
             }
-            recordCommittedPreview(committed)
-            return CoordinatorKeyOutcome.Commit(
-                action = CommitAction.PlainText(committed, fromRimeNative = true),
-                ui = snapshotUi(nowMillis, frame),
-                feedToAutoLearn = profile.allowAutoLearn
-            )
         }
 
         rawBuffer = frame.rawInput.ifEmpty { rawBuffer + ch }
 
-        // Stage 4b: DirectCommandEngine high-priority phrase check (`orq`, `ouj`, `ofi`, `oqm`, `ovy`, `ojf`, `oai`)
+        // Stage 4b (Fallback): DirectCommandEngine phrase check if Rime altered rawInput
         activeDirectCandidates = directCommandEngine.evaluate(
             code = rawBuffer,
             nowMillis = nowMillis,
@@ -318,8 +341,24 @@ class TypeFreeKeyCoordinator(
             }
             return CoordinatorKeyOutcome.Consumed(snapshotUi(nowMillis))
         }
-        val frame = rimePort.sendBackspace()
-        rawBuffer = frame.rawInput
+        val frame = if (activeDirectCandidates.isNotEmpty()) {
+            val nextBuf = rawBuffer.dropLast(1)
+            if (nextBuf.isEmpty()) {
+                reset()
+                return CoordinatorKeyOutcome.Consumed(snapshotUi(nowMillis))
+            }
+            rimePort.clearComposition()
+            var replayed = RimeDecodeFrame(rawInput = nextBuf, preedit = nextBuf)
+            for (c in nextBuf) {
+                replayed = rimePort.sendChar(c)
+            }
+            rawBuffer = nextBuf
+            replayed
+        } else {
+            val backFrame = rimePort.sendBackspace()
+            rawBuffer = backFrame.rawInput
+            backFrame
+        }
         if (rawBuffer.isEmpty()) {
             reset()
             return CoordinatorKeyOutcome.Consumed(snapshotUi(nowMillis))
@@ -355,7 +394,10 @@ class TypeFreeKeyCoordinator(
         // Virtual split or direct command: commit directly & reset Rime composition (0 userdb write!)
         if (index < activeDirectCandidates.size || activeSplit != null) {
             reset()
-            if (picked.commitText.isNotEmpty()) {
+            if (picked.commitText.isNotEmpty() &&
+                picked.action !is CommitAction.CopyToClipboard &&
+                picked.action !is CommitAction.Command
+            ) {
                 recordCommittedPreview(picked.commitText)
             }
             return CoordinatorKeyOutcome.Commit(
@@ -395,7 +437,8 @@ class TypeFreeKeyCoordinator(
 
     fun snapshotUi(
         nowMillis: Long = System.currentTimeMillis(),
-        cachedFrame: RimeDecodeFrame? = null
+        cachedFrame: RimeDecodeFrame? = null,
+        maxCandidates: Int = 24
     ): CoordinatorUiSnapshot {
         if (overlayController.isActive) {
             return CoordinatorUiSnapshot(
@@ -428,7 +471,7 @@ class TypeFreeKeyCoordinator(
             )
         }
 
-        val frame = cachedFrame ?: rimePort.currentFrame()
+        val frame = cachedFrame ?: rimePort.currentFrame(maxCandidates)
         val rimeCands = filterRimeCandidates(frame.candidates).map { (txt, comment) ->
             EnhancedCandidate(
                 displayText = txt,
@@ -502,9 +545,11 @@ class TypeFreeKeyCoordinator(
     private fun isExtendedGuardBuffer(code: String): Boolean {
         if (code.length < 2) return false
         val p2 = code.substring(0, 2)
-        if (p2 in profile.gt4GuardPrefixes) return true
-        if (code.length == 4 && reverseSplitEngine?.index?.hasGt4Prefix(code) == true) return true
-        return false
+        if (code.length == 4) {
+            val idx = reverseSplitEngine?.index
+            if (idx != null) return idx.hasGt4Prefix(code)
+        }
+        return p2 in profile.gt4GuardPrefixes
     }
 
     private fun mapPunctuation(ch: Char, asciiPunct: Boolean): String {

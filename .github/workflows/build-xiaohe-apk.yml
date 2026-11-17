@@ -1,13 +1,10 @@
 name: Build TypeFree Xiaohe Exclusive APK
 
 on:
-  push:
-    branches:
-      - feat/codetable-enhancer-xiaohe
   workflow_dispatch:
     inputs:
       xiaohe_dict_url:
-        description: "Optional direct download URL for xiaohe_flypy_typefree_ready.zip (falls back to XIAOHE_READY_ZIP_URL / XIAOHE_READY_ZIP_B64 / GDRIVE_ACCESS_TOKEN secrets)"
+        description: "Optional direct download URL for xiaohe_flypy_typefree_ready.zip (falls back to XIAOHE_READY_ZIP_URL / XIAOHE_READY_ZIP_B64 / GDRIVE_ACCESS_TOKEN+XIAOHE_GDRIVE_FILE_ID secrets)"
         required: false
         default: ""
 
@@ -97,17 +94,27 @@ jobs:
             echo "Decoding Xiaohe bundle from XIAOHE_READY_ZIP_B64 secret..."
             printf '%s' "$SECRET_B64" | base64 -d > /tmp/xiaohe_bundle/xiaohe.zip
             unzip -tq /tmp/xiaohe_bundle/xiaohe.zip >/dev/null
-          elif [ -n "$GDRIVE_ACCESS_TOKEN" ]; then
-            FILE_ID="${GDRIVE_FILE_ID:-1-XzQCyYfKqWpWbPTkQbsE6HAuFCSIt8o}"
-            echo "Downloading xiaohe_flypy_typefree_ready.zip ($FILE_ID) via Google Drive API..."
-            curl -fsSL               -H "Authorization: Bearer ${GDRIVE_ACCESS_TOKEN}"               "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media"               -o /tmp/xiaohe_bundle/xiaohe.zip
+          elif [ -n "$GDRIVE_ACCESS_TOKEN" ] && [ -n "$GDRIVE_FILE_ID" ]; then
+            echo "Downloading Xiaohe bundle via authenticated Google Drive API..."
+            curl -fsSL \
+              -H "Authorization: Bearer ${GDRIVE_ACCESS_TOKEN}" \
+              "https://www.googleapis.com/drive/v3/files/${GDRIVE_FILE_ID}?alt=media" \
+              -o /tmp/xiaohe_bundle/xiaohe.zip
             unzip -tq /tmp/xiaohe_bundle/xiaohe.zip >/dev/null
           else
-            FILE_ID="${GDRIVE_FILE_ID:-1-XzQCyYfKqWpWbPTkQbsE6HAuFCSIt8o}"
-            download_url_or_gdrive "https://drive.usercontent.google.com/download?id=${FILE_ID}&export=download&confirm=t" /tmp/xiaohe_bundle/xiaohe.zip
+            echo "::error::Missing private Xiaohe bundle credentials (provide workflow input xiaohe_dict_url, or configure XIAOHE_READY_ZIP_URL / XIAOHE_READY_ZIP_B64 / GDRIVE_ACCESS_TOKEN+XIAOHE_GDRIVE_FILE_ID secrets)."
+            exit 1
           fi
 
-          unzip -oq /tmp/xiaohe_bundle/xiaohe.zip -d app/src/xiaohe/assets/rime/
+          mkdir -p /tmp/xiaohe_bundle/unpacked
+          unzip -oq /tmp/xiaohe_bundle/xiaohe.zip -d /tmp/xiaohe_bundle/unpacked
+          SCHEMA_FILE=$(find /tmp/xiaohe_bundle/unpacked -type f -name "*.schema.yaml" ! -name "*dz.schema.yaml" | head -n 1 || true)
+          if [ -n "$SCHEMA_FILE" ]; then
+            SCHEMA_ROOT=$(dirname "$SCHEMA_FILE")
+          else
+            SCHEMA_ROOT=/tmp/xiaohe_bundle/unpacked
+          fi
+          cp -a "$SCHEMA_ROOT"/. app/src/xiaohe/assets/rime/
           rm -rf /tmp/xiaohe_bundle
 
           echo "Injected files in app/src/xiaohe/assets/rime/:"
