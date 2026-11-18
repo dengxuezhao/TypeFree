@@ -376,7 +376,30 @@ class TypeFreeKeyCoordinator(
         activeEnglishSuggestions = emptyList()
 
         val prevRawBuffer = rawBuffer
+        val intended4 = prevRawBuffer + ch
+        val mayTrigger4CharEnglishVeto = englishPrefixVetoEnabled &&
+            (profile.archetype == SchemaArchetype.FIXED_YINXING ||
+                profile.archetype == SchemaArchetype.FIXED_SHAPECODE) &&
+            prevRawBuffer.length == 3 &&
+            ch in 'a'..'z' &&
+            prevRawBuffer.all { it in 'a'..'z' } &&
+            !prevRawBuffer.startsWith("ok") &&
+            !prevRawBuffer.startsWith("os") &&
+            !isExtendedGuardBuffer(intended4) &&
+            englishWordTrie.hasLongerWordPrefix(intended4)
+
         val frame = rimePort.sendChar(ch)
+        val rimeCommittedWhole4CharCode = frame.rawInput.isEmpty() && !frame.autoCommittedText.isNullOrEmpty()
+        if (mayTrigger4CharEnglishVeto && frame.rawInput != intended4 && !rimeCommittedWhole4CharCode) {
+            rimePort.clearComposition()
+            rawBuffer = intended4
+            activeSplit = null
+            activeDirectCandidates = emptyList()
+            activeDirectOffsetPending = false
+            activeEnglishSuggestions = buildEnglishCandidates(intended4)
+            val syntheticFrame = RimeDecodeFrame(rawInput = rawBuffer, preedit = rawBuffer)
+            return CoordinatorKeyOutcome.Consumed(snapshotUi(nowMillis, syntheticFrame))
+        }
         if (!frame.autoCommittedText.isNullOrEmpty()) {
             val committed = frame.autoCommittedText
             if (!singleCharMode || Utf8Safety.isSingleCharacter(committed)) {
