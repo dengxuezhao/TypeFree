@@ -150,11 +150,31 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 }
                 _imeState.update { prev ->
                     prev.copy(
-                        isRimeDeploying = prev.activeInputScheme.usesRime && !ready
+                        isRimeDeploying = prev.activeInputScheme.usesRime && !ready,
+                        codetableEnhancerActive = typingController.activeEngine is CodetableEnhancedInputEngine,
+                        singleCharModeEnabled = typingController.codetableEnhancedEngine?.singleCharModeEnabled ?: false,
+                        pinnedWordsForCurrentCode = typingController.codetableEnhancedEngine?.currentPinnedWordsForBuffer().orEmpty()
                     )
                 }
                 if (ready && typingController.isComposing) {
                     typingController.syncEngineStateToUi()
+                }
+            }
+        }
+        serviceScope.launch {
+            var lastVersion = TypeFreeApp.instance.rimeDataManager.metadataVersion.value
+            TypeFreeApp.instance.rimeDataManager.metadataVersion.collect { version ->
+                if (version != lastVersion) {
+                    lastVersion = version
+                    bindCodetableEnhancedEngineIfAvailable()
+                    typingController.codetableEnhancedEngine?.let { eng ->
+                        eng.refreshUserDictAutoEncoder()
+                        eng.reloadShadowRules()
+                        val s = repository.settings.value
+                        eng.setEnglishPrefixVetoEnabled(s.englishPrefixVetoEnabled)
+                        eng.setAutoEncodeEnabled(s.codetableAutoEncodeEnabled)
+                    }
+                    syncCodetableUiFlags()
                 }
             }
         }
@@ -182,6 +202,10 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 }
                 typingController.updateSnippets(currentSettings.snippets)
                 typingController.setFixedCandidateOrder(currentSettings.fixedCandidateOrder)
+                typingController.codetableEnhancedEngine?.let { eng ->
+                    eng.setEnglishPrefixVetoEnabled(currentSettings.englishPrefixVetoEnabled)
+                    eng.setAutoEncodeEnabled(currentSettings.codetableAutoEncodeEnabled)
+                }
                 if (schemeChanged) {
                     lastScheme = currentSettings.inputScheme
                     typingController.resetComposing()
@@ -195,6 +219,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 _imeState.update {
                     it.copy(
                         activeInputScheme = currentSettings.inputScheme,
+                        codetableEnhancerActive = typingController.activeEngine is CodetableEnhancedInputEngine,
+                        singleCharModeEnabled = typingController.codetableEnhancedEngine?.singleCharModeEnabled ?: false,
+                        pinnedWordsForCurrentCode = typingController.codetableEnhancedEngine?.currentPinnedWordsForBuffer().orEmpty(),
                         isRimeDeploying = currentSettings.inputScheme.usesRime && !typingController.isRimeReady,
                         activeHeightLevel = currentSettings.keyboardHeightLevel,
                         activeHeightMode = currentSettings.keyboardHeightMode,
@@ -286,6 +313,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             }
         }
         syncEditorMetadata(info, restarting)
+        typingController.codetableEnhancedEngine?.let { eng ->
+            eng.reloadShadowRules()
+            eng.refreshUserDictAutoEncoder()
+        }
+        syncCodetableUiFlags()
         syncSystemClipboardIfNeeded(allowFreshBanner = true)
         syncCurrentEditorText()
         voiceController.warmVoiceConnectionsInBackground()
@@ -654,6 +686,10 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             is ImeUiAction.SelectKeyboardLiftLevel -> selectKeyboardLiftLevel(action.liftLevel)
 
             ImeUiAction.TriggerUndo -> performUndo()
+            is ImeUiAction.PinCandidate -> pinCandidateFromBar(action.word)
+            is ImeUiAction.UnpinCandidate -> unpinCandidateFromBar(action.word)
+            is ImeUiAction.BlockCandidate -> blockCandidateFromBar(action.word)
+            ImeUiAction.ToggleSingleCharMode -> toggleSingleCharMode()
             is ImeUiAction.CommitText -> commitDirectText(action.text, recordUndo = true, markManualEdit = true)
             is ImeUiAction.CommitQwertyChar -> typingController.commitQwertyChar(action.char)
             is ImeUiAction.CommaOrPeriodKey -> typingController.handleCommaOrPeriodKey(action.isComma)
@@ -1370,6 +1406,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         val dm = TypeFreeApp.instance.rimeDataManager
         if (!dm.hasXiaoheSchemaInstalled() && !dm.hasCustomSchemaImported()) return
 
+        val latestSettings = repository.settings.value
         val existing = typingController.codetableEnhancedEngine
         if (existing != null) {
             existing.refreshFromMetadata(
@@ -1378,6 +1415,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 briefIndex = dm.activeBriefIndex,
                 reverseLookupMap = dm.activeReverseLookupMap
             )
+            existing.setEnglishPrefixVetoEnabled(latestSettings.englishPrefixVetoEnabled)
+            existing.setAutoEncodeEnabled(latestSettings.codetableAutoEncodeEnabled)
+            syncCodetableUiFlags()
             return
         }
 
@@ -1407,6 +1447,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                         dm.rimeBridge.setOption("simplification", next)
                         showQuickActionToast(if (next) "繁體中文模式" else "简体中文模式")
                     }
+                    DirectCommandType.TOGGLE_SINGLE_CHAR_MODE -> {
+                        val enabled = typingController.codetableEnhancedEngine?.singleCharModeEnabled ?: false
+                        _imeState.update { it.copy(singleCharModeEnabled = enabled) }
+                        showQuickActionToast(if (enabled) "✓ 单字模式已开启 (odz)" else "✓ 单字模式已关闭 (odz)")
+                    }
                 }
             },
             onAutoLearnEligibleCommit = { recordManualEditTouch() },
@@ -1418,7 +1463,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             }
         )
         androidCommitExecutor = executor
-        typingController.codetableEnhancedEngine = CodetableEnhancedInputEngine(
+        val created = CodetableEnhancedInputEngine(
             rimeClient = dm.rimeBridge,
             initialProfile = dm.activeSchemaProfile,
             symbolTrie = dm.activeSymbolTrie,
@@ -1436,8 +1481,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                         typingController.codetableEnhancedEngine?.let { eng ->
                             if (typingController.activeEngine === eng) {
                                 eng.coordinator.updateProfile(eng.activeProfile)
+                                val s = repository.settings.value
+                                eng.setEnglishPrefixVetoEnabled(s.englishPrefixVetoEnabled)
+                                eng.setAutoEncodeEnabled(s.codetableAutoEncodeEnabled)
                                 eng.setIncognitoMode(_imeState.value.isIncognitoMode)
-                                eng.setFixedCandidateOrder(repository.settings.value.fixedCandidateOrder)
+                                eng.setFixedCandidateOrder(s.fixedCandidateOrder)
                             }
                         }
                     }
@@ -1445,8 +1493,71 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             },
             isActiveEnginePredicate = {
                 typingController.activeEngine === typingController.codetableEnhancedEngine
+            },
+            onSingleCharModeChanged = { enabled ->
+                _imeState.update { it.copy(singleCharModeEnabled = enabled) }
+            },
+            onUiStateSynced = { _, singleCharEnabled, pinnedWords ->
+                _imeState.update {
+                    it.copy(
+                        codetableEnhancerActive = typingController.activeEngine is CodetableEnhancedInputEngine,
+                        singleCharModeEnabled = singleCharEnabled,
+                        pinnedWordsForCurrentCode = pinnedWords
+                    )
+                }
             }
         )
+        created.setEnglishPrefixVetoEnabled(latestSettings.englishPrefixVetoEnabled)
+        created.setAutoEncodeEnabled(latestSettings.codetableAutoEncodeEnabled)
+        typingController.codetableEnhancedEngine = created
+        syncCodetableUiFlags()
+    }
+
+    private fun syncCodetableUiFlags() {
+        val eng = typingController.codetableEnhancedEngine
+        _imeState.update {
+            it.copy(
+                codetableEnhancerActive = typingController.activeEngine is CodetableEnhancedInputEngine,
+                singleCharModeEnabled = eng?.singleCharModeEnabled ?: false,
+                pinnedWordsForCurrentCode = eng?.currentPinnedWordsForBuffer().orEmpty()
+            )
+        }
+    }
+
+    private fun pinCandidateFromBar(word: String) {
+        val eng = typingController.codetableEnhancedEngine ?: return
+        performKeyFeedback(strong = false)
+        eng.pinCandidate(word)
+        typingController.syncEngineStateToUi()
+        syncCodetableUiFlags()
+        showQuickActionToast("📌 已置顶首选「$word」")
+    }
+
+    private fun unpinCandidateFromBar(word: String) {
+        val eng = typingController.codetableEnhancedEngine ?: return
+        performKeyFeedback(strong = false)
+        eng.unpinCandidate(word)
+        typingController.syncEngineStateToUi()
+        syncCodetableUiFlags()
+        showQuickActionToast("已取消置顶「$word」")
+    }
+
+    private fun blockCandidateFromBar(word: String) {
+        val eng = typingController.codetableEnhancedEngine ?: return
+        performKeyFeedback(strong = true)
+        eng.blockCandidate(word)
+        typingController.syncEngineStateToUi()
+        syncCodetableUiFlags()
+        showQuickActionToast("已屏蔽「$word」")
+    }
+
+    private fun toggleSingleCharMode() {
+        val eng = typingController.codetableEnhancedEngine ?: return
+        performKeyFeedback(strong = false)
+        val next = eng.toggleSingleCharMode()
+        typingController.syncEngineStateToUi()
+        syncCodetableUiFlags()
+        showQuickActionToast(if (next) "✓ 单字模式已开启" else "✓ 单字模式已关闭")
     }
 
     private fun onEnhancedEngineCommitted(committedText: String, @Suppress("UNUSED_PARAMETER") allowAutoLearn: Boolean) {

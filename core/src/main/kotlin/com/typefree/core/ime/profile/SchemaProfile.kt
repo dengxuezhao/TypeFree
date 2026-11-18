@@ -38,7 +38,9 @@ data class SchemaProfile(
     val directCommandsEnabled: Boolean = true,   // 启用原生日期/农历/计算器/剪贴板反查直通车
     val reverseLookupDict: String? = null,       // 绑定的单字反查词库名（如 flypydz）
     val gt4GuardPrefixes: Set<String> = emptySet(), // 超四码引导前缀（如小鹤 ok, os）
-    val spellerAlphabet: String = "abcdefghijklmnopqrstuvwxyz'"
+    val spellerAlphabet: String = "abcdefghijklmnopqrstuvwxyz'",
+    val englishPrefixVetoEnabled: Boolean = true,
+    val autoEncodePhrasesEnabled: Boolean = false
 ) {
     val overlayEnabled: Boolean
         get() = overlayGuideKey != null && overlayGuideKey !in spellerAlphabet

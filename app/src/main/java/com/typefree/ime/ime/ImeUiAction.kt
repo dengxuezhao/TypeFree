@@ -87,6 +87,10 @@ sealed interface ImeUiAction {
 
     // Typing & Editor actions
     data object TriggerUndo : ImeUiAction
+    data class PinCandidate(val word: String) : ImeUiAction
+    data class UnpinCandidate(val word: String) : ImeUiAction
+    data class BlockCandidate(val word: String) : ImeUiAction
+    data object ToggleSingleCharMode : ImeUiAction
     data class CommitText(val text: String) : ImeUiAction
     data class CommitQwertyChar(val char: String) : ImeUiAction
     data class CommaOrPeriodKey(val isComma: Boolean) : ImeUiAction

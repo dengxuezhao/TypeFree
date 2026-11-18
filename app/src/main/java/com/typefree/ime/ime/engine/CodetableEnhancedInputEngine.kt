@@ -7,8 +7,11 @@ import com.typefree.core.ime.coordinator.RimeCoreSessionPort
 import com.typefree.core.ime.coordinator.RimeDecodeFrame
 import com.typefree.core.ime.coordinator.TypeFreeKeyCoordinator
 import com.typefree.core.ime.enhancer.BriefPrefixIndex
+import com.typefree.core.ime.enhancer.CodetableAutoEncoder
 import com.typefree.core.ime.enhancer.DirectCommandEngine
+import com.typefree.core.ime.enhancer.EnglishWordTrie
 import com.typefree.core.ime.enhancer.ReverseSplitEngine
+import com.typefree.core.ime.enhancer.ShadowDictManager
 import com.typefree.core.ime.importer.SubDictToggleManager
 import com.typefree.core.ime.overlay.OverlaySymbolController
 import com.typefree.core.ime.overlay.SymbolTrie
@@ -101,11 +104,19 @@ class CodetableEnhancedInputEngine(
     private val onToast: (String) -> Unit = {},
     private val onOpenJevCopilot: () -> Unit = {},
     private val onAsyncReloadSchema: ((String) -> Unit)? = null,
-    var isActiveEnginePredicate: () -> Boolean = { true }
+    var isActiveEnginePredicate: () -> Boolean = { true },
+    private val englishWordTrie: EnglishWordTrie = EnglishWordTrie.defaultBuiltIn(),
+    var onSingleCharModeChanged: ((Boolean) -> Unit)? = null,
+    var onUiStateSynced: ((EngineState, Boolean, Set<String>) -> Unit)? = null
 ) : InputEngine {
 
     private val portAdapter = RimeSessionClientPortAdapter(rimeClient)
     private var currentMaxCandidates: Int = RimeInputEngine.DEFAULT_PAGE_SIZE
+    private var currentSymbolTrie: SymbolTrie = symbolTrie
+    private var currentBriefIndex: BriefPrefixIndex = briefIndex
+    private var currentReverseLookupMap: Map<String, List<String>> = reverseLookupMap
+    private var englishPrefixVetoOverride: Boolean? = null
+    private var autoEncodeOverride: Boolean? = null
 
     val subDictToggleManager: SubDictToggleManager? = schemaDir?.let { dir ->
         SubDictToggleManager(dir) { schemaId ->
@@ -114,36 +125,80 @@ class CodetableEnhancedInputEngine(
             } else {
                 rimeClient.deploy(schemaId)
                 coordinator.updateProfile(coordinator.profile)
+                applyPreferenceOverrides()
             }
         }
     }
 
-    val coordinator = TypeFreeKeyCoordinator(
+    var shadowDictManager: ShadowDictManager? = schemaDir?.let { dir ->
+        ShadowDictManager(dir, initialProfile.schemaId)
+    }
+        private set
+
+    var autoEncoder: CodetableAutoEncoder? = schemaDir?.let { dir ->
+        CodetableAutoEncoder(File(dir, "${initialProfile.schemaId}_user.txt"), initialProfile.schemaId)
+    }
+        private set
+
+    var coordinator: TypeFreeKeyCoordinator = buildCoordinator(
         profile = initialProfile,
-        rimePort = portAdapter,
-        overlayController = OverlaySymbolController(symbolTrie),
-        reverseSplitEngine = ReverseSplitEngine(briefIndex),
-        directCommandEngine = DirectCommandEngine(
-            reverseLookupMap = reverseLookupMap,
-            clipboardReader = clipboardReader,
-            fullCodeEnabledStateProvider = {
-                subDictToggleManager?.isSubDictEnabled(
-                    subDictName = "flypy_full",
-                    defaultEnabled = true,
-                    schemaId = activeProfile.schemaId
-                ) ?: true
-            },
-            asciiPunctStateProvider = { rimeClient.getOption("ascii_punct") },
-            simplificationStateProvider = { rimeClient.getOption("simplification") }
-        ),
-        applyInitialIsolationOptions = isActiveEnginePredicate()
+        symbolTrie = currentSymbolTrie,
+        briefIndex = currentBriefIndex,
+        reverseLookupMap = currentReverseLookupMap,
+        applyIsolation = isActiveEnginePredicate()
     )
+        private set
 
     private val _state = MutableStateFlow(EngineState())
     override val state: StateFlow<EngineState> = _state.asStateFlow()
 
     val activeProfile: SchemaProfile
         get() = coordinator.profile
+
+    val singleCharModeEnabled: Boolean
+        get() = coordinator.singleCharMode
+
+    private fun buildCoordinator(
+        profile: SchemaProfile,
+        symbolTrie: SymbolTrie,
+        briefIndex: BriefPrefixIndex,
+        reverseLookupMap: Map<String, List<String>>,
+        applyIsolation: Boolean
+    ): TypeFreeKeyCoordinator {
+        val created = TypeFreeKeyCoordinator(
+            profile = profile,
+            rimePort = portAdapter,
+            overlayController = OverlaySymbolController(symbolTrie),
+            reverseSplitEngine = ReverseSplitEngine(briefIndex),
+            directCommandEngine = DirectCommandEngine(
+                reverseLookupMap = reverseLookupMap,
+                clipboardReader = clipboardReader,
+                fullCodeEnabledStateProvider = {
+                    subDictToggleManager?.isSubDictEnabled(
+                        subDictName = "flypy_full",
+                        defaultEnabled = true,
+                        schemaId = activeProfile.schemaId
+                    ) ?: true
+                },
+                asciiPunctStateProvider = { rimeClient.getOption("ascii_punct") },
+                simplificationStateProvider = { rimeClient.getOption("simplification") },
+                activeSchemaIdProvider = { activeProfile.schemaId },
+                singleCharModeStateProvider = { coordinator.singleCharMode }
+            ),
+            applyInitialIsolationOptions = applyIsolation,
+            englishWordTrie = englishWordTrie,
+            shadowDictManager = shadowDictManager,
+            autoEncoder = autoEncoder
+        )
+        englishPrefixVetoOverride?.let { created.setEnglishPrefixVetoEnabled(it) }
+        autoEncodeOverride?.let { created.setAutoEncodeEnabled(it) }
+        return created
+    }
+
+    private fun applyPreferenceOverrides() {
+        englishPrefixVetoOverride?.let { coordinator.setEnglishPrefixVetoEnabled(it) }
+        autoEncodeOverride?.let { coordinator.setAutoEncodeEnabled(it) }
+    }
 
     fun refreshFromMetadata(
         profile: SchemaProfile,
@@ -152,17 +207,120 @@ class CodetableEnhancedInputEngine(
         reverseLookupMap: Map<String, List<String>>
     ) {
         currentMaxCandidates = RimeInputEngine.DEFAULT_PAGE_SIZE
-        coordinator.overlayController.updateTrie(symbolTrie)
-        coordinator.reverseSplitEngine = ReverseSplitEngine(briefIndex)
-        coordinator.directCommandEngine.updateReverseLookupMap(reverseLookupMap)
-        if (isActiveEnginePredicate()) {
-            rimeClient.pageSize = currentMaxCandidates
-            rimeClient.selectSchema(profile.schemaId)
-            coordinator.updateProfile(profile)
+        currentSymbolTrie = symbolTrie
+        currentBriefIndex = briefIndex
+        currentReverseLookupMap = reverseLookupMap
+
+        val schemaChanged = profile.schemaId != coordinator.profile.schemaId
+        if (schemaChanged && schemaDir != null) {
+            val prevSingleChar = coordinator.singleCharMode
+            shadowDictManager = ShadowDictManager(schemaDir, profile.schemaId)
+            autoEncoder = CodetableAutoEncoder(
+                File(schemaDir, "${profile.schemaId}_user.txt"),
+                profile.schemaId
+            )
+            if (isActiveEnginePredicate()) {
+                rimeClient.pageSize = currentMaxCandidates
+                rimeClient.selectSchema(profile.schemaId)
+            }
+            coordinator = buildCoordinator(
+                profile = profile,
+                symbolTrie = symbolTrie,
+                briefIndex = briefIndex,
+                reverseLookupMap = reverseLookupMap,
+                applyIsolation = isActiveEnginePredicate()
+            )
+            coordinator.setSingleCharModeEnabled(prevSingleChar)
         } else {
-            coordinator.profile = profile
-            coordinator.reset()
+            coordinator.overlayController.updateTrie(symbolTrie)
+            coordinator.reverseSplitEngine = ReverseSplitEngine(briefIndex)
+            coordinator.directCommandEngine.updateReverseLookupMap(reverseLookupMap)
+            if (isActiveEnginePredicate()) {
+                rimeClient.pageSize = currentMaxCandidates
+                rimeClient.selectSchema(profile.schemaId)
+                coordinator.updateProfile(profile)
+            } else {
+                coordinator.profile = profile
+                coordinator.reset()
+            }
+            applyPreferenceOverrides()
         }
+        syncUiState()
+    }
+
+    fun refreshUserDictAutoEncoder() {
+        val dir = schemaDir ?: return
+        val profile = activeProfile
+        val prevSingleChar = coordinator.singleCharMode
+        val isComposing = coordinator.isComposing
+        autoEncoder = CodetableAutoEncoder(
+            File(dir, "${profile.schemaId}_user.txt"),
+            profile.schemaId
+        )
+        if (!isComposing) {
+            coordinator = buildCoordinator(
+                profile = profile,
+                symbolTrie = currentSymbolTrie,
+                briefIndex = currentBriefIndex,
+                reverseLookupMap = currentReverseLookupMap,
+                applyIsolation = isActiveEnginePredicate()
+            )
+            coordinator.setSingleCharModeEnabled(prevSingleChar)
+            syncUiState()
+        }
+    }
+
+    fun setEnglishPrefixVetoEnabled(enabled: Boolean) {
+        englishPrefixVetoOverride = enabled
+        coordinator.setEnglishPrefixVetoEnabled(enabled)
+    }
+
+    fun setAutoEncodeEnabled(enabled: Boolean) {
+        autoEncodeOverride = enabled
+        coordinator.setAutoEncodeEnabled(enabled)
+    }
+
+    fun setSingleCharModeEnabled(enabled: Boolean) {
+        coordinator.setSingleCharModeEnabled(enabled)
+        onSingleCharModeChanged?.invoke(enabled)
+        syncUiState()
+    }
+
+    fun toggleSingleCharMode(): Boolean {
+        val next = !coordinator.singleCharMode
+        setSingleCharModeEnabled(next)
+        return next
+    }
+
+    fun reloadShadowRules() {
+        coordinator.reloadShadowRules()
+        syncUiState()
+    }
+
+    fun currentPinnedWordsForBuffer(): Set<String> {
+        return coordinator.currentPinnedWordsForBuffer().toSet()
+    }
+
+    fun pinCandidate(word: String) {
+        val code = coordinator.snapshotUi().rawCode
+        if (code.isBlank() || word.isBlank()) return
+        shadowDictManager?.pinWord(code, word)
+        coordinator.reloadShadowRules()
+        syncUiState()
+    }
+
+    fun unpinCandidate(word: String) {
+        val code = coordinator.snapshotUi().rawCode
+        if (code.isBlank() || word.isBlank()) return
+        shadowDictManager?.unpinWord(code, word)
+        coordinator.reloadShadowRules()
+        syncUiState()
+    }
+
+    fun blockCandidate(word: String) {
+        if (word.isBlank()) return
+        shadowDictManager?.blockWord(word)
+        coordinator.reloadShadowRules()
         syncUiState()
     }
 
@@ -346,6 +504,11 @@ class CodetableEnhancedInputEngine(
             DirectCommandType.OPEN_JEV_COPILOT -> {
                 onOpenJevCopilot()
             }
+            DirectCommandType.TOGGLE_SINGLE_CHAR_MODE -> {
+                val enabled = coordinator.singleCharMode
+                onSingleCharModeChanged?.invoke(enabled)
+                onToast(if (enabled) "✓ 单字模式已开启 (odz)" else "✓ 单字模式已关闭 (odz)")
+            }
         }
     }
 
@@ -353,12 +516,14 @@ class CodetableEnhancedInputEngine(
         val barState = CandidateBarViewModel.mapSnapshot(
             coordinator.snapshotUi(maxCandidates = currentMaxCandidates)
         )
-        _state.value = EngineState(
+        val next = EngineState(
             preedit = barState.preeditText,
             rawCode = barState.rawCode,
             candidates = barState.candidates,
             hasMore = barState.hasMore,
             isComposing = barState.isComposing
         )
+        _state.value = next
+        onUiStateSynced?.invoke(next, coordinator.singleCharMode, currentPinnedWordsForBuffer())
     }
 }

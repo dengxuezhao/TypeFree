@@ -336,7 +336,12 @@ fun KeyboardScreen(
                                         onSelectCandidate = onSelectFlypyCandidate,
                                         onToggleSheet = onToggleFlypyCandidateSheet,
                                         onClearCode = onClearFlypyComposing,
-                                        onRequestMoreCandidates = onRequestMoreCandidates
+                                        onRequestMoreCandidates = onRequestMoreCandidates,
+                                        codetableEnhancerActive = uiState.codetableEnhancerActive,
+                                        pinnedWordsForCurrentCode = uiState.pinnedWordsForCurrentCode,
+                                        onPinCandidate = { onAction(ImeUiAction.PinCandidate(it)) },
+                                        onUnpinCandidate = { onAction(ImeUiAction.UnpinCandidate(it)) },
+                                        onBlockCandidate = { onAction(ImeUiAction.BlockCandidate(it)) }
                                     )
                                 }
 
@@ -411,6 +416,7 @@ fun KeyboardScreen(
                                         onOpenHelpMeWrite = onOpenHelpMeWrite,
                                         onOpenJevCopilot = { onAction(ImeUiAction.OpenJevCopilot) },
                                         onToggleManualIncognito = onToggleManualIncognito,
+                                        onToggleSingleCharMode = { onAction(ImeUiAction.ToggleSingleCharMode) },
                                         onOpenDictionary = { onOpenHostApp(AppDestinations.TAB_DICTIONARY) },
                                         onOpenSettings = { onOpenHostApp(AppDestinations.TAB_SETTINGS) }
                                     )
@@ -491,7 +497,12 @@ fun KeyboardScreen(
                                                 onSelectCandidate = onSelectFlypyCandidate,
                                                 onBackspace = onBackspace,
                                                 onCollapse = onToggleFlypyCandidateSheet,
-                                                onRequestMoreCandidates = onRequestMoreCandidates
+                                                onRequestMoreCandidates = onRequestMoreCandidates,
+                                                codetableEnhancerActive = uiState.codetableEnhancerActive,
+                                                pinnedWordsForCurrentCode = uiState.pinnedWordsForCurrentCode,
+                                                onPinCandidate = { onAction(ImeUiAction.PinCandidate(it)) },
+                                                onUnpinCandidate = { onAction(ImeUiAction.UnpinCandidate(it)) },
+                                                onBlockCandidate = { onAction(ImeUiAction.BlockCandidate(it)) }
                                             )
                                         }
                                     }

@@ -22,6 +22,15 @@ fun interface RimeCodeProber {
 }
 
 /**
+ * First continuation entry encountered in original `.dict.yaml` line order for a prefix of length `2..7`.
+ */
+data class NaturalContinuation(
+    val word: String,
+    val suffixCode: String,
+    val fullCode: String
+)
+
+/**
  * Ultra-lightweight (< 96KB) immutable in-memory index for empty-code 2+(1~2) reverse splitting:
  * - [brief1]: 26 single-letter brief slots (`a..z`, Xiaohe Flypy = 52 entries)
  * - [brief2]: 676 two-letter brief slots (`aa..zz`, Xiaohe Flypy = 898 entries)
@@ -34,7 +43,8 @@ class BriefPrefixIndex(
     private val brief2: Array<List<String>>,
     private val has4CodeFor3Prefix: BitSet,
     private val gt4PackedTable: IntArray,
-    private val gt4GuardTwoPrefixes: Set<String> = emptySet()
+    private val gt4GuardTwoPrefixes: Set<String> = emptySet(),
+    private val naturalContinuations: Map<String, NaturalContinuation> = emptyMap()
 ) {
     private val hasExactGt4Table: Boolean = gt4PackedTable.any { it != EMPTY_SLOT }
 
@@ -104,8 +114,13 @@ class BriefPrefixIndex(
         }
     }
 
+    fun lookupNaturalFirstContinuation(prefix: String): NaturalContinuation? {
+        if (prefix.length !in 2..7) return null
+        return naturalContinuations[prefix]
+    }
+
     /**
-     * Writes compact binary snapshot (`<schema>.brief.idx`, ~30–40KB) for `< 2ms` cold-start reload.
+     * Writes compact binary snapshot (`<schema>.brief.idx`) for fast cold-start reload.
      */
     fun writeSnapshot(targetFile: File) {
         targetFile.parentFile?.mkdirs()
@@ -134,12 +149,19 @@ class BriefPrefixIndex(
 
             out.writeShort(gt4GuardTwoPrefixes.size)
             for (p in gt4GuardTwoPrefixes) out.writeUTF(p)
+
+            out.writeInt(naturalContinuations.size)
+            for ((prefix, nat) in naturalContinuations) {
+                out.writeUTF(prefix)
+                out.writeUTF(nat.word)
+                out.writeUTF(nat.fullCode)
+            }
         }
     }
 
     companion object {
         private const val SNAPSHOT_MAGIC = 0x54464249 // "TFBI"
-        private const val SNAPSHOT_VERSION = 1
+        private const val SNAPSHOT_VERSION = 2
         private const val EMPTY_SLOT = -1
 
         fun empty(): BriefPrefixIndex = BriefPrefixIndex(
@@ -147,14 +169,15 @@ class BriefPrefixIndex(
             brief2 = Array(676) { emptyList() },
             has4CodeFor3Prefix = BitSet(17_576),
             gt4PackedTable = IntArray(16) { EMPTY_SLOT },
-            gt4GuardTwoPrefixes = emptySet()
+            gt4GuardTwoPrefixes = emptySet(),
+            naturalContinuations = emptyMap()
         )
 
         fun readSnapshot(file: File): BriefPrefixIndex {
             DataInputStream(BufferedInputStream(FileInputStream(file), 16 * 1024)).use { input ->
                 val magic = input.readInt()
                 val version = input.readInt()
-                require(magic == SNAPSHOT_MAGIC && version == SNAPSHOT_VERSION) {
+                require(magic == SNAPSHOT_MAGIC && (version == 1 || version == SNAPSHOT_VERSION)) {
                     "Invalid BriefPrefixIndex snapshot header in ${file.name}"
                 }
                 val b1 = Array<List<String>>(26) {
@@ -178,12 +201,36 @@ class BriefPrefixIndex(
                 val guards = LinkedHashSet<String>(guardCount)
                 repeat(guardCount) { guards.add(input.readUTF()) }
 
+                val natMap = if (version >= 2) {
+                    val natCount = input.readInt()
+                    val map = LinkedHashMap<String, NaturalContinuation>(natCount.coerceAtLeast(0))
+                    repeat(natCount) {
+                        val prefix = input.readUTF()
+                        val word = input.readUTF()
+                        val fullCode = input.readUTF()
+                        val suffix = if (fullCode.length > prefix.length) {
+                            fullCode.substring(prefix.length)
+                        } else {
+                            ""
+                        }
+                        map[prefix] = NaturalContinuation(
+                            word = word,
+                            suffixCode = suffix,
+                            fullCode = fullCode
+                        )
+                    }
+                    map
+                } else {
+                    emptyMap()
+                }
+
                 return BriefPrefixIndex(
                     brief1 = b1,
                     brief2 = b2,
                     has4CodeFor3Prefix = bits,
                     gt4PackedTable = hashTable,
-                    gt4GuardTwoPrefixes = guards
+                    gt4GuardTwoPrefixes = guards,
+                    naturalContinuations = natMap
                 )
             }
         }
@@ -203,6 +250,7 @@ class BriefPrefixIndex(
             val b2 = Array(676) { ArrayList<String>(2) }
             val has4Bits = BitSet(17_576)
             val gt4Raw = LinkedHashSet<Int>(1536)
+            val naturalMap = LinkedHashMap<String, NaturalContinuation>()
 
             fun addBriefCandidate(code: String, word: String, prepend: Boolean = false) {
                 if (word.isEmpty() || word in blockedWords || word.contains('$') || word.contains('{')) return
@@ -261,6 +309,25 @@ class BriefPrefixIndex(
                 ) {
                     gt4Raw.add(pack4(code[0], code[1], code[2], code[3]))
                 }
+                if (word.isNotEmpty() &&
+                    word !in blockedWords &&
+                    !word.contains('$') &&
+                    !word.contains('{') &&
+                    code.length >= 3 &&
+                    code.all { it in 'a'..'z' }
+                ) {
+                    val maxPrefixLen = minOf(7, code.length - 1)
+                    for (len in 2..maxPrefixLen) {
+                        val prefix = code.substring(0, len)
+                        if (!naturalMap.containsKey(prefix)) {
+                            naturalMap[prefix] = NaturalContinuation(
+                                word = word,
+                                suffixCode = code.substring(len),
+                                fullCode = code
+                            )
+                        }
+                    }
+                }
             }
 
             // 3. Trailing personal phrases (`flypy_user.txt`: `word \t code`)
@@ -275,7 +342,8 @@ class BriefPrefixIndex(
                 gt4PackedTable = buildOpenHashSet(gt4Raw),
                 gt4GuardTwoPrefixes = gt4GuardTwoPrefixes.filter {
                     it.length == 2 && it[0] in 'a'..'z' && it[1] in 'a'..'z'
-                }.toSet()
+                }.toSet(),
+                naturalContinuations = naturalMap
             )
         }
 

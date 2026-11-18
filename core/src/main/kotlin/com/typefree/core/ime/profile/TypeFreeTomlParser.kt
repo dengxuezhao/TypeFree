@@ -69,7 +69,11 @@ object TypeFreeTomlParser {
             reverseLookupDict = reverseLookup,
             gt4GuardPrefixes = guardPrefixes,
             spellerAlphabet = rawMap["speller_alphabet"]?.let(::unquote)?.ifBlank { null }
-                ?: fallback.spellerAlphabet
+                ?: fallback.spellerAlphabet,
+            englishPrefixVetoEnabled = rawMap["english_prefix_veto_enabled"]?.toBooleanStrictOrNull()
+                ?: fallback.englishPrefixVetoEnabled,
+            autoEncodePhrasesEnabled = rawMap["auto_encode_phrases_enabled"]?.toBooleanStrictOrNull()
+                ?: fallback.autoEncodePhrasesEnabled
         )
     }
 
@@ -93,6 +97,8 @@ object TypeFreeTomlParser {
             appendLine("fifth_key_top_commit = ${profile.fifthKeyTopCommit}")
             appendLine("auto_commit_unique_full = ${profile.autoCommitUniqueFull}")
             appendLine("direct_commands_enabled = ${profile.directCommandsEnabled}")
+            appendLine("english_prefix_veto_enabled = ${profile.englishPrefixVetoEnabled}")
+            appendLine("auto_encode_phrases_enabled = ${profile.autoEncodePhrasesEnabled}")
             if (revDict.isNotEmpty()) {
                 appendLine("reverse_lookup_dict = \"${escape(revDict)}\"")
             }
