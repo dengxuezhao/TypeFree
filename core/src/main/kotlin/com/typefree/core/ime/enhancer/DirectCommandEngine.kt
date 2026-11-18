@@ -86,7 +86,7 @@ object Utf8Safety {
 }
 
 /**
- * Lua-free direct command engine (`orq`, `ouj`, `=expr`, `ofi`, `oqm`, `ovy`, `ojf`, `oai`).
+ * Lua-free direct command engine (`orq`, `orq±N`, `ouj`, `=expr`, `ofi`, `oqm`, `ovy`, `ojf`, `oai`, `odz`, `zz`, `zza..zzf`).
  */
 class DirectCommandEngine(
     private var reverseLookupMap: Map<String, List<String>> = emptyMap(),
@@ -94,8 +94,22 @@ class DirectCommandEngine(
     private val fullCodeEnabledStateProvider: () -> Boolean = { true },
     private val asciiPunctStateProvider: () -> Boolean = { false },
     private val simplificationStateProvider: () -> Boolean = { false },
-    private val zoneId: ZoneId = ZoneId.of("Asia/Shanghai")
+    private val zoneId: ZoneId = ZoneId.of("Asia/Shanghai"),
+    private val activeSchemaIdProvider: () -> String = DEFAULT_SCHEMA_ID_PROVIDER,
+    private val singleCharModeStateProvider: () -> Boolean = DEFAULT_SINGLE_CHAR_PROVIDER,
+    private val dateProvider: () -> LocalDate = DEFAULT_DATE_PROVIDER
 ) {
+    internal var boundSchemaIdProvider: (() -> String)? = null
+    internal var boundSingleCharModeProvider: (() -> Boolean)? = null
+
+    private fun currentSchemaId(): String =
+        if (activeSchemaIdProvider !== DEFAULT_SCHEMA_ID_PROVIDER) activeSchemaIdProvider()
+        else boundSchemaIdProvider?.invoke() ?: activeSchemaIdProvider()
+
+    private fun currentSingleCharMode(): Boolean =
+        if (singleCharModeStateProvider !== DEFAULT_SINGLE_CHAR_PROVIDER) singleCharModeStateProvider()
+        else boundSingleCharModeProvider?.invoke() ?: singleCharModeStateProvider()
+
     fun updateReverseLookupMap(newMap: Map<String, List<String>>) {
         reverseLookupMap = newMap
     }
@@ -105,6 +119,8 @@ class DirectCommandEngine(
     fun isCommandPrefixOrMatch(code: String, enabled: Boolean = true): Boolean {
         if (!enabled || code.isEmpty()) return false
         if (code.startsWith("=")) return code.length >= 2
+        if (code == "oqm") return currentSchemaId() == "flypy"
+        if (parseDateOffsetDays(code) != null) return true
         return code in DIRECT_COMMAND_CODES
     }
 
@@ -130,18 +146,19 @@ class DirectCommandEngine(
         }
 
         val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(nowMillis), zoneId)
+        val baseDate = if (dateProvider !== DEFAULT_DATE_PROVIDER) {
+            dateProvider()
+        } else {
+            zdt.toLocalDate()
+        }
+
+        val offsetDays = parseDateOffsetDays(code)
+        if (offsetDays != null) {
+            return formatDateCandidates(baseDate.plusDays(offsetDays))
+        }
 
         return when (code) {
-            "orq", "date" -> {
-                val cnDate = zdt.format(CN_DATE_FMT)
-                val isoDate = zdt.format(ISO_DATE_FMT)
-                val lunar = ChineseLunarCalendar.formatGanZhiLunar(zdt.toLocalDate())
-                listOf(
-                    EnhancedCandidate(displayText = cnDate, commitText = cnDate),
-                    EnhancedCandidate(displayText = isoDate, commitText = isoDate),
-                    EnhancedCandidate(displayText = lunar, commitText = lunar, codeHint = "农历")
-                )
-            }
+            "orq", "date" -> formatDateCandidates(baseDate)
 
             "ouj", "time" -> {
                 val hm = zdt.format(HM_FMT)
@@ -205,6 +222,7 @@ class DirectCommandEngine(
             }
 
             "oqm" -> {
+                if (currentSchemaId() != "flypy") return emptyList()
                 val currentOn = fullCodeEnabledStateProvider()
                 val statusLabel = if (currentOn) "已开启 → 点击关闭" else "已关闭 → 点击开启"
                 listOf(
@@ -252,12 +270,139 @@ class DirectCommandEngine(
                 )
             }
 
+            "odz" -> {
+                val singleOn = currentSingleCharMode()
+                val label = if (singleOn) "关闭单字模式" else "开启单字模式"
+                listOf(
+                    EnhancedCandidate(
+                        displayText = label,
+                        commitText = "",
+                        codeHint = if (singleOn) "当前仅单字" else "当前字词混排",
+                        action = CommitAction.Command(DirectCommandType.TOGGLE_SINGLE_CHAR_MODE)
+                    )
+                )
+            }
+
+            "zz" -> buildZzOverviewCandidates()
+
+            "zza", "zzb", "zzc", "zzd", "zze", "zzf" -> buildZzGroupCandidates(code)
+
             else -> emptyList()
         }
     }
 
+    private fun formatDateCandidates(date: LocalDate): List<EnhancedCandidate> {
+        val cnDate = date.format(CN_DATE_FMT)
+        val isoDate = date.format(ISO_DATE_FMT)
+        val lunar = ChineseLunarCalendar.formatGanZhiLunar(date)
+        return listOf(
+            EnhancedCandidate(displayText = cnDate, commitText = cnDate),
+            EnhancedCandidate(displayText = isoDate, commitText = isoDate),
+            EnhancedCandidate(displayText = lunar, commitText = lunar, codeHint = "农历")
+        )
+    }
+
+    private fun parseDateOffsetDays(code: String): Long? {
+        val match = DATE_OFFSET_REGEX.matchEntire(code) ?: return null
+        val sign = match.groupValues[1]
+        val n = match.groupValues[2].toLongOrNull() ?: return null
+        if (n !in 0L..3650L) return null
+        return if (sign == "-") -n else n
+    }
+
+    private fun buildZzOverviewCandidates(): List<EnhancedCandidate> {
+        val hints = ZZ_CATEGORY_HINTS.map { (hintLabel, sampleHint) ->
+            EnhancedCandidate(
+                displayText = hintLabel,
+                commitText = "",
+                codeHint = sampleHint,
+                action = CommitAction.PlainText("")
+            )
+        }
+        val popular = ZZ_POPULAR_SYMBOLS.map { sym ->
+            EnhancedCandidate(
+                displayText = sym,
+                commitText = sym,
+                action = CommitAction.PlainText(sym)
+            )
+        }
+        return hints + popular
+    }
+
+    private fun buildZzGroupCandidates(code: String): List<EnhancedCandidate> {
+        val symbols = ZZ_GROUPS[code].orEmpty()
+        return symbols.map { sym ->
+            EnhancedCandidate(
+                displayText = sym,
+                commitText = sym,
+                action = CommitAction.PlainText(sym)
+            )
+        }
+    }
+
     companion object {
-        val DIRECT_COMMAND_CODES = setOf("orq", "date", "ouj", "time", "oxq", "ofi", "oqm", "ovy", "ojf", "oai")
+        internal val DEFAULT_SCHEMA_ID_PROVIDER: () -> String = { "flypy" }
+        internal val DEFAULT_SINGLE_CHAR_PROVIDER: () -> Boolean = { false }
+        internal val DEFAULT_DATE_PROVIDER: () -> LocalDate = { LocalDate.now() }
+
+        private val DATE_OFFSET_REGEX = Regex("^(?:orq|date)([+-])(\\d{1,4})$")
+
+        val DIRECT_COMMAND_CODES = setOf(
+            "orq", "date", "ouj", "time", "oxq", "ofi", "oqm", "ovy", "ojf", "oai", "odz",
+            "zz", "zza", "zzb", "zzc", "zzd", "zze", "zzf"
+        )
+
+        private val ZZ_CATEGORY_HINTS = listOf(
+            "zza 常用符号" to "★ ✓ ※",
+            "zzb 数学/单位" to "± × ℃",
+            "zzc 序号/编号" to "① Ⅰ 一",
+            "zzd 箭头/方向" to "→ ↑ ↙",
+            "zze 制表/几何" to "─ ■ ●",
+            "zzf 标点/括号" to "「」【】"
+        )
+
+        private val ZZ_POPULAR_SYMBOLS = listOf(
+            "★", "✓", "✗", "→", "←", "↑", "↓", "℃", "①", "②", "③",
+            "•", "…", "—", "±", "×", "÷", "°", "￥", "©", "®", "™"
+        )
+
+        private val ZZ_GROUPS: Map<String, List<String>> = mapOf(
+            "zza" to listOf(
+                "★", "☆", "✓", "✗", "✕", "※", "•", "·", "…", "—", "～", "｜",
+                "＠", "＃", "￥", "＄", "€", "£", "©", "®", "™", "§", "¶", "†",
+                "‡", "♠", "♥", "♦", "♣", "☀", "☁", "☂", "☃", "♪", "♫", "⚡"
+            ),
+            "zzb" to listOf(
+                "＋", "－", "×", "÷", "±", "＝", "≠", "≈", "≡", "＜", "＞", "≤",
+                "≥", "∞", "√", "∑", "∏", "∫", "∂", "∆", "∇", "∈", "∉", "⊂",
+                "⊃", "∪", "∩", "∧", "∨", "¬", "∀", "∃", "∴", "∵", "°", "℃",
+                "℉", "‰", "㎡", "㎥", "㎝", "㎜", "㎞", "㎏", "㎖", "Ω", "μ", "π"
+            ),
+            "zzc" to listOf(
+                "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫",
+                "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳", "⑴", "⑵", "⑶", "⑷",
+                "⑸", "⑹", "⑺", "⑻", "⑼", "⑽", "⒈", "⒉", "⒊", "⒋", "⒌", "Ⅰ",
+                "Ⅱ", "Ⅲ", "Ⅳ", "Ⅴ", "Ⅵ", "Ⅶ", "Ⅷ", "Ⅸ", "Ⅹ", "一", "二", "三",
+                "四", "五", "六", "七", "八", "九", "十"
+            ),
+            "zzd" to listOf(
+                "→", "←", "↑", "↓", "↔", "↕", "↖", "↗", "↘", "↙", "⇒", "⇐",
+                "⇑", "⇓", "⇔", "⇕", "➜", "➡", "⬅", "⬆", "⬇", "↩", "↪", "↺",
+                "↻", "⇄", "⇅", "⇆", "➔", "➤", "➢", "➣", "▶", "◀", "▲", "▼"
+            ),
+            "zze" to listOf(
+                "─", "│", "┌", "┐", "└", "┘", "├", "┤", "┬", "┴", "┼", "═",
+                "║", "╔", "╗", "╚", "╝", "╠", "╣", "╦", "╩", "╬", "■", "□",
+                "▪", "▫", "●", "○", "◎", "◉", "▲", "△", "▼", "▽", "◆", "◇",
+                "◈", "★", "☆", "◢", "◣", "◤", "◥"
+            ),
+            "zzf" to listOf(
+                "「", "」", "『", "』", "【", "】", "〔", "〕", "《", "》", "〈", "〉",
+                "（", "）", "［", "］", "｛", "｝", "＂", "＇", "‘", "’", "“", "”",
+                "、", "。", "，", "．", "；", "：", "？", "！", "～", "·", "…", "—"
+            )
+        )
+
         private val CN_DATE_FMT = DateTimeFormatter.ofPattern("yyyy年MM月dd日", Locale.CHINA)
         private val ISO_DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.US)
         private val HM_FMT = DateTimeFormatter.ofPattern("HH:mm", Locale.US)
