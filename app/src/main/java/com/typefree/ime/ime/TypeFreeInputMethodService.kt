@@ -24,6 +24,7 @@ import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.bubble.CapturedChatContext
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.HistoryRetention
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
@@ -164,11 +165,20 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 val dm = TypeFreeApp.instance.rimeDataManager
                 val schemeChanged = lastScheme != currentSettings.inputScheme
                 TypeFreeApp.instance.rimeInputEngine.setInputScheme(currentSettings.inputScheme)
-                if (dm.isSchemeHandledByEnhancedEngine(currentSettings.inputScheme) &&
-                    (schemeChanged || typingController.codetableEnhancedEngine == null)
-                ) {
-                    dm.activateEnhancedSchemeSync(currentSettings.inputScheme)
-                    bindCodetableEnhancedEngineIfAvailable()
+                if (dm.isSchemeHandledByEnhancedEngine(currentSettings.inputScheme)) {
+                    val expectedSchemaId = if (currentSettings.inputScheme == InputScheme.FLYPY_TABLE) {
+                        "flypy"
+                    } else {
+                        dm.resolveCustomSchemaId()
+                    }
+                    val needsActivation = schemeChanged ||
+                        typingController.codetableEnhancedEngine == null ||
+                        dm.rimeBridge.activeSchemaId != expectedSchemaId ||
+                        typingController.codetableEnhancedEngine?.activeProfile?.schemaId != expectedSchemaId
+                    if (needsActivation) {
+                        dm.activateEnhancedSchemeSync(currentSettings.inputScheme)
+                        bindCodetableEnhancedEngineIfAvailable()
+                    }
                 }
                 typingController.updateSnippets(currentSettings.snippets)
                 typingController.setFixedCandidateOrder(currentSettings.fixedCandidateOrder)

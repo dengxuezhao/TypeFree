@@ -162,6 +162,12 @@ fun DictionaryScreen(repository: AppRepository) {
     val isCustomActive = remember(flypyDict) {
         FlypyDictionary.isCustomDictionaryActive(context)
     }
+    val xiaoheSchemaInstalled = remember(rimeDeployState) {
+        TypeFreeApp.instance.rimeDataManager.hasXiaoheSchemaInstalled()
+    }
+    val isEnhancedXiaoheActive = settings.inputScheme == InputScheme.FLYPY_TABLE &&
+        (rimeDeployState is RimeDeploymentState.Ready || xiaoheSchemaInstalled) &&
+        xiaoheSchemaInstalled
     var showRimeImportDialog by remember { mutableStateOf(false) }
     var showRestoreConfirmDialog by remember { mutableStateOf(false) }
 
@@ -522,18 +528,19 @@ fun DictionaryScreen(repository: AppRepository) {
 
                         Surface(
                             shape = RoundedCornerShape(50),
-                            color = if (isCustomActive || settings.inputScheme.usesRime) TypeFreeEmerald.copy(alpha = 0.15f)
+                            color = if (isCustomActive || settings.inputScheme.usesRime || isEnhancedXiaoheActive) TypeFreeEmerald.copy(alpha = 0.15f)
                             else MaterialTheme.colorScheme.surfaceVariant
                         ) {
                             Text(
                                 text = when {
+                                    isEnhancedXiaoheActive -> "当前：小鹤音形 (Rime 原生码表)"
                                     settings.inputScheme.usesRime -> "当前：${settings.inputScheme.label} (音形备选 ${flypyDict.codeCount} 编码)"
                                     isCustomActive -> "自定义音形 (${flypyDict.codeCount} 编码)"
                                     else -> "内置四码表 (${flypyDict.codeCount} 编码)"
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
-                                color = if (isCustomActive || settings.inputScheme.usesRime) TypeFreeEmerald
+                                color = if (isCustomActive || settings.inputScheme.usesRime || isEnhancedXiaoheActive) TypeFreeEmerald
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
                             )
@@ -542,6 +549,8 @@ fun DictionaryScreen(repository: AppRepository) {
 
                     Text(
                         text = when {
+                            isEnhancedXiaoheActive ->
+                                "当前键盘激活「小鹤音形」（由上方原生 librime 1.17.0 引擎驱动，一简/二简/四码字词默认锁定码表原序，并启用空码二简逆切分与 ; 双模态快符）。"
                             settings.inputScheme.usesRime ->
                                 "当前键盘激活「${settings.inputScheme.label}」（由上方原生 librime 1.17.0 引擎驱动）。本卡片管理「小鹤音形（四码）」方案的 TSV 顶功码表，导入后切到小鹤音形即可生效。"
                             isCustomActive ->
@@ -714,7 +723,7 @@ fun DictionaryScreen(repository: AppRepository) {
                             )
                         }
                         Switch(
-                            checked = settings.fixedCandidateOrder == true,
+                            checked = settings.fixedCandidateOrder ?: (isEnhancedXiaoheActive || settings.inputScheme == InputScheme.FLYPY_TABLE),
                             onCheckedChange = { fixed ->
                                 repository.updateSettings { it.copy(fixedCandidateOrder = fixed) }
                             }

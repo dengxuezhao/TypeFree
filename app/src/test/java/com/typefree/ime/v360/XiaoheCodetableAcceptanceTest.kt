@@ -15,7 +15,10 @@ import com.typefree.ime.commit.EditorBatchConnection
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.HistoryRetention
+import com.typefree.ime.data.InMemoryKeyValueStore
 import com.typefree.ime.data.InputScheme
+import com.typefree.ime.data.JvmAesGcmCipher
+import com.typefree.ime.data.SecretVault
 import com.typefree.ime.ime.ImeHostCallbacks
 import com.typefree.ime.ime.ImeLogic
 import com.typefree.ime.ime.ImeUiState
@@ -701,11 +704,10 @@ class XiaoheCodetableAcceptanceTest {
                 schemaDir = sharedDir
             )
 
-            // 1) Normal Xiaohe input `n` -> `你`, `内容`
+            // 1) Normal Xiaohe input `n` -> exact 2 candidates `["你", "内容"]` (no pinyin/completion leakage)
             engine.onKey(KeyInput.CharKey('n'))
             val nCandidates = engine.state.value.candidates.map { it.text }
-            assertTrue("Expected `你` for `n`, got $nCandidates", "你" in nCandidates)
-            assertTrue("Expected `内容` for `n`, got $nCandidates", "内容" in nCandidates)
+            assertEquals("Expected exact Xiaohe 1-brief candidates for `n`, got $nCandidates", listOf("你", "内容"), nCandidates)
             engine.clear()
 
             // 2) >4-code `okhguu` -> `丁` (must NOT be truncated to `khguu`)
@@ -823,6 +825,82 @@ class XiaoheCodetableAcceptanceTest {
             }
         } finally {
             tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `Overwrite-install on com_typefree_ime migrates xiaohe flavor once to FLYPY_TABLE while keeping manual overrides`() {
+        // Pure migration matrix across both flavors
+        assertEquals(
+            InputScheme.FLYPY_TABLE,
+            AppRepository.resolveUpgradedInputScheme(
+                rawInputScheme = InputScheme.RIME_PINYIN,
+                isXiaoheFlavor = true,
+                alreadyMigratedXiaoheScheme = false
+            )
+        )
+        assertEquals(
+            InputScheme.FLYPY_TABLE,
+            AppRepository.resolveUpgradedInputScheme(
+                rawInputScheme = InputScheme.RIME_DOUBLE_PINYIN_FLYPY,
+                isXiaoheFlavor = true,
+                alreadyMigratedXiaoheScheme = false
+            )
+        )
+        assertEquals(
+            InputScheme.RIME_CUSTOM,
+            AppRepository.resolveUpgradedInputScheme(
+                rawInputScheme = InputScheme.RIME_CUSTOM,
+                isXiaoheFlavor = true,
+                alreadyMigratedXiaoheScheme = false
+            )
+        )
+        assertEquals(
+            InputScheme.RIME_DOUBLE_PINYIN_FLYPY,
+            AppRepository.resolveUpgradedInputScheme(
+                rawInputScheme = InputScheme.RIME_DOUBLE_PINYIN_FLYPY,
+                isXiaoheFlavor = true,
+                alreadyMigratedXiaoheScheme = true
+            )
+        )
+        assertEquals(
+            InputScheme.RIME_PINYIN,
+            AppRepository.resolveUpgradedInputScheme(
+                rawInputScheme = InputScheme.RIME_PINYIN,
+                isXiaoheFlavor = false,
+                alreadyMigratedXiaoheScheme = false
+            )
+        )
+
+        val publicStore = InMemoryKeyValueStore()
+        val secretStore = InMemoryKeyValueStore()
+        val cipher = JvmAesGcmCipher()
+        publicStore.putString(
+            AppRepository.KEY_SETTINGS,
+            """{"inputScheme":"RIME_PINYIN","fixedCandidateOrder":true}"""
+        )
+
+        val upgradedRepo = AppRepository(
+            appContext = null,
+            publicStore = publicStore,
+            secretVault = SecretVault(secretStore, cipher)
+        )
+        assertEquals(true, upgradedRepo.settings.value.fixedCandidateOrder)
+        if (com.typefree.ime.BuildConfig.IS_XIAOHE_FLAVOR) {
+            assertEquals(InputScheme.FLYPY_TABLE, upgradedRepo.settings.value.inputScheme)
+            assertTrue(publicStore.getBoolean(AppRepository.KEY_MIGRATED_V360_XIAOHE_SCHEME, false))
+
+            // Subsequent manual switch after one-time migration must stick across reload
+            upgradedRepo.updateSettings { it.copy(inputScheme = InputScheme.RIME_DOUBLE_PINYIN_FLYPY) }
+            val reloadedRepo = AppRepository(
+                appContext = null,
+                publicStore = publicStore,
+                secretVault = SecretVault(secretStore, cipher)
+            )
+            assertEquals(InputScheme.RIME_DOUBLE_PINYIN_FLYPY, reloadedRepo.settings.value.inputScheme)
+            assertEquals(true, reloadedRepo.settings.value.fixedCandidateOrder)
+        } else {
+            assertEquals(InputScheme.RIME_PINYIN, upgradedRepo.settings.value.inputScheme)
         }
     }
 }
