@@ -36,6 +36,8 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -81,6 +83,7 @@ import com.typefree.ime.data.DictionarySource
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.SnippetEntry
 import com.typefree.ime.data.SnippetMatcher
+import com.typefree.core.ime.profile.SchemaArchetype
 import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.TypeFreeEmerald
@@ -165,6 +168,12 @@ fun DictionaryScreen(repository: AppRepository) {
     val xiaoheSchemaInstalled = remember(rimeDeployState) {
         TypeFreeApp.instance.rimeDataManager.hasXiaoheSchemaInstalled()
     }
+    val metadataVersion by TypeFreeApp.instance.rimeDataManager.metadataVersion.collectAsState()
+    val activeProfile = remember(rimeDeployState, settings.inputScheme, metadataVersion) {
+        TypeFreeApp.instance.rimeDataManager.activeSchemaProfile
+    }
+    val isCodetableMode = activeProfile.archetype != SchemaArchetype.SENTENCE_PINYIN ||
+        settings.inputScheme == InputScheme.FLYPY_TABLE
     val isEnhancedXiaoheActive = settings.inputScheme == InputScheme.FLYPY_TABLE &&
         (rimeDeployState is RimeDeploymentState.Ready || xiaoheSchemaInstalled) &&
         xiaoheSchemaInstalled
@@ -488,8 +497,15 @@ fun DictionaryScreen(repository: AppRepository) {
             }
         } else if (primarySectionTab == 2) {
 
-        // 1.5 Custom Rime / Yinxing IME Engine Table Card (Dedicated Segment 2)
+        // 1.5 Top Status Banner: SchemaProfile + Active Codetable Badge + Zip Import
         item(key = "dict_rime_custom_card") {
+            val isDeployingRime = rimeDeployState is RimeDeploymentState.Deploying
+            val archetypeTag = when (activeProfile.archetype) {
+                SchemaArchetype.FIXED_YINXING -> "四码定长音形"
+                SchemaArchetype.PUSH_TOPUP_CODE -> "顶功变长方案"
+                SchemaArchetype.FIXED_SHAPECODE -> "纯形定长码表"
+                SchemaArchetype.SENTENCE_PINYIN -> "整句拼音"
+            }
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
@@ -516,7 +532,7 @@ fun DictionaryScreen(repository: AppRepository) {
                             Icon(
                                 imageVector = TypeFreeIcons.KeyboardGrid,
                                 contentDescription = null,
-                                tint = if (isCustomActive) TypeFreeEmerald else MaterialTheme.colorScheme.primary,
+                                tint = if (isCustomActive || isCodetableMode) TypeFreeEmerald else MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(20.dp)
                             )
                             Text(
@@ -534,7 +550,8 @@ fun DictionaryScreen(repository: AppRepository) {
                             Text(
                                 text = when {
                                     isEnhancedXiaoheActive -> "当前：小鹤音形 (Rime 原生码表)"
-                                    settings.inputScheme.usesRime -> "当前：${settings.inputScheme.label} (音形备选 ${flypyDict.codeCount} 编码)"
+                                    settings.inputScheme == InputScheme.RIME_CUSTOM -> "当前：${activeProfile.displayName} ($archetypeTag)"
+                                    settings.inputScheme.usesRime -> "当前：${settings.inputScheme.label} ($archetypeTag)"
                                     isCustomActive -> "自定义音形 (${flypyDict.codeCount} 编码)"
                                     else -> "内置四码表 (${flypyDict.codeCount} 编码)"
                                 },
@@ -551,52 +568,18 @@ fun DictionaryScreen(repository: AppRepository) {
                         text = when {
                             isEnhancedXiaoheActive ->
                                 "当前键盘激活「小鹤音形」（由上方原生 librime 1.17.0 引擎驱动，一简/二简/四码字词默认锁定码表原序，并启用空码二简逆切分与 ; 双模态快符）。"
+                            isCodetableMode ->
+                                "当前处于码表模式「${activeProfile.displayName}」（$archetypeTag · schema_id=${activeProfile.schemaId}）。可通过下方进阶面板管理方案、置顶/自造词、; 快符与扩展词库。"
                             settings.inputScheme.usesRime ->
-                                "当前键盘激活「${settings.inputScheme.label}」（由上方原生 librime 1.17.0 引擎驱动）。本卡片管理「小鹤音形（四码）」方案的 TSV 顶功码表，导入后切到小鹤音形即可生效。"
+                                "当前键盘激活「${settings.inputScheme.label}」（由上方原生 librime 1.17.0 引擎驱动）。支持导入 Rime 方案包或切换开源预设码表。"
                             isCustomActive ->
                                 "当前已挂载私有音形码表，单字与词组在键盘中优先生效。可随时导入新码表或一键恢复内置词库。"
                             else ->
-                                "当前使用内置开源四码词库。支持导入您个人的 TSV 码表（如小鹤音形、五笔、虎码等）实现四码定长顶功输入。"
+                                "当前使用内置开源四码词库。支持导入 Rime 方案包或个人 TSV 码表实现定长/顶功输入。"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 18.sp
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Button(
-                            onClick = { showRimeImportDialog = true },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(vertical = 8.dp)
-                        ) {
-                            Text(
-                                text = "导入自定义码表 (TSV)",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        if (isCustomActive) {
-                            OutlinedButton(
-                                onClick = { showRestoreConfirmDialog = true },
-                                shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                            ) {
-                                Text(
-                                    text = "恢复默认",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-                    }
-
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
                     )
 
                     // Rime Deployment Status & Progress Row
@@ -621,7 +604,7 @@ fun DictionaryScreen(repository: AppRepository) {
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            if (rimeDeployState is RimeDeploymentState.Deploying) {
+                            if (isDeployingRime) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(14.dp),
                                     strokeWidth = 2.dp
@@ -640,62 +623,22 @@ fun DictionaryScreen(repository: AppRepository) {
                         }
                     }
 
-                    // On-demand full rime-ice download + Rime .zip schema package import
-                    Row(
+                    OutlinedButton(
+                        onClick = {
+                            rimeZipPickerLauncher.launch(
+                                arrayOf("application/zip", "application/x-zip-compressed", "*/*")
+                            )
+                        },
+                        enabled = !isDeployingRime,
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp)
                     ) {
-                        val isDeployingRime = rimeDeployState is RimeDeploymentState.Deploying
-                        val hasFullIce = (rimeDeployState as? RimeDeploymentState.Ready)?.hasFullRimeIce == true
-                        FilledTonalButton(
-                            onClick = {
-                                rimeScope.launch {
-                                    try {
-                                        val ready = TypeFreeApp.instance.rimeDataManager.downloadFullRimeIceDictionary()
-                                        val count = (ready as? RimeDeploymentState.Ready)?.wordCount ?: 0
-                                        Toast.makeText(
-                                            context,
-                                            "✓ 完整雾凇拼音词库已部署 ($count 词条)",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    } catch (e: Exception) {
-                                        Toast.makeText(
-                                            context,
-                                            "雾凇词库下载失败: ${e.message ?: "请检查网络"}",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-                                }
-                            },
-                            enabled = !isDeployingRime,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
-                        ) {
-                            Text(
-                                text = if (hasFullIce) "更新雾凇完整词库" else "按需下载雾凇完整词库",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                rimeZipPickerLauncher.launch(
-                                    arrayOf("application/zip", "application/x-zip-compressed", "*/*")
-                                )
-                            },
-                            enabled = !isDeployingRime,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
-                        ) {
-                            Text(
-                                text = "导入 Rime 方案包 (.zip)",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
+                        Text(
+                            text = "导入 Rime 方案包 (.zip)",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
 
                     // 1-Row Advanced Toggle: Fixed Candidate Order (`fixedCandidateOrder`)
@@ -728,6 +671,145 @@ fun DictionaryScreen(repository: AppRepository) {
                                 repository.updateSettings { it.copy(fixedCandidateOrder = fixed) }
                             }
                         )
+                    }
+                }
+            }
+        }
+
+        // 1.6 Codetable Advanced Management Card
+        item(key = "codetable_advanced_management_card") {
+            CodetableAdvancedManagementCard(
+                repository = repository,
+                settings = settings,
+                activeProfile = activeProfile,
+                rimeDeployState = rimeDeployState,
+                defaultExpanded = isCodetableMode
+            )
+        }
+
+        // 1.7 Pinyin & Legacy TSV Compatibility Tools (collapsed automatically in codetable mode)
+        item(key = "dict_pinyin_compat_tools_card") {
+            val isDeployingRime = rimeDeployState is RimeDeploymentState.Deploying
+            val hasFullIce = (rimeDeployState as? RimeDeploymentState.Ready)?.hasFullRimeIce == true
+            var compatToolsExpanded by rememberSaveable(isCodetableMode) {
+                mutableStateOf(!isCodetableMode)
+            }
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { compatToolsExpanded = !compatToolsExpanded }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = if (isCodetableMode) {
+                                "拼音词库与兼容工具（码表模式下已收起，点击展开）"
+                            } else {
+                                "拼音词库与兼容工具"
+                            },
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp)
+                        )
+                        Icon(
+                            imageVector = if (compatToolsExpanded) {
+                                Icons.Default.KeyboardArrowUp
+                            } else {
+                                Icons.Default.KeyboardArrowDown
+                            },
+                            contentDescription = if (compatToolsExpanded) "收起" else "展开",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    AnimatedVisibility(visible = compatToolsExpanded) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                            )
+
+                            FilledTonalButton(
+                                onClick = {
+                                    rimeScope.launch {
+                                        try {
+                                            val ready = TypeFreeApp.instance.rimeDataManager.downloadFullRimeIceDictionary()
+                                            val count = (ready as? RimeDeploymentState.Ready)?.wordCount ?: 0
+                                            Toast.makeText(
+                                                context,
+                                                "✓ 完整雾凇拼音词库已部署 ($count 词条)",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        } catch (e: Exception) {
+                                            Toast.makeText(
+                                                context,
+                                                "雾凇词库下载失败: ${e.message ?: "请检查网络"}",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                    }
+                                },
+                                enabled = !isDeployingRime,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = if (hasFullIce) "更新雾凇完整词库" else "按需下载雾凇完整词库",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Button(
+                                    onClick = { showRimeImportDialog = true },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        text = "导入自定义码表 (TSV)",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+
+                                if (isCustomActive) {
+                                    OutlinedButton(
+                                        onClick = { showRestoreConfirmDialog = true },
+                                        shape = RoundedCornerShape(10.dp),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                                    ) {
+                                        Text(
+                                            text = "恢复默认",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

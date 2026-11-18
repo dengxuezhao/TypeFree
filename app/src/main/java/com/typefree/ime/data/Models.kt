@@ -449,6 +449,8 @@ data class AppSettings(
     val liveWriteToEditor: Boolean = true, // 实时写入输入框（v3.0 默认开启）
     val inputScheme: InputScheme = if (com.typefree.ime.BuildConfig.USE_PRIVATE_DICT) InputScheme.FLYPY_TABLE else InputScheme.RIME_PINYIN, // 音形专享版或老用户升级默认 FLYPY_TABLE；标准版新装默认 RIME_PINYIN (真实 librime 1.17.0)
     val fixedCandidateOrder: Boolean? = null, // null = 按方案自动
+    val englishPrefixVetoEnabled: Boolean = true,
+    val codetableAutoEncodeEnabled: Boolean = false,
     val predictionEnabled: Boolean = true,
     val aiCompletionEnabled: Boolean = false,
     val chatContextReplyEnabled: Boolean = false, // 读屏上下文「AI 帮回」（默认关闭，需首次披露同意后开启）
