@@ -556,6 +556,101 @@ class CodetableV361EnhancementsTest {
     }
 
     @Test
+    fun `4b_auto_encoder_and_shadow_override_4code_speller_autocommit_and_3char_reject`() {
+        val tempDir = Files.createTempDirectory("auto_enc_speller_").toFile()
+        try {
+            val encoder = CodetableAutoEncoder(File(tempDir, "flypy_user.txt"), "flypy")
+            val shadowMgr = ShadowDictManager(tempDir, "flypy")
+
+            // Encode two 2-char phrases:
+            // 1) 正(vg) + 并(bk) -> 正并 (vgbk), which collides with unique static Rime entry 征兵 (vgbk)
+            assertNull(encoder.recordCommittedUnit("正", "vg"))
+            assertEquals(EncodedPhrase("正并", "vgbk"), encoder.recordCommittedUnit("并", "bk"))
+            // 2) 但(dj) + 正(vg) -> 但正 (djvg), which is absent from static Rime table
+            encoder.resetSession()
+            assertNull(encoder.recordCommittedUnit("但", "dj"))
+            assertEquals(EncodedPhrase("但正", "djvg"), encoder.recordCommittedUnit("正", "vg"))
+            encoder.resetSession()
+
+            // Simulates real librime speller with auto_select: true:
+            // - `vgbk`: unique 4-code static entry `征兵` -> Rime returns rawInput="", autoCommittedText="征兵"
+            // - `djvg`: absent 4-code entry -> Rime auto-commits 3-char `单机` and leaves rawInput="g"
+            val spellerPort = object : RimeCoreSessionPort {
+                private val buf = StringBuilder()
+                override fun sendChar(ch: Char): RimeDecodeFrame {
+                    buf.append(ch)
+                    return when (val cur = buf.toString()) {
+                        "vgbk" -> {
+                            buf.clear()
+                            RimeDecodeFrame(rawInput = "", preedit = "", candidates = emptyList(), autoCommittedText = "征兵")
+                        }
+                        "djvg" -> {
+                            buf.clear().append('g')
+                            RimeDecodeFrame(rawInput = "g", preedit = "g", candidates = listOf("个" to ""), autoCommittedText = "单机")
+                        }
+                        else -> RimeDecodeFrame(rawInput = cur, preedit = cur)
+                    }
+                }
+                override fun sendBackspace(): RimeDecodeFrame {
+                    if (buf.isNotEmpty()) buf.deleteCharAt(buf.length - 1)
+                    val cur = buf.toString()
+                    return RimeDecodeFrame(rawInput = cur, preedit = cur)
+                }
+                override fun selectCandidate(index: Int): Pair<String?, RimeDecodeFrame> = null to RimeDecodeFrame()
+                override fun commitCurrentComposition(): String? = null
+                override fun clearComposition() { buf.clear() }
+                override fun currentFrame(maxCandidates: Int): RimeDecodeFrame {
+                    val cur = buf.toString()
+                    return RimeDecodeFrame(rawInput = cur, preedit = cur)
+                }
+                override fun setOption(option: String, value: Boolean) {}
+                override fun getOption(option: String): Boolean = false
+            }
+
+            val coord = TypeFreeKeyCoordinator(
+                profile = SchemaProfile.defaultXiaoheFlypy(),
+                rimePort = spellerPort,
+                shadowDictManager = shadowMgr,
+                autoEncoder = encoder
+            )
+            coord.setAutoEncodeEnabled(true)
+
+            // 1) `vgbk`: must NOT silently auto-commit 征兵; must surface [征兵, 正并] cleanly
+            for (c in "vgbk") {
+                val out = coord.onCharKey(c)
+                assertTrue("vgbk must stay composing with both 征兵 and 正并", out is CoordinatorKeyOutcome.Consumed)
+            }
+            assertEquals(listOf("征兵", "正并"), coord.snapshotUi().candidates.map { it.commitText })
+            val pickUser = coord.selectCandidate(1) as CoordinatorKeyOutcome.Commit
+            assertEquals("正并", (pickUser.action as CommitAction.PlainText).text)
+            assertFalse(coord.isComposing)
+
+            // 2) Pin `正并` on `vgbk` -> hoisted to #1 ahead of `征兵`
+            shadowMgr.pinWord("vgbk", "正并")
+            coord.reloadShadowRules()
+            for (c in "vgbk") coord.onCharKey(c)
+            assertEquals(listOf("正并", "征兵"), coord.snapshotUi().candidates.map { it.commitText })
+            assertEquals("正并", ((coord.selectCandidate(0) as CoordinatorKeyOutcome.Commit).action as CommitAction.PlainText).text)
+
+            // 3) `djvg`: must veto premature 3-char `单机` auto-commit and auto-commit unique `但正`
+            coord.onCharKey('d'); coord.onCharKey('j'); coord.onCharKey('v')
+            val djvgOutcome = coord.onCharKey('g')
+            assertTrue("djvg must commit 但正 on 4th key", djvgOutcome is CoordinatorKeyOutcome.Commit)
+            assertEquals("但正", ((djvgOutcome as CoordinatorKeyOutcome.Commit).action as CommitAction.PlainText).text)
+            assertFalse(coord.isComposing)
+
+            // 4) With autoCommitUniqueFull=false, `djvg` stays composing with [`但正`]
+            coord.updateProfile(SchemaProfile.defaultXiaoheFlypy().copy(autoCommitUniqueFull = false, autoEncodePhrasesEnabled = true))
+            for (c in "djvg") {
+                assertTrue(coord.onCharKey(c) is CoordinatorKeyOutcome.Consumed)
+            }
+            assertEquals(listOf("但正"), coord.snapshotUi().candidates.map { it.commitText })
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `5_direct_commands_orq_offset_odz_oqm_restriction_and_zz_symbol_groups`() {
         val fixedDate = LocalDate.of(2026, 11, 18)
         var currentSchema = "flypy"
