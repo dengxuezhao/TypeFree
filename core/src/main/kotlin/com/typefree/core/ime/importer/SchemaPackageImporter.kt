@@ -107,7 +107,15 @@ class SchemaPackageImporter(
             val rawSchemaText = schemaFile.readText(StandardCharsets.UTF_8)
             val initialMeta = SchemaInspector.parseSchemaYaml(rawSchemaText)
             val schemaId = initialMeta.schemaId
+            val isXiaohe = schemaId == "flypy" || initialMeta.displayName.contains("小鹤音形")
             val mainDictName = initialMeta.mainDictionary ?: schemaId
+
+            if (isXiaohe) {
+                val rimeLua = File(realRoot, "rime.lua")
+                if (rimeLua.exists() && rimeLua.delete()) {
+                    strippedDesktopFiles.add(rimeLua.name)
+                }
+            }
 
             val mainDictFile = findFileRecursive(realRoot, "$mainDictName.dict.yaml")
             val precompiledTableBin = File(realRoot, "build/$schemaId.table.bin")
@@ -420,7 +428,7 @@ class SchemaPackageImporter(
     private fun normalizeAllTextFiles(root: File) {
         root.walkTopDown().filter { it.isFile }.forEach { file ->
             val lower = file.name.lowercase()
-            if (lower.endsWith(".yaml") || lower.endsWith(".txt") || lower.endsWith(".toml") || lower.endsWith(".tsv")) {
+            if (lower.endsWith(".yaml") || lower.endsWith(".txt") || lower.endsWith(".toml") || lower.endsWith(".tsv") || lower.endsWith(".lua")) {
                 val rawBytes = file.readBytes()
                 val decoded = decodeUtf8OrGb18030(rawBytes)
                 val normalized = decoded
@@ -544,10 +552,10 @@ class SchemaPackageImporter(
                 if (inOkMode) hasOkModeBlock = true
             }
 
-            if (trimmed.startsWith("- lua_translator")) {
+            if (isXiaohe && isLuaPluginLine(trimmed)) {
                 val luaName = trimmed.removePrefix("-").trim()
                 sanitizedLuaOut.add(luaName)
-                outLines.add(line.replaceFirst("- lua_translator", "# [TypeFree DirectCommand] - lua_translator"))
+                outLines.add(line.replaceFirst("- lua_", "# [TypeFree DirectCommand] - lua_"))
                 continue
             }
 
@@ -614,6 +622,13 @@ class SchemaPackageImporter(
     }
 
     companion object {
+        private fun isLuaPluginLine(trimmed: String): Boolean {
+            return trimmed.startsWith("- lua_processor") ||
+                trimmed.startsWith("- lua_segmentor") ||
+                trimmed.startsWith("- lua_translator") ||
+                trimmed.startsWith("- lua_filter")
+        }
+
         const val MAX_UNZIPPED_BYTES = 150L * 1024L * 1024L
         val DESKTOP_FRONTEND_FILES = setOf(
             "default.yaml",
@@ -621,13 +636,15 @@ class SchemaPackageImporter(
             "squirrel.yaml",
             "squirrel.custom.yaml",
             "weasel.yaml",
-            "weasel.custom.yaml",
-            "rime.lua"
+            "weasel.custom.yaml"
         )
 
         fun isDesktopFrontendFile(fileName: String): Boolean {
             val lower = fileName.lowercase()
-            return lower in DESKTOP_FRONTEND_FILES || lower.endsWith(".trime.yaml")
+            return lower in DESKTOP_FRONTEND_FILES ||
+                lower.startsWith("squirrel.") ||
+                lower.startsWith("weasel.") ||
+                lower.endsWith(".trime.yaml")
         }
 
         fun sha256Hex(file: File): String {
