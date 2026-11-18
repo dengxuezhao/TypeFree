@@ -318,6 +318,94 @@ class CodetableV361EnhancementsTest {
     }
 
     @Test
+    fun `2b_english_veto_handles_real_librime_speller_reject_and_3code_autocommit_on_4th_key`() {
+        // Simulates real flypy.schema.yaml speller (`auto_select: true`, `auto_select_pattern: ^(?!o[ks])[a-z]{4}$`):
+        // 1) `gith`: `git` has no dict entry -> Rime discards `git` at 4th key 'h' and returns rawInput="h", candidates=[和, 忽略]
+        // 2) `goog`: `goo` has dict entry `腘` -> Rime auto-commits `腘` at 4th key 'g' and returns rawInput="g"
+        // 3) `pyth`: valid 4-code Chinese entry -> Rime keeps rawInput="pyth", candidates=[跑一趟, 朋友] (NOT hijacked)
+        val rimeSpellerPort = object : RimeCoreSessionPort {
+            private val buf = StringBuilder()
+            override fun sendChar(ch: Char): RimeDecodeFrame {
+                buf.append(ch)
+                return when (val cur = buf.toString()) {
+                    "gith" -> {
+                        buf.clear().append('h')
+                        RimeDecodeFrame(rawInput = "h", preedit = "h", candidates = listOf("和" to "", "忽略" to ""))
+                    }
+                    "goog" -> {
+                        buf.clear().append('g')
+                        RimeDecodeFrame(
+                            rawInput = "g",
+                            preedit = "g",
+                            candidates = listOf("个" to ""),
+                            autoCommittedText = "腘"
+                        )
+                    }
+                    "pyth" -> RimeDecodeFrame(
+                        rawInput = "pyth",
+                        preedit = "pyth",
+                        candidates = listOf("跑一趟" to "", "朋友" to "")
+                    )
+                    else -> RimeDecodeFrame(rawInput = cur, preedit = cur, candidates = emptyList())
+                }
+            }
+            override fun sendBackspace(): RimeDecodeFrame {
+                if (buf.isNotEmpty()) buf.deleteCharAt(buf.length - 1)
+                val cur = buf.toString()
+                return RimeDecodeFrame(rawInput = cur, preedit = cur)
+            }
+            override fun selectCandidate(index: Int): Pair<String?, RimeDecodeFrame> = null to RimeDecodeFrame()
+            override fun commitCurrentComposition(): String? = null
+            override fun clearComposition() { buf.clear() }
+            override fun currentFrame(maxCandidates: Int): RimeDecodeFrame {
+                val cur = buf.toString()
+                val cands = if (cur == "pyth") {
+                    listOf("跑一趟" to "", "朋友" to "")
+                } else {
+                    emptyList()
+                }
+                return RimeDecodeFrame(rawInput = cur, preedit = cur, candidates = cands)
+            }
+            override fun setOption(option: String, value: Boolean) {}
+            override fun getOption(option: String): Boolean = false
+        }
+
+        val coord = TypeFreeKeyCoordinator(
+            profile = SchemaProfile.defaultXiaoheFlypy(),
+            rimePort = rimeSpellerPort
+        )
+
+        // 1) `gith` -> vetoed despite Rime returning rawInput="h"
+        for (c in "gith") {
+            assertTrue(coord.onCharKey(c) is CoordinatorKeyOutcome.Consumed)
+        }
+        assertEquals("gith", coord.snapshotUi().rawCode)
+        assertTrue(coord.snapshotUi().candidates.any { it.commitText == "github" })
+        coord.onCharKey('u')
+        coord.onCharKey('b')
+        val gitCommit = coord.onSpace() as CoordinatorKeyOutcome.Commit
+        assertEquals("github", (gitCommit.action as CommitAction.PlainText).text)
+
+        // 2) `goog` -> vetoed despite Rime auto-committing 3-code `腘` and leaving rawInput="g"
+        for (c in "goog") {
+            val out = coord.onCharKey(c)
+            assertTrue("goog must NOT prematurely commit 腘 at key '$c'", out is CoordinatorKeyOutcome.Consumed)
+        }
+        assertEquals("goog", coord.snapshotUi().rawCode)
+        assertTrue(coord.snapshotUi().candidates.any { it.commitText == "google" })
+        coord.onCharKey('l')
+        coord.onCharKey('e')
+        val googleCommit = coord.onSpace() as CoordinatorKeyOutcome.Commit
+        assertEquals("google", (googleCommit.action as CommitAction.PlainText).text)
+
+        // 3) `pyth` -> real 4-code Chinese candidates preserved
+        for (c in "pyth") {
+            assertTrue(coord.onCharKey(c) is CoordinatorKeyOutcome.Consumed)
+        }
+        assertEquals(listOf("跑一趟", "朋友"), coord.snapshotUi().candidates.map { it.commitText })
+    }
+
+    @Test
     fun `3_shadow_dict_manager_pin_block_persistence_and_selection_consistency`() {
         val tempDir = Files.createTempDirectory("shadow_dict_").toFile()
         try {
