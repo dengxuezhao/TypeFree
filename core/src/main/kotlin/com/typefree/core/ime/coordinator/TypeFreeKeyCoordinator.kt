@@ -104,6 +104,7 @@ class TypeFreeKeyCoordinator(
     private var activeDirectCandidates: List<EnhancedCandidate> = emptyList()
     private var activeEnglishSuggestions: List<EnhancedCandidate> = emptyList()
     private var activeDirectOffsetPending: Boolean = false
+    private var syntheticRimeCandidatesOverride: List<Pair<String, String>>? = null
     private var shadowRuleState: ShadowDictManager.ShadowRuleState =
         shadowDictManager?.loadRules() ?: ShadowDictManager.ShadowRuleState()
 
@@ -176,6 +177,7 @@ class TypeFreeKeyCoordinator(
         activeDirectCandidates = emptyList()
         activeEnglishSuggestions = emptyList()
         activeDirectOffsetPending = false
+        syntheticRimeCandidatesOverride = null
         rimePort.clearComposition()
     }
 
@@ -364,9 +366,12 @@ class TypeFreeKeyCoordinator(
         }
 
         // Stage 5: Send regular code char to librime (handles native speller & PUSH_TOPUP_CODE 3-code/4-code push)
-        val wasClearedForDirectOrEnglish =
-            activeDirectCandidates.isNotEmpty() || activeEnglishSuggestions.isNotEmpty() || activeDirectOffsetPending
-        if (wasClearedForDirectOrEnglish) {
+        val wasClearedInRime =
+            activeDirectCandidates.isNotEmpty() ||
+                activeEnglishSuggestions.isNotEmpty() ||
+                activeDirectOffsetPending ||
+                syntheticRimeCandidatesOverride != null
+        if (wasClearedInRime) {
             rimePort.clearComposition()
             for (c in rawBuffer) {
                 rimePort.sendChar(c)
@@ -374,9 +379,14 @@ class TypeFreeKeyCoordinator(
         }
         activeDirectOffsetPending = false
         activeEnglishSuggestions = emptyList()
+        syntheticRimeCandidatesOverride = null
 
         val prevRawBuffer = rawBuffer
-        val intended4 = prevRawBuffer + ch
+        val intendedNext = prevRawBuffer + ch
+        val hasKotlinLayeredWords = lookupValidAutoEncodedWords(intendedNext).isNotEmpty() ||
+            shadowRuleState.pinnedByCode[intendedNext].orEmpty().any {
+                it !in shadowRuleState.blockedWords && (!singleCharMode || Utf8Safety.isSingleCharacter(it))
+            }
         val mayTrigger4CharEnglishVeto = englishPrefixVetoEnabled &&
             (profile.archetype == SchemaArchetype.FIXED_YINXING ||
                 profile.archetype == SchemaArchetype.FIXED_SHAPECODE) &&
@@ -385,44 +395,60 @@ class TypeFreeKeyCoordinator(
             prevRawBuffer.all { it in 'a'..'z' } &&
             !prevRawBuffer.startsWith("ok") &&
             !prevRawBuffer.startsWith("os") &&
-            !isExtendedGuardBuffer(intended4) &&
-            englishWordTrie.hasLongerWordPrefix(intended4)
+            !isExtendedGuardBuffer(intendedNext) &&
+            englishWordTrie.hasLongerWordPrefix(intendedNext)
 
         val frame = rimePort.sendChar(ch)
-        val rimeCommittedWhole4CharCode = frame.rawInput.isEmpty() && !frame.autoCommittedText.isNullOrEmpty()
-        if (mayTrigger4CharEnglishVeto && frame.rawInput != intended4 && !rimeCommittedWhole4CharCode) {
+        val rimeCommittedWholeCode = frame.rawInput.isEmpty() && !frame.autoCommittedText.isNullOrEmpty()
+
+        val workingFrame = if (hasKotlinLayeredWords && frame.rawInput != intendedNext) {
             rimePort.clearComposition()
-            rawBuffer = intended4
+            val syntheticCands = if (rimeCommittedWholeCode) {
+                listOf(frame.autoCommittedText!! to "")
+            } else {
+                emptyList()
+            }
+            syntheticRimeCandidatesOverride = syntheticCands
+            RimeDecodeFrame(
+                rawInput = intendedNext,
+                preedit = intendedNext,
+                candidates = syntheticCands
+            )
+        } else if (mayTrigger4CharEnglishVeto && frame.rawInput != intendedNext && !rimeCommittedWholeCode) {
+            rimePort.clearComposition()
+            rawBuffer = intendedNext
             activeSplit = null
             activeDirectCandidates = emptyList()
             activeDirectOffsetPending = false
-            activeEnglishSuggestions = buildEnglishCandidates(intended4)
+            activeEnglishSuggestions = buildEnglishCandidates(intendedNext)
             val syntheticFrame = RimeDecodeFrame(rawInput = rawBuffer, preedit = rawBuffer)
             return CoordinatorKeyOutcome.Consumed(snapshotUi(nowMillis, syntheticFrame))
-        }
-        if (!frame.autoCommittedText.isNullOrEmpty()) {
-            val committed = frame.autoCommittedText
-            if (!singleCharMode || Utf8Safety.isSingleCharacter(committed)) {
-                if (autoEncodeEnabled) {
-                    autoEncoder?.recordCommittedUnit(committed, prevRawBuffer + ch)
+        } else {
+            if (!frame.autoCommittedText.isNullOrEmpty()) {
+                val committed = frame.autoCommittedText
+                if (!singleCharMode || Utf8Safety.isSingleCharacter(committed)) {
+                    if (autoEncodeEnabled) {
+                        autoEncoder?.recordCommittedUnit(committed, intendedNext)
+                    }
+                    rawBuffer = frame.rawInput
+                    activeSplit = null
+                    activeDirectCandidates = if (rawBuffer.isNotEmpty()) {
+                        directCommandEngine.evaluate(rawBuffer, nowMillis, profile.directCommandsEnabled)
+                    } else {
+                        emptyList()
+                    }
+                    recordCommittedPreview(committed)
+                    return CoordinatorKeyOutcome.Commit(
+                        action = CommitAction.PlainText(committed, fromRimeNative = true),
+                        ui = snapshotUi(nowMillis, frame),
+                        feedToAutoLearn = profile.allowAutoLearn
+                    )
                 }
-                rawBuffer = frame.rawInput
-                activeSplit = null
-                activeDirectCandidates = if (rawBuffer.isNotEmpty()) {
-                    directCommandEngine.evaluate(rawBuffer, nowMillis, profile.directCommandsEnabled)
-                } else {
-                    emptyList()
-                }
-                recordCommittedPreview(committed)
-                return CoordinatorKeyOutcome.Commit(
-                    action = CommitAction.PlainText(committed, fromRimeNative = true),
-                    ui = snapshotUi(nowMillis, frame),
-                    feedToAutoLearn = profile.allowAutoLearn
-                )
             }
+            frame
         }
 
-        rawBuffer = frame.rawInput.ifEmpty { prevRawBuffer + ch }
+        rawBuffer = workingFrame.rawInput.ifEmpty { intendedNext }
 
         // Stage 4b (Fallback): DirectCommandEngine phrase check if Rime altered rawInput
         activeDirectCandidates = directCommandEngine.evaluate(
@@ -432,19 +458,21 @@ class TypeFreeKeyCoordinator(
         )
         if (activeDirectCandidates.isNotEmpty()) {
             activeSplit = null
-            return CoordinatorKeyOutcome.Consumed(snapshotUi(nowMillis, frame))
+            syntheticRimeCandidatesOverride = null
+            return CoordinatorKeyOutcome.Consumed(snapshotUi(nowMillis, workingFrame))
         }
 
-        val hasExactRimeMatch = frame.candidates.any { (_, comment) -> !isCompletionComment(comment) }
+        val hasExactRimeMatch = workingFrame.candidates.any { (_, comment) -> !isCompletionComment(comment) }
 
         // English prefix veto on 4-letter lowercase buffer (FIXED_YINXING / FIXED_SHAPECODE)
         if (shouldActivateEnglishPrefixVeto(rawBuffer, hasExactRimeMatch)) {
             activeSplit = null
+            syntheticRimeCandidatesOverride = null
             activeEnglishSuggestions = buildEnglishCandidates(rawBuffer)
-            return CoordinatorKeyOutcome.Consumed(snapshotUi(nowMillis, frame))
+            return CoordinatorKeyOutcome.Consumed(snapshotUi(nowMillis, workingFrame))
         }
 
-        val rimeFilteredCandidates = filterRimeCandidates(frame.candidates)
+        val rimeFilteredCandidates = filterRimeCandidates(workingFrame.candidates)
         val validNat = findValidNaturalContinuation(rawBuffer, hasExactRimeMatch)
         val autoEncodedWords = lookupValidAutoEncodedWords(rawBuffer)
 
@@ -483,7 +511,7 @@ class TypeFreeKeyCoordinator(
                     )
                 }
             } else if (validNat == null) {
-                val slots = buildRegularCandidateSlots(frame)
+                val slots = buildRegularCandidateSlots(workingFrame)
                 val hasExactOrUserSource =
                     hasExactRimeMatch || autoEncodedWords.isNotEmpty() || currentPinnedWordsForBuffer().isNotEmpty()
                 if (slots.size == 1 && hasExactOrUserSource) {
@@ -502,7 +530,7 @@ class TypeFreeKeyCoordinator(
             }
         }
 
-        return CoordinatorKeyOutcome.Consumed(snapshotUi(nowMillis, frame))
+        return CoordinatorKeyOutcome.Consumed(snapshotUi(nowMillis, workingFrame))
     }
 
     fun onSpace(nowMillis: Long = System.currentTimeMillis()): CoordinatorKeyOutcome {
@@ -552,7 +580,16 @@ class TypeFreeKeyCoordinator(
             rawBuffer = nextBuf
             return finishBackspaceWithFrame(replayed, nowMillis)
         }
-        val frame = if (activeDirectCandidates.isNotEmpty() || activeDirectOffsetPending) {
+        val frame = if (syntheticRimeCandidatesOverride != null) {
+            syntheticRimeCandidatesOverride = null
+            val nextBuf = rawBuffer.dropLast(1)
+            if (nextBuf.isEmpty()) {
+                reset()
+                return CoordinatorKeyOutcome.Consumed(snapshotUi(nowMillis))
+            }
+            rawBuffer = nextBuf
+            replayBufferIntoRime(nextBuf)
+        } else if (activeDirectCandidates.isNotEmpty() || activeDirectOffsetPending) {
             val nextBuf = rawBuffer.dropLast(1)
             if (nextBuf.isEmpty()) {
                 reset()
@@ -649,7 +686,12 @@ class TypeFreeKeyCoordinator(
             )
         }
         val frame = if (activeDirectCandidates.isEmpty() && activeEnglishSuggestions.isEmpty() && activeSplit == null && rawBuffer.isNotEmpty()) {
-            rimePort.currentFrame()
+            val overrideCands = syntheticRimeCandidatesOverride
+            if (overrideCands != null) {
+                RimeDecodeFrame(rawInput = rawBuffer, preedit = rawBuffer, candidates = overrideCands)
+            } else {
+                rimePort.currentFrame()
+            }
         } else {
             RimeDecodeFrame(rawInput = rawBuffer, preedit = rawBuffer)
         }
@@ -756,7 +798,9 @@ class TypeFreeKeyCoordinator(
             )
         }
 
-        val frame = cachedFrame ?: rimePort.currentFrame(maxCandidates)
+        val frame = cachedFrame ?: syntheticRimeCandidatesOverride?.let { overrideCands ->
+            RimeDecodeFrame(rawInput = rawBuffer, preedit = rawBuffer, candidates = overrideCands)
+        } ?: rimePort.currentFrame(maxCandidates)
         val slots = buildCandidateSlots(frame)
         val badge = when {
             rawBuffer == "ofi" || rawBuffer.contains('`') -> CoordinatorModeBadge.REVERSE_LOOKUP
@@ -869,6 +913,7 @@ class TypeFreeKeyCoordinator(
             seenWords.add(validNat.word)
         }
 
+        val isSyntheticRimeFrame = syntheticRimeCandidatesOverride != null
         rawRime.forEachIndexed { origIdx, (txt, comment) ->
             if (txt in blocked) return@forEachIndexed
             if (singleCharMode && !Utf8Safety.isSingleCharacter(txt)) return@forEachIndexed
@@ -880,9 +925,9 @@ class TypeFreeKeyCoordinator(
                         displayText = txt,
                         commitText = txt,
                         codeHint = comment,
-                        action = CommitAction.PlainText(txt, fromRimeNative = true)
+                        action = CommitAction.PlainText(txt, fromRimeNative = !isSyntheticRimeFrame)
                     ),
-                    rimeIndex = origIdx
+                    rimeIndex = if (isSyntheticRimeFrame) null else origIdx
                 )
             )
         }
