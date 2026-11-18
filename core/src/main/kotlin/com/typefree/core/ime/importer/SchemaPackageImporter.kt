@@ -198,7 +198,34 @@ class SchemaPackageImporter(
                 tomlFile.writeText(TypeFreeTomlParser.serialize(profile), StandardCharsets.UTF_8)
 
                 // Stage 5.1.4: Offline staging compilation
-                val compiledOk = stagingCompiler.compilePlainSchema(realRoot, schemaId)
+                val tempDefaultYaml = File(realRoot, "default.yaml")
+                val wroteTempDefault = if (!tempDefaultYaml.exists()) {
+                    tempDefaultYaml.writeText(
+                        """
+                        config_version: "2026-11-18"
+                        schema_list:
+                          - schema: $schemaId
+                        punctuator:
+                          half_shape: {}
+                          full_shape: {}
+                        key_binder:
+                          bindings: []
+                        recognizer:
+                          patterns: {}
+                        """.trimIndent() + "\n",
+                        StandardCharsets.UTF_8
+                    )
+                    true
+                } else {
+                    false
+                }
+                val compiledOk = try {
+                    stagingCompiler.compilePlainSchema(realRoot, schemaId)
+                } finally {
+                    if (wroteTempDefault) {
+                        tempDefaultYaml.delete()
+                    }
+                }
                 if (!compiledOk) {
                     throw IllegalStateException("离线编译方案 $schemaId 失败")
                 }
@@ -504,6 +531,7 @@ class SchemaPackageImporter(
         val isXiaohe = meta.schemaId == "flypy" || meta.displayName.contains("小鹤音形")
         val outLines = ArrayList<String>()
         var inSpeller = false
+        var inOkMode = false
         var hasOkModeBlock = false
 
         for (line in rawYaml.lines()) {
@@ -512,13 +540,20 @@ class SchemaPackageImporter(
             if (indent == 0 && trimmed.endsWith(":") && !trimmed.startsWith("#")) {
                 val sec = trimmed.removeSuffix(":")
                 inSpeller = (sec == "speller")
-                if (sec == "ok_mode") hasOkModeBlock = true
+                inOkMode = (sec == "ok_mode")
+                if (inOkMode) hasOkModeBlock = true
             }
 
             if (trimmed.startsWith("- lua_translator")) {
                 val luaName = trimmed.removePrefix("-").trim()
                 sanitizedLuaOut.add(luaName)
                 outLines.add(line.replaceFirst("- lua_translator", "# [TypeFree DirectCommand] - lua_translator"))
+                continue
+            }
+
+            if (isXiaohe && inOkMode && trimmed.startsWith("prefix:")) {
+                // `ok*`/`os*` entries in flypy.dict.yaml store full `ok...`/`os...` keys;
+                // keeping `prefix: "o"` in affix_segmentor strips leading `o` and breaks lookup.
                 continue
             }
 
@@ -544,7 +579,7 @@ class SchemaPackageImporter(
             outLines.add("")
             outLines.add("ok_mode:")
             outLines.add("  tag: ok_mode")
-            outLines.add("  prefix: \"o\"")
+            outLines.add("  tags: [ expression ]")
             outLines.add("  dictionary: flypy")
             outLines.add("  enable_charset_filter: false")
             outLines.add("  enable_sentence: false")

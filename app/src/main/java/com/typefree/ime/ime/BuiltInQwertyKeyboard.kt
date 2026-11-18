@@ -241,7 +241,7 @@ private val ALPHA_ROW_3 = listOf("z", "x", "c", "v", "b", "n", "m")
 
 private val NUM_ROW_1 = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
 private val NUM_ROW_2 = listOf("@", "#", "$", "%", "&", "-", "+", "(", ")", "/")
-private val NUM_ROW_3 = listOf("，", "。", "？", "！", ":", "\"", "'")
+private val NUM_ROW_3 = listOf(";", "=", "？", "！", ":", "\"", "'")
 
 private val SYM_ROW_1 = listOf("[", "]", "{", "}", "<", ">", "^", "*", "=", "~")
 private val SYM_ROW_2 = listOf("_", "\\", "|", "、", "；", "“", "”", "‘", "’", "…")
@@ -568,6 +568,15 @@ fun BuiltInQwertyKeyboard(
                     val row1 = if (isMoreSymbols) SYM_ROW_1 else NUM_ROW_1
                     val row2 = if (isMoreSymbols) SYM_ROW_2 else NUM_ROW_2
                     val row3 = if (isMoreSymbols) SYM_ROW_3 else NUM_ROW_3
+                    val handleSymbolClick: (String) -> Unit = { sym ->
+                        if (isFlypyChineseMode && (sym == ";" || sym == "；")) {
+                            onCommitChar(";")
+                            isSymbolLayer = false
+                            isMoreSymbols = false
+                        } else {
+                            onCommitChar(sym)
+                        }
+                    }
 
                     // Symbol Row 1 (10 × 1.0f = 10.0f)
                     Row(
@@ -587,7 +596,7 @@ fun BuiltInQwertyKeyboard(
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight(),
-                                onClick = { onCommitChar(sym) }
+                                onClick = { handleSymbolClick(sym) }
                             )
                         }
                     }
@@ -610,7 +619,7 @@ fun BuiltInQwertyKeyboard(
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight(),
-                                onClick = { onCommitChar(sym) }
+                                onClick = { handleSymbolClick(sym) }
                             )
                         }
                     }
@@ -642,7 +651,7 @@ fun BuiltInQwertyKeyboard(
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight(),
-                                onClick = { onCommitChar(sym) }
+                                onClick = { handleSymbolClick(sym) }
                             )
                         }
 
@@ -731,9 +740,9 @@ fun BuiltInQwertyKeyboard(
 
                     QwertyCharKey(
                         label = if (isFlypyChineseMode && !isSymbolLayer) "，" else ",",
-                        subLabel = if (showSecondBadge) "2" else if (isFlypyChineseMode && !hasActiveFlypyComposing) "," else null,
+                        subLabel = if (showSecondBadge) "2" else if (isFlypyChineseMode && !isSymbolLayer && !hasActiveFlypyComposing) ";" else null,
                         highlightSubLabel = showSecondBadge,
-                        allowSwipeUpSecondary = isFlypyChineseMode && !hasActiveFlypyComposing,
+                        allowSwipeUpSecondary = isFlypyChineseMode && !isSymbolLayer && !hasActiveFlypyComposing,
                         fontSize = 17.5.sp,
                         fontWeight = FontWeight.Medium,
                         cornerRadius = FUNC_KEY_CORNER,
@@ -748,8 +757,8 @@ fun BuiltInQwertyKeyboard(
                                 onCommaOrPeriodKey(true)
                             }
                         },
-                        onLongPress = if (isFlypyChineseMode && !hasActiveFlypyComposing) {
-                            { onCommitChar(",") }
+                        onLongPress = if (isFlypyChineseMode && !isSymbolLayer && !hasActiveFlypyComposing) {
+                            { onCommitChar(";") }
                         } else {
                             null
                         }

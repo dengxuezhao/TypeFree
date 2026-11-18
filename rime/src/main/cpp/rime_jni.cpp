@@ -3,18 +3,43 @@
 
 #include <jni.h>
 #include <rime_api.h>
-#include <android/log.h>
 
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
+#ifdef __ANDROID__
+#include <android/log.h>
 #define LOG_TAG "TypeFreeRimeJNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#else
+#include <cstdio>
+#define LOGI(...)                                                       \
+  do {                                                                  \
+    std::fprintf(stderr, "[I/TypeFreeRimeJNI] ");                       \
+    std::fprintf(stderr, __VA_ARGS__);                                  \
+    std::fprintf(stderr, "\n");                                         \
+  } while (0)
+#define LOGW(...)                                                       \
+  do {                                                                  \
+    std::fprintf(stderr, "[W/TypeFreeRimeJNI] ");                       \
+    std::fprintf(stderr, __VA_ARGS__);                                  \
+    std::fprintf(stderr, "\n");                                         \
+  } while (0)
+#define LOGE(...)                                                       \
+  do {                                                                  \
+    std::fprintf(stderr, "[E/TypeFreeRimeJNI] ");                       \
+    std::fprintf(stderr, __VA_ARGS__);                                  \
+    std::fprintf(stderr, "\n");                                         \
+  } while (0)
+#endif
 
 extern void rime_require_module_lua();
 extern void rime_require_module_octagram();
@@ -40,6 +65,8 @@ std::string g_pending_commit;
 bool g_incognito = false;
 bool g_fixed_candidate_order = false;
 bool g_enable_user_dict = true;
+bool g_simplification = false;
+bool g_ascii_punct = false;
 
 /**
  * Standard UTF-8 ByteArray <-> std::string JNI helpers.
@@ -188,6 +215,85 @@ void applySessionOptionsLocked(RimeApi* api, RimeSessionId sid) {
   api->set_option(sid, "_incognito", g_incognito ? True : False);
   api->set_option(sid, "fixed_candidate_order", g_fixed_candidate_order ? True : False);
   api->set_option(sid, "enable_user_dict", g_enable_user_dict ? True : False);
+  api->set_option(sid, "simplification", g_simplification ? True : False);
+  api->set_option(sid, "ascii_punct", g_ascii_punct ? True : False);
+}
+
+bool verifyCompiledSchemaLocked(RimeApi* api, const std::string& schemaId) {
+  if (!api || schemaId.empty()) return false;
+  RimeConfig cfg = {nullptr};
+  if (!api->schema_open(schemaId.c_str(), &cfg)) {
+    return false;
+  }
+  char idBuf[256] = {0};
+  Bool hasId = api->config_get_string(&cfg, "schema/schema_id", idBuf, sizeof(idBuf));
+  api->config_close(&cfg);
+  return hasId == True && schemaId == idBuf;
+}
+
+std::string findSchemaSourceFileLocked(const std::string& schemaId) {
+  if (schemaId.empty()) return "";
+  namespace fs = std::filesystem;
+  const std::string fileName = schemaId + ".schema.yaml";
+  std::error_code ec;
+  if (!g_user_dir.empty()) {
+    fs::path userPath = fs::path(g_user_dir) / fileName;
+    if (fs::exists(userPath, ec) && fs::is_regular_file(userPath, ec)) {
+      return userPath.string();
+    }
+  }
+  if (!g_shared_dir.empty()) {
+    fs::path sharedPath = fs::path(g_shared_dir) / fileName;
+    if (fs::exists(sharedPath, ec) && fs::is_regular_file(sharedPath, ec)) {
+      return sharedPath.string();
+    }
+  }
+  return "";
+}
+
+bool deploySchemaWithDependenciesLocked(RimeApi* api, const std::string& schemaId) {
+  if (!api || schemaId.empty()) return false;
+  const std::string schemaPath = findSchemaSourceFileLocked(schemaId);
+  if (schemaPath.empty()) {
+    LOGE("Schema source file not found for '%s'", schemaId.c_str());
+    return false;
+  }
+
+  std::ifstream fin(schemaPath);
+  if (fin.is_open()) {
+    std::ostringstream ss;
+    ss << fin.rdbuf();
+    std::string yamlText = ss.str();
+    RimeConfig rawCfg = {nullptr};
+    api->config_init(&rawCfg);
+    if (api->config_load_string(&rawCfg, yamlText.c_str())) {
+      RimeConfigIterator iter{};
+      if (api->config_begin_list(&iter, &rawCfg, "schema/dependencies")) {
+        std::vector<std::string> deps;
+        while (api->config_next(&iter)) {
+          const char* depId = api->config_get_cstring(&rawCfg, iter.path);
+          if (depId && depId[0] != '\0' && schemaId != depId) {
+            deps.emplace_back(depId);
+          }
+        }
+        api->config_end(&iter);
+        for (const auto& depId : deps) {
+          if (!verifyCompiledSchemaLocked(api, depId)) {
+            const std::string depPath = findSchemaSourceFileLocked(depId);
+            if (!depPath.empty()) {
+              LOGI("Deploying dependency schema '%s' from %s", depId.c_str(), depPath.c_str());
+              api->deploy_schema(depPath.c_str());
+            }
+          }
+        }
+      }
+    }
+    api->config_close(&rawCfg);
+  }
+
+  LOGI("Deploying target schema '%s' from %s", schemaId.c_str(), schemaPath.c_str());
+  Bool deployOk = api->deploy_schema(schemaPath.c_str());
+  return deployOk == True && verifyCompiledSchemaLocked(api, schemaId);
 }
 
 void destroyProbeSessionLocked(RimeApi* api) {
@@ -346,6 +452,8 @@ Java_com_typefree_rime_RimeBridge_nativeInitialize(
     g_initialized = false;
   }
 
+  g_simplification = false;
+  g_ascii_punct = false;
   api->initialize(&traits);
   g_initialized = true;
   LOGI("librime %s initialized (shared=%s, user=%s)",
@@ -379,15 +487,42 @@ Java_com_typefree_rime_RimeBridge_nativeDeploy(
     api->join_maintenance_thread();
   }
 
+  if (!g_active_schema.empty() && !verifyCompiledSchemaLocked(api, g_active_schema)) {
+    LOGW("Schema '%s' missing compiled output after maintenance; attempting explicit deploy_schema",
+         g_active_schema.c_str());
+    if (!deploySchemaWithDependenciesLocked(api, g_active_schema)) {
+      LOGE("Explicit deploy_schema failed for '%s'", g_active_schema.c_str());
+      return JNI_FALSE;
+    }
+  }
+
   g_session_id = api->create_session();
-  if (g_session_id != 0 && !g_active_schema.empty()) {
-    api->select_schema(g_session_id, g_active_schema.c_str());
+  if (g_session_id == 0) {
+    LOGE("Failed to create Rime session after deploy");
+    return JNI_FALSE;
+  }
+
+  if (!g_active_schema.empty()) {
+    if (!verifyCompiledSchemaLocked(api, g_active_schema)) {
+      LOGE("Compiled schema validation failed for '%s'", g_active_schema.c_str());
+      return JNI_FALSE;
+    }
+    Bool selectOk = api->select_schema(g_session_id, g_active_schema.c_str());
+    char currentSchema[256] = {0};
+    Bool hasCurrent = api->get_current_schema(g_session_id, currentSchema, sizeof(currentSchema));
+    if (!selectOk || !hasCurrent || g_active_schema != currentSchema) {
+      LOGE("select_schema failed for '%s' (selectOk=%d, current='%s')",
+           g_active_schema.c_str(),
+           static_cast<int>(selectOk),
+           currentSchema);
+      return JNI_FALSE;
+    }
     applySessionOptionsLocked(api, g_session_id);
   }
   LOGI("librime deploy complete (activeSchema=%s, session=%lu)",
        g_active_schema.c_str(),
        static_cast<unsigned long>(g_session_id));
-  return g_session_id != 0 ? JNI_TRUE : JNI_FALSE;
+  return JNI_TRUE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -403,9 +538,20 @@ Java_com_typefree_rime_RimeBridge_nativeSelectSchema(
   if (target.empty()) return JNI_FALSE;
   g_active_schema = target;
 
+  if (!verifyCompiledSchemaLocked(api, g_active_schema)) {
+    LOGW("nativeSelectSchema: '%s' not yet compiled; attempting deploy_schema",
+         g_active_schema.c_str());
+    if (!deploySchemaWithDependenciesLocked(api, g_active_schema)) {
+      LOGE("nativeSelectSchema: failed to compile '%s'", g_active_schema.c_str());
+      return JNI_FALSE;
+    }
+  }
+
   RimeSessionId sid = ensureSessionLocked(api);
   if (!sid) return JNI_FALSE;
   Bool ok = api->select_schema(sid, g_active_schema.c_str());
+  char currentSchema[256] = {0};
+  Bool hasCurrent = api->get_current_schema(sid, currentSchema, sizeof(currentSchema));
   applySessionOptionsLocked(api, sid);
   if (g_probe_session_id != 0 && api->find_session(g_probe_session_id)) {
     api->select_schema(g_probe_session_id, g_active_schema.c_str());
@@ -413,7 +559,9 @@ Java_com_typefree_rime_RimeBridge_nativeSelectSchema(
     api->set_option(g_probe_session_id, "fixed_candidate_order", True);
     api->set_option(g_probe_session_id, "enable_user_dict", False);
   }
-  return ok ? JNI_TRUE : JNI_FALSE;
+  return (ok == True && hasCurrent == True && g_active_schema == currentSchema)
+      ? JNI_TRUE
+      : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -810,6 +958,10 @@ Java_com_typefree_rime_RimeBridge_nativeSetOption(
     g_fixed_candidate_order = val;
   } else if (opt == "enable_user_dict") {
     g_enable_user_dict = val;
+  } else if (opt == "simplification") {
+    g_simplification = val;
+  } else if (opt == "ascii_punct") {
+    g_ascii_punct = val;
   }
   RimeApi* api = rime_get_api();
   RimeSessionId sid = ensureSessionLocked(api);
@@ -828,6 +980,8 @@ Java_com_typefree_rime_RimeBridge_nativeGetOption(
   if (opt == "_incognito") return g_incognito ? JNI_TRUE : JNI_FALSE;
   if (opt == "fixed_candidate_order") return g_fixed_candidate_order ? JNI_TRUE : JNI_FALSE;
   if (opt == "enable_user_dict") return g_enable_user_dict ? JNI_TRUE : JNI_FALSE;
+  if (opt == "simplification") return g_simplification ? JNI_TRUE : JNI_FALSE;
+  if (opt == "ascii_punct") return g_ascii_punct ? JNI_TRUE : JNI_FALSE;
   RimeApi* api = rime_get_api();
   RimeSessionId sid = ensureSessionLocked(api);
   if (!sid || opt.empty()) return JNI_FALSE;

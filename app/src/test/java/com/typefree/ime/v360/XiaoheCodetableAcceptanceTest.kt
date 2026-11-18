@@ -23,7 +23,10 @@ import com.typefree.ime.ime.KeyboardTabMode
 import com.typefree.ime.ime.TypingController
 import com.typefree.ime.ime.UndoSnapshot
 import com.typefree.ime.ime.engine.CodetableEnhancedInputEngine
+import com.typefree.ime.ime.engine.EngineResult
+import com.typefree.ime.ime.engine.KeyInput
 import com.typefree.ime.ime.engine.RimeDataManager
+import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.ime.engine.RimeInputEngine
 import com.typefree.ime.ime.predict.PredictionStore
 import com.typefree.ime.ime.predict.StaticPredictor
@@ -349,6 +352,13 @@ class XiaoheCodetableAcceptanceTest {
         ).firstOrNull { File(it, "flypy.schema.yaml").exists() }
     }
 
+    private fun resolveMainRimeAssetsDir(): File? {
+        return listOf(
+            File("src/main/assets/rime"),
+            File("app/src/main/assets/rime")
+        ).firstOrNull { File(it, "default.yaml").exists() }
+    }
+
     @Test
     fun `Host scheme switching preserves shared RimeBridge schema and isolation options (P0-2)`() {
         val tempRoot = Files.createTempDirectory("host_p02_").toFile()
@@ -641,6 +651,176 @@ class XiaoheCodetableAcceptanceTest {
             assertEquals(false, toggled)
             assertEquals(1, asyncDeployCount)
             assertTrue(File(sharedDir, "flypy.custom.yaml").exists())
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `Real native librime deploys flypy, decodes n and okhguu, reverse-splits hfkn, and toggles ojf simplification`() {
+        val xiaoheDir = resolveXiaoheAssetsDir() ?: return
+        val mainDir = resolveMainRimeAssetsDir() ?: return
+        val nativeDylibPresent = listOf(
+            File("rime/build/host-macos/librime_jni.dylib"),
+            File("../rime/build/host-macos/librime_jni.dylib")
+        ).any { it.isFile }
+
+        val bridge = RimeBridge()
+        if (!bridge.isNativeLoaded) {
+            if (nativeDylibPresent) {
+                throw AssertionError("Host librime_jni.dylib exists but failed to load in RimeBridge")
+            }
+            return
+        }
+
+        val tempRoot = Files.createTempDirectory("native_librime_xiaohe_").toFile()
+        try {
+            val sharedDir = File(tempRoot, "shared").apply { mkdirs() }
+            val userDir = File(tempRoot, "user").apply { mkdirs() }
+            mainDir.copyRecursively(sharedDir, overwrite = true)
+            xiaoheDir.copyRecursively(sharedDir, overwrite = true)
+
+            val dm = RimeDataManager(sharedDir, userDir, bridge)
+            val deployState = dm.deployDefaultSync(InputScheme.FLYPY_TABLE)
+            assertTrue(
+                "Expected native RimeDeploymentState.Ready, got $deployState",
+                deployState is RimeDeploymentState.Ready
+            )
+            val ready = deployState as RimeDeploymentState.Ready
+            assertEquals("flypy", ready.activeSchemaId)
+            assertTrue(File(sharedDir, "default.custom.yaml").exists())
+            assertTrue(File(sharedDir, "opencc/s2tw.json").exists())
+            assertTrue(dm.activateEnhancedSchemeSync(InputScheme.FLYPY_TABLE))
+
+            val engine = CodetableEnhancedInputEngine(
+                rimeClient = bridge,
+                initialProfile = dm.activeSchemaProfile,
+                symbolTrie = dm.activeSymbolTrie,
+                briefIndex = dm.activeBriefIndex,
+                reverseLookupMap = dm.activeReverseLookupMap,
+                schemaDir = sharedDir
+            )
+
+            // 1) Normal Xiaohe input `n` -> `你`, `内容`
+            engine.onKey(KeyInput.CharKey('n'))
+            val nCandidates = engine.state.value.candidates.map { it.text }
+            assertTrue("Expected `你` for `n`, got $nCandidates", "你" in nCandidates)
+            assertTrue("Expected `内容` for `n`, got $nCandidates", "内容" in nCandidates)
+            engine.clear()
+
+            // 2) >4-code `okhguu` -> `丁` (must NOT be truncated to `khguu`)
+            for (ch in "okhguu") {
+                engine.onKey(KeyInput.CharKey(ch))
+            }
+            val okCandidates = engine.state.value.candidates.map { it.text }
+            assertTrue("Expected `丁` for `okhguu`, got $okCandidates", "丁" in okCandidates)
+            engine.clear()
+
+            // 3) Empty-code 2+2 reverse split `hfkn` -> `很可能` / `困难` (commitText=`很困难`)
+            for (ch in "hfkn") {
+                engine.onKey(KeyInput.CharKey(ch))
+            }
+            val hfknCandidates = engine.state.value.candidates
+            assertTrue("Expected candidates for `hfkn`", hfknCandidates.isNotEmpty())
+            assertEquals("很可能", hfknCandidates[0].text)
+            assertTrue(
+                "Expected `很困难` (displayText=`困难`) in `hfkn` secondary candidates, got $hfknCandidates",
+                hfknCandidates.any { it.text == "很困难" && it.displayText == "困难" }
+            )
+            engine.clear()
+
+            // 4) `ojf` toggles OpenCC simplification (`s2tw.json`), converting `内容` -> `內容`, `个` -> `個`, `国` -> `國`
+            assertFalse(bridge.getOption("simplification"))
+            for (ch in "ojf") {
+                engine.onKey(KeyInput.CharKey(ch))
+            }
+            val ojfCands = engine.state.value.candidates
+            assertTrue("Expected [简繁切换] candidate for `ojf`, got ${ojfCands.map { it.text }}", ojfCands.isNotEmpty())
+            val toggleResult = engine.select(0)
+            assertTrue(toggleResult is EngineResult.Consumed)
+            assertTrue("`ojf` must enable native librime simplification option", bridge.getOption("simplification"))
+
+            engine.onKey(KeyInput.CharKey('n'))
+            val tradNCandidates = engine.state.value.candidates.map { it.text }
+            assertTrue(
+                "Expected OpenCC traditional `內容` for `n` when simplification=true, got $tradNCandidates",
+                "內容" in tradNCandidates
+            )
+            engine.clear()
+
+            engine.onKey(KeyInput.CharKey('g'))
+            val tradGCandidates = engine.state.value.candidates.map { it.text }
+            assertTrue(
+                "Expected OpenCC traditional `個` for `g` when simplification=true, got $tradGCandidates",
+                "個" in tradGCandidates
+            )
+            engine.clear()
+
+            for (ch in "gok") {
+                engine.onKey(KeyInput.CharKey(ch))
+            }
+            val tradGokCandidates = engine.state.value.candidates.map { it.text }
+            assertTrue(
+                "Expected OpenCC traditional `國` for `gok` when simplification=true, got $tradGokCandidates",
+                "國" in tradGokCandidates
+            )
+            engine.clear()
+
+            // 5) Quick symbol overlay (`;` / `；`) and inline math (`=1+2`)
+            val semiEnter = engine.onKey(KeyInput.CharKey('；'))
+            assertTrue(semiEnter is EngineResult.Consumed)
+            assertTrue(engine.coordinator.overlayController.isActive)
+            val semiA = engine.onKey(KeyInput.CharKey('a'))
+            assertEquals(EngineResult.Commit("！", remainComposing = false), semiA)
+
+            for (ch in "=1+2") {
+                engine.onKey(KeyInput.CharKey(ch))
+            }
+            val mathCands = engine.state.value.candidates.map { it.text }
+            assertTrue("Expected `3` for `=1+2`, got $mathCands", "3" in mathCands)
+            engine.clear()
+
+            // 6) Verify real native librime deploy catches missing/invalid schema instead of ignoring select_schema failure
+            val invalidDeploy = bridge.deploy("nonexistent_schema_xyz")
+            assertFalse("Deploying nonexistent schema must return false", invalidDeploy)
+
+            // 7) Verify SchemaPackageImporter strips legacy `prefix: "o"` and compiles cleanly via real librime
+            val legacyBrokenSchema = File(xiaoheDir, "flypy.schema.yaml")
+                .readText(StandardCharsets.UTF_8)
+                .replace("tag: ok_mode", "tag: ok_mode\n  prefix: \"o\"")
+            val legacyZip = ByteArrayOutputStream().use { baos ->
+                ZipOutputStream(baos, StandardCharsets.UTF_8).use { zos ->
+                    xiaoheDir.listFiles().orEmpty().filter { it.isFile }.forEach { f ->
+                        zos.putNextEntry(ZipEntry(f.name))
+                        if (f.name == "flypy.schema.yaml") {
+                            zos.write(legacyBrokenSchema.toByteArray(StandardCharsets.UTF_8))
+                        } else {
+                            zos.write(f.readBytes())
+                        }
+                        zos.closeEntry()
+                    }
+                }
+                baos.toByteArray()
+            }
+            val importRoot = Files.createTempDirectory("native_import_xiaohe_").toFile()
+            try {
+                val impShared = File(importRoot, "shared").apply { mkdirs() }
+                val impUser = File(importRoot, "user").apply { mkdirs() }
+                mainDir.copyRecursively(impShared, overwrite = true)
+                val impDm = RimeDataManager(impShared, impUser, bridge)
+                val impRes = impDm.importEnhancedSchemaPackageSync(ByteArrayInputStream(legacyZip))
+                assertEquals("flypy", impRes.schemaId)
+                val importedSchemaText = File(impShared, "flypy.schema.yaml").readText(StandardCharsets.UTF_8)
+                assertFalse("Importer must strip legacy ok_mode prefix: \"o\"", importedSchemaText.contains("prefix:"))
+
+                val snapOk = bridge.processKeyText("okhguu")
+                assertTrue(
+                    "Imported flypy must decode `okhguu` -> `丁` in real librime, got ${snapOk.candidates.map { it.text }}",
+                    snapOk.candidates.any { it.text == "丁" }
+                )
+            } finally {
+                importRoot.deleteRecursively()
+            }
         } finally {
             tempRoot.deleteRecursively()
         }

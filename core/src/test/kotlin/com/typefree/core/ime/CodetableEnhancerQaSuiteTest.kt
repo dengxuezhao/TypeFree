@@ -238,6 +238,23 @@ class CodetableEnhancerQaSuiteTest {
         val mSpaceOut = coord.onSpace()
         assertEquals(CommitAction.PlainText("@"), (mSpaceOut as CoordinatorKeyOutcome.Commit).action)
         assertFalse(coord.isComposing)
+
+        // 5. Full-width `；` acts identically to `;` when overlayGuideKey == `;`
+        assertTrue(coord.onCharKey('；') is CoordinatorKeyOutcome.Consumed)
+        val fwSemiO = coord.onCharKey('o') as CoordinatorKeyOutcome.Commit
+        assertEquals(CommitAction.PairedText("「", "」"), fwSemiO.action)
+        assertFalse(coord.isComposing)
+
+        assertTrue(coord.onCharKey('；') is CoordinatorKeyOutcome.Consumed)
+        val fwDoubleSemi = coord.onCharKey('；') as CoordinatorKeyOutcome.Commit
+        assertEquals(CommitAction.PlainText("；"), fwDoubleSemi.action)
+        assertFalse(coord.isComposing)
+
+        coord.onCharKey('a')
+        coord.onCharKey('n')
+        val fwSemiSelect = coord.onCharKey('；') as CoordinatorKeyOutcome.Commit
+        assertEquals(secondExpected, (fwSemiSelect.action as CommitAction.PlainText).text)
+        assertFalse(coord.isComposing)
     }
 
     @Test
@@ -703,6 +720,10 @@ class CodetableEnhancerQaSuiteTest {
                     speller:
                       alphabet: "abcdefghijklmnopqrstuvwxyz;'"
                       max_code_length: 4
+                    ok_mode:
+                      tag: ok_mode
+                      prefix: "o"
+                      dictionary: flypy
                     translator:
                       dictionary: flypy
                     """.trimIndent()
@@ -734,6 +755,11 @@ class CodetableEnhancerQaSuiteTest {
             assertTrue("flypy.trime.yaml" in result.strippedDesktopFiles)
             assertFalse(File(result.installedDir, "default.yaml").exists())
             assertFalse(File(result.installedDir, "flypy.trime.yaml").exists())
+            val sanitizedSchema = File(result.installedDir, "flypy.schema.yaml").readText(StandardCharsets.UTF_8)
+            assertFalse(
+                "ok_mode must NOT retain prefix: \"o\" which truncates okhguu to khguu",
+                sanitizedSchema.contains("prefix:")
+            )
 
             val quickFile = File(result.installedDir, "quick_symbols.yaml")
             assertTrue("Extracted ;qq must be persisted to quick_symbols.yaml", quickFile.exists())

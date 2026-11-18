@@ -141,13 +141,13 @@ class TypeFreeKeyCoordinator(
         }
 
         // Stage 2: Idle non-code-element guide key -> enter overlay without touching librime
-        if (rawBuffer.isEmpty() && profile.overlayEnabled && ch == profile.overlayGuideKey) {
+        if (rawBuffer.isEmpty() && profile.overlayEnabled && isOverlayGuideTrigger(ch)) {
             overlayController.enter()
             return CoordinatorKeyOutcome.Consumed(snapshotUi())
         }
 
         // Stage 3: Composing state semicolon secondary select & non-alphabet punctuation top-up
-        if (rawBuffer.isNotEmpty() && ch == ';' && !profile.isCodeAlphabetChar(';')) {
+        if (rawBuffer.isNotEmpty() && (ch == ';' || ch == '；') && !profile.isCodeAlphabetChar(';')) {
             val currentCands = snapshotUi(nowMillis).candidates
             if (profile.semicolonSelectsSecond && currentCands.size >= 2) {
                 return selectCandidate(1, nowMillis)
@@ -540,6 +540,11 @@ class TypeFreeKeyCoordinator(
     private fun filterRimeCandidates(rawList: List<Pair<String, String>>): List<Pair<String, String>> {
         if (!singleCharMode) return rawList
         return rawList.filter { (text, _) -> Utf8Safety.isSingleCharacter(text) }
+    }
+
+    private fun isOverlayGuideTrigger(ch: Char): Boolean {
+        val guide = profile.overlayGuideKey ?: return false
+        return ch == guide || (guide == ';' && ch == '；')
     }
 
     private fun isExtendedGuardBuffer(code: String): Boolean {

@@ -59,8 +59,9 @@ class OverlaySymbolController(
     fun onChar(ch: Char, asciiPunct: Boolean = false, lastCommittedPreview: String = ""): OverlayStepResult {
         if (!isActive) return OverlayStepResult.CancelledAndExit
 
-        // Double tap guide key (e.g. `;;`) when overlay buffer is empty -> output `；` / `;` and exit
-        if (ch == trie.guideKey && buffer.isEmpty()) {
+        // Double tap guide key (e.g. `;;` or `;；`) when overlay buffer is empty -> output `；` / `;` and exit
+        val isGuideDoubleTap = ch == trie.guideKey || (trie.guideKey == ';' && ch == '；')
+        if (isGuideDoubleTap && buffer.isEmpty()) {
             val out = if (asciiPunct) trie.doubleTapAsciiCommit else trie.doubleTapCommit
             reset()
             return OverlayStepResult.CommitAndExit(CommitAction.PlainText(out))

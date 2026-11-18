@@ -333,10 +333,31 @@ class RimeBridge : RimeSessionClient {
                 System.loadLibrary("rime_jni")
                 true
             } catch (_: UnsatisfiedLinkError) {
-                false
+                loadHostMacOsNativeLibraries()
             } catch (_: Throwable) {
                 false
             }
+        }
+
+        private fun loadHostMacOsNativeLibraries(): Boolean {
+            val candidates = listOfNotNull(
+                System.getProperty("typefree.rime.native.dir")?.takeIf { it.isNotBlank() }?.let { File(it) },
+                File("rime/build/host-macos"),
+                File("../rime/build/host-macos")
+            )
+            for (dir in candidates) {
+                val librime = File(dir, "librime.dylib")
+                val libjni = File(dir, "librime_jni.dylib")
+                if (librime.isFile && libjni.isFile) {
+                    val loaded = runCatching {
+                        System.load(librime.canonicalPath)
+                        System.load(libjni.canonicalPath)
+                        true
+                    }.getOrDefault(false)
+                    if (loaded) return true
+                }
+            }
+            return false
         }
     }
 }

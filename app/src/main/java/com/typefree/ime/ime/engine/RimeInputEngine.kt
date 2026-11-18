@@ -204,8 +204,8 @@ class RimeInputEngine(
     }
 
     private fun onCharInput(ch: Char, nowMillis: Long): EngineResult {
-        // 1. Semicolon (`;`) — Quick-symbol prefix when idle, secondary select (`分号次选`) when composing
-        if (ch == ';') {
+        // 1. Semicolon (`;` / `；`) — Quick-symbol prefix when idle, secondary select (`分号次选`) when composing
+        if (ch == ';' || ch == '；') {
             return when {
                 currentRawCode.isEmpty() -> {
                     currentRawCode = ";"
