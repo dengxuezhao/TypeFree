@@ -761,6 +761,7 @@ class RimeDataManager(
             }
         }
         val canReuseBriefSnapshot = briefSnap.exists() &&
+            isBriefSnapshotV2OrNewer(briefSnap) &&
             (!dictFile.exists() || (
                 (!topFile.exists() || briefSnap.lastModified() >= topFile.lastModified()) &&
                     (!userFile.exists() || briefSnap.lastModified() >= userFile.lastModified())
@@ -829,6 +830,17 @@ class RimeDataManager(
             }
         }
         activeReverseLookupMap = merged
+    }
+
+    private fun isBriefSnapshotV2OrNewer(file: File): Boolean {
+        if (!file.isFile || file.length() < 8L) return false
+        return runCatching {
+            java.io.DataInputStream(FileInputStream(file)).use { input ->
+                val magic = input.readInt()
+                val version = input.readInt()
+                magic == 0x54464249 && version >= 2
+            }
+        }.getOrDefault(false)
     }
 
     private fun ensureDefaultCustomYaml(dir: File, primarySchemaId: String? = null) {

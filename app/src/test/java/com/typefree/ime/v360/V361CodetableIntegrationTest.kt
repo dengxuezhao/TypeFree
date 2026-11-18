@@ -8,6 +8,7 @@ import com.typefree.core.ime.profile.SchemaArchetype
 import com.typefree.core.ime.profile.SchemaProfile
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.InMemoryKeyValueStore
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.JvmAesGcmCipher
 import com.typefree.ime.data.SecretVault
 import com.typefree.ime.ime.ImeUiState
@@ -28,7 +29,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.zip.ZipEntry
@@ -398,6 +403,76 @@ class V361CodetableIntegrationTest {
             val reloadState = dm.reloadActiveEnhancedSchema("xkjd6")
             assertTrue(reloadState is RimeDeploymentState.Ready)
             assertEquals(listOf("bcde"), dm.activeReverseLookupMap["编程词典"])
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `v1 brief snapshot on disk triggers v2 rebuild with natural continuations populated`() {
+        val tempRoot = Files.createTempDirectory("v361_v1_upgrade_").toFile()
+        try {
+            val sharedDir = File(tempRoot, "shared").apply { mkdirs() }
+            val userDir = File(tempRoot, "user").apply { mkdirs() }
+
+            File(sharedDir, "flypy.schema.yaml").writeText(
+                """
+                schema:
+                  schema_id: flypy
+                  name: 小鹤音形
+                engine:
+                  translators:
+                    - table_translator
+                speller:
+                  alphabet: "abcdefghijklmnopqrstuvwxyz'"
+                  max_code_length: 4
+                translator:
+                  dictionary: flypy
+                """.trimIndent(),
+                StandardCharsets.UTF_8
+            )
+            File(sharedDir, "flypy.dict.yaml").writeText(
+                "---\nname: flypy\n...\n丁\tokhguu\n清风徐来\tqfxl\n",
+                StandardCharsets.UTF_8
+            )
+            File(sharedDir, "typefree.toml").writeText(
+                """
+                schema_id = "flypy"
+                display_name = "小鹤音形"
+                archetype = "FIXED_YINXING"
+                reverse_split_enabled = true
+                """.trimIndent(),
+                StandardCharsets.UTF_8
+            )
+
+            // Write a valid v1 flypy.brief.idx snapshot (magic 0x54464249, version 1, no naturalContinuations)
+            val briefSnap = File(sharedDir, "flypy.brief.idx")
+            DataOutputStream(FileOutputStream(briefSnap)).use { out ->
+                out.writeInt(0x54464249)
+                out.writeInt(1)
+                repeat(26) { out.writeShort(0) }
+                repeat(676) { out.writeShort(0) }
+                out.writeInt(0) // bitLen
+                out.writeInt(0) // gt4Count
+                out.writeShort(0) // guardCount
+            }
+            briefSnap.setLastModified(System.currentTimeMillis() + 60_000L)
+
+            val dm = RimeDataManager(sharedDir, userDir, FakeCodetableRimeClient())
+            assertTrue(dm.activateEnhancedSchemeSync(InputScheme.FLYPY_TABLE))
+
+            val okhgNat = dm.activeBriefIndex.lookupNaturalFirstContinuation("okhg")
+            assertEquals("丁", okhgNat?.word)
+            assertEquals("uu", okhgNat?.suffixCode)
+
+            val qfxNat = dm.activeBriefIndex.lookupNaturalFirstContinuation("qfx")
+            assertEquals("清风徐来", qfxNat?.word)
+            assertEquals("l", qfxNat?.suffixCode)
+
+            DataInputStream(FileInputStream(briefSnap)).use { input ->
+                assertEquals(0x54464249, input.readInt())
+                assertEquals(2, input.readInt())
+            }
         } finally {
             tempRoot.deleteRecursively()
         }
