@@ -4,20 +4,27 @@ import android.content.Context
 import com.typefree.core.ime.enhancer.BriefPrefixIndex
 import com.typefree.core.ime.enhancer.DirectCommandEngine
 import com.typefree.core.ime.enhancer.RimeCodeProber
+import com.typefree.core.ime.enhancer.ShadowDictManager
+import com.typefree.core.ime.importer.CustomUserPhraseFileEditor
 import com.typefree.core.ime.importer.ImportMode
 import com.typefree.core.ime.importer.SchemaImportResult
 import com.typefree.core.ime.importer.SchemaPackageImporter
+import com.typefree.core.ime.importer.SubDictToggleManager
 import com.typefree.core.ime.overlay.SymbolTrie
 import com.typefree.core.ime.profile.SchemaInspector
 import com.typefree.core.ime.profile.SchemaProfile
+import com.typefree.core.ime.profile.TypeFreeTomlParser
 import com.typefree.ime.BuildConfig
 import com.typefree.ime.data.InputScheme
 import com.typefree.rime.RimeBridge
 import com.typefree.rime.RimeSessionClient
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -69,6 +76,11 @@ class RimeDataManager(
 
     private val _deploymentState = MutableStateFlow<RimeDeploymentState>(RimeDeploymentState.Idle)
     val deploymentState: StateFlow<RimeDeploymentState> = _deploymentState.asStateFlow()
+
+    private val _metadataVersion = MutableStateFlow(0L)
+    val metadataVersion: StateFlow<Long> = _metadataVersion.asStateFlow()
+
+    private val backgroundReloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile
     var activeSchemaProfile: SchemaProfile = if (BuildConfig.IS_XIAOHE_FLAVOR) {
@@ -575,7 +587,7 @@ class RimeDataManager(
             activeBriefIndex = result.briefIndex
             activeSymbolTrie = result.quickSymbolTrie
             activeReverseLookupMap = emptyMap()
-            refreshReverseLookupFromDir(result.installedDir, result.profile.reverseLookupDict)
+            refreshReverseLookupFromDir(sharedDir, result.profile.reverseLookupDict)
             File(sharedDir, CUSTOM_SCHEMA_META_FILENAME).writeText(result.displayName, Charsets.UTF_8)
             File(sharedDir, CUSTOM_SCHEMA_ID_FILENAME).writeText(result.schemaId, Charsets.UTF_8)
             val elapsed = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
@@ -586,6 +598,7 @@ class RimeDataManager(
                 customSchemaName = result.displayName,
                 deployDurationMs = elapsed
             )
+            _metadataVersion.value++
             result
         } catch (e: Exception) {
             _deploymentState.value = RimeDeploymentState.Error(e.message ?: "导入方案包失败")
@@ -599,12 +612,123 @@ class RimeDataManager(
         }
     }
 
+    suspend fun installPresetSchema(context: Context, assetPath: String): SchemaImportResult {
+        return withContext(Dispatchers.IO) {
+            context.assets.open(assetPath).use { stream ->
+                importEnhancedSchemaPackageSync(stream)
+            }
+        }
+    }
+
+    fun getShadowDictManager(schemaId: String = activeSchemaProfile.schemaId): ShadowDictManager {
+        val targetId = schemaId.ifBlank { activeSchemaProfile.schemaId }.ifBlank { "flypy" }
+        return ShadowDictManager(sharedDir, targetId)
+    }
+
+    fun getUserPhraseEditor(schemaId: String = activeSchemaProfile.schemaId): CustomUserPhraseFileEditor {
+        val targetId = schemaId.ifBlank { activeSchemaProfile.schemaId }.ifBlank { "flypy" }
+        return CustomUserPhraseFileEditor(sharedDir, targetId)
+    }
+
+    fun getSubDictToggleManager(): SubDictToggleManager {
+        return SubDictToggleManager(sharedDir) { sid ->
+            refreshReverseLookupFromDir(sharedDir, activeSchemaProfile.reverseLookupDict)
+            _metadataVersion.value++
+            if (appContext != null) {
+                backgroundReloadScope.launch {
+                    runCatching { reloadActiveEnhancedSchemaSync(sid) }
+                }
+            }
+        }
+    }
+
+    fun saveQuickSymbolsTrie(trie: SymbolTrie, schemaId: String = activeSchemaProfile.schemaId) {
+        sharedDir.mkdirs()
+        val serialized = trie.serializeQuickSymbolsYaml()
+        File(sharedDir, "quick_symbols.yaml").writeText(serialized, Charsets.UTF_8)
+        val targetId = schemaId.ifBlank { activeSchemaProfile.schemaId }
+        if (targetId.isNotBlank()) {
+            File(sharedDir, "$targetId.quick_symbols.yaml").writeText(serialized, Charsets.UTF_8)
+        }
+        if (targetId == activeSchemaProfile.schemaId || targetId.isBlank()) {
+            activeSymbolTrie = trie
+        }
+        _metadataVersion.value++
+    }
+
+    fun resetQuickSymbolsToDefault(schemaId: String = activeSchemaProfile.schemaId): SymbolTrie {
+        val defaultTrie = SymbolTrie.defaultXiaohe()
+        saveQuickSymbolsTrie(defaultTrie, schemaId)
+        return defaultTrie
+    }
+
+    suspend fun importExtSubDictionary(
+        fileName: String,
+        inputStream: InputStream,
+        schemaId: String = activeSchemaProfile.schemaId
+    ): SubDictToggleManager.SubDictDescriptor = withContext(Dispatchers.IO) {
+        val targetId = schemaId.ifBlank { activeSchemaProfile.schemaId }.ifBlank { "flypy" }
+        val mgr = SubDictToggleManager(sharedDir)
+        val descriptor = mgr.importExtDict(
+            sourceFileName = fileName,
+            contentStream = inputStream,
+            schemaId = targetId
+        )
+        reloadActiveEnhancedSchemaSync(targetId)
+        descriptor
+    }
+
+    fun reloadActiveEnhancedSchemaSync(schemaId: String = activeSchemaProfile.schemaId): RimeDeploymentState {
+        val t0 = System.currentTimeMillis()
+        val targetId = schemaId.ifBlank { activeSchemaProfile.schemaId }.ifBlank { "flypy" }
+        return try {
+            sharedDir.mkdirs()
+            userDir.mkdirs()
+            val dictFile = File(sharedDir, "$targetId.dict.yaml")
+            val briefSnap = File(sharedDir, "$targetId.brief.idx")
+            if (dictFile.exists() && briefSnap.exists()) {
+                runCatching { briefSnap.delete() }
+            }
+            ensureDefaultCustomYaml(sharedDir, primarySchemaId = targetId)
+            rimeBridge.initialize(sharedDir.absolutePath, userDir.absolutePath)
+            val ok = rimeBridge.deploy(targetId)
+            refreshEnhancedMetadataFromDir(sharedDir, targetId)
+            if (!ok && rimeBridge.isNativeLoaded) {
+                throw IllegalStateException("librime 原生重载未完成 ($targetId)")
+            }
+            val elapsed = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+            val ready = RimeDeploymentState.Ready(
+                wordCount = rimeBridge.wordCount,
+                hasFullRimeIce = hasFullRimeIceDictionary(),
+                activeSchemaId = rimeBridge.activeSchemaId.ifBlank { targetId },
+                customSchemaName = readCustomSchemaName(),
+                deployDurationMs = elapsed
+            )
+            _deploymentState.value = ready
+            _metadataVersion.value++
+            ready
+        } catch (e: Exception) {
+            val err = RimeDeploymentState.Error(e.message ?: "Rime 重载失败")
+            _deploymentState.value = err
+            err
+        }
+    }
+
+    suspend fun reloadActiveEnhancedSchema(
+        schemaId: String = activeSchemaProfile.schemaId
+    ): RimeDeploymentState = withContext(Dispatchers.IO) {
+        reloadActiveEnhancedSchemaSync(schemaId)
+    }
+
     private fun refreshEnhancedMetadataFromDir(dir: File, schemaId: String) {
         val schemaFile = File(dir, "$schemaId.schema.yaml")
         val tomlFile = File(dir, "typefree.toml")
         val dictFile = File(dir, "$schemaId.dict.yaml")
-        val quickFile = File(dir, "quick_symbols.yaml")
+        val perSchemaQuickFile = File(dir, "$schemaId.quick_symbols.yaml")
+        val quickFile = if (perSchemaQuickFile.exists()) perSchemaQuickFile else File(dir, "quick_symbols.yaml")
         val briefSnap = File(dir, "$schemaId.brief.idx")
+        val topFile = File(dir, "${schemaId}_top.txt")
+        val userFile = File(dir, "${schemaId}_user.txt")
 
         activeSymbolTrie = if (quickFile.exists()) {
             runCatching {
@@ -614,11 +738,19 @@ class RimeDataManager(
             SymbolTrie.defaultXiaohe()
         }
         if (schemaFile.exists()) {
+            val matchingToml = if (tomlFile.exists()) {
+                runCatching { tomlFile.readText(Charsets.UTF_8) }.getOrNull()?.takeIf { text ->
+                    val parsed = TypeFreeTomlParser.parse(text)
+                    parsed.schemaId == schemaId || !text.contains("schema_id")
+                }
+            } else {
+                null
+            }
             runCatching {
                 activeSchemaProfile = SchemaInspector.inspect(
                     schemaYaml = schemaFile.readText(Charsets.UTF_8),
                     dictYamlContent = if (dictFile.exists()) dictFile.readText(Charsets.UTF_8) else null,
-                    tomlOverrideContent = if (tomlFile.exists()) tomlFile.readText(Charsets.UTF_8) else null
+                    tomlOverrideContent = matchingToml
                 )
             }
         } else {
@@ -628,16 +760,21 @@ class RimeDataManager(
                 SchemaProfile.defaultSentencePinyin(schemaId = schemaId)
             }
         }
+        val canReuseBriefSnapshot = briefSnap.exists() &&
+            (!dictFile.exists() || (
+                (!topFile.exists() || briefSnap.lastModified() >= topFile.lastModified()) &&
+                    (!userFile.exists() || briefSnap.lastModified() >= userFile.lastModified())
+                ))
         activeBriefIndex = if (activeSchemaProfile.reverseSplitEnabled) {
             runCatching {
                 when {
-                    briefSnap.exists() -> BriefPrefixIndex.readSnapshot(briefSnap)
+                    canReuseBriefSnapshot -> BriefPrefixIndex.readSnapshot(briefSnap)
                     dictFile.exists() -> {
                         val built = BriefPrefixIndex.buildFromDictLines(
                             mainDictLines = dictFile.readLines(Charsets.UTF_8).asSequence(),
-                            topDictLines = File(dir, "${schemaId}_top.txt").takeIf { it.exists() }
+                            topDictLines = topFile.takeIf { it.exists() }
                                 ?.readLines(Charsets.UTF_8).orEmpty().asSequence(),
-                            userDictLines = File(dir, "${schemaId}_user.txt").takeIf { it.exists() }
+                            userDictLines = userFile.takeIf { it.exists() }
                                 ?.readLines(Charsets.UTF_8).orEmpty().asSequence(),
                             gt4GuardTwoPrefixes = activeSchemaProfile.gt4GuardPrefixes
                         )
@@ -664,15 +801,34 @@ class RimeDataManager(
     }
 
     private fun refreshReverseLookupFromDir(dir: File, reverseDictName: String?) {
-        val dzName = reverseDictName ?: return
-        val dzFile = File(dir, "$dzName.dict.yaml")
-        if (dzFile.exists()) {
-            runCatching {
-                activeReverseLookupMap = DirectCommandEngine.loadReverseLookupFromDictLines(
-                    dzFile.readLines(Charsets.UTF_8).asSequence()
-                )
+        val merged = LinkedHashMap<String, MutableList<String>>()
+        if (!reverseDictName.isNullOrBlank()) {
+            val dzFile = File(dir, "$reverseDictName.dict.yaml")
+            if (dzFile.exists()) {
+                runCatching {
+                    val baseMap = DirectCommandEngine.loadReverseLookupFromDictLines(
+                        dzFile.readLines(Charsets.UTF_8).asSequence()
+                    )
+                    for ((word, codes) in baseMap) {
+                        val list = merged.getOrPut(word) { ArrayList(codes.size) }
+                        for (code in codes) {
+                            if (code !in list) list.add(code)
+                        }
+                    }
+                }
             }
         }
+        val extRoot = if (File(dir, "ext").isDirectory) dir else sharedDir
+        runCatching {
+            val extMap = SubDictToggleManager(extRoot).loadEnabledExtReverseLookup(activeSchemaProfile.schemaId)
+            for ((word, codes) in extMap) {
+                val list = merged.getOrPut(word) { ArrayList(codes.size) }
+                for (code in codes) {
+                    if (code !in list) list.add(code)
+                }
+            }
+        }
+        activeReverseLookupMap = merged
     }
 
     private fun ensureDefaultCustomYaml(dir: File, primarySchemaId: String? = null) {

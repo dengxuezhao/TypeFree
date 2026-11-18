@@ -227,6 +227,16 @@ class AppRepository(
             } else {
                 null
             }
+            val resolvedEnglishPrefixVetoEnabled = if (raw.contains("\"englishPrefixVetoEnabled\"")) {
+                parsed.englishPrefixVetoEnabled
+            } else {
+                true
+            }
+            val resolvedCodetableAutoEncodeEnabled = if (raw.contains("\"codetableAutoEncodeEnabled\"")) {
+                parsed.codetableAutoEncodeEnabled
+            } else {
+                false
+            }
             val resolvedPredictionEnabled = if (raw.contains("\"predictionEnabled\"")) {
                 parsed.predictionEnabled
             } else {
@@ -396,6 +406,8 @@ class AppRepository(
                 liveWriteToEditor = resolvedLiveWriteToEditor,
                 inputScheme = resolvedInputScheme,
                 fixedCandidateOrder = resolvedFixedCandidateOrder,
+                englishPrefixVetoEnabled = resolvedEnglishPrefixVetoEnabled,
+                codetableAutoEncodeEnabled = resolvedCodetableAutoEncodeEnabled,
                 predictionEnabled = resolvedPredictionEnabled,
                 aiCompletionEnabled = resolvedAiCompletionEnabled,
                 chatContextReplyEnabled = resolvedChatContextReplyEnabled,

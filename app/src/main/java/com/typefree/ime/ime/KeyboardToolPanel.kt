@@ -69,6 +69,7 @@ fun KeyboardToolPanel(
     onOpenHelpMeWrite: () -> Unit = {},
     onOpenJevCopilot: () -> Unit = {},
     onToggleManualIncognito: () -> Unit = {},
+    onToggleSingleCharMode: () -> Unit = {},
     onOpenDictionary: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
@@ -251,6 +252,44 @@ fun KeyboardToolPanel(
                             color = palette.keyTextPrimary,
                             fontSize = 10.5.sp,
                             fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                // 5. Codetable Single-Char Mode Toggle Pill (`单字`)
+                if (uiState.codetableEnhancerActive) {
+                    val singleCharEnabled = uiState.singleCharModeEnabled
+                    Row(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(
+                                if (singleCharEnabled) {
+                                    TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.16f else 0.12f)
+                                } else {
+                                    palette.capsuleTrackBg
+                                }
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = if (singleCharEnabled) {
+                                    TypeFreeEmerald.copy(alpha = 0.65f)
+                                } else {
+                                    palette.keyBorder
+                                },
+                                shape = RoundedCornerShape(9.dp)
+                            )
+                            .clickable(onClick = onToggleSingleCharMode)
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Text(
+                            text = "单字",
+                            color = if (singleCharEnabled) activeAccent else palette.keyTextMuted,
+                            fontSize = 10.5.sp,
+                            fontWeight = if (singleCharEnabled) FontWeight.SemiBold else FontWeight.Medium,
                             maxLines = 1
                         )
                     }
