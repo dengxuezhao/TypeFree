@@ -21,8 +21,7 @@ body:
       label: 安装包版本类型
       description: 请选择你当前安装的 APK 类型
       options:
-        - 公开标准版 (standard / GitHub Release)
-        - 小鹤音形专享版 (xiaohe)
+        - GitHub Release 官方包
         - 自行源码编译
         - 不确定
     validations:

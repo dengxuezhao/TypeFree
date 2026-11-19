@@ -523,6 +523,8 @@ fun HomeSetupScreen(
             isImeEnabled = isImeEnabled,
             isImeSelected = isImeSelected,
             isApiReady = isApiReady,
+            isAccessibilityReady = isA11yReady,
+            jevCopilotEnabled = settings.jevCopilotEnabled,
             onRequestMic = {
                 permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             },
@@ -542,6 +544,9 @@ fun HomeSetupScreen(
             },
             onOpenApiConfig = {
                 onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_API)
+            },
+            onOpenAccessibility = {
+                TypeFreeBubbleController.openAccessibilitySettings(context)
             }
         )
 
@@ -1517,77 +1522,133 @@ private fun KeyboardSetupWizardCard(
     isImeEnabled: Boolean,
     isImeSelected: Boolean,
     isApiReady: Boolean = true,
+    isAccessibilityReady: Boolean = false,
+    jevCopilotEnabled: Boolean = true,
     onRequestMic: () -> Unit,
     onOpenAppSettings: () -> Unit,
     onOpenImeSettings: () -> Unit,
     onShowImePicker: () -> Unit,
-    onOpenApiConfig: () -> Unit = {}
+    onOpenApiConfig: () -> Unit = {},
+    onOpenAccessibility: () -> Unit = {}
 ) {
     val completedCount = listOf(isImeEnabled, isImeSelected, isApiReady).count { it }
     val allReady = isImeEnabled && isImeSelected && isApiReady && hasMicPermission
     var manualExpanded by rememberSaveable { mutableStateOf(false) }
+    var a11ySoftTipDismissed by rememberSaveable { mutableStateOf(false) }
 
     if (allReady && !manualExpanded) {
-        // Sleek 1-Line Emerald Ready Banner (R5.1)
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .clickable { manualExpanded = true },
-            shape = RoundedCornerShape(16.dp),
-            color = TypeFreeEmerald.copy(alpha = 0.10f),
-            border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.45f))
-        ) {
-            Row(
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Sleek 1-Line Emerald Ready Banner (R5.1)
+            Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 11.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable { manualExpanded = true },
+                shape = RoundedCornerShape(16.dp),
+                color = TypeFreeEmerald.copy(alpha = 0.10f),
+                border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.45f))
             ) {
                 Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 11.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(TypeFreeEmerald),
-                        contentAlignment = Alignment.Center
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(13.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(22.dp)
+                                .clip(CircleShape)
+                                .background(TypeFreeEmerald),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                        Text(
+                            text = "灵言 TypeFree 语音键盘已就绪 (3/3) · 点击展开",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
-                    Text(
-                        text = "灵言 TypeFree 语音键盘已就绪 (3/3) · 点击展开",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    TextButton(
-                        onClick = onShowImePicker,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text("切换输入法", style = MaterialTheme.typography.labelSmall)
+                        TextButton(
+                            onClick = onShowImePicker,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        ) {
+                            Text("切换输入法", style = MaterialTheme.typography.labelSmall)
+                        }
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = "展开详情",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
-                    Icon(
-                        imageVector = Icons.Default.KeyboardArrowDown,
-                        contentDescription = "展开详情",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
-                    )
+                }
+            }
+
+            // Optional soft guidance for ✦ Jev Copilot screen-reading Accessibility permission
+            if (jevCopilotEnabled && !isAccessibilityReady && !a11ySoftTipDismissed) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    color = TypeFreeAmber.copy(alpha = 0.10f),
+                    border = BorderStroke(1.dp, TypeFreeAmber.copy(alpha = 0.40f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "✦ 军师读屏尚未开启无障碍（可选）",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "仅在主动点击「✦ 军师」时按需读取聊天上文并端侧脱敏；纯打字/帮写/问AI 无需开启",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            FilledTonalButton(
+                                onClick = onOpenAccessibility,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("去开启", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            }
+                            TextButton(
+                                onClick = { a11ySoftTipDismissed = true },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                            ) {
+                                Text("暂不", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1704,6 +1765,21 @@ private fun KeyboardSetupWizardCard(
                 buttonLabel = if (isApiReady) "修改配置" else "去配置",
                 keepClickableWhenDone = true,
                 onClick = onOpenApiConfig
+            )
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+
+            WizardStepItem(
+                stepNumber = 4,
+                title = "进阶可选 · 开启无障碍服务（✦ 军师读屏 / 悬浮球）",
+                subtitle = if (isAccessibilityReady) {
+                    "无障碍服务已就绪，✦ 军师可按需读取当前聊天上文"
+                } else {
+                    "使用「✦ 军师」读屏回复或悬浮胶囊时需要开启；纯打字与基础语音可跳过"
+                },
+                isDone = isAccessibilityReady,
+                buttonLabel = if (isAccessibilityReady) "已开启" else "去开启",
+                onClick = onOpenAccessibility
             )
         }
     }

@@ -651,4 +651,48 @@ class CodetableV362EnhancementsTest {
             assertTrue(s2?.word != "你好你好")
         }
     }
+
+    @Test
+    fun `12_live_26_slot_empty_3code_continuation_probing_filters_autoclear_restarts`() {
+        val singleCharBaseline = ('a'..'z').associate { ch -> ch.toString() to listOf("单$ch") }
+        val genuine4Code = mapOf("xyza" to listOf("星云"), "xyzf" to listOf("细雨"))
+        val probingPort = object : RimeCoreSessionPort {
+            private var buf = ""
+            override fun sendChar(ch: Char): RimeDecodeFrame {
+                buf += ch
+                return RimeDecodeFrame(rawInput = buf, preedit = buf, candidates = emptyList())
+            }
+            override fun sendBackspace(): RimeDecodeFrame {
+                buf = buf.dropLast(1)
+                return RimeDecodeFrame(rawInput = buf, preedit = buf, candidates = emptyList())
+            }
+            override fun selectCandidate(index: Int): Pair<String?, RimeDecodeFrame> = null to RimeDecodeFrame()
+            override fun commitCurrentComposition(): String? = buf.also { buf = "" }
+            override fun clearComposition() { buf = "" }
+            override fun currentFrame(maxCandidates: Int): RimeDecodeFrame = RimeDecodeFrame(buf, buf, emptyList())
+            override fun setOption(option: String, value: Boolean) {}
+            override fun getOption(option: String): Boolean = false
+            override fun probeBatchCandidates(codes: List<String>, maxCount: Int): List<List<String>> {
+                return codes.map { code ->
+                    when {
+                        code.length == 1 -> singleCharBaseline[code].orEmpty()
+                        code in genuine4Code -> genuine4Code[code].orEmpty()
+                        // Simulate Rime `auto_clear: max_length` restarting on the 4th char!
+                        code.length == 4 -> singleCharBaseline[code.last().toString()].orEmpty()
+                        else -> emptyList()
+                    }
+                }
+            }
+        }
+        val coord = TypeFreeKeyCoordinator(
+            profile = SchemaProfile.defaultXiaoheFlypy(),
+            rimePort = probingPort,
+            reverseSplitEngine = ReverseSplitEngine(BriefPrefixIndex.empty())
+        )
+        coord.onCharKey('x')
+        coord.onCharKey('y')
+        val third = coord.onCharKey('z') as CoordinatorKeyOutcome.Consumed
+        assertEquals(listOf("星云", "细雨"), third.ui.candidates.map { it.commitText })
+        assertEquals(listOf("~a", "~f"), third.ui.candidates.map { it.codeHint })
+    }
 }

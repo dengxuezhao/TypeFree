@@ -32,6 +32,7 @@ interface RimeCoreSessionPort {
     fun currentFrame(maxCandidates: Int = 24): RimeDecodeFrame
     fun setOption(option: String, value: Boolean)
     fun getOption(option: String): Boolean
+    fun probeBatchCandidates(codes: List<String>, maxCount: Int = 2): List<List<String>> = emptyList()
 }
 
 enum class CoordinatorModeBadge(val label: String) {
@@ -108,6 +109,8 @@ class TypeFreeKeyCoordinator(
     private var activeDirectCandidates: List<EnhancedCandidate> = emptyList()
     private var syntheticRimeCandidatesOverride: List<Pair<String, String>>? = null
     private var rimeClearedByCoordinator: Boolean = false
+    private val liveContinuationCache = HashMap<String, List<NaturalContinuation>>(64)
+    private var liveSingleCharBaseline: List<List<String>>? = null
     private var isSlashSnippetMode: Boolean = false
     private var slashBuffer: String = ""
     private var slashSnippetEntries: List<SlashSnippetEntry> = emptyList()
@@ -125,6 +128,8 @@ class TypeFreeKeyCoordinator(
 
     fun updateProfile(newProfile: SchemaProfile) {
         profile = newProfile
+        liveContinuationCache.clear()
+        liveSingleCharBaseline = null
         reloadShadowRules()
         reset()
         applyProfileIsolationOptions()
@@ -1098,15 +1103,79 @@ class TypeFreeKeyCoordinator(
     ): List<NaturalContinuation> {
         if (!naturalContinuationEnabled || hasExactRimeMatch) return emptyList()
         if (!isExtendedGuardBuffer(buffer) && buffer.length !in 2..7) return emptyList()
-        val list = reverseSplitEngine?.index?.lookupNaturalContinuations(
+        val staticList = reverseSplitEngine?.index?.lookupNaturalContinuations(
             prefix = buffer,
             limit = BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS
         ).orEmpty()
-        if (list.isEmpty()) return emptyList()
-        return list.filter { nat ->
+        val rawList = if (staticList.isNotEmpty()) {
+            staticList
+        } else {
+            probeLiveSingleStepContinuations(buffer)
+        }
+        if (rawList.isEmpty()) return emptyList()
+        return rawList.filter { nat ->
             nat.word !in shadowRuleState.blockedWords &&
                 (!singleCharMode || Utf8Safety.isSingleCharacter(nat.word))
         }
+    }
+
+    /**
+     * Lazy 26-slot on-demand probing for precompiled binary tables (e.g. official Xiaohe `.table.bin`,
+     * Wubi 86, Keytao 6) when a `(maxCodeLength - 1)` prefix is empty: probes `buffer + 'a'..'z'`
+     * via the isolated Rime probe session (`< 0.5ms`, zero decompilation) and caches per prefix.
+     */
+    private fun probeLiveSingleStepContinuations(buffer: String): List<NaturalContinuation> {
+        if (profile.maxCodeLength < 3) return emptyList()
+        if (buffer.length != profile.maxCodeLength - 1) return emptyList()
+        if (isExtendedGuardBuffer(buffer) || !buffer.all { it in 'a'..'z' }) return emptyList()
+        liveContinuationCache[buffer]?.let { return it }
+
+        val singleBaseline = liveSingleCharBaseline ?: run {
+            val singleCodes = ArrayList<String>(26)
+            for (ch in 'a'..'z') singleCodes.add(ch.toString())
+            rimePort.probeBatchCandidates(singleCodes, maxCount = 2).also {
+                if (it.size == 26) liveSingleCharBaseline = it
+            }
+        }
+
+        val probeCodes = ArrayList<String>(26)
+        for (ch in 'a'..'z') {
+            probeCodes.add("$buffer$ch")
+        }
+        val probedSlots = rimePort.probeBatchCandidates(probeCodes, maxCount = 2)
+        if (probedSlots.isEmpty()) return emptyList()
+
+        val found = ArrayList<NaturalContinuation>(BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS)
+        val seenWords = HashSet<String>(BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS)
+        for (i in 0 until minOf(26, probedSlots.size)) {
+            val suffixChar = ('a' + i)
+            val fullCode = probeCodes[i]
+            val slotCandidates = probedSlots[i]
+            if (slotCandidates.isEmpty()) continue
+            // Guard against Rime `auto_clear: max_length` restarting composition on the single suffix char
+            val baselineForChar = singleBaseline.getOrNull(i).orEmpty()
+            if (baselineForChar.isNotEmpty() && slotCandidates == baselineForChar) continue
+            for (word in slotCandidates) {
+                if (word.isEmpty() || word.contains('$') || word.contains('{')) continue
+                if (word.equals(fullCode, ignoreCase = true) || word.equals(buffer, ignoreCase = true)) continue
+                if (!seenWords.add(word)) continue
+                found.add(
+                    NaturalContinuation(
+                        word = word,
+                        suffixCode = suffixChar.toString(),
+                        fullCode = fullCode
+                    )
+                )
+                if (found.size >= BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS) break
+            }
+            if (found.size >= BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS) break
+        }
+        if (liveContinuationCache.size >= 256) {
+            liveContinuationCache.clear()
+        }
+        val immutable = found.toList()
+        liveContinuationCache[buffer] = immutable
+        return immutable
     }
 
     private fun isCompletionComment(comment: String): Boolean {

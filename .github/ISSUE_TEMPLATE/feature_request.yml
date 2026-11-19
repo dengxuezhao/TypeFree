@@ -43,4 +43,4 @@ body:
     id: app_version
     attributes:
       label: 当前使用版本（可选）
-      placeholder: "例如：v3.6.0（小鹤专享版 / 标准版）"
+      placeholder: "例如：v3.7.1"

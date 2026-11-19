@@ -85,10 +85,10 @@ jobs:
             // Welcome comment only on initial open when there are no comments yet
             const isBot = issue.user && (issue.user.type === 'Bot' || (issue.user.login || '').endsWith('[bot]'));
             if (action === 'opened' && issue.comments === 0 && !isBot) {
-              const hasVersionHint = /(v\d+\.\d+|版本|标准版|standard|小鹤|xiaohe)/i.test(text);
+              const hasVersionHint = /(v\d+\.\d+|版本|standard|GitHub Release)/i.test(text);
               const missingHintNote = hasVersionHint
                 ? ''
-                : '\n> 💡 **补充信息提示**：如方便，请补充当前使用的 **应用版本号**（App「设置」右上角可见）及 **版本类型**（公开标准版 / 小鹤专享版），有助于更快定位复现。';
+                : '\n> 💡 **补充信息提示**：如方便，请补充当前使用的 **应用版本号**（App「通用 → 关于」可见）及所用输入方案，有助于更快定位复现。';
 
               const labelPreview = finalLabels.length > 0
                 ? finalLabels.map(l => `\`${l}\``).join(' ')

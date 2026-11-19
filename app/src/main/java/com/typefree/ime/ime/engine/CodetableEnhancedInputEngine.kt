@@ -90,6 +90,9 @@ class RimeSessionClientPortAdapter(
     override fun setOption(option: String, value: Boolean) = client.setOption(option, value)
 
     override fun getOption(option: String): Boolean = client.getOption(option)
+
+    override fun probeBatchCandidates(codes: List<String>, maxCount: Int): List<List<String>> =
+        client.probeBatchCandidatesForCodes(codes, maxCount)
 }
 
 /**
