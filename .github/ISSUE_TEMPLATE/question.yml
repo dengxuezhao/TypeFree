@@ -1,0 +1,19 @@
+name: 💬 使用咨询与方案求助 (Question)
+description: 咨询编码配置、词库导入、API 配置或使用方式问题
+title: "[Question]: "
+labels: ["question", "needs-triage"]
+body:
+  - type: input
+    id: app_version
+    attributes:
+      label: 当前应用版本与安装类型
+      placeholder: "例如：v3.6.0 公开标准版"
+    validations:
+      required: true
+  - type: textarea
+    id: question_detail
+    attributes:
+      label: 问题描述
+      description: 请详细描述你的疑问或配置卡点（请勿粘贴个人 API Key）。
+    validations:
+      required: true

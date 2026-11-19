@@ -1,0 +1,207 @@
+name: Build TypeFree Xiaohe Exclusive APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      xiaohe_dict_url:
+        description: "Optional direct download URL for xiaohe_flypy_typefree_ready.zip (falls back to XIAOHE_READY_ZIP_URL / XIAOHE_READY_ZIP_B64 / GDRIVE_ACCESS_TOKEN+XIAOHE_GDRIVE_FILE_ID secrets)"
+        required: false
+        default: ""
+      build_type:
+        description: "APK build type (debug or release; release uses TYPEFREE_KEYSTORE_* secrets if configured)"
+        required: false
+        default: "debug"
+        type: choice
+        options:
+          - debug
+          - release
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xiaohe-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-xiaohe-apk:
+    name: QA Gate Matrix + Assemble Xiaohe Exclusive APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout TypeFree branch
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Accept Android SDK licenses for NDK & CMake
+        run: |
+          if [ -n "${ANDROID_HOME:-}" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          fi
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Cache upstream librime 1.17.0 C++ dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            rime/src/main/cpp/librime
+            rime/src/main/cpp/boost
+            rime/src/main/cpp/snappy
+            rime/src/main/cpp/librime-lua
+            rime/src/main/cpp/librime-lua-deps
+            rime/src/main/cpp/librime-octagram
+            rime/src/main/cpp/librime-predict
+          key: librime-1.17.0-deps-${{ hashFiles('rime/src/main/cpp/fetch_librime_deps.sh') }}
+
+      - name: Fetch upstream librime 1.17.0 dependencies
+        run: bash rime/src/main/cpp/fetch_librime_deps.sh
+
+      - name: Inject untracked Xiaohe dictionary bundle into app/src/xiaohe/assets/rime/
+        env:
+          INPUT_URL: ${{ inputs.xiaohe_dict_url }}
+          SECRET_URL: ${{ secrets.XIAOHE_READY_ZIP_URL }}
+          SECRET_B64: ${{ secrets.XIAOHE_READY_ZIP_B64 }}
+          GDRIVE_FILE_ID: ${{ secrets.XIAOHE_GDRIVE_FILE_ID }}
+          GDRIVE_ACCESS_TOKEN: ${{ secrets.GDRIVE_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/xiaohe_bundle app/src/xiaohe/assets/rime
+
+          download_url_or_gdrive() {
+            local url="$1"
+            local out="$2"
+            curl -fsSL -L "$url" -o "$out" || true
+            if unzip -tq "$out" >/dev/null 2>&1; then
+              return 0
+            fi
+            # Auto-upgrade Google Drive sharing/uc URLs to direct usercontent endpoint when needed
+            local fid=""
+            if [[ "$url" =~ [?\&]id=([a-zA-Z0-9_-]+) ]]; then
+              fid="${BASH_REMATCH[1]}"
+            elif [[ "$url" =~ /file/d/([a-zA-Z0-9_-]+) ]]; then
+              fid="${BASH_REMATCH[1]}"
+            fi
+            if [ -n "$fid" ]; then
+              echo "Retrying via drive.usercontent.google.com direct binary endpoint..."
+              curl -fsSL -L "https://drive.usercontent.google.com/download?id=${fid}&export=download&confirm=t" -o "$out"
+            fi
+            unzip -tq "$out" >/dev/null
+          }
+
+          if [ -n "$INPUT_URL" ]; then
+            echo "Downloading Xiaohe bundle from workflow input URL..."
+            download_url_or_gdrive "$INPUT_URL" /tmp/xiaohe_bundle/xiaohe.zip
+          elif [ -n "$SECRET_URL" ]; then
+            echo "Downloading Xiaohe bundle from XIAOHE_READY_ZIP_URL secret..."
+            download_url_or_gdrive "$SECRET_URL" /tmp/xiaohe_bundle/xiaohe.zip
+          elif [ -n "$SECRET_B64" ]; then
+            echo "Decoding Xiaohe bundle from XIAOHE_READY_ZIP_B64 secret..."
+            printf '%s' "$SECRET_B64" | base64 -d > /tmp/xiaohe_bundle/xiaohe.zip
+            unzip -tq /tmp/xiaohe_bundle/xiaohe.zip >/dev/null
+          elif [ -n "$GDRIVE_ACCESS_TOKEN" ] && [ -n "$GDRIVE_FILE_ID" ]; then
+            echo "Downloading Xiaohe bundle via authenticated Google Drive API..."
+            curl -fsSL \
+              -H "Authorization: Bearer ${GDRIVE_ACCESS_TOKEN}" \
+              "https://www.googleapis.com/drive/v3/files/${GDRIVE_FILE_ID}?alt=media" \
+              -o /tmp/xiaohe_bundle/xiaohe.zip
+            unzip -tq /tmp/xiaohe_bundle/xiaohe.zip >/dev/null
+          else
+            echo "::error::Missing private Xiaohe bundle credentials (provide workflow input xiaohe_dict_url, or configure XIAOHE_READY_ZIP_URL / XIAOHE_READY_ZIP_B64 / GDRIVE_ACCESS_TOKEN+XIAOHE_GDRIVE_FILE_ID secrets)."
+            exit 1
+          fi
+
+          mkdir -p /tmp/xiaohe_bundle/unpacked
+          unzip -oq /tmp/xiaohe_bundle/xiaohe.zip -d /tmp/xiaohe_bundle/unpacked
+          SCHEMA_FILE=$(find /tmp/xiaohe_bundle/unpacked -type f -name "*.schema.yaml" ! -name "*dz.schema.yaml" | head -n 1 || true)
+          if [ -n "$SCHEMA_FILE" ]; then
+            SCHEMA_ROOT=$(dirname "$SCHEMA_FILE")
+          else
+            SCHEMA_ROOT=/tmp/xiaohe_bundle/unpacked
+          fi
+          cp -a "$SCHEMA_ROOT"/. app/src/xiaohe/assets/rime/
+          rm -rf /tmp/xiaohe_bundle
+
+          echo "Injected files in app/src/xiaohe/assets/rime/:"
+          ls -lh app/src/xiaohe/assets/rime/
+
+          # Enforce EULA compliance gate: git status MUST ignore app/src/xiaohe/assets/rime/
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Git working tree polluted after injecting private dictionary!"
+            git status
+            exit 1
+          fi
+          echo "EULA Git isolation verified: 0 untracked dictionary files visible to Git."
+
+      - name: Run Section 6.2 8-Gate Automated QA Unit Tests
+        run: ./gradlew :core:test testXiaoheDebugUnitTest --no-daemon --stacktrace
+
+      - name: Decode release keystore (if building release and configured)
+        id: sign
+        env:
+          BUILD_TYPE: ${{ inputs.build_type || 'debug' }}
+          KS_B64: ${{ secrets.TYPEFREE_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.TYPEFREE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.TYPEFREE_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.TYPEFREE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          IS_SIGNED="false"
+          if [ "$BUILD_TYPE" = "release" ] && [ -n "$KS_B64" ] && [ -n "$KS_PASS" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASS" ]; then
+            printf '%s' "$KS_B64" | base64 -d > /tmp/typefree-release.jks
+            test -s /tmp/typefree-release.jks
+            IS_SIGNED="true"
+          fi
+          echo "is_signed=$IS_SIGNED" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble Xiaohe Exclusive APK
+        id: apk
+        env:
+          BUILD_TYPE: ${{ inputs.build_type || 'debug' }}
+          TYPEFREE_KEYSTORE_PATH: ${{ steps.sign.outputs.is_signed == 'true' && '/tmp/typefree-release.jks' || '' }}
+          TYPEFREE_KEYSTORE_PASSWORD: ${{ secrets.TYPEFREE_KEYSTORE_PASSWORD }}
+          TYPEFREE_KEY_ALIAS: ${{ secrets.TYPEFREE_KEY_ALIAS }}
+          TYPEFREE_KEY_PASSWORD: ${{ secrets.TYPEFREE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ "$BUILD_TYPE" = "release" ]; then
+            ./gradlew assembleXiaoheRelease --no-daemon --stacktrace
+            APK_PATH=$(find app/build/outputs/apk/xiaohe/release -name "*.apk" | head -n 1)
+            if [ "${{ steps.sign.outputs.is_signed }}" = "true" ]; then
+              OUT_APK="TypeFree-xiaohe-release.apk"
+            else
+              OUT_APK="TypeFree-xiaohe-release-debugsigned.apk"
+            fi
+          else
+            ./gradlew assembleXiaoheDebug --no-daemon --stacktrace
+            APK_PATH=$(find app/build/outputs/apk/xiaohe/debug -name "*.apk" | head -n 1)
+            OUT_APK="TypeFree-xiaohe-debug.apk"
+          fi
+          test -f "$APK_PATH"
+          cp "$APK_PATH" "$OUT_APK"
+          sha256sum "$OUT_APK" | tee "${OUT_APK}.sha256"
+          echo "apk_file=$OUT_APK" >> "$GITHUB_OUTPUT"
+          echo "sha_file=${OUT_APK}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Clean up temporary keystore
+        if: always()
+        run: rm -f /tmp/typefree-release.jks
+
+      - name: Upload Xiaohe Exclusive APK & QA Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: TypeFree-xiaohe-${{ inputs.build_type || 'debug' }}-apk
+          path: |
+            ${{ steps.apk.outputs.apk_file }}
+            ${{ steps.apk.outputs.sha_file }}
+            core/build/reports/tests/test/
+            app/build/reports/tests/testXiaoheDebugUnitTest/
+          if-no-files-found: error
+          retention-days: 30

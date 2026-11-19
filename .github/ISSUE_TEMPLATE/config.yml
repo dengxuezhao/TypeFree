@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 查看最新版本与更新日志 (GitHub Releases)
+    url: https://github.com/dengxuezhao/TypeFree/releases
+    about: 下载最新公开版 APK，或在遇到问题前确认是否已在新版本中修复
+  - name: 项目主页与功能说明 (README)
+    url: https://github.com/dengxuezhao/TypeFree#readme
+    about: 查看核心快捷键、语音/Jev 军师配置及小鹤/开源方案说明

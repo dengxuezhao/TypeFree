@@ -1,0 +1,162 @@
+name: TypeFree CI (Standard Edition)
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - ".github/labels.json"
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - ".github/labels.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hygiene-and-core:
+    name: Repo Hygiene & :core JVM Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Enforce EULA & secret tracking guard
+        run: |
+          set -euo pipefail
+          FORBIDDEN=$(git ls-files \
+            'app/src/xiaohe/assets/rime/**' \
+            'local_private/**' \
+            'keystore.properties' \
+            '*.jks' \
+            '*.keystore' \
+            '*.table.bin' \
+            '*.prism.bin' \
+            '*.reverse.bin' \
+            '*.brief.idx' \
+            'release/*.apk' || true)
+          if [ -n "$FORBIDDEN" ]; then
+            echo "::error::Tracked forbidden private/signing/binary files detected:"
+            echo "$FORBIDDEN"
+            exit 1
+          fi
+          echo "Repo hygiene verified: 0 forbidden private or signing files tracked."
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run :core JVM unit tests (if :core module present)
+        run: |
+          if grep -q 'include(":core")' settings.gradle.kts; then
+            ./gradlew :core:test --no-daemon --stacktrace
+          else
+            echo "No :core module in settings.gradle.kts; skipping :core:test."
+          fi
+
+      - name: Upload :core test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-jvm-test-report
+          path: core/build/reports/tests/test/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  android-standard:
+    name: Standard Flavor Unit Tests & Debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Accept Android SDK licenses for NDK & CMake
+        run: |
+          if [ -n "${ANDROID_HOME:-}" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          fi
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Cache upstream librime 1.17.0 C++ dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            rime/src/main/cpp/librime
+            rime/src/main/cpp/boost
+            rime/src/main/cpp/snappy
+            rime/src/main/cpp/librime-lua
+            rime/src/main/cpp/librime-lua-deps
+            rime/src/main/cpp/librime-octagram
+            rime/src/main/cpp/librime-predict
+          key: librime-1.17.0-deps-${{ hashFiles('rime/src/main/cpp/fetch_librime_deps.sh') }}
+
+      - name: Fetch upstream librime 1.17.0 dependencies
+        run: bash rime/src/main/cpp/fetch_librime_deps.sh
+
+      - name: Resolve flavor Gradle tasks
+        id: tasks
+        run: |
+          if grep -q 'create("standard")' app/build.gradle.kts; then
+            echo "unit_task=testStandardDebugUnitTest" >> "$GITHUB_OUTPUT"
+            echo "apk_task=assembleStandardDebug" >> "$GITHUB_OUTPUT"
+            echo "apk_dir=app/build/outputs/apk/standard/debug" >> "$GITHUB_OUTPUT"
+          else
+            echo "unit_task=testDebugUnitTest" >> "$GITHUB_OUTPUT"
+            echo "apk_task=assembleDebug" >> "$GITHUB_OUTPUT"
+            echo "apk_dir=app/build/outputs/apk/debug" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Android Debug unit tests
+        run: ./gradlew ${{ steps.tasks.outputs.unit_task }} --no-daemon --stacktrace
+
+      - name: Assemble Standard Debug APK
+        run: |
+          ./gradlew ${{ steps.tasks.outputs.apk_task }} --no-daemon --stacktrace
+          APK_PATH=$(find "${{ steps.tasks.outputs.apk_dir }}" -name "*.apk" | head -n 1)
+          test -f "$APK_PATH"
+          cp "$APK_PATH" TypeFree-standard-debug.apk
+          sha256sum TypeFree-standard-debug.apk | tee TypeFree-standard-debug.apk.sha256
+
+      - name: Upload Standard Debug APK & test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TypeFree-standard-debug-apk
+          path: |
+            TypeFree-standard-debug.apk
+            TypeFree-standard-debug.apk.sha256
+            app/build/reports/tests/
+          if-no-files-found: ignore
+          retention-days: 14

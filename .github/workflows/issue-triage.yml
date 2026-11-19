@@ -1,0 +1,192 @@
+name: Issue Triage & Notification
+
+on:
+  issues:
+    types:
+      - opened
+      - reopened
+
+permissions:
+  issues: write
+
+jobs:
+  triage:
+    name: Auto Label, Welcome & Notify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Auto-triage labels & post initial response
+        id: triage
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const action = context.payload.action;
+            const text = `${issue.title || ''}\n${issue.body || ''}`;
+            const lower = text.toLowerCase();
+
+            const existingLabels = new Set((issue.labels || []).map(l => l.name));
+            const labelsToAdd = new Set();
+
+            const resolvedStateLabels = [
+              'confirmed',
+              'planned',
+              'under-consideration',
+              'in-progress',
+              'duplicate',
+              'invalid',
+              'wontfix'
+            ];
+            const hasResolvedState = resolvedStateLabels.some(l => existingLabels.has(l));
+            if (!hasResolvedState && !existingLabels.has('needs-triage')) {
+              labelsToAdd.add('needs-triage');
+            }
+
+            // Area classification
+            if (/(九键|九宫格|\bt9\b|26键|键盘|布局|按键|删除键|退格|上滑|下滑|空格|换行|底排|候选栏|候选词|候选条)/.test(lower)) {
+              labelsToAdd.add('area: keyboard');
+            }
+            if (/(小鹤|音形|码表|词库|双拼|五笔|键道|简码|顶字|逆切|空码|快符|rime|flypy|\.dict|\.schema|xkjd|wubi)/.test(lower)) {
+              labelsToAdd.add('area: codetable');
+            }
+            if (/(语音|asr|麦克风|录音|转写|jev|军师|帮写|润色|翻译|deepseek|gemini|openai|\bai\b)/.test(lower)) {
+              labelsToAdd.add('area: voice-jev');
+            }
+            if (/(设置|界面|主题|深色|浅色|字体|更新|检查更新|隐私|权限|图标|ui)/.test(lower)) {
+              labelsToAdd.add('area: ui-settings');
+            }
+            if (/(librime|jni|ndk|崩溃日志|sigsegv|native|\.so)/.test(lower)) {
+              labelsToAdd.add('area: rime-native');
+            }
+
+            // Type classification when neither bug nor enhancement nor question was set by template
+            const hasTypeLabel = ['bug', 'enhancement', 'question', 'documentation'].some(l => existingLabels.has(l));
+            if (!hasTypeLabel) {
+              if (/(闪退|崩溃|crash|anr|卡死|报错|异常|失败|无法|不能|失效|\bbug\b)/.test(lower)) {
+                labelsToAdd.add('bug');
+              } else if (/(希望|建议|能否|能不能|想要|增加|新增|支持|优化|改进|功能|\bfeature\b)/.test(lower)) {
+                labelsToAdd.add('enhancement');
+              }
+            }
+
+            if (labelsToAdd.size > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: Array.from(labelsToAdd)
+              });
+            }
+
+            const finalLabels = Array.from(new Set([...existingLabels, ...labelsToAdd]));
+            core.setOutput('applied_labels', finalLabels.join(', '));
+
+            // Welcome comment only on initial open when there are no comments yet
+            const isBot = issue.user && (issue.user.type === 'Bot' || (issue.user.login || '').endsWith('[bot]'));
+            if (action === 'opened' && issue.comments === 0 && !isBot) {
+              const hasVersionHint = /(v\d+\.\d+|版本|标准版|standard|小鹤|xiaohe)/i.test(text);
+              const missingHintNote = hasVersionHint
+                ? ''
+                : '\n> 💡 **补充信息提示**：如方便，请补充当前使用的 **应用版本号**（App「设置」右上角可见）及 **版本类型**（公开标准版 / 小鹤专享版），有助于更快定位复现。';
+
+              const labelPreview = finalLabels.length > 0
+                ? finalLabels.map(l => `\`${l}\``).join(' ')
+                : '`needs-triage`';
+
+              const commentBody = [
+                `感谢 @${issue.user.login} 提交反馈！`,
+                '',
+                `本 Issue 已进入待分诊队列，当前自动分类标签：${labelPreview}。`,
+                missingHintNote,
+                '',
+                '- 最新公开版与更新说明可查看 [GitHub Releases](https://github.com/dengxuezhao/TypeFree/releases)。',
+                '- 后续若关联 PR 修复并发布新版本，系统会在本帖自动通知。'
+              ].filter(line => line !== null && line !== undefined).join('\n');
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: commentBody
+              });
+            }
+
+      - name: Notify Feishu bot on new/reopened Issue (optional)
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE_ACTION: ${{ github.event.action }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          APPLIED_LABELS: ${{ steps.triage.outputs.applied_labels }}
+        run: |
+          if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
+            echo "FEISHU_WEBHOOK_URL secret is not configured; skipping Feishu notification."
+            exit 0
+          fi
+
+          python3 - << 'PYEOF'
+          import json
+          import os
+          import urllib.request
+
+          webhook = os.environ["FEISHU_WEBHOOK_URL"].strip()
+          body_preview = (os.environ.get("ISSUE_BODY") or "").strip().replace("\r\n", "\n")
+          if len(body_preview) > 260:
+              body_preview = body_preview[:260] + "..."
+          if not body_preview:
+              body_preview = "(无正文)"
+
+          payload = {
+              "msg_type": "interactive",
+              "card": {
+                  "header": {
+                      "template": "blue",
+                      "title": {
+                          "tag": "plain_text",
+                          "content": f"TypeFree Issue #{os.environ['ISSUE_NUMBER']} ({os.environ['ISSUE_ACTION']})"
+                      }
+                  },
+                  "elements": [
+                      {
+                          "tag": "div",
+                          "text": {
+                              "tag": "lark_md",
+                              "content": (
+                                  f"**标题**：{os.environ['ISSUE_TITLE']}\n"
+                                  f"**作者**：@{os.environ['ISSUE_AUTHOR']}\n"
+                                  f"**标签**：{os.environ.get('APPLIED_LABELS') or 'needs-triage'}\n"
+                                  f"**摘要**：\n{body_preview}"
+                              )
+                          }
+                      },
+                      {
+                          "tag": "action",
+                          "actions": [
+                              {
+                                  "tag": "button",
+                                  "text": {"tag": "plain_text", "content": "打开 GitHub Issue"},
+                                  "type": "primary",
+                                  "url": os.environ["ISSUE_URL"]
+                              }
+                          ]
+                      }
+                  ]
+              }
+          }
+
+          req = urllib.request.Request(
+              webhook,
+              data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+              headers={"Content-Type": "application/json; charset=utf-8"},
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                  print(f"Feishu webhook status: {resp.status}")
+          except Exception as exc:
+              print(f"::warning::Feishu webhook notification failed: {exc}")
+          PYEOF

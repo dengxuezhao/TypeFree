@@ -1,0 +1,74 @@
+name: 🐛 问题反馈 (Bug Report)
+description: 反馈崩溃、按键/候选异常、语音识别或更新等故障
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈 TypeFree 问题！请尽量补充以下信息，便于我们快速定位复现。
+  - type: input
+    id: app_version
+    attributes:
+      label: 应用版本
+      description: 可在 App「设置」右上角版本胶囊或「关于」卡片查看（例如 `v3.6.0`）
+      placeholder: "v3.6.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: edition
+    attributes:
+      label: 安装包版本类型
+      description: 请选择你当前安装的 APK 类型
+      options:
+        - 公开标准版 (standard / GitHub Release)
+        - 小鹤音形专享版 (xiaohe)
+        - 自行源码编译
+        - 不确定
+    validations:
+      required: true
+  - type: dropdown
+    id: input_scheme
+    attributes:
+      label: 当前使用的输入方案 / 场景
+      options:
+        - 小鹤音形（码表）
+        - 小鹤双拼
+        - 全拼
+        - 导入的第三方码表（星空键道 / 五笔等）
+        - 语音输入 / Jev 军师 / 帮写
+        - 其它 / 通用界面
+    validations:
+      required: true
+  - type: input
+    id: device_info
+    attributes:
+      label: 设备型号与 Android 版本
+      placeholder: "例如：Xiaomi 14 / Android 15 (HyperOS 2)"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 请按顺序描述触发该问题的操作步骤
+      placeholder: |
+        1. 打开微信输入框并切换到 TypeFree
+        2. 输入编码 `...` 或执行操作 `...`
+        3. 观察到异常现象
+    validations:
+      required: true
+  - type: textarea
+    id: expected_vs_actual
+    attributes:
+      label: 预期行为 vs 实际结果
+      placeholder: |
+        预期：...
+        实际：...
+    validations:
+      required: true
+  - type: textarea
+    id: extra_context
+    attributes:
+      label: 补充信息 / 截图 / 日志（可选）
+      description: 如果是编码或候选问题，请尽量附带具体编码串与期望候选字词；可粘贴截图。
