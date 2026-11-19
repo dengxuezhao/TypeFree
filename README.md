@@ -23,7 +23,8 @@
   📦 <a href="https://github.com/dengxuezhao/TypeFree/releases/latest"><b>下载最新公开标准版 APK</b></a> ·
   📘 <a href="docs/features-guide.md"><b>完整功能使用手册</b></a> ·
   🔌 <a href="docs/domestic-api-setup-guide.md"><b>国内 API / DeepSeek 配置指南</b></a> ·
-  ✦ <a href="docs/jev-decision-tree.md"><b>Jev 军师决策树白皮书</b></a>
+  ✦ <a href="docs/jev-decision-tree.md"><b>Jev 军师决策树白皮书</b></a><br/>
+  💬 功能建议与 Bug 反馈 QQ 群：<b>TypeFree输入法反馈群（<code>801143863</code>）</b>
 </p>
 
 ---
@@ -183,4 +184,6 @@ bash rime/src/main/cpp/fetch_librime_deps.sh
 ## 📄 开源许可证与反馈
 
 本项目基于 **[GNU General Public License v3.0 (GPL-3.0)](LICENSE)** 开源。
-欢迎通过 [GitHub Issues](https://github.com/dengxuezhao/TypeFree/issues) 提交缺陷报告与功能建议，或直接发起 Pull Request！
+
+- **GitHub 反馈与贡献**：欢迎通过 [GitHub Issues](https://github.com/dengxuezhao/TypeFree/issues) 提交缺陷报告与功能建议，或直接发起 Pull Request。
+- **QQ 反馈交流群**：功能建议、日常使用交流或 Bug 反馈，欢迎加入 **TypeFree输入法反馈群**（QQ 群号：`801143863`）。
