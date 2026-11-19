@@ -411,6 +411,41 @@ class V362EndToEndAcceptanceTest {
             host.editorText.append("123*8=1000 1*1")
             controller.refreshPassiveMathSuggestion()
             assertEquals("1", host.stateFlow.value.passiveMathResult)
+
+            // 10) v3.6.4: Composing `n` + Enter MUST commit literal `"n"` WITHOUT appending newline even when engine returns Consumed via AndroidCommitExecutor
+            val committedViaExecutor = StringBuilder()
+            val executorEngine = CodetableEnhancedInputEngine(
+                rimeClient = FakeXiaoheRimeClient(),
+                initialProfile = SchemaProfile.defaultXiaoheFlypy(),
+                symbolTrie = SymbolTrie.defaultXiaohe(),
+                briefIndex = briefWithNihc,
+                reverseLookupMap = reverseMap,
+                schemaDir = tempDir,
+                commitExecutor = com.typefree.ime.commit.AndroidCommitExecutor(
+                    connectionProvider = {
+                        object : com.typefree.ime.commit.EditorBatchConnection {
+                            override fun beginBatchEdit() = true
+                            override fun endBatchEdit() = true
+                            override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+                                committedViaExecutor.append(text)
+                                return true
+                            }
+                            override fun getExtractedSelectionStart() = committedViaExecutor.length
+                            override fun setSelection(start: Int, end: Int) = true
+                            override fun deleteSurroundingText(beforeLength: Int, afterLength: Int) = true
+                            override fun sendDpadLeftKeyEvent() {}
+                        }
+                    }
+                )
+            )
+            controller.codetableEnhancedEngine = executorEngine
+            host.editorText.clear()
+            controller.commitQwertyChar("n")
+            assertTrue(controller.isComposing)
+            controller.performEnterOrNewline { _, _ -> }
+            assertFalse(controller.isComposing)
+            assertEquals("n", committedViaExecutor.toString())
+            assertEquals("", host.editorText.toString())
         } finally {
             scope.cancel()
             tempDir.deleteRecursively()

@@ -905,15 +905,26 @@ class TypingController(
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode && isComposing) {
             val res = activeEngine.onKey(KeyInput.Enter)
             syncEngineStateToUi()
-            if (res is EngineResult.Commit && res.text.isNotEmpty()) {
-                predictionCoordinator.dismissPredictions(resetChain = true)
-                host.commitDirectText(
-                    text = res.text,
-                    recordUndo = true,
-                    markManualEdit = true,
-                    playFeedback = true
-                )
-                return
+            when (res) {
+                is EngineResult.Commit -> {
+                    if (res.text.isNotEmpty()) {
+                        predictionCoordinator.dismissPredictions(resetChain = true)
+                        host.commitDirectText(
+                            text = res.text,
+                            recordUndo = true,
+                            markManualEdit = true,
+                            playFeedback = true
+                        )
+                    }
+                    return
+                }
+                EngineResult.Consumed -> {
+                    predictionCoordinator.dismissPredictions(resetChain = true)
+                    host.performKeyFeedback(strong = false)
+                    refreshPassiveMathSuggestion()
+                    return
+                }
+                EngineResult.PassThrough -> Unit
             }
         }
 
