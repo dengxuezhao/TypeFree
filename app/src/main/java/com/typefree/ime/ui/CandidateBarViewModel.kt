@@ -14,7 +14,9 @@ data class CandidateBarRenderState(
     val preeditText: String = "",
     val candidates: List<FlypyCandidate> = emptyList(),
     val isReverseSplit: Boolean = false,
-    val hasMore: Boolean = false
+    val hasMore: Boolean = false,
+    val isOrqDateActive: Boolean = false,
+    val orqDateOffsetDays: Int = 0
 )
 
 /**
@@ -62,7 +64,9 @@ class CandidateBarViewModel {
                 preeditText = formattedPreedit,
                 candidates = mappedCandidates,
                 isReverseSplit = snapshot.isReverseSplitActive,
-                hasMore = snapshot.hasMoreCandidates
+                hasMore = snapshot.hasMoreCandidates,
+                isOrqDateActive = snapshot.isOrqDateActive,
+                orqDateOffsetDays = snapshot.orqDateOffsetDays
             )
         }
     }

@@ -66,6 +66,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.core.ime.coordinator.CommitAction
+import com.typefree.core.ime.enhancer.CodetableCodeDeriver
 import com.typefree.core.ime.enhancer.DirectCommandEngine
 import com.typefree.core.ime.enhancer.ShadowDictManager
 import com.typefree.core.ime.importer.CustomUserPhraseFileEditor
@@ -474,35 +475,7 @@ object XiaohePhraseCodeHelper {
     fun deriveXiaohe4Code(
         phrase: String,
         reverseLookupMap: Map<String, List<String>>
-    ): String? {
-        val clean = phrase.trim()
-        if (clean.isEmpty() || reverseLookupMap.isEmpty()) return null
-        val chars = ArrayList<String>(clean.length)
-        var offset = 0
-        while (offset < clean.length) {
-            val cp = clean.codePointAt(offset)
-            val count = Character.charCount(cp)
-            val isHan = Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN
-            if (!isHan) return null
-            chars.add(clean.substring(offset, offset + count))
-            offset += count
-        }
-        if (chars.size < 2) return null
-
-        fun bestCodeForChar(ch: String): String? {
-            val candidates = reverseLookupMap[ch].orEmpty()
-                .map { it.trim().lowercase() }
-                .filter { code -> code.length >= 2 && code.all { it in 'a'..'z' } }
-            return candidates.maxByOrNull { it.length }
-        }
-
-        val codes = chars.map { bestCodeForChar(it) ?: return null }
-        return when (codes.size) {
-            2 -> codes[0].take(2) + codes[1].take(2)
-            3 -> "${codes[0][0]}${codes[1][0]}${codes[2].take(2)}"
-            else -> "${codes[0][0]}${codes[1][0]}${codes[2][0]}${codes.last()[0]}"
-        }
-    }
+    ): String? = CodetableCodeDeriver.deriveXiaohe4Code(phrase, reverseLookupMap)
 }
 
 @Composable

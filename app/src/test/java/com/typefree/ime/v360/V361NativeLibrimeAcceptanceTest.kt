@@ -99,15 +99,13 @@ class V361NativeLibrimeAcceptanceTest {
                 reverseLookupMap = dm.activeReverseLookupMap,
                 schemaDir = sharedDir
             )
-            engine.setEnglishPrefixVetoEnabled(true)
-            engine.setAutoEncodeEnabled(false)
 
             // 1) n -> [你, 内容]
             typeChars(engine, "n")
             assertEquals(listOf("你", "内容"), engine.state.value.candidates.map { it.text })
             engine.clear()
 
-            // 2) okhg natural continuation hoists 丁〔~uu〕 ahead of Rime ASCII completions (百~bd/下~bu)
+            // 2) okhg natural continuation hoists 丁〔~uu〕 ahead of Rime ASCII completions
             typeChars(engine, "okhg")
             val okhgCands = engine.state.value.candidates
             assertTrue("Expected okhg candidates, got $okhgCands", okhgCands.isNotEmpty())
@@ -128,15 +126,10 @@ class V361NativeLibrimeAcceptanceTest {
             assertTrue(hfknCands.any { it.text == "很困难" && it.displayText == "困难" })
             engine.clear()
 
-            // 5) gith / goog -> EnglishWordTrie veto keeps 4+ letters and suggests github / google, while pyth preserves Chinese
+            // 5) v3.6.2 zero-interference Chinese typing: `gith` NOT hijacked by English, `pyth` -> 跑一趟
             typeChars(engine, "gith")
             val githCands = engine.state.value.candidates.map { it.text }
-            assertTrue("Expected github for gith, got $githCands", "github" in githCands)
-            engine.clear()
-
-            typeChars(engine, "goog")
-            val googCands = engine.state.value.candidates.map { it.text }
-            assertTrue("Expected google for goog (must not auto-commit 3-code 腘), got $googCands", "google" in googCands)
+            assertFalse("Chinese mode must not hijack gith with github", "github" in githCands)
             engine.clear()
 
             val pythRes = typeChars(engine, "pyth")
@@ -145,15 +138,29 @@ class V361NativeLibrimeAcceptanceTest {
             assertTrue("Expected exact 4-code 跑一趟 for pyth, got res=$pythRes cands=${engine.state.value.candidates}", pythMatched)
             engine.clear()
 
-            // 6) orq+1 -> tomorrow's date
-            typeChars(engine, "orq+1")
+            // 6) v3.6.2 `orq` includes weekday and supports ±1 day stepping (`adjustOrqDateOffset`)
+            typeChars(engine, "orq")
+            assertTrue("orq must mark isOrqDateActive", engine.state.value.isOrqDateActive)
+            assertEquals(0, engine.state.value.orqDateOffsetDays)
+            val orqTodayCands = engine.state.value.candidates.map { it.text }
+            assertTrue("Expected weekday 星期 in orq candidates, got $orqTodayCands", orqTodayCands.any { it.startsWith("星期") })
+
+            engine.adjustOrqDateOffset(1)
+            assertEquals(1, engine.state.value.orqDateOffsetDays)
             val expectedTomorrow = LocalDate.now(ZoneId.of("Asia/Shanghai")).plusDays(1)
                 .format(DateTimeFormatter.ofPattern("yyyy年MM月dd日", Locale.CHINA))
-            val orqCands = engine.state.value.candidates.map { it.text }
-            assertTrue("Expected tomorrow $expectedTomorrow for orq+1, got $orqCands", expectedTomorrow in orqCands)
+            val orqTomorrowCands = engine.state.value.candidates.map { it.text }
+            assertTrue("Expected tomorrow $expectedTomorrow after +1 step, got $orqTomorrowCands", expectedTomorrow in orqTomorrowCands)
+
+            engine.adjustOrqDateOffset(-2)
+            assertEquals(-1, engine.state.value.orqDateOffsetDays)
+            val expectedYesterday = LocalDate.now(ZoneId.of("Asia/Shanghai")).minusDays(1)
+                .format(DateTimeFormatter.ofPattern("yyyy年MM月dd日", Locale.CHINA))
+            val orqYesterdayCands = engine.state.value.candidates.map { it.text }
+            assertTrue("Expected yesterday $expectedYesterday after -2 step, got $orqYesterdayCands", expectedYesterday in orqYesterdayCands)
             engine.clear()
 
-            // 7) odz -> toggles single-char mode
+            // 7) `odz` toggles single-char mode AND `nihc` does NOT get stuck empty, Backspace recovers `nih`
             typeChars(engine, "odz")
             val odzCands = engine.state.value.candidates
             assertEquals("开启单字模式", odzCands[0].displayText)
@@ -162,17 +169,79 @@ class V361NativeLibrimeAcceptanceTest {
             typeChars(engine, "n")
             assertEquals(listOf("你"), engine.state.value.candidates.map { it.text })
             engine.clear()
+
+            // Typing 4-code multi-char `nihc` (auto-commits 你好 in normal mode) in single-char mode
+            // must NOT commit multi-char or wipe buffer; Backspace recovers `nih` cleanly and next Backspace recovers `ni` -> `你`!
+            val nihcRes = typeChars(engine, "nihc")
+            assertTrue("Single-char mode must intercept multi-char auto-commit for nihc, got $nihcRes", nihcRes is EngineResult.Consumed)
+            assertEquals("nihc", engine.state.value.rawCode)
+            engine.onKey(KeyInput.Backspace())
+            assertEquals("nih", engine.state.value.rawCode)
+            engine.onKey(KeyInput.Backspace())
+            assertEquals("ni", engine.state.value.rawCode)
+            assertTrue(
+                "Backspace from nihc -> nih -> ni in single-char mode must recover single-char candidates including 你, got ${engine.state.value.candidates}",
+                engine.state.value.candidates.any { it.text == "你" } &&
+                    engine.state.value.candidates.all {
+                        com.typefree.core.ime.enhancer.Utf8Safety.isSingleCharacter(it.text)
+                    }
+            )
+            engine.clear()
+
             typeChars(engine, "odz")
             assertEquals("关闭单字模式", engine.state.value.candidates[0].displayText)
             engine.select(0)
             assertFalse(engine.singleCharModeEnabled)
 
-            // 8) zz / zza multi-level symbols
+            // 8) v3.6.2 zero-interference native Xiaohe codes: `zz` -> 走/揍, `oxq` -> 七/千/犬..., `ofbd` -> symbols
             typeChars(engine, "zz")
-            assertTrue(engine.state.value.candidates.any { it.displayText == "zza 常用符号" })
-            typeChars(engine, "a")
-            assertTrue(engine.state.value.candidates.any { it.text == "★" })
+            val zzCands = engine.state.value.candidates.map { it.text }
+            assertTrue("Expected 走/揍 for Xiaohe zz, got $zzCands", "走" in zzCands || "揍" in zzCands)
+            assertFalse("zz must not show legacy zza symbol menu", engine.state.value.candidates.any { it.displayText.contains("zza") })
             engine.clear()
+
+            typeChars(engine, "oxq")
+            val oxqCands = engine.state.value.candidates.map { it.text }
+            assertTrue("Expected native Xiaohe oxq characters (七/千/犬...), got $oxqCands", oxqCands.any { it in setOf("七", "千", "犬", "弃", "切", "且") })
+            assertFalse("oxq must not be hijacked as weekday command", oxqCands.any { it.startsWith("星期") })
+            engine.clear()
+
+            typeChars(engine, "ofbd")
+            val ofbdCands = engine.state.value.candidates.map { it.text }
+            assertTrue("Expected native Xiaohe ofbd punctuation symbols, got $ofbdCands", ofbdCands.isNotEmpty())
+            engine.clear()
+
+            // 8b) `/` slash snippet expansion via CodetableEnhancedInputEngine
+            engine.updateSnippets(
+                listOf(
+                    com.typefree.ime.data.SnippetEntry(
+                        title = "收货地址",
+                        voiceTriggers = "收货地址",
+                        flypyCode = ";sd",
+                        content = "上海市浦东新区张江高科",
+                        enabled = true
+                    ),
+                    com.typefree.ime.data.SnippetEntry(
+                        title = "邮箱",
+                        voiceTriggers = "邮箱",
+                        flypyCode = "/yx",
+                        content = "hello@typefree.ai",
+                        enabled = true
+                    )
+                )
+            )
+            engine.onKey(KeyInput.CharKey('/'))
+            assertEquals(2, engine.state.value.candidates.size)
+            engine.onKey(KeyInput.CharKey('s'))
+            engine.onKey(KeyInput.CharKey('d'))
+            assertEquals(
+                EngineResult.Commit("上海市浦东新区张江高科", remainComposing = false),
+                engine.onKey(KeyInput.Space)
+            )
+            engine.onKey(KeyInput.CharKey('/'))
+            assertEquals(EngineResult.Commit("/", remainComposing = false), engine.onKey(KeyInput.CharKey('/')))
+            engine.onKey(KeyInput.CharKey('/'))
+            assertEquals(EngineResult.Commit("/", remainComposing = false), engine.onKey(KeyInput.Enter))
 
             // 9) shadow.yaml pin & block
             typeChars(engine, "n")
@@ -184,26 +253,15 @@ class V361NativeLibrimeAcceptanceTest {
             engine.shadowDictManager?.clearAll()
             engine.reloadShadowRules()
 
-            // 10) AaAbBaBb auto-encode when toggled ON
-            engine.setAutoEncodeEnabled(true)
+            // 10) L1 derivation & L2 zero auto-write protection
+            assertEquals("vgbk", engine.deriveXiaohe4Code("正并"))
+            val userFileBefore = File(sharedDir, "flypy_user.txt").takeIf { it.exists() }?.readText(StandardCharsets.UTF_8).orEmpty()
             typeChars(engine, "vg")
-            val r1 = engine.select(0) // 正
-            assertEquals(EngineResult.Commit("正", remainComposing = false), r1)
+            assertEquals(EngineResult.Commit("正", remainComposing = false), engine.select(0))
             typeChars(engine, "bk")
-            val r2 = engine.select(0) // 并
-            assertEquals(EngineResult.Commit("并", remainComposing = false), r2)
-            val userFile = File(sharedDir, "flypy_user.txt")
-            assertTrue(
-                "Expected flypy_user.txt to contain 正并\\tvgbk\\t1",
-                userFile.readText(StandardCharsets.UTF_8).contains("正并\tvgbk\t1")
-            )
-            val autoRes = typeChars(engine, "vgbk")
-            // If unique 4-code auto-commits or sits at index 0, verify either outcome
-            val matchedAuto = (autoRes as? EngineResult.Commit)?.text == "正并" ||
-                engine.state.value.candidates.any { it.text == "正并" }
-            assertTrue("Expected 正并 via vgbk after auto-encode", matchedAuto)
-            engine.clear()
-            engine.setAutoEncodeEnabled(false)
+            assertEquals(EngineResult.Commit("并", remainComposing = false), engine.select(0))
+            val userFileAfter = File(sharedDir, "flypy_user.txt").takeIf { it.exists() }?.readText(StandardCharsets.UTF_8).orEmpty()
+            assertEquals("Normal typing must NEVER auto-write flypy_user.txt", userFileBefore, userFileAfter)
 
             // 11) ojf OpenCC simplification toggle
             assertFalse(bridge.getOption("simplification"))
@@ -311,10 +369,53 @@ class V361NativeLibrimeAcceptanceTest {
             )
             typeChars(engine, "qfx")
             val cands = engine.state.value.candidates
-            assertTrue("Expected qfx candidates, got $cands", cands.isNotEmpty())
+            assertTrue("Expected multiple BriefPrefixIndex v3 natural continuations for qfx, got $cands", cands.size >= 2)
             assertEquals("清风徐来", cands[0].text)
             assertEquals("~l", cands[0].codeHint)
+            assertEquals("秋风萧瑟", cands[1].text)
+            assertEquals("~s", cands[1].codeHint)
             assertEquals(EngineResult.Commit("清风徐来", remainComposing = false), engine.select(0))
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `Real native librime deploys wubi86_preset zip and ojf outputs 焊 with zero Xiaohe command interference`() {
+        val mainDir = resolveMainRimeAssetsDir() ?: return
+        val wubiZip = resolvePresetZip("wubi86_preset.zip") ?: return
+        val bridge = loadNativeBridgeOrSkip() ?: return
+
+        val tempRoot = Files.createTempDirectory("native_v362_wubi86_").toFile()
+        try {
+            val sharedDir = File(tempRoot, "shared").apply { mkdirs() }
+            val userDir = File(tempRoot, "user").apply { mkdirs() }
+            mainDir.copyRecursively(sharedDir, overwrite = true)
+
+            val dm = RimeDataManager(sharedDir, userDir, bridge)
+            val result = wubiZip.inputStream().use { stream ->
+                dm.importEnhancedSchemaPackageSync(stream)
+            }
+            assertFalse(
+                "Non-flypy Wubi schema MUST have directCommandsEnabled=false",
+                dm.activeSchemaProfile.directCommandsEnabled
+            )
+            assertTrue(bridge.deploy(result.schemaId))
+            assertTrue(bridge.selectSchema(result.schemaId))
+
+            val engine = CodetableEnhancedInputEngine(
+                rimeClient = bridge,
+                initialProfile = dm.activeSchemaProfile,
+                symbolTrie = dm.activeSymbolTrie,
+                briefIndex = dm.activeBriefIndex,
+                reverseLookupMap = dm.activeReverseLookupMap,
+                schemaDir = sharedDir
+            )
+            typeChars(engine, "ojf")
+            val cands = engine.state.value.candidates.map { it.text }
+            assertTrue("Expected Wubi ojf -> 焊, got $cands", "焊" in cands)
+            assertFalse("Wubi ojf must NOT be intercepted by Xiaohe simplification command", cands.any { it.contains("简繁") })
+            engine.clear()
         } finally {
             tempRoot.deleteRecursively()
         }

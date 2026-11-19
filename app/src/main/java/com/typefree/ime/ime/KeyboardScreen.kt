@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -32,6 +33,7 @@ import androidx.compose.ui.zIndex
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ClipboardEntry
 import com.typefree.ime.data.DefaultPresets
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
@@ -146,11 +148,19 @@ fun KeyboardScreen(
     val metrics = LocalKeyboardMetrics.current
     val resolvedSubPanel = uiState.resolvedVoiceSubPanel
     val isInSubPanel = uiState.tabMode == KeyboardTabMode.VOICE && resolvedSubPanel != VoiceSubPanel.NONE
-    val isActiveQwertyGrid = !uiState.isClipboardOpen &&
-        !uiState.isToolPanelOpen &&
-        !isInSubPanel &&
-        !uiState.isArcTranslateActive &&
-        uiState.tabMode == KeyboardTabMode.QWERTY
+    val isActiveQwertyGrid = !uiState.isClipboardOpen && !uiState.isToolPanelOpen &&
+        !isInSubPanel && !uiState.isArcTranslateActive && uiState.tabMode == KeyboardTabMode.QWERTY
+    val fiveKeyBottomRowActive = settings.codetableFiveKeyBottomRow && (
+        uiState.activeInputScheme == InputScheme.FLYPY_TABLE ||
+            uiState.activeInputScheme == InputScheme.RIME_CUSTOM ||
+            uiState.codetableEnhancerActive
+        )
+    val effectiveKeyGestureProfile = remember(settings.customKeyGesturesJson, uiState.isFlypyChineseMode, settings.qwertyShowNumberRow) {
+        KeyGestureConfig.fromJson(
+            json = settings.customKeyGesturesJson,
+            fallback = KeyGestureConfig.defaultProfile(uiState.isFlypyChineseMode, settings.qwertyShowNumberRow)
+        )
+    }
 
     val topDividerColor by animateColorAsState(
         targetValue = when (uiState.voicePhase) {
@@ -204,18 +214,7 @@ fun KeyboardScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .then(
-                    if (isActiveQwertyGrid) {
-                        Modifier.padding(top = 5.dp, bottom = 0.dp)
-                    } else {
-                        Modifier.padding(
-                            start = 12.dp,
-                            end = 12.dp,
-                            top = 5.dp,
-                            bottom = 6.dp
-                        )
-                    }
-                )
+                .then(if (isActiveQwertyGrid) Modifier.padding(top = 5.dp) else Modifier.padding(horizontal = 12.dp, vertical = 5.dp))
         ) {
             Column(
                 modifier = Modifier
@@ -341,7 +340,10 @@ fun KeyboardScreen(
                                         pinnedWordsForCurrentCode = uiState.pinnedWordsForCurrentCode,
                                         onPinCandidate = { onAction(ImeUiAction.PinCandidate(it)) },
                                         onUnpinCandidate = { onAction(ImeUiAction.UnpinCandidate(it)) },
-                                        onBlockCandidate = { onAction(ImeUiAction.BlockCandidate(it)) }
+                                        onBlockCandidate = { onAction(ImeUiAction.BlockCandidate(it)) },
+                                        isOrqDateActive = uiState.isOrqDateActive,
+                                        orqDateOffsetDays = uiState.orqDateOffsetDays,
+                                        onStepOrqDate = { delta -> onAction(ImeUiAction.StepOrqDate(delta)) }
                                     )
                                 }
 
@@ -353,7 +355,14 @@ fun KeyboardScreen(
                                         onToggleToolPanel = onToggleToolPanel,
                                         onSelectPrediction = onSelectPredictionCandidate,
                                         onSelectAiCompletion = onSelectAiCompletion,
-                                        onDismiss = onDismissPredictions
+                                        onDismiss = onDismissPredictions,
+                                        passiveMathResult = uiState.passiveMathResult,
+                                        onSelectPassiveMath = { onAction(ImeUiAction.SelectPassiveMath(it)) },
+                                        phraseSuggestionLabel = uiState.activePhraseSuggestionLabel,
+                                        onAcceptPhraseSuggestion = { onAction(ImeUiAction.AcceptPhraseSuggestion) },
+                                        onDismissPhraseSuggestion = { onAction(ImeUiAction.DismissPhraseSuggestion) },
+                                        englishSuggestions = uiState.englishSuggestions,
+                                        onSelectEnglishSuggestion = { onAction(ImeUiAction.SelectEnglishSuggestion(it)) }
                                     )
                                 }
 
@@ -417,8 +426,12 @@ fun KeyboardScreen(
                                         onOpenJevCopilot = { onAction(ImeUiAction.OpenJevCopilot) },
                                         onToggleManualIncognito = onToggleManualIncognito,
                                         onToggleSingleCharMode = { onAction(ImeUiAction.ToggleSingleCharMode) },
-                                        onOpenDictionary = { onOpenHostApp(AppDestinations.TAB_DICTIONARY) },
-                                        onOpenSettings = { onOpenHostApp(AppDestinations.TAB_SETTINGS) }
+                                        onOpenDictionary = { onOpenHostApp(AppDestinations.TAB_KEYBOARD) },
+                                        onOpenSettings = { onOpenHostApp(AppDestinations.TAB_GENERAL) },
+                                        showLanguageTogglePill = fiveKeyBottomRowActive,
+                                        onToggleLanguageMode = onToggleFlypyLanguageMode,
+                                        isPhraseRecording = uiState.isPhraseRecording,
+                                        onTogglePhraseRecording = { onAction(ImeUiAction.TogglePhraseRecording) }
                                     )
                                 }
 
@@ -478,7 +491,11 @@ fun KeyboardScreen(
                                         showNumberRow = settings.qwertyShowNumberRow,
                                         inputSessionToken = uiState.inputSessionToken,
                                         showKeyPopupPreview = settings.qwertyKeyPopupPreview,
-                                        activeInputScheme = uiState.activeInputScheme
+                                        activeInputScheme = uiState.activeInputScheme,
+                                        keyGestureProfile = effectiveKeyGestureProfile,
+                                        onTriggerKeyGesture = { onAction(ImeUiAction.TriggerKeyGesture(it)) },
+                                        fiveKeyBottomRow = fiveKeyBottomRowActive,
+                                        onSwipeUpPeriodSlash = { onAction(ImeUiAction.SwipeUpPeriodSlash) }
                                     )
 
                                     if (
@@ -530,11 +547,7 @@ fun KeyboardScreen(
                             }
 
                             // In-frame Top Overlay for Style Selector Strip & Error Context Banner
-                            val overlaySidePad = if (isActiveQwertyGrid) {
-                                Modifier.padding(horizontal = 9.dp)
-                            } else {
-                                Modifier
-                            }
+                            val overlaySidePad = if (isActiveQwertyGrid) Modifier.padding(horizontal = 9.dp) else Modifier
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -544,9 +557,7 @@ fun KeyboardScreen(
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 AnimatedVisibility(
-                                    visible = uiState.isStylePickerExpanded &&
-                                        !uiState.isFlypyComposing &&
-                                        !uiState.isToolPanelOpen,
+                                    visible = uiState.isStylePickerExpanded && !uiState.isFlypyComposing && !uiState.isToolPanelOpen,
                                     enter = fadeIn(tween(130)) + expandVertically(tween(150)),
                                     exit = fadeOut(tween(110)) + shrinkVertically(tween(130))
                                 ) {
@@ -562,7 +573,9 @@ fun KeyboardScreen(
                                             settings = settings,
                                             onSelectAutoStyle = onSelectAutoStyle,
                                             onSelectManualStyle = onSelectManualStyle,
-                                            onOpenStyleRules = { onOpenHostApp(AppDestinations.TAB_STYLES) }
+                                            onOpenStyleRules = {
+                                                onAction(ImeUiAction.OpenHostApp(AppDestinations.TAB_VOICE_AI, AppDestinations.SUBTAB_VOICE_AI_STYLE))
+                                            }
                                         )
                                     }
                                 }
@@ -572,7 +585,9 @@ fun KeyboardScreen(
                                     ErrorContextBanner(
                                         error = errorPhase,
                                         onRetry = onRetryLastAudio,
-                                        onOpenApiSetup = { onOpenHostApp(AppDestinations.TAB_API) },
+                                        onOpenApiSetup = {
+                                            onAction(ImeUiAction.OpenHostApp(AppDestinations.TAB_VOICE_AI, AppDestinations.SUBTAB_VOICE_API))
+                                        },
                                         onOpenPermissionSetup = { onOpenHostApp(AppDestinations.TAB_HOME) },
                                         onDismiss = onDismissError
                                     )

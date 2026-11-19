@@ -5,11 +5,13 @@ import com.typefree.core.ime.coordinator.CoordinatorKeyOutcome
 import com.typefree.core.ime.coordinator.DirectCommandType
 import com.typefree.core.ime.coordinator.RimeCoreSessionPort
 import com.typefree.core.ime.coordinator.RimeDecodeFrame
+import com.typefree.core.ime.coordinator.SlashSnippetEntry
 import com.typefree.core.ime.coordinator.TypeFreeKeyCoordinator
 import com.typefree.core.ime.enhancer.BriefPrefixIndex
-import com.typefree.core.ime.enhancer.CodetableAutoEncoder
+import com.typefree.core.ime.enhancer.CodetableCodeDeriver
 import com.typefree.core.ime.enhancer.DirectCommandEngine
-import com.typefree.core.ime.enhancer.EnglishWordTrie
+import com.typefree.core.ime.enhancer.PhraseSuggestion
+import com.typefree.core.ime.enhancer.PhraseSuggestionTracker
 import com.typefree.core.ime.enhancer.ReverseSplitEngine
 import com.typefree.core.ime.enhancer.ShadowDictManager
 import com.typefree.core.ime.importer.SubDictToggleManager
@@ -18,6 +20,7 @@ import com.typefree.core.ime.overlay.SymbolTrie
 import com.typefree.core.ime.profile.SchemaProfile
 import com.typefree.ime.commit.AndroidCommitExecutor
 import com.typefree.ime.data.SnippetEntry
+import com.typefree.ime.data.SnippetMatcher
 import com.typefree.ime.ui.CandidateBarViewModel
 import com.typefree.rime.RimeBridge
 import com.typefree.rime.RimeSessionClient
@@ -25,6 +28,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
+import java.nio.charset.StandardCharsets
+import java.util.Locale
 
 /**
  * Adapter bridging [RimeSessionClient] (`:rime`) to pure Kotlin [RimeCoreSessionPort] (`:core`).
@@ -105,18 +110,28 @@ class CodetableEnhancedInputEngine(
     private val onOpenJevCopilot: () -> Unit = {},
     private val onAsyncReloadSchema: ((String) -> Unit)? = null,
     var isActiveEnginePredicate: () -> Boolean = { true },
-    private val englishWordTrie: EnglishWordTrie = EnglishWordTrie.defaultBuiltIn(),
+    var isIncognitoPredicate: () -> Boolean = { false },
     var onSingleCharModeChanged: ((Boolean) -> Unit)? = null,
+    var onPhraseSuggestion: ((PhraseSuggestion?) -> Unit)? = null,
     var onUiStateSynced: ((EngineState, Boolean, Set<String>) -> Unit)? = null
 ) : InputEngine {
 
     private val portAdapter = RimeSessionClientPortAdapter(rimeClient)
     private var currentMaxCandidates: Int = RimeInputEngine.DEFAULT_PAGE_SIZE
+    private var baseProfile: SchemaProfile = initialProfile
     private var currentSymbolTrie: SymbolTrie = symbolTrie
     private var currentBriefIndex: BriefPrefixIndex = briefIndex
     private var currentReverseLookupMap: Map<String, List<String>> = reverseLookupMap
-    private var englishPrefixVetoOverride: Boolean? = null
-    private var autoEncodeOverride: Boolean? = null
+    private var xiaoheDirectCommandsOverride: Boolean? = null
+    private var xiaoheReverseSplitOverride: Boolean? = null
+    private var naturalContinuationEnabled: Boolean = true
+    var phraseSuggestionL2Enabled: Boolean = true
+        private set
+    private var currentSlashSnippets: List<SlashSnippetEntry> = emptyList()
+    private val knownUserWords: MutableSet<String> = HashSet()
+    private var uniqueSingleChar4Codes: Set<String> = buildUniqueSingleChar4Codes(reverseLookupMap)
+
+    val phraseSuggestionTracker: PhraseSuggestionTracker = PhraseSuggestionTracker()
 
     val subDictToggleManager: SubDictToggleManager? = schemaDir?.let { dir ->
         SubDictToggleManager(dir) { schemaId ->
@@ -124,7 +139,7 @@ class CodetableEnhancedInputEngine(
                 onAsyncReloadSchema.invoke(schemaId)
             } else {
                 rimeClient.deploy(schemaId)
-                coordinator.updateProfile(coordinator.profile)
+                coordinator.updateProfile(resolveEffectiveProfile(baseProfile))
                 applyPreferenceOverrides()
             }
         }
@@ -135,19 +150,18 @@ class CodetableEnhancedInputEngine(
     }
         private set
 
-    var autoEncoder: CodetableAutoEncoder? = schemaDir?.let { dir ->
-        CodetableAutoEncoder(File(dir, "${initialProfile.schemaId}_user.txt"), initialProfile.schemaId)
-    }
-        private set
-
     var coordinator: TypeFreeKeyCoordinator = buildCoordinator(
-        profile = initialProfile,
+        profile = resolveEffectiveProfile(initialProfile),
         symbolTrie = currentSymbolTrie,
         briefIndex = currentBriefIndex,
         reverseLookupMap = currentReverseLookupMap,
         applyIsolation = isActiveEnginePredicate()
     )
         private set
+
+    init {
+        reloadUserDictWordsCache(initialProfile.schemaId)
+    }
 
     private val _state = MutableStateFlow(EngineState())
     override val state: StateFlow<EngineState> = _state.asStateFlow()
@@ -157,6 +171,23 @@ class CodetableEnhancedInputEngine(
 
     val singleCharModeEnabled: Boolean
         get() = coordinator.singleCharMode
+
+    private fun resolveEffectiveProfile(base: SchemaProfile): SchemaProfile {
+        val effectiveDirect = if (base.schemaId == "flypy") {
+            xiaoheDirectCommandsOverride ?: base.directCommandsEnabled
+        } else {
+            false
+        }
+        val effectiveReverse = if (base.schemaId == "flypy") {
+            xiaoheReverseSplitOverride ?: base.reverseSplitEnabled
+        } else {
+            base.reverseSplitEnabled
+        }
+        return base.copy(
+            directCommandsEnabled = effectiveDirect,
+            reverseSplitEnabled = effectiveReverse
+        )
+    }
 
     private fun buildCoordinator(
         profile: SchemaProfile,
@@ -186,18 +217,19 @@ class CodetableEnhancedInputEngine(
                 singleCharModeStateProvider = { coordinator.singleCharMode }
             ),
             applyInitialIsolationOptions = applyIsolation,
-            englishWordTrie = englishWordTrie,
             shadowDictManager = shadowDictManager,
-            autoEncoder = autoEncoder
+            naturalContinuationEnabled = naturalContinuationEnabled
         )
-        englishPrefixVetoOverride?.let { created.setEnglishPrefixVetoEnabled(it) }
-        autoEncodeOverride?.let { created.setAutoEncodeEnabled(it) }
+        if (currentSlashSnippets.isNotEmpty()) {
+            created.updateSlashSnippets(currentSlashSnippets)
+        }
         return created
     }
 
     private fun applyPreferenceOverrides() {
-        englishPrefixVetoOverride?.let { coordinator.setEnglishPrefixVetoEnabled(it) }
-        autoEncodeOverride?.let { coordinator.setAutoEncodeEnabled(it) }
+        coordinator.profile = resolveEffectiveProfile(baseProfile)
+        coordinator.setNaturalContinuationEnabled(naturalContinuationEnabled)
+        coordinator.updateSlashSnippets(currentSlashSnippets)
     }
 
     fun refreshFromMetadata(
@@ -207,24 +239,25 @@ class CodetableEnhancedInputEngine(
         reverseLookupMap: Map<String, List<String>>
     ) {
         currentMaxCandidates = RimeInputEngine.DEFAULT_PAGE_SIZE
+        baseProfile = profile
         currentSymbolTrie = symbolTrie
         currentBriefIndex = briefIndex
         currentReverseLookupMap = reverseLookupMap
+        uniqueSingleChar4Codes = buildUniqueSingleChar4Codes(reverseLookupMap)
+        reloadUserDictWordsCache(profile.schemaId)
 
+        val effectiveProfile = resolveEffectiveProfile(profile)
         val schemaChanged = profile.schemaId != coordinator.profile.schemaId
         if (schemaChanged && schemaDir != null) {
             val prevSingleChar = coordinator.singleCharMode
             shadowDictManager = ShadowDictManager(schemaDir, profile.schemaId)
-            autoEncoder = CodetableAutoEncoder(
-                File(schemaDir, "${profile.schemaId}_user.txt"),
-                profile.schemaId
-            )
+            phraseSuggestionTracker.resetWindow()
             if (isActiveEnginePredicate()) {
                 rimeClient.pageSize = currentMaxCandidates
                 rimeClient.selectSchema(profile.schemaId)
             }
             coordinator = buildCoordinator(
-                profile = profile,
+                profile = effectiveProfile,
                 symbolTrie = symbolTrie,
                 briefIndex = briefIndex,
                 reverseLookupMap = reverseLookupMap,
@@ -238,9 +271,9 @@ class CodetableEnhancedInputEngine(
             if (isActiveEnginePredicate()) {
                 rimeClient.pageSize = currentMaxCandidates
                 rimeClient.selectSchema(profile.schemaId)
-                coordinator.updateProfile(profile)
+                coordinator.updateProfile(effectiveProfile)
             } else {
-                coordinator.profile = profile
+                coordinator.profile = effectiveProfile
                 coordinator.reset()
             }
             applyPreferenceOverrides()
@@ -248,36 +281,71 @@ class CodetableEnhancedInputEngine(
         syncUiState()
     }
 
-    fun refreshUserDictAutoEncoder() {
+    fun reloadUserDictWordsCache(schemaId: String = activeProfile.schemaId) {
+        knownUserWords.clear()
         val dir = schemaDir ?: return
-        val profile = activeProfile
-        val prevSingleChar = coordinator.singleCharMode
-        val isComposing = coordinator.isComposing
-        autoEncoder = CodetableAutoEncoder(
-            File(dir, "${profile.schemaId}_user.txt"),
-            profile.schemaId
-        )
-        if (!isComposing) {
-            coordinator = buildCoordinator(
-                profile = profile,
-                symbolTrie = currentSymbolTrie,
-                briefIndex = currentBriefIndex,
-                reverseLookupMap = currentReverseLookupMap,
-                applyIsolation = isActiveEnginePredicate()
-            )
-            coordinator.setSingleCharModeEnabled(prevSingleChar)
-            syncUiState()
+        for (suffix in listOf("_user.txt", "_top.txt")) {
+            val file = File(dir, "$schemaId$suffix")
+            if (!file.isFile) continue
+            runCatching {
+                file.forEachLine(StandardCharsets.UTF_8) { raw ->
+                    val trimmed = raw.trim()
+                    if (trimmed.isEmpty() || trimmed.startsWith("#")) return@forEachLine
+                    val word = raw.substringBefore('\t').trim()
+                    if (word.isNotEmpty()) {
+                        knownUserWords.add(word)
+                    }
+                }
+            }
         }
     }
 
-    fun setEnglishPrefixVetoEnabled(enabled: Boolean) {
-        englishPrefixVetoOverride = enabled
-        coordinator.setEnglishPrefixVetoEnabled(enabled)
+    fun setXiaoheDirectCommandsEnabled(enabled: Boolean) {
+        xiaoheDirectCommandsOverride = enabled
+        coordinator.profile = resolveEffectiveProfile(baseProfile)
+        if (coordinator.isComposing) syncUiState()
     }
 
-    fun setAutoEncodeEnabled(enabled: Boolean) {
-        autoEncodeOverride = enabled
-        coordinator.setAutoEncodeEnabled(enabled)
+    fun setXiaoheReverseSplitEnabled(enabled: Boolean) {
+        xiaoheReverseSplitOverride = enabled
+        coordinator.profile = resolveEffectiveProfile(baseProfile)
+        if (coordinator.isComposing) syncUiState()
+    }
+
+    fun setXiaoheNaturalContinuationEnabled(enabled: Boolean) {
+        naturalContinuationEnabled = enabled
+        coordinator.setNaturalContinuationEnabled(enabled)
+        if (coordinator.isComposing) syncUiState()
+    }
+
+    fun setPhraseSuggestionL2Enabled(enabled: Boolean) {
+        phraseSuggestionL2Enabled = enabled
+        if (!enabled) {
+            phraseSuggestionTracker.resetWindow()
+            onPhraseSuggestion?.invoke(null)
+        }
+    }
+
+    fun markPhraseSuggestionAccepted(word: String) {
+        phraseSuggestionTracker.markAccepted(word)
+        if (word.isNotBlank()) knownUserWords.add(word.trim())
+    }
+
+    fun markPhraseSuggestionDismissed(word: String) {
+        phraseSuggestionTracker.markDismissed(word)
+    }
+
+    fun resetPhraseSuggestionWindow() {
+        phraseSuggestionTracker.resetWindow()
+    }
+
+    fun deriveXiaohe4Code(phrase: String): String? {
+        return CodetableCodeDeriver.deriveXiaohe4Code(phrase, currentReverseLookupMap)
+    }
+
+    fun adjustOrqDateOffset(deltaDays: Int, nowMillis: Long = System.currentTimeMillis()) {
+        coordinator.adjustOrqDateOffset(deltaDays, nowMillis)
+        syncUiState()
     }
 
     fun setSingleCharModeEnabled(enabled: Boolean) {
@@ -326,29 +394,45 @@ class CodetableEnhancedInputEngine(
 
     override fun onKey(key: KeyInput): EngineResult {
         return when (key) {
-            is KeyInput.CharKey -> dispatchOutcome(coordinator.onCharKey(key.char, key.nowMillis))
-            is KeyInput.Backspace -> dispatchOutcome(coordinator.onBackspace(key.nowMillis))
-            KeyInput.Space -> dispatchOutcome(coordinator.onSpace())
-            KeyInput.Enter -> {
-                val snap = coordinator.snapshotUi()
-                if (!snap.isComposing) {
-                    EngineResult.PassThrough
+            is KeyInput.CharKey -> {
+                val snapBefore = coordinator.snapshotUi()
+                val rawBefore = snapBefore.rawCode
+                val candidateCode = if (
+                    !coordinator.overlayController.isActive &&
+                    !rawBefore.startsWith("/") &&
+                    !rawBefore.startsWith(";") &&
+                    key.char in 'a'..'z'
+                ) {
+                    if (rawBefore.length >= coordinator.profile.maxCodeLength &&
+                        coordinator.profile.maxCodeLength > 0
+                    ) {
+                        rawBefore
+                    } else {
+                        rawBefore + key.char
+                    }
                 } else {
-                    val raw = snap.rawCode
-                    coordinator.reset()
-                    syncUiState()
-                    EngineResult.Commit(raw, remainComposing = false)
+                    ""
                 }
+                dispatchOutcome(coordinator.onCharKey(key.char, key.nowMillis), candidateCode)
             }
+            is KeyInput.Backspace -> dispatchOutcome(coordinator.onBackspace(key.nowMillis))
+            KeyInput.Space -> {
+                val rawBefore = coordinator.snapshotUi().rawCode
+                val code = if (rawBefore.isNotEmpty() && rawBefore.all { it in 'a'..'z' }) rawBefore else ""
+                dispatchOutcome(coordinator.onSpace(), code)
+            }
+            KeyInput.Enter -> dispatchOutcome(coordinator.onEnter())
             is KeyInput.CommaOrPeriod -> {
                 val ch = if (key.isComma) ',' else '.'
                 if (coordinator.isComposing && key.commaPeriodQuickSelect) {
-                    val cands = coordinator.snapshotUi().candidates
+                    val snapBefore = coordinator.snapshotUi()
+                    val cands = snapBefore.candidates
+                    val code = if (snapBefore.rawCode.all { it in 'a'..'z' }) snapBefore.rawCode else ""
                     if (key.isComma && cands.size >= 2) {
-                        return dispatchOutcome(coordinator.selectCandidate(1))
+                        return dispatchOutcome(coordinator.selectCandidate(1), code)
                     }
                     if (!key.isComma && cands.size >= 3) {
-                        return dispatchOutcome(coordinator.selectCandidate(2))
+                        return dispatchOutcome(coordinator.selectCandidate(2), code)
                     }
                 }
                 dispatchOutcome(coordinator.onCharKey(ch))
@@ -357,7 +441,17 @@ class CodetableEnhancedInputEngine(
     }
 
     override fun select(index: Int): EngineResult {
-        return dispatchOutcome(coordinator.selectCandidate(index))
+        val snapBefore = coordinator.snapshotUi()
+        val code = if (
+            !snapBefore.isReverseSplitActive &&
+            snapBefore.rawCode.isNotEmpty() &&
+            snapBefore.rawCode.all { it in 'a'..'z' }
+        ) {
+            snapBefore.rawCode
+        } else {
+            ""
+        }
+        return dispatchOutcome(coordinator.selectCandidate(index), code)
     }
 
     override fun clear() {
@@ -393,6 +487,9 @@ class CodetableEnhancedInputEngine(
     }
 
     override fun setIncognitoMode(incognito: Boolean) {
+        if (incognito) {
+            phraseSuggestionTracker.resetWindow()
+        }
         if (!isActiveEnginePredicate()) return
         if (coordinator.profile.lockNaturalOrder) {
             rimeClient.setOption("_incognito", true)
@@ -410,10 +507,29 @@ class CodetableEnhancedInputEngine(
     }
 
     override fun updateSnippets(snippets: List<SnippetEntry>, nowMillis: Long) {
-        // Preserves interface compatibility
+        currentSlashSnippets = snippets.mapNotNull { entry ->
+            if (!entry.enabled || entry.content.isBlank()) return@mapNotNull null
+            val cleanCode = SnippetMatcher.extractSlashSnippetCode(entry.flypyCode)
+            if (cleanCode.isEmpty()) {
+                null
+            } else {
+                SlashSnippetEntry(
+                    code = cleanCode,
+                    title = entry.title.trim(),
+                    content = entry.content
+                )
+            }
+        }
+        coordinator.updateSlashSnippets(currentSlashSnippets)
+        if (coordinator.isComposing) {
+            syncUiState()
+        }
     }
 
-    private fun dispatchOutcome(outcome: CoordinatorKeyOutcome): EngineResult {
+    private fun dispatchOutcome(
+        outcome: CoordinatorKeyOutcome,
+        commitSourceCode: String = ""
+    ): EngineResult {
         return when (outcome) {
             CoordinatorKeyOutcome.PassThrough -> {
                 syncUiState()
@@ -425,9 +541,41 @@ class CodetableEnhancedInputEngine(
             }
             is CoordinatorKeyOutcome.Commit -> {
                 syncUiState()
+                trackPhraseSuggestionIfEligible(outcome.action, commitSourceCode)
                 handleCommitAction(outcome.action, outcome.feedToAutoLearn, outcome.ui.isComposing)
             }
         }
+    }
+
+    private fun trackPhraseSuggestionIfEligible(action: CommitAction, commitSourceCode: String) {
+        if (!phraseSuggestionL2Enabled || isIncognitoPredicate()) {
+            phraseSuggestionTracker.resetWindow()
+            return
+        }
+        val plain = action as? CommitAction.PlainText
+        if (plain == null || commitSourceCode.isEmpty() || !commitSourceCode.all { it in 'a'..'z' }) {
+            phraseSuggestionTracker.resetWindow()
+            return
+        }
+        val suggestion = phraseSuggestionTracker.recordCommittedUnit(
+            text = plain.text,
+            code = commitSourceCode,
+            existsInDict = ::wordExistsInKnownDict,
+            isUniqueSingleCharCode = { code -> code in uniqueSingleChar4Codes }
+        )
+        if (suggestion != null) {
+            onPhraseSuggestion?.invoke(suggestion)
+        }
+    }
+
+    private fun wordExistsInKnownDict(word: String): Boolean {
+        if (word in knownUserWords) return true
+        if (word in currentReverseLookupMap) return true
+        val derived = CodetableCodeDeriver.deriveXiaohe4Code(word, currentReverseLookupMap)
+        if (derived != null && derived.length == 2) {
+            if (word in currentBriefIndex.lookup2(derived[0], derived[1])) return true
+        }
+        return false
     }
 
     private fun handleCommitAction(
@@ -521,9 +669,28 @@ class CodetableEnhancedInputEngine(
             rawCode = barState.rawCode,
             candidates = barState.candidates,
             hasMore = barState.hasMore,
-            isComposing = barState.isComposing
+            isComposing = barState.isComposing,
+            isOrqDateActive = barState.isOrqDateActive,
+            orqDateOffsetDays = barState.orqDateOffsetDays
         )
         _state.value = next
         onUiStateSynced?.invoke(next, coordinator.singleCharMode, currentPinnedWordsForBuffer())
+    }
+
+    companion object {
+        private fun buildUniqueSingleChar4Codes(reverseLookupMap: Map<String, List<String>>): Set<String> {
+            if (reverseLookupMap.isEmpty()) return emptySet()
+            val counts = HashMap<String, Int>(reverseLookupMap.size)
+            for ((word, codes) in reverseLookupMap) {
+                if (word.codePointCount(0, word.length) != 1) continue
+                for (raw in codes) {
+                    val c = raw.trim().lowercase(Locale.ROOT)
+                    if (c.length == 4 && c.all { it in 'a'..'z' }) {
+                        counts[c] = (counts[c] ?: 0) + 1
+                    }
+                }
+            }
+            return counts.filterValues { it == 1 }.keys
+        }
     }
 }

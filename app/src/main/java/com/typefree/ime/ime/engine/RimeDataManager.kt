@@ -583,7 +583,9 @@ class RimeDataManager(
                 rimeBridge.initialize(sharedDir.absolutePath, userDir.absolutePath)
                 rimeBridge.selectSchema(result.schemaId)
             }
-            activeSchemaProfile = result.profile
+            activeSchemaProfile = result.profile.copy(
+                directCommandsEnabled = result.profile.schemaId == "flypy" && result.profile.directCommandsEnabled
+            )
             activeBriefIndex = result.briefIndex
             activeSymbolTrie = result.quickSymbolTrie
             activeReverseLookupMap = emptyMap()
@@ -747,10 +749,13 @@ class RimeDataManager(
                 null
             }
             runCatching {
-                activeSchemaProfile = SchemaInspector.inspect(
+                val inspected = SchemaInspector.inspect(
                     schemaYaml = schemaFile.readText(Charsets.UTF_8),
                     dictYamlContent = if (dictFile.exists()) dictFile.readText(Charsets.UTF_8) else null,
                     tomlOverrideContent = matchingToml
+                )
+                activeSchemaProfile = inspected.copy(
+                    directCommandsEnabled = inspected.schemaId == "flypy" && inspected.directCommandsEnabled
                 )
             }
         } else {
@@ -761,7 +766,7 @@ class RimeDataManager(
             }
         }
         val canReuseBriefSnapshot = briefSnap.exists() &&
-            isBriefSnapshotV2OrNewer(briefSnap) &&
+            isBriefSnapshotCurrentVersion(briefSnap) &&
             (!dictFile.exists() || (
                 (!topFile.exists() || briefSnap.lastModified() >= topFile.lastModified()) &&
                     (!userFile.exists() || briefSnap.lastModified() >= userFile.lastModified())
@@ -832,13 +837,13 @@ class RimeDataManager(
         activeReverseLookupMap = merged
     }
 
-    private fun isBriefSnapshotV2OrNewer(file: File): Boolean {
+    private fun isBriefSnapshotCurrentVersion(file: File): Boolean {
         if (!file.isFile || file.length() < 8L) return false
         return runCatching {
             java.io.DataInputStream(FileInputStream(file)).use { input ->
                 val magic = input.readInt()
                 val version = input.readInt()
-                magic == 0x54464249 && version >= 2
+                magic == 0x54464249 && version == BriefPrefixIndex.SNAPSHOT_VERSION
             }
         }.getOrDefault(false)
     }

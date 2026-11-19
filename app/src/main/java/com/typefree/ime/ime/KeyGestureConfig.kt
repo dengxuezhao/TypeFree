@@ -193,6 +193,30 @@ object KeyGestureConfig {
     }
 
     /**
+     * Serializes only the key bindings that differ from [baseline] (or returns `""` when identical),
+     * so untouched keys keep adapting dynamically to Chinese/English default punctuation.
+     */
+    fun toDeltaJson(
+        profile: KeyGestureProfile,
+        baseline: KeyGestureProfile = defaultProfile(isChinese = true, showNumberRow = false)
+    ): String {
+        val diffSwipe = LinkedHashMap<Char, KeyGestureBinding>()
+        val diffLong = LinkedHashMap<Char, KeyGestureBinding>()
+        for (ch in ALL_QWERTY_KEYS) {
+            val s = profile.swipeUpMap[ch]
+            if (s != null && s != baseline.swipeUpMap[ch]) {
+                diffSwipe[ch] = s
+            }
+            val l = profile.longPressMap[ch]
+            if (l != null && l != baseline.longPressMap[ch]) {
+                diffLong[ch] = l
+            }
+        }
+        if (diffSwipe.isEmpty() && diffLong.isEmpty()) return ""
+        return toJson(KeyGestureProfile(swipeUpMap = diffSwipe, longPressMap = diffLong))
+    }
+
+    /**
      * Parses `customKeyGesturesJson` into a [KeyGestureProfile], overlaying parsed entries
      * onto [fallback] so both full-map JSON and partial-override JSON work safely.
      */

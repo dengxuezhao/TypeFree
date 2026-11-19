@@ -143,12 +143,12 @@ class V361CodetableIntegrationTest {
             publicStore = publicStore,
             secretVault = SecretVault(secretStore, cipher)
         )
-        assertTrue(legacyRepo.settings.value.englishPrefixVetoEnabled)
+        assertFalse(legacyRepo.settings.value.englishPrefixVetoEnabled)
         assertFalse(legacyRepo.settings.value.codetableAutoEncodeEnabled)
 
         legacyRepo.updateSettings {
             it.copy(
-                englishPrefixVetoEnabled = false,
+                englishPrefixVetoEnabled = true,
                 codetableAutoEncodeEnabled = true
             )
         }
@@ -158,7 +158,7 @@ class V361CodetableIntegrationTest {
             publicStore = publicStore,
             secretVault = SecretVault(secretStore, cipher)
         )
-        assertFalse(reloadedRepo.settings.value.englishPrefixVetoEnabled)
+        assertTrue(reloadedRepo.settings.value.englishPrefixVetoEnabled)
         assertTrue(reloadedRepo.settings.value.codetableAutoEncodeEnabled)
     }
 
@@ -205,71 +205,74 @@ class V361CodetableIntegrationTest {
     }
 
     @Test
-    fun `CodetableEnhancedInputEngine wires CodetableAutoEncoder opt-in and English prefix veto live`() {
-        val tempDir = Files.createTempDirectory("v361_autoenc_").toFile()
+    fun `CodetableEnhancedInputEngine removes Chinese English veto and wires L2 PhraseSuggestionTracker cleanly`() {
+        val tempDir = Files.createTempDirectory("v362_l2phrase_").toFile()
         try {
             val fakeBridge = FakeCodetableRimeClient()
             val briefIdx = BriefPrefixIndex.buildFromDictLines(
                 mainDictLines = sequenceOf("---", "name: flypy", "...", "你\tni", "好\thc"),
                 gt4GuardTwoPrefixes = setOf("ok", "os")
             )
+            val suggestions = ArrayList<com.typefree.core.ime.enhancer.PhraseSuggestion>()
             val engine = CodetableEnhancedInputEngine(
                 rimeClient = fakeBridge,
                 initialProfile = SchemaProfile.defaultXiaoheFlypy(),
                 briefIndex = briefIdx,
-                schemaDir = tempDir
+                reverseLookupMap = mapOf("你" to listOf("nirx"), "好" to listOf("hcnz")),
+                schemaDir = tempDir,
+                onPhraseSuggestion = { s -> if (s != null) suggestions.add(s) }
             )
 
-            // 1) English prefix veto ON by default: "gith" -> suggests "github" and does NOT commit/split
-            for (c in "gith") {
-                val res = engine.onKey(KeyInput.CharKey(c))
-                assertTrue(res is EngineResult.Consumed)
-            }
-            assertTrue(engine.state.value.candidates.any { it.text == "github" })
-            engine.clear()
-
-            // Toggle English prefix veto OFF live -> "gith" no longer suggests "github"
-            engine.setEnglishPrefixVetoEnabled(false)
+            // 1) Chinese mode NEVER hijacks 4-letter codes with EnglishWordTrie
             for (c in "gith") {
                 engine.onKey(KeyInput.CharKey(c))
             }
             assertFalse(engine.state.value.candidates.any { it.text == "github" })
             engine.clear()
 
-            // 2) CodetableAutoEncoder is strictly OFF by default
-            assertFalse(engine.coordinator.autoEncodeEnabled)
-            engine.onKey(KeyInput.CharKey('n'))
-            engine.onKey(KeyInput.CharKey('i'))
-            engine.select(0) // "你"
-            engine.onKey(KeyInput.CharKey('h'))
-            engine.onKey(KeyInput.CharKey('c'))
-            engine.select(0) // "好"
+            // 2) L2 PhraseSuggestionTracker never auto-writes `_user.txt`, triggers only on 3rd repeat
             val userTxt = File(tempDir, "flypy_user.txt")
-            assertFalse(userTxt.exists() && userTxt.readText().contains("你好\tnihc"))
+            repeat(2) {
+                engine.onKey(KeyInput.CharKey('n'))
+                engine.onKey(KeyInput.CharKey('i'))
+                engine.select(0) // 你
+                engine.onKey(KeyInput.CharKey('h'))
+                engine.onKey(KeyInput.CharKey('c'))
+                engine.select(0) // 好
+            }
+            assertTrue("Should not suggest before 3 repeats", suggestions.isEmpty())
+            assertFalse("Must never auto-write _user.txt", userTxt.exists())
 
-            // Enable auto-encode live -> "你"(ni) + "好"(hc) creates "你好\tnihc\t1"
-            engine.setAutoEncodeEnabled(true)
+            // 3rd repeat triggers one-time suggestion chip (still no disk write until user accepts)
             engine.onKey(KeyInput.CharKey('n'))
             engine.onKey(KeyInput.CharKey('i'))
             engine.select(0)
             engine.onKey(KeyInput.CharKey('h'))
             engine.onKey(KeyInput.CharKey('c'))
             engine.select(0)
-            assertTrue(userTxt.exists())
-            assertTrue(userTxt.readText(StandardCharsets.UTF_8).contains("你好\tnihc\t1"))
+            assertEquals(1, suggestions.size)
+            assertEquals("你好", suggestions.first().word)
+            assertEquals("nihc", suggestions.first().code)
+            assertFalse("Suggestion alone must not write _user.txt", userTxt.exists())
 
-            for (c in "nih") engine.onKey(KeyInput.CharKey(c))
-            val fourthRes = engine.onKey(KeyInput.CharKey('c'))
-            assertEquals(EngineResult.Commit("你好", remainComposing = false), fourthRes)
+            // Dismissing suppresses subsequent suggestions for "你好"
+            engine.markPhraseSuggestionDismissed("你好")
+            engine.resetPhraseSuggestionWindow()
+            suggestions.clear()
+            engine.onKey(KeyInput.CharKey('n'))
+            engine.onKey(KeyInput.CharKey('i'))
+            engine.select(0)
+            engine.onKey(KeyInput.CharKey('h'))
+            engine.onKey(KeyInput.CharKey('c'))
+            engine.select(0)
+            assertTrue("Dismissed phrase 你好 must not be suggested again", suggestions.none { it.word == "你好" })
 
-            // Also verify refreshUserDictAutoEncoder reloads phrases written via CustomUserPhraseFileEditor
+            // Also verify reloadUserDictWordsCache + L1 deriveXiaohe4Code work cleanly
+            assertEquals("nihc", engine.deriveXiaohe4Code("你好"))
             val editor = com.typefree.core.ime.importer.CustomUserPhraseFileEditor(tempDir, "flypy")
             editor.addPhrase("测试词", "cs", isTopPinned = false)
-            engine.refreshUserDictAutoEncoder()
-            engine.onKey(KeyInput.CharKey('c'))
-            engine.onKey(KeyInput.CharKey('s'))
-            assertTrue(engine.state.value.candidates.any { it.text == "测试词" })
-            engine.clear()
+            engine.reloadUserDictWordsCache("flypy")
+            assertTrue(userTxt.exists())
         } finally {
             tempDir.deleteRecursively()
         }
@@ -409,8 +412,8 @@ class V361CodetableIntegrationTest {
     }
 
     @Test
-    fun `v1 brief snapshot on disk triggers v2 rebuild with natural continuations populated`() {
-        val tempRoot = Files.createTempDirectory("v361_v1_upgrade_").toFile()
+    fun `v1 and v2 brief snapshots on disk trigger v3 rebuild with multi natural continuations populated`() {
+        val tempRoot = Files.createTempDirectory("v362_v3_upgrade_").toFile()
         try {
             val sharedDir = File(tempRoot, "shared").apply { mkdirs() }
             val userDir = File(tempRoot, "user").apply { mkdirs() }
@@ -432,7 +435,7 @@ class V361CodetableIntegrationTest {
                 StandardCharsets.UTF_8
             )
             File(sharedDir, "flypy.dict.yaml").writeText(
-                "---\nname: flypy\n...\n丁\tokhguu\n清风徐来\tqfxl\n",
+                "---\nname: flypy\n...\n丁\tokhguu\n清风徐来\tqfxl\n秋风萧瑟\tqfxs\n",
                 StandardCharsets.UTF_8
             )
             File(sharedDir, "typefree.toml").writeText(
@@ -445,16 +448,17 @@ class V361CodetableIntegrationTest {
                 StandardCharsets.UTF_8
             )
 
-            // Write a valid v1 flypy.brief.idx snapshot (magic 0x54464249, version 1, no naturalContinuations)
+            // Write a stale v2 flypy.brief.idx snapshot (magic 0x54464249, version 2)
             val briefSnap = File(sharedDir, "flypy.brief.idx")
             DataOutputStream(FileOutputStream(briefSnap)).use { out ->
                 out.writeInt(0x54464249)
-                out.writeInt(1)
+                out.writeInt(2)
                 repeat(26) { out.writeShort(0) }
                 repeat(676) { out.writeShort(0) }
                 out.writeInt(0) // bitLen
                 out.writeInt(0) // gt4Count
                 out.writeShort(0) // guardCount
+                out.writeInt(0) // natCount
             }
             briefSnap.setLastModified(System.currentTimeMillis() + 60_000L)
 
@@ -465,13 +469,13 @@ class V361CodetableIntegrationTest {
             assertEquals("丁", okhgNat?.word)
             assertEquals("uu", okhgNat?.suffixCode)
 
-            val qfxNat = dm.activeBriefIndex.lookupNaturalFirstContinuation("qfx")
-            assertEquals("清风徐来", qfxNat?.word)
-            assertEquals("l", qfxNat?.suffixCode)
+            val qfxNats = dm.activeBriefIndex.lookupNaturalContinuations("qfx")
+            assertEquals(listOf("清风徐来", "秋风萧瑟"), qfxNats.map { it.word })
+            assertEquals(listOf("l", "s"), qfxNats.map { it.suffixCode })
 
             DataInputStream(FileInputStream(briefSnap)).use { input ->
                 assertEquals(0x54464249, input.readInt())
-                assertEquals(2, input.readInt())
+                assertEquals(BriefPrefixIndex.SNAPSHOT_VERSION, input.readInt())
             }
         } finally {
             tempRoot.deleteRecursively()

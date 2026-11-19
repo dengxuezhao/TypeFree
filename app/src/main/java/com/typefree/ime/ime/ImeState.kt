@@ -143,6 +143,17 @@ data class ImeUiState(
     val codetableEnhancerActive: Boolean = false,
     val singleCharModeEnabled: Boolean = false,
     val pinnedWordsForCurrentCode: Set<String> = emptySet(),
+    val isOrqDateActive: Boolean = false,
+    val orqDateOffsetDays: Int = 0,
+    val passiveMathResult: String? = null,
+    val passiveMathExpression: String? = null,
+    val isPhraseRecording: Boolean = false,
+    val recordedPhraseBuffer: String = "",
+    val recordedPhraseCode: String? = null,
+    val l2PhraseSuggestionWord: String? = null,
+    val l2PhraseSuggestionCode: String? = null,
+    val englishSuggestions: List<String> = emptyList(),
+    val englishSuggestionReplaceLength: Int = 0,
     val isRimeDeploying: Boolean = false,
     val predictionCandidates: List<FlypyCandidate> = emptyList(),
     val aiCompletionSuggestion: String? = null,
@@ -192,11 +203,29 @@ data class ImeUiState(
             isFlypyChineseMode &&
             (flypyComposingCode.isNotEmpty() || preeditDisplay.isNotEmpty())
 
+    val activePhraseSuggestionLabel: String?
+        get() = when {
+            isPhraseRecording && recordedPhraseBuffer.codePointCount(0, recordedPhraseBuffer.length) >= 2 &&
+                !recordedPhraseCode.isNullOrBlank() ->
+                "+ 存入个人词: $recordedPhraseBuffer · $recordedPhraseCode"
+            isPhraseRecording && recordedPhraseBuffer.isNotEmpty() ->
+                "+ 造词中: $recordedPhraseBuffer"
+            !l2PhraseSuggestionWord.isNullOrBlank() && !l2PhraseSuggestionCode.isNullOrBlank() ->
+                "+ 录入: $l2PhraseSuggestionWord · $l2PhraseSuggestionCode"
+            else -> null
+        }
+
     val isPredictionBarVisible: Boolean
         get() = tabMode == KeyboardTabMode.QWERTY &&
-            isFlypyChineseMode &&
-            !isFlypyComposing &&
-            (predictionCandidates.isNotEmpty() || !aiCompletionSuggestion.isNullOrBlank())
+            !isFlypyComposing && (
+                (isFlypyChineseMode && (
+                    predictionCandidates.isNotEmpty() ||
+                        !aiCompletionSuggestion.isNullOrBlank() ||
+                        !activePhraseSuggestionLabel.isNullOrBlank()
+                    )) ||
+                    !passiveMathResult.isNullOrBlank() ||
+                    (!isFlypyChineseMode && englishSuggestions.isNotEmpty())
+            )
     val effectiveSelectedText: String
         get() = if (ignoreSelectionForThisTurn) "" else rawSelectedText
 

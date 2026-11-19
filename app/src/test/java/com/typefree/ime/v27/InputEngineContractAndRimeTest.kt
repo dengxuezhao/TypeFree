@@ -312,24 +312,23 @@ class InputEngineContractAndRimeTest {
                 assertEquals(EngineResult.Consumed, engine.onKey(KeyInput.CharKey(';')))
                 assertEquals(EngineResult.Commit("？", false), engine.onKey(KeyInput.CharKey('f')))
 
-                // 7) `orq`, `ouj`, `oxq` dynamic date/time/weekday commands via shared CandidateMerger
+                // 7) `orq` (includes weekday) and `ouj` dynamic date/time commands via shared CandidateMerger (`oxq` removed in v3.6.2)
                 val fixedTimeMs = 1_715_000_000_000L
-                for (cmd in listOf("orq", "ouj", "oxq")) {
+                for (cmd in listOf("orq", "ouj")) {
                     engine.clear()
                     typeChars(engine, cmd, nowMillis = fixedTimeMs)
                     val cands = engine.state.value.candidates
                     assertTrue("$label should produce dynamic candidates for $cmd", cands.size >= 2)
                     if (cmd == "orq") {
                         assertTrue("$label orq should contain 年/月/日", cands[0].text.contains("年"))
+                        assertTrue("$label orq should contain weekday 星期", cands.any { it.text.startsWith("星期") })
                     } else if (cmd == "ouj") {
                         assertTrue("$label ouj should contain :", cands[0].text.contains(":"))
-                    } else if (cmd == "oxq") {
-                        assertTrue("$label oxq should start with 星期", cands[0].text.startsWith("星期"))
                     }
                     engine.clear()
                 }
 
-                // 8) Custom snippet expansion (`;sd` & `;yx`)
+                // 8) Custom snippet expansion (`/sd` & `/yx`, auto-migrating legacy `;yx` / `;sd`)
                 val snippets = listOf(
                     SnippetEntry(
                         title = "邮箱",
@@ -341,20 +340,25 @@ class InputEngineContractAndRimeTest {
                     SnippetEntry(
                         title = "地址",
                         voiceTriggers = "收货地址",
-                        flypyCode = ";sd",
+                        flypyCode = "/sd",
                         content = "上海市浦东新区张江高科",
                         enabled = true
                     )
                 )
                 engine.updateSnippets(snippets)
-                assertEquals(EngineResult.Consumed, engine.onKey(KeyInput.CharKey(';')))
+                assertEquals(EngineResult.Consumed, engine.onKey(KeyInput.CharKey('/')))
+                assertTrue("$label `/` should list all enabled snippets", engine.state.value.candidates.size >= 2)
                 assertEquals(EngineResult.Consumed, engine.onKey(KeyInput.CharKey('y')))
-                val snipRes = engine.onKey(KeyInput.CharKey('x'))
+                assertEquals(EngineResult.Consumed, engine.onKey(KeyInput.CharKey('x')))
+                val snipRes = engine.onKey(KeyInput.Space)
                 assertEquals(
-                    "$label should auto-commit unique ;yx snippet",
+                    "$label should commit /yx snippet on Space",
                     EngineResult.Commit("dev@typefree.ai", false),
                     snipRes
                 )
+                // `//` commits literal `/`
+                assertEquals(EngineResult.Consumed, engine.onKey(KeyInput.CharKey('/')))
+                assertEquals(EngineResult.Commit("/", false), engine.onKey(KeyInput.CharKey('/')))
             }
         } finally {
             tempRoot.deleteRecursively()

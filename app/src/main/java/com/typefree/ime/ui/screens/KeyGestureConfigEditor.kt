@@ -53,12 +53,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.google.gson.Gson
-import com.google.gson.GsonBuilder
-import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
+import com.typefree.ime.ime.EditorShortcutAction
+import com.typefree.ime.ime.KeyGestureActionType
+import com.typefree.ime.ime.KeyGestureBinding
+import com.typefree.ime.ime.KeyGestureConfig
+import com.typefree.ime.ime.KeyGestureProfile
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 
 enum class KeyGestureActionKind(val title: String) {
@@ -67,7 +68,27 @@ enum class KeyGestureActionKind(val title: String) {
     UNDO_LAST("撤回上屏"),
     REPEAT_LAST("重复上屏"),
     EDITOR_SHORTCUT("编辑快捷操作"),
-    NONE("禁用")
+    NONE("禁用");
+
+    fun toCoreType(): KeyGestureActionType = when (this) {
+        COMMIT_TEXT -> KeyGestureActionType.COMMIT_TEXT
+        COMMIT_PAIRED -> KeyGestureActionType.COMMIT_PAIRED
+        UNDO_LAST -> KeyGestureActionType.UNDO_LAST
+        REPEAT_LAST -> KeyGestureActionType.REPEAT_LAST
+        EDITOR_SHORTCUT -> KeyGestureActionType.EDITOR_SHORTCUT
+        NONE -> KeyGestureActionType.NONE
+    }
+
+    companion object {
+        fun fromCoreType(type: KeyGestureActionType): KeyGestureActionKind = when (type) {
+            KeyGestureActionType.COMMIT_TEXT -> COMMIT_TEXT
+            KeyGestureActionType.COMMIT_PAIRED -> COMMIT_PAIRED
+            KeyGestureActionType.UNDO_LAST -> UNDO_LAST
+            KeyGestureActionType.REPEAT_LAST -> REPEAT_LAST
+            KeyGestureActionType.EDITOR_SHORTCUT -> EDITOR_SHORTCUT
+            KeyGestureActionType.NONE -> NONE
+        }
+    }
 }
 
 enum class EditorShortcutOption(val wireName: String, val label: String) {
@@ -84,27 +105,29 @@ data class KeyGestureBindingSpec(
     val label: String = "",
     val editorShortcut: String? = null
 ) {
+    fun toCoreBinding(): KeyGestureBinding = KeyGestureBinding(
+        type = type.toCoreType(),
+        text = text,
+        rightText = rightText,
+        label = label,
+        editorShortcut = editorShortcut?.let { name ->
+            EditorShortcutAction.entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
+        }
+    )
+
     fun displayBadge(): String {
         if (type == KeyGestureActionKind.NONE) return "—"
-        if (label.isNotBlank()) return label
-        return when (type) {
-            KeyGestureActionKind.COMMIT_TEXT -> when (text) {
-                "\t" -> "Tab"
-                "\u3000" -> "全角"
-                else -> text.take(4)
-            }
-            KeyGestureActionKind.COMMIT_PAIRED -> "${text}${rightText}".take(4)
-            KeyGestureActionKind.UNDO_LAST -> "撤回"
-            KeyGestureActionKind.REPEAT_LAST -> "重复"
-            KeyGestureActionKind.EDITOR_SHORTCUT -> when (editorShortcut) {
-                "SELECT_ALL" -> "全"
-                "CUT" -> "剪"
-                "COPY" -> "复"
-                "PASTE" -> "粘"
-                else -> "编辑"
-            }
-            KeyGestureActionKind.NONE -> "—"
-        }
+        return toCoreBinding().displayBadge().ifEmpty { "—" }
+    }
+
+    companion object {
+        fun fromCoreBinding(binding: KeyGestureBinding): KeyGestureBindingSpec = KeyGestureBindingSpec(
+            type = KeyGestureActionKind.fromCoreType(binding.type),
+            text = binding.text,
+            rightText = binding.rightText,
+            label = binding.label,
+            editorShortcut = binding.editorShortcut?.name
+        )
     }
 }
 
@@ -113,9 +136,11 @@ data class KeyGestureProfileSpec(
     val longPress: Map<Char, KeyGestureBindingSpec>
 )
 
+/**
+ * UI bridge delegating 100% of default profiles and JSON codec directly to [KeyGestureConfig]
+ * so settings UI and IME runtime share a single source of truth with zero format drift.
+ */
 object KeyGestureConfigCodec {
-
-    private val prettyGson: Gson = GsonBuilder().disableHtmlEscaping().create()
 
     val QWERTY_ROWS: List<List<Char>> = listOf(
         listOf('q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'),
@@ -123,140 +148,42 @@ object KeyGestureConfigCodec {
         listOf('z', 'x', 'c', 'v', 'b', 'n', 'm')
     )
 
-    val ALL_KEYS: List<Char> = QWERTY_ROWS.flatten()
+    val ALL_KEYS: List<Char> = KeyGestureConfig.ALL_QWERTY_KEYS
 
-    fun defaultSwipeUpMap(): Map<Char, KeyGestureBindingSpec> = linkedMapOf(
-        'q' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "：“", label = "：“"),
-        'w' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "？", label = "？"),
-        'e' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "（", label = "（"),
-        'r' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "）", label = "）"),
-        't' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "\t", label = "Tab"),
-        'y' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_PAIRED, text = "《", rightText = "》", label = "《》"),
-        'u' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "『", label = "『"),
-        'i' to KeyGestureBindingSpec(KeyGestureActionKind.UNDO_LAST, label = "撤回"),
-        'o' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_PAIRED, text = "「", rightText = "」", label = "「」"),
-        'p' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_PAIRED, text = "『", rightText = "』", label = "『』"),
-        'a' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "！", label = "！"),
-        's' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "……", label = "……"),
-        'd' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "、", label = "、"),
-        'f' to KeyGestureBindingSpec(KeyGestureActionKind.REPEAT_LAST, label = "重复"),
-        'g' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "·", label = "·"),
-        'h' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_PAIRED, text = "[", rightText = "]", label = "[]"),
-        'j' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_PAIRED, text = "“", rightText = "”", label = "“”"),
-        'k' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_PAIRED, text = "（", rightText = "）", label = "（）"),
-        'l' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_PAIRED, text = "〔", rightText = "〕", label = "〔〕"),
-        'z' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "”", label = "”"),
-        'x' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "→", label = "→"),
-        'c' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "’", label = "’"),
-        'v' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "——", label = "——"),
-        'b' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "\u3000", label = "全角"),
-        'n' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "=", label = "="),
-        'm' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "@", label = "@")
+    private fun coreDefault(): KeyGestureProfile =
+        KeyGestureConfig.defaultProfile(isChinese = true, showNumberRow = false)
+
+    private fun fromCoreProfile(profile: KeyGestureProfile): KeyGestureProfileSpec = KeyGestureProfileSpec(
+        swipeUp = profile.swipeUpMap.mapValues { (_, v) -> KeyGestureBindingSpec.fromCoreBinding(v) },
+        longPress = profile.longPressMap.mapValues { (_, v) -> KeyGestureBindingSpec.fromCoreBinding(v) }
     )
 
-    fun defaultLongPressMap(): Map<Char, KeyGestureBindingSpec> = linkedMapOf(
-        'q' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "1", label = "1"),
-        'w' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "2", label = "2"),
-        'e' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "3", label = "3"),
-        'r' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "4", label = "4"),
-        't' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "5", label = "5"),
-        'y' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "6", label = "6"),
-        'u' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "7", label = "7"),
-        'i' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "8", label = "8"),
-        'o' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "9", label = "9"),
-        'p' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "0", label = "0"),
-        'a' to KeyGestureBindingSpec(KeyGestureActionKind.EDITOR_SHORTCUT, label = "全", editorShortcut = "SELECT_ALL"),
-        's' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "@", label = "@"),
-        'd' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "#", label = "#"),
-        'f' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "¥", label = "¥"),
-        'g' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "~", label = "~"),
-        'h' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "-", label = "-"),
-        'j' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_PAIRED, text = "“", rightText = "”", label = "“”"),
-        'k' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_PAIRED, text = "（", rightText = "）", label = "（）"),
-        'l' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "：", label = "："),
-        'z' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "`", label = "`"),
-        'x' to KeyGestureBindingSpec(KeyGestureActionKind.EDITOR_SHORTCUT, label = "剪", editorShortcut = "CUT"),
-        'c' to KeyGestureBindingSpec(KeyGestureActionKind.EDITOR_SHORTCUT, label = "复", editorShortcut = "COPY"),
-        'v' to KeyGestureBindingSpec(KeyGestureActionKind.EDITOR_SHORTCUT, label = "粘", editorShortcut = "PASTE"),
-        'b' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "、", label = "、"),
-        'n' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "！", label = "！"),
-        'm' to KeyGestureBindingSpec(KeyGestureActionKind.COMMIT_TEXT, text = "？", label = "？")
+    private fun toCoreProfile(spec: KeyGestureProfileSpec): KeyGestureProfile = KeyGestureProfile(
+        swipeUpMap = spec.swipeUp.mapValues { (_, v) -> v.toCoreBinding() },
+        longPressMap = spec.longPress.mapValues { (_, v) -> v.toCoreBinding() }
     )
 
-    fun defaultProfile(): KeyGestureProfileSpec = KeyGestureProfileSpec(
-        swipeUp = defaultSwipeUpMap(),
-        longPress = defaultLongPressMap()
-    )
+    fun defaultSwipeUpMap(): Map<Char, KeyGestureBindingSpec> = defaultProfile().swipeUp
+
+    fun defaultLongPressMap(): Map<Char, KeyGestureBindingSpec> = defaultProfile().longPress
+
+    fun defaultProfile(): KeyGestureProfileSpec = fromCoreProfile(coreDefault())
 
     fun fromJsonOrDefault(rawJson: String): KeyGestureProfileSpec {
-        val base = defaultProfile()
-        if (rawJson.isBlank()) return base
-        return runCatching {
-            val root = JsonParser.parseString(rawJson).asJsonObject
-            val mergedSwipe = base.swipeUp.toMutableMap()
-            val mergedLong = base.longPress.toMutableMap()
-            parseKeyMap(root.getAsJsonObject("swipeUp"), mergedSwipe)
-            parseKeyMap(root.getAsJsonObject("longPress"), mergedLong)
-            KeyGestureProfileSpec(swipeUp = mergedSwipe, longPress = mergedLong)
-        }.getOrDefault(base)
+        return fromCoreProfile(KeyGestureConfig.fromJson(rawJson, coreDefault()))
     }
 
     fun toJson(profile: KeyGestureProfileSpec): String {
-        val root = JsonObject()
-        val swipeObj = JsonObject()
-        val longObj = JsonObject()
-        ALL_KEYS.forEach { key ->
-            profile.swipeUp[key]?.let { binding ->
-                swipeObj.add(key.toString(), serializeBinding(binding))
-            }
-            profile.longPress[key]?.let { binding ->
-                longObj.add(key.toString(), serializeBinding(binding))
-            }
-        }
-        root.add("swipeUp", swipeObj)
-        root.add("longPress", longObj)
-        return prettyGson.toJson(root)
+        return KeyGestureConfig.toJson(toCoreProfile(profile))
+    }
+
+    fun toDeltaJson(profile: KeyGestureProfileSpec): String {
+        return KeyGestureConfig.toDeltaJson(toCoreProfile(profile), coreDefault())
     }
 
     fun isCustomized(profile: KeyGestureProfileSpec): Boolean {
         val def = defaultProfile()
         return profile.swipeUp != def.swipeUp || profile.longPress != def.longPress
-    }
-
-    private fun parseKeyMap(obj: JsonObject?, target: MutableMap<Char, KeyGestureBindingSpec>) {
-        if (obj == null) return
-        for ((k, el) in obj.entrySet()) {
-            val ch = k.trim().lowercase().firstOrNull() ?: continue
-            if (ch !in 'a'..'z' || !el.isJsonObject) continue
-            val bObj = el.asJsonObject
-            val rawType = bObj.get("type")?.takeIf { !it.isJsonNull }?.asString ?: continue
-            val kind = KeyGestureActionKind.entries.firstOrNull { it.name.equals(rawType, ignoreCase = true) }
-                ?: continue
-            val text = bObj.get("text")?.takeIf { !it.isJsonNull }?.asString ?: ""
-            val rightText = bObj.get("rightText")?.takeIf { !it.isJsonNull }?.asString ?: ""
-            val label = bObj.get("label")?.takeIf { !it.isJsonNull }?.asString ?: ""
-            val editorShortcut = bObj.get("editorShortcut")?.takeIf { !it.isJsonNull }?.asString
-                ?.takeIf { it.isNotBlank() }
-            target[ch] = KeyGestureBindingSpec(
-                type = kind,
-                text = text,
-                rightText = rightText,
-                label = label,
-                editorShortcut = editorShortcut
-            )
-        }
-    }
-
-    private fun serializeBinding(binding: KeyGestureBindingSpec): JsonObject {
-        val obj = JsonObject()
-        obj.addProperty("type", binding.type.name)
-        obj.addProperty("text", binding.text)
-        obj.addProperty("rightText", binding.rightText)
-        obj.addProperty("label", binding.label)
-        if (!binding.editorShortcut.isNullOrBlank()) {
-            obj.addProperty("editorShortcut", binding.editorShortcut)
-        }
-        return obj
     }
 }
 
@@ -478,7 +405,7 @@ fun KeyGestureCustomizerCard(
                     longPress = updatedLongMap
                 )
                 val newJson = if (KeyGestureConfigCodec.isCustomized(updatedProfile)) {
-                    KeyGestureConfigCodec.toJson(updatedProfile)
+                    KeyGestureConfigCodec.toDeltaJson(updatedProfile)
                 } else {
                     ""
                 }

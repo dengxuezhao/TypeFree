@@ -768,18 +768,20 @@ class XiaoheCodetableAcceptanceTest {
             )
             engine.clear()
 
-            // 5) Quick symbol overlay (`;` / `；`) and inline math (`=1+2`)
+            // 5) Quick symbol overlay (`;` / `；`) and zero-interference `=` (passive math only, never intercepted)
             val semiEnter = engine.onKey(KeyInput.CharKey('；'))
             assertTrue(semiEnter is EngineResult.Consumed)
             assertTrue(engine.coordinator.overlayController.isActive)
             val semiA = engine.onKey(KeyInput.CharKey('a'))
             assertEquals(EngineResult.Commit("！", remainComposing = false), semiA)
 
-            for (ch in "=1+2") {
-                engine.onKey(KeyInput.CharKey(ch))
-            }
-            val mathCands = engine.state.value.candidates.map { it.text }
-            assertTrue("Expected `3` for `=1+2`, got $mathCands", "3" in mathCands)
+            val eqRes = engine.onKey(KeyInput.CharKey('='))
+            assertTrue(
+                "v3.6.2 must never hijack `=` into composing mode, got $eqRes",
+                eqRes is EngineResult.Commit && !engine.state.value.isComposing
+            )
+            val passive = com.typefree.core.ime.enhancer.SafeMathEvaluator.detectTrailingExpression("125*8=")
+            assertEquals("1000", passive?.formattedResult)
             engine.clear()
 
             // 6) Verify real native librime deploy catches missing/invalid schema instead of ignoring select_schema failure

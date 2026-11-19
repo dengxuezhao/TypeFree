@@ -121,6 +121,13 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         typingController.enhancedSchemePredicate = { scheme ->
             TypeFreeApp.instance.rimeDataManager.isSchemeHandledByEnhancedEngine(scheme)
         }
+        typingController.onUndoRequested = { performUndo() }
+        typingController.reverseLookupMapProvider = {
+            TypeFreeApp.instance.rimeDataManager.activeReverseLookupMap
+        }
+        typingController.onSaveUserPhrase = { word, code ->
+            saveUserPhraseAsync(word, code)
+        }
         typingController.isRimeReady = TypeFreeApp.instance.rimeDataManager.isReady
         bindCodetableEnhancedEngineIfAvailable()
         TypeFreeApp.instance.ensureRimeDeployed()
@@ -168,11 +175,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     lastVersion = version
                     bindCodetableEnhancedEngineIfAvailable()
                     typingController.codetableEnhancedEngine?.let { eng ->
-                        eng.refreshUserDictAutoEncoder()
+                        eng.reloadUserDictWordsCache()
                         eng.reloadShadowRules()
-                        val s = repository.settings.value
-                        eng.setEnglishPrefixVetoEnabled(s.englishPrefixVetoEnabled)
-                        eng.setAutoEncodeEnabled(s.codetableAutoEncodeEnabled)
+                        applyCodetableV362Settings(eng, repository.settings.value)
                     }
                     syncCodetableUiFlags()
                 }
@@ -203,8 +208,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 typingController.updateSnippets(currentSettings.snippets)
                 typingController.setFixedCandidateOrder(currentSettings.fixedCandidateOrder)
                 typingController.codetableEnhancedEngine?.let { eng ->
-                    eng.setEnglishPrefixVetoEnabled(currentSettings.englishPrefixVetoEnabled)
-                    eng.setAutoEncodeEnabled(currentSettings.codetableAutoEncodeEnabled)
+                    applyCodetableV362Settings(eng, currentSettings)
                 }
                 if (schemeChanged) {
                     lastScheme = currentSettings.inputScheme
@@ -295,6 +299,14 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     flypyComposingCode = "",
                     preeditDisplay = "",
                     flypyCandidates = emptyList(),
+                    isOrqDateActive = false,
+                    orqDateOffsetDays = 0,
+                    passiveMathResult = null,
+                    passiveMathExpression = null,
+                    l2PhraseSuggestionWord = null,
+                    l2PhraseSuggestionCode = null,
+                    englishSuggestions = emptyList(),
+                    englishSuggestionReplaceLength = 0,
                     isFlypyCandidateSheetExpanded = false,
                     predictionCandidates = emptyList(),
                     aiCompletionSuggestion = null,
@@ -315,7 +327,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         syncEditorMetadata(info, restarting)
         typingController.codetableEnhancedEngine?.let { eng ->
             eng.reloadShadowRules()
-            eng.refreshUserDictAutoEncoder()
+            eng.reloadUserDictWordsCache()
         }
         syncCodetableUiFlags()
         syncSystemClipboardIfNeeded(allowFreshBanner = true)
@@ -540,6 +552,17 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 flypyComposingCode = "",
                 preeditDisplay = "",
                 flypyCandidates = emptyList(),
+                isOrqDateActive = false,
+                orqDateOffsetDays = 0,
+                passiveMathResult = null,
+                passiveMathExpression = null,
+                isPhraseRecording = false,
+                recordedPhraseBuffer = "",
+                recordedPhraseCode = null,
+                l2PhraseSuggestionWord = null,
+                l2PhraseSuggestionCode = null,
+                englishSuggestions = emptyList(),
+                englishSuggestionReplaceLength = 0,
                 isFlypyCandidateSheetExpanded = false,
                 predictionCandidates = emptyList(),
                 aiCompletionSuggestion = null
@@ -631,7 +654,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             ImeUiAction.ToggleStylePicker -> toggleStylePicker()
             ImeUiAction.OpenStylePickerFromToolPanel -> openStylePickerFromToolPanel()
             ImeUiAction.TogglePunctuationStrip -> voiceController.togglePunctuationStrip()
-            is ImeUiAction.OpenHostApp -> openHostApp(action.tabIndex)
+            is ImeUiAction.OpenHostApp -> openHostApp(action.tabIndex, action.subTabIndex)
             ImeUiAction.OpenJevCopilot -> voiceController.openJevCopilotPanel()
             is ImeUiAction.SelectJevStrategyCard -> voiceController.selectJevStrategyCard(action.index)
             ImeUiAction.RefreshJevStrategies -> voiceController.refreshJevStrategies()
@@ -690,6 +713,14 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             is ImeUiAction.UnpinCandidate -> unpinCandidateFromBar(action.word)
             is ImeUiAction.BlockCandidate -> blockCandidateFromBar(action.word)
             ImeUiAction.ToggleSingleCharMode -> toggleSingleCharMode()
+            is ImeUiAction.TriggerKeyGesture -> typingController.handleKeyGesture(action.binding)
+            ImeUiAction.SwipeUpPeriodSlash -> typingController.triggerSwipeUpPeriodSlash()
+            is ImeUiAction.StepOrqDate -> typingController.stepOrqDate(action.deltaDays)
+            ImeUiAction.TogglePhraseRecording -> typingController.togglePhraseRecording()
+            ImeUiAction.AcceptPhraseSuggestion -> typingController.acceptPhraseSuggestion()
+            ImeUiAction.DismissPhraseSuggestion -> typingController.dismissPhraseSuggestion()
+            is ImeUiAction.SelectPassiveMath -> typingController.selectPassiveMath(action.result)
+            is ImeUiAction.SelectEnglishSuggestion -> typingController.selectEnglishSuggestion(action.word)
             is ImeUiAction.CommitText -> commitDirectText(action.text, recordUndo = true, markManualEdit = true)
             is ImeUiAction.CommitQwertyChar -> typingController.commitQwertyChar(action.char)
             is ImeUiAction.CommaOrPeriodKey -> typingController.handleCommaOrPeriodKey(action.isComma)
@@ -1074,7 +1105,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         typingController.deleteBackward()
     }
 
-    fun openHostApp(tabIndex: Int = AppDestinations.TAB_HOME) {
+    fun openHostApp(tabIndex: Int = AppDestinations.TAB_HOME, subTabIndex: Int? = null) {
         performKeyFeedback(strong = false)
         tryAutoLearnFromRecentEdit()
         try {
@@ -1086,6 +1117,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                         Intent.FLAG_ACTIVITY_SINGLE_TOP
                 )
                 putExtra(AppDestinations.EXTRA_OPEN_TAB, tabIndex)
+                if (subTabIndex != null) {
+                    putExtra(AppDestinations.EXTRA_SETTINGS_SUBTAB, subTabIndex)
+                }
             }
             startActivity(intent)
             requestHideSelf(0)
@@ -1241,7 +1275,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                         Intent.FLAG_ACTIVITY_CLEAR_TOP or
                         Intent.FLAG_ACTIVITY_SINGLE_TOP
                 )
-                putExtra(AppDestinations.EXTRA_OPEN_TAB, AppDestinations.TAB_SETTINGS)
+                putExtra(AppDestinations.EXTRA_OPEN_TAB, AppDestinations.TAB_GENERAL)
                 putExtra(AppDestinations.EXTRA_SETTINGS_SUBTAB, AppDestinations.SUBTAB_PREFERENCES)
             }
             startActivity(intent)
@@ -1402,6 +1436,38 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         voiceController.openJevCopilotPanel()
     }
 
+    private fun applyCodetableV362Settings(
+        eng: CodetableEnhancedInputEngine,
+        settings: com.typefree.ime.data.AppSettings
+    ) {
+        eng.setXiaoheDirectCommandsEnabled(settings.xiaoheDirectCommandsEnabled)
+        eng.setXiaoheReverseSplitEnabled(settings.xiaoheReverseSplitEnabled)
+        eng.setXiaoheNaturalContinuationEnabled(settings.xiaoheNaturalContinuationEnabled)
+        eng.setPhraseSuggestionL2Enabled(settings.phraseSuggestionL2Enabled)
+    }
+
+    private fun saveUserPhraseAsync(word: String, code: String) {
+        val cleanWord = word.trim()
+        val cleanCode = code.trim().lowercase()
+        if (cleanWord.isEmpty() || cleanCode.isEmpty()) return
+        serviceScope.launch(Dispatchers.IO) {
+            val dm = TypeFreeApp.instance.rimeDataManager
+            val schemaId = dm.activeSchemaProfile.schemaId.ifBlank { "flypy" }
+            val result = runCatching {
+                dm.getUserPhraseEditor(schemaId).addPhrase(cleanWord, cleanCode, isTopPinned = false)
+                dm.reloadActiveEnhancedSchemaSync(schemaId)
+            }
+            withContext(Dispatchers.Main) {
+                if (result.isSuccess) {
+                    typingController.codetableEnhancedEngine?.reloadUserDictWordsCache(schemaId)
+                    showQuickActionToast("✓ 已存入个人词：$cleanWord · $cleanCode")
+                } else {
+                    showQuickActionToast("保存个人词失败：${result.exceptionOrNull()?.message ?: "未知错误"}")
+                }
+            }
+        }
+    }
+
     private fun bindCodetableEnhancedEngineIfAvailable() {
         val dm = TypeFreeApp.instance.rimeDataManager
         if (!dm.hasXiaoheSchemaInstalled() && !dm.hasCustomSchemaImported()) return
@@ -1415,8 +1481,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 briefIndex = dm.activeBriefIndex,
                 reverseLookupMap = dm.activeReverseLookupMap
             )
-            existing.setEnglishPrefixVetoEnabled(latestSettings.englishPrefixVetoEnabled)
-            existing.setAutoEncodeEnabled(latestSettings.codetableAutoEncodeEnabled)
+            applyCodetableV362Settings(existing, latestSettings)
+            existing.updateSnippets(latestSettings.snippets)
             syncCodetableUiFlags()
             return
         }
@@ -1482,8 +1548,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                             if (typingController.activeEngine === eng) {
                                 eng.coordinator.updateProfile(eng.activeProfile)
                                 val s = repository.settings.value
-                                eng.setEnglishPrefixVetoEnabled(s.englishPrefixVetoEnabled)
-                                eng.setAutoEncodeEnabled(s.codetableAutoEncodeEnabled)
+                                applyCodetableV362Settings(eng, s)
                                 eng.setIncognitoMode(_imeState.value.isIncognitoMode)
                                 eng.setFixedCandidateOrder(s.fixedCandidateOrder)
                             }
@@ -1494,8 +1559,15 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             isActiveEnginePredicate = {
                 typingController.activeEngine === typingController.codetableEnhancedEngine
             },
+            isIncognitoPredicate = {
+                _imeState.value.isIncognitoMode ||
+                    ImeLogic.isPasswordEditorInputType(_imeState.value.currentInputType)
+            },
             onSingleCharModeChanged = { enabled ->
                 _imeState.update { it.copy(singleCharModeEnabled = enabled) }
+            },
+            onPhraseSuggestion = { suggestion ->
+                typingController.onL2PhraseSuggestion(suggestion)
             },
             onUiStateSynced = { _, singleCharEnabled, pinnedWords ->
                 _imeState.update {
@@ -1507,8 +1579,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 }
             }
         )
-        created.setEnglishPrefixVetoEnabled(latestSettings.englishPrefixVetoEnabled)
-        created.setAutoEncodeEnabled(latestSettings.codetableAutoEncodeEnabled)
+        applyCodetableV362Settings(created, latestSettings)
+        created.updateSnippets(latestSettings.snippets)
         typingController.codetableEnhancedEngine = created
         syncCodetableUiFlags()
     }
@@ -1578,6 +1650,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         }
         syncCurrentEditorText()
         if (committedText.isNotEmpty()) {
+            typingController.onExternalCommittedTextForV362(committedText)
             typingController.predictionCoordinator.onWordCommitted(
                 committedText = committedText,
                 isComposing = typingController.isComposing
