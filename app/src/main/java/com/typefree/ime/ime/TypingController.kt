@@ -257,6 +257,7 @@ class TypingController(
                 isRimeDeploying = scheme.usesRime && !isRimeReady && rimeInputEngine != null,
                 passiveMathResult = if (engineState.isComposing) null else prev.passiveMathResult,
                 passiveMathExpression = if (engineState.isComposing) null else prev.passiveMathExpression,
+                passiveMathEndsWithEquals = if (engineState.isComposing) false else prev.passiveMathEndsWithEquals,
                 englishSuggestions = if (engineState.isComposing) emptyList() else prev.englishSuggestions,
                 englishSuggestionReplaceLength = if (engineState.isComposing) 0 else prev.englishSuggestionReplaceLength,
                 isFlypyCandidateSheetExpanded = if (!engineState.isComposing || cands.size <= 4) {
@@ -378,8 +379,14 @@ class TypingController(
             !safeSettings().passiveCalculatorEnabled ||
             ImeLogic.isPasswordEditorInputType(curr.currentInputType)
         ) {
-            if (curr.passiveMathResult != null || curr.passiveMathExpression != null) {
-                host.stateFlow.update { it.copy(passiveMathResult = null, passiveMathExpression = null) }
+            if (curr.passiveMathResult != null || curr.passiveMathExpression != null || curr.passiveMathEndsWithEquals) {
+                host.stateFlow.update {
+                    it.copy(
+                        passiveMathResult = null,
+                        passiveMathExpression = null,
+                        passiveMathEndsWithEquals = false
+                    )
+                }
             }
             return
         }
@@ -392,22 +399,37 @@ class TypingController(
         }
         val nextResult = coreRes?.formattedResult ?: helperRes?.formattedResult
         val nextExpr = coreRes?.expression ?: helperRes?.expression
-        if (curr.passiveMathResult != nextResult || curr.passiveMathExpression != nextExpr) {
+        val nextEndsWithEquals = coreRes?.endsWithEquals ?: helperRes?.endsWithEquals ?: false
+        if (curr.passiveMathResult != nextResult ||
+            curr.passiveMathExpression != nextExpr ||
+            curr.passiveMathEndsWithEquals != nextEndsWithEquals
+        ) {
             host.stateFlow.update {
                 it.copy(
                     passiveMathResult = nextResult,
-                    passiveMathExpression = nextExpr
+                    passiveMathExpression = nextExpr,
+                    passiveMathEndsWithEquals = nextEndsWithEquals
                 )
             }
         }
     }
 
     fun selectPassiveMath(result: String) {
-        val clean = result.trim()
+        val clean = result.trim().removePrefix("=").trim()
         if (clean.isEmpty()) return
-        host.stateFlow.update { it.copy(passiveMathResult = null, passiveMathExpression = null) }
+        val stateEndsWithEquals = host.stateFlow.value.passiveMathEndsWithEquals
+        val tail = host.readSurroundingBeforeCursor(4).trimEnd()
+        val alreadyHasEquals = stateEndsWithEquals || tail.endsWith('=') || tail.endsWith('＝')
+        val textToCommit = if (alreadyHasEquals) clean else "=$clean"
+        host.stateFlow.update {
+            it.copy(
+                passiveMathResult = null,
+                passiveMathExpression = null,
+                passiveMathEndsWithEquals = false
+            )
+        }
         host.commitDirectText(
-            text = clean,
+            text = textToCommit,
             recordUndo = true,
             markManualEdit = false,
             playFeedback = true
@@ -751,6 +773,7 @@ class TypingController(
             it.copy(
                 passiveMathResult = null,
                 passiveMathExpression = null,
+                passiveMathEndsWithEquals = false,
                 englishSuggestions = emptyList(),
                 englishSuggestionReplaceLength = 0
             )
@@ -763,6 +786,7 @@ class TypingController(
             it.copy(
                 passiveMathResult = null,
                 passiveMathExpression = null,
+                passiveMathEndsWithEquals = false,
                 englishSuggestions = emptyList(),
                 englishSuggestionReplaceLength = 0
             )
@@ -824,6 +848,7 @@ class TypingController(
             it.copy(
                 passiveMathResult = null,
                 passiveMathExpression = null,
+                passiveMathEndsWithEquals = false,
                 englishSuggestions = emptyList(),
                 englishSuggestionReplaceLength = 0
             )

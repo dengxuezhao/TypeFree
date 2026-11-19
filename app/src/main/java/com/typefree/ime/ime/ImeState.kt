@@ -147,6 +147,7 @@ data class ImeUiState(
     val orqDateOffsetDays: Int = 0,
     val passiveMathResult: String? = null,
     val passiveMathExpression: String? = null,
+    val passiveMathEndsWithEquals: Boolean = false,
     val isPhraseRecording: Boolean = false,
     val recordedPhraseBuffer: String = "",
     val recordedPhraseCode: String? = null,

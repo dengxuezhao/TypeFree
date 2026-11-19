@@ -495,14 +495,19 @@ private fun UserPhraseEditorSection(
     var showAddPhraseDialog by remember { mutableStateOf(false) }
     var entries by remember { mutableStateOf<List<CustomUserPhraseFileEditor.UserPhraseEntry>>(emptyList()) }
     var isReloading by remember { mutableStateOf(false) }
+    val isXiaoheSchema = schemaId == "flypy"
     var fallbackReverseMap by remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
 
-    val effectiveReverseMap = remember(rimeDataManager.activeReverseLookupMap, fallbackReverseMap, metadataVersion) {
-        rimeDataManager.activeReverseLookupMap.ifEmpty { fallbackReverseMap }
+    val effectiveReverseMap = remember(isXiaoheSchema, rimeDataManager.activeReverseLookupMap, fallbackReverseMap, metadataVersion) {
+        if (!isXiaoheSchema) {
+            emptyMap()
+        } else {
+            rimeDataManager.activeReverseLookupMap.ifEmpty { fallbackReverseMap }
+        }
     }
 
     LaunchedEffect(schemaId, metadataVersion) {
-        if (rimeDataManager.activeReverseLookupMap.isEmpty() && fallbackReverseMap.isEmpty()) {
+        if (isXiaoheSchema && rimeDataManager.activeReverseLookupMap.isEmpty() && fallbackReverseMap.isEmpty()) {
             fallbackReverseMap = withContext(Dispatchers.IO) {
                 runCatching {
                     context.assets.open("flypy_dz.tsv").bufferedReader(Charsets.UTF_8).useLines { lines ->
@@ -568,7 +573,12 @@ private fun UserPhraseEditorSection(
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(
-                text = if (isTopPinned) "添加置顶词条（支持自动算小鹤 4 码）" else "添加自造词条（支持自动算小鹤 4 码）",
+                text = when {
+                    isTopPinned && isXiaoheSchema -> "添加置顶词条（支持自动算小鹤 4 码）"
+                    isTopPinned -> "添加置顶词条"
+                    isXiaoheSchema -> "添加自造词条（支持自动算小鹤 4 码）"
+                    else -> "添加自造词条"
+                },
                 fontWeight = FontWeight.Bold
             )
         }
@@ -716,8 +726,9 @@ private fun AddUserPhraseDialog(
     var codeManuallyEdited by rememberSaveable { mutableStateOf(false) }
     var targetTopPinned by rememberSaveable { mutableStateOf(initialIsTopPinned) }
 
-    val derivedCode = remember(wordInput, reverseLookupMap) {
-        XiaohePhraseCodeHelper.deriveXiaohe4Code(wordInput, reverseLookupMap)
+    val isXiaoheSchema = schemaId == "flypy"
+    val derivedCode = remember(isXiaoheSchema, wordInput, reverseLookupMap) {
+        if (isXiaoheSchema) XiaohePhraseCodeHelper.deriveXiaohe4Code(wordInput, reverseLookupMap) else null
     }
 
     AlertDialog(
@@ -750,7 +761,7 @@ private fun AddUserPhraseDialog(
                     value = wordInput,
                     onValueChange = { next ->
                         wordInput = next
-                        if (!codeManuallyEdited) {
+                        if (isXiaoheSchema && !codeManuallyEdited) {
                             val auto = XiaohePhraseCodeHelper.deriveXiaohe4Code(next, reverseLookupMap)
                             if (auto != null) {
                                 codeInput = auto
@@ -763,7 +774,7 @@ private fun AddUserPhraseDialog(
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp),
                     label = { Text("词条 *") },
-                    placeholder = { Text("输入 2~4+ 汉字，如：双拼输入") }
+                    placeholder = { Text(if (isXiaoheSchema) "输入 2~4+ 汉字，如：双拼输入" else "输入要添加的词条") }
                 )
 
                 Row(
@@ -781,40 +792,44 @@ private fun AddUserPhraseDialog(
                         singleLine = true,
                         shape = RoundedCornerShape(10.dp),
                         label = { Text("编码 *") },
-                        placeholder = { Text("如：uupb") }
+                        placeholder = { Text(if (isXiaoheSchema) "如：uupb" else "输入当前方案对应的编码") }
                     )
-                    FilledTonalButton(
-                        onClick = {
-                            if (derivedCode != null) {
-                                codeInput = derivedCode
-                                codeManuallyEdited = false
-                            }
-                        },
-                        enabled = derivedCode != null,
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 14.dp)
-                    ) {
-                        Text(
-                            text = "自动算小鹤 4 码",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold
-                        )
+                    if (isXiaoheSchema) {
+                        FilledTonalButton(
+                            onClick = {
+                                if (derivedCode != null) {
+                                    codeInput = derivedCode
+                                    codeManuallyEdited = false
+                                }
+                            },
+                            enabled = derivedCode != null,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 14.dp)
+                        ) {
+                            Text(
+                                text = "自动算小鹤 4 码",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
 
-                if (derivedCode != null) {
-                    Text(
-                        text = "按单字反查表推算小鹤 4 码：$derivedCode",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TypeFreeEmerald,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                } else if (wordInput.trim().isNotEmpty()) {
-                    Text(
-                        text = "输入 2~4+ 个纯汉字可自动推导小鹤 4 码，也可手动填写自定义编码",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                if (isXiaoheSchema) {
+                    if (derivedCode != null) {
+                        Text(
+                            text = "按单字反查表推算小鹤 4 码：$derivedCode",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TypeFreeEmerald,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    } else if (wordInput.trim().isNotEmpty()) {
+                        Text(
+                            text = "输入 2~4+ 个纯汉字可自动推导小鹤 4 码，也可手动填写自定义编码",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         },

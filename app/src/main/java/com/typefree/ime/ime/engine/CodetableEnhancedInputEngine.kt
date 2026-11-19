@@ -572,8 +572,15 @@ class CodetableEnhancedInputEngine(
         if (word in knownUserWords) return true
         if (word in currentReverseLookupMap) return true
         val derived = CodetableCodeDeriver.deriveXiaohe4Code(word, currentReverseLookupMap)
-        if (derived != null && derived.length == 2) {
+        if (derived != null && derived.length == 4) {
             if (word in currentBriefIndex.lookup2(derived[0], derived[1])) return true
+            if (currentBriefIndex.lookupNaturalContinuations(
+                    prefix = derived.substring(0, 3),
+                    limit = BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS
+                ).any { it.word == word && it.fullCode == derived }
+            ) {
+                return true
+            }
         }
         return false
     }

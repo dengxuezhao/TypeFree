@@ -543,4 +543,58 @@ class CodetableV362EnhancementsTest {
         val apSuggestions = trie.suggestWords("ap", limit = 6)
         assertTrue("Expected 'app' and 'api' in top suggestions for 'ap', got $apSuggestions", "app" in apSuggestions && "api" in apSuggestions)
     }
+
+    @Test
+    fun `9_schema_package_importer_keeps_direct_commands_disabled_for_non_flypy_lua_schema`() {
+        val tempRoot = java.nio.file.Files.createTempDirectory("v362_non_flypy_lua_").toFile()
+        try {
+            val stagingDir = File(tempRoot, "staging")
+            val schemasDir = File(tempRoot, "schemas")
+            val zipBytes = java.io.ByteArrayOutputStream().use { baos ->
+                java.util.zip.ZipOutputStream(baos, java.nio.charset.StandardCharsets.UTF_8).use { zos ->
+                    zos.putNextEntry(java.util.zip.ZipEntry("xkjd6.schema.yaml"))
+                    zos.write(
+                        """
+                        schema:
+                          schema_id: xkjd6
+                          name: 星空键道6
+                        engine:
+                          processors:
+                            - lua_processor@topup_processor
+                          translators:
+                            - table_translator
+                        speller:
+                          alphabet: "abcdefghijklmnopqrstuvwxyz"
+                          auto_select_pattern: "^[bcdfghjklmnpqrstwxyz]{2}[aiouv].*$"
+                        translator:
+                          dictionary: xkjd6
+                        """.trimIndent().toByteArray(java.nio.charset.StandardCharsets.UTF_8)
+                    )
+                    zos.closeEntry()
+                    zos.putNextEntry(java.util.zip.ZipEntry("xkjd6.dict.yaml"))
+                    zos.write("---\nname: xkjd6\n...\n星\txgoi\n".toByteArray(java.nio.charset.StandardCharsets.UTF_8))
+                    zos.closeEntry()
+                    zos.putNextEntry(java.util.zip.ZipEntry("rime.lua"))
+                    zos.write("topup_processor = require('topup_processor')\n".toByteArray(java.nio.charset.StandardCharsets.UTF_8))
+                    zos.closeEntry()
+                    zos.putNextEntry(java.util.zip.ZipEntry("lua/topup_processor.lua"))
+                    zos.write("return {}\n".toByteArray(java.nio.charset.StandardCharsets.UTF_8))
+                    zos.closeEntry()
+                }
+                baos.toByteArray()
+            }
+            val importer = com.typefree.core.ime.importer.SchemaPackageImporter(
+                stagingParentDir = stagingDir,
+                targetSchemasRootDir = schemasDir,
+                stagingCompiler = { _, _ -> true }
+            )
+            val result = importer.importZip(java.io.ByteArrayInputStream(zipBytes))
+            assertEquals("xkjd6", result.schemaId)
+            assertFalse("Non-flypy Lua schema MUST keep directCommandsEnabled=false", result.profile.directCommandsEnabled)
+            val tomlText = File(result.installedDir, "typefree.toml").readText(java.nio.charset.StandardCharsets.UTF_8)
+            assertTrue("typefree.toml must persist direct_commands_enabled = false", tomlText.contains("direct_commands_enabled = false"))
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
 }

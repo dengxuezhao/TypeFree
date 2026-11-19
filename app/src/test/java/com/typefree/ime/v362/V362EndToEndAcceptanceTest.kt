@@ -210,12 +210,21 @@ class V362EndToEndAcceptanceTest {
             val savedPhrases = ArrayList<Pair<String, String>>()
             var undoTriggered = 0
 
+            val briefWithNihc = BriefPrefixIndex.buildFromDictLines(
+                mainDictLines = sequenceOf(
+                    "---",
+                    "name: flypy",
+                    "...",
+                    "你好\tnihc"
+                ),
+                gt4GuardTwoPrefixes = setOf("ok", "os")
+            )
             lateinit var controller: TypingController
             val enhanced = CodetableEnhancedInputEngine(
                 rimeClient = rime,
                 initialProfile = SchemaProfile.defaultXiaoheFlypy(),
                 symbolTrie = SymbolTrie.defaultXiaohe(),
-                briefIndex = BriefPrefixIndex.empty(),
+                briefIndex = briefWithNihc,
                 reverseLookupMap = reverseMap,
                 schemaDir = tempDir,
                 isIncognitoPredicate = {
@@ -271,17 +280,38 @@ class V362EndToEndAcceptanceTest {
             assertEquals("机", host.stateFlow.value.flypyCandidates.firstOrNull()?.text)
             controller.clearComposing()
 
-            // 3) Passive calculator (`125*8=`) never intercepts `=` and surfaces chip `1000`
+            // 3) Passive calculator: BOTH `125*8=` (with `=`) AND `125*8` (without `=`) produce `125*8=1000`
             host.editorText.clear()
             for (ch in listOf("1", "2", "5", "*", "8", "=")) {
                 controller.commitSecondarySymbol(ch)
             }
             assertEquals("125*8=", host.editorText.toString())
             assertEquals("1000", host.stateFlow.value.passiveMathResult)
+            assertTrue(host.stateFlow.value.passiveMathEndsWithEquals)
             assertTrue(host.stateFlow.value.isPredictionBarVisible)
             controller.selectPassiveMath("1000")
             assertEquals("125*8=1000", host.editorText.toString())
             assertNull(host.stateFlow.value.passiveMathResult)
+
+            host.editorText.clear()
+            for (ch in listOf("1", "2", "5", "*", "8")) {
+                controller.commitSecondarySymbol(ch)
+            }
+            assertEquals("125*8", host.editorText.toString())
+            assertEquals("1000", host.stateFlow.value.passiveMathResult)
+            assertFalse(host.stateFlow.value.passiveMathEndsWithEquals)
+            controller.selectPassiveMath("1000")
+            assertEquals("125*8=1000", host.editorText.toString())
+            assertNull(host.stateFlow.value.passiveMathResult)
+
+            // 3b) Idle Chinese long-press `.` and symbol-layer `/`, `` ` ``, `:` output literal ASCII directly
+            host.editorText.clear()
+            controller.commitSecondarySymbol(".")
+            controller.commitSecondarySymbol("/")
+            controller.commitSecondarySymbol("`")
+            controller.commitSecondarySymbol(":")
+            assertFalse("Symbol-layer / and ` must NOT enter composing mode", controller.isComposing)
+            assertEquals("./`:", host.editorText.toString())
 
             // 4) EN mode word suggestion (`th` -> `the`, disabled in password fields)
             host.editorText.clear()
@@ -325,7 +355,23 @@ class V362EndToEndAcceptanceTest {
             assertFalse(host.stateFlow.value.isPhraseRecording)
             assertEquals(listOf("你好" to "nihc"), savedPhrases)
 
-            // 6) L2 PhraseSuggestionTracker (`正` + `并` x3 -> chip -> accept saves `正并 · vgbk`)
+            // 6) L2 PhraseSuggestionTracker MUST skip existing main-dict 4-code phrase `你好` (`nihc`),
+            // while surfacing new unseen phrase `正并` (`vgbk`) on 3rd repeat!
+            enhanced.resetPhraseSuggestionWindow()
+            repeat(3) {
+                controller.commitQwertyChar("n")
+                controller.commitQwertyChar("i")
+                controller.selectFlypyCandidate(0) // 你
+                controller.commitQwertyChar("h")
+                controller.commitQwertyChar("c")
+                controller.selectFlypyCandidate(0) // 好
+                enhanced.resetPhraseSuggestionWindow()
+            }
+            assertNull(
+                "Existing main-dict phrase 你好 (nihc) must NOT trigger L2 phrase suggestion",
+                host.stateFlow.value.l2PhraseSuggestionWord
+            )
+
             repeat(3) {
                 controller.commitQwertyChar("v")
                 controller.commitQwertyChar("g")

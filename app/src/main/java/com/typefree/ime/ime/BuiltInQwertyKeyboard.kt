@@ -564,11 +564,7 @@ fun BuiltInQwertyKeyboard(
                     val row2 = if (isMoreSymbols) SYM_ROW_2 else NUM_ROW_2
                     val row3 = if (isMoreSymbols) SYM_ROW_3 else NUM_ROW_3
                     val handleSymbolClick: (String) -> Unit = { sym ->
-                        if (sym == ";" || sym == "；" || sym == "=") {
-                            onCommitSecondarySymbol(sym)
-                        } else {
-                            onCommitChar(sym)
-                        }
+                        onCommitSecondarySymbol(sym)
                     }
 
                     // Symbol Row 1 (10 × 1.0f = 10.0f)
@@ -758,7 +754,7 @@ fun BuiltInQwertyKeyboard(
                             .fillMaxHeight(),
                         onClick = {
                             if (isSymbolLayer) {
-                                onCommitChar(",")
+                                onCommitSecondarySymbol(",")
                             } else {
                                 onCommaOrPeriodKey(true)
                             }
@@ -809,7 +805,7 @@ fun BuiltInQwertyKeyboard(
                             .fillMaxHeight(),
                         onClick = {
                             if (isSymbolLayer) {
-                                onCommitChar(".")
+                                onCommitSecondarySymbol(".")
                             } else {
                                 onCommaOrPeriodKey(false)
                             }
@@ -820,7 +816,7 @@ fun BuiltInQwertyKeyboard(
                             null
                         },
                         onLongPress = if (isIdlePeriod && isFlypyChineseMode) {
-                            { onCommitChar(".") }
+                            { onCommitSecondarySymbol(".") }
                         } else {
                             null
                         }

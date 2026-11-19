@@ -198,7 +198,7 @@ class SchemaPackageImporter(
                     dictYamlContent = dictText,
                     tomlOverrideContent = existingToml
                 )
-                profile = if (sanitizedLua.isNotEmpty()) {
+                profile = if (sanitizedLua.isNotEmpty() && inspected.schemaId == "flypy") {
                     inspected.copy(directCommandsEnabled = true)
                 } else {
                     inspected
@@ -304,7 +304,7 @@ class SchemaPackageImporter(
                     probedTwoBriefMultiCharRatio = probedRatio,
                     tomlOverrideContent = existingToml
                 )
-                profile = if (sanitizedLua.isNotEmpty()) {
+                profile = if (sanitizedLua.isNotEmpty() && inspected.schemaId == "flypy") {
                     inspected.copy(directCommandsEnabled = true)
                 } else {
                     inspected
