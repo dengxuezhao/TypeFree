@@ -1,0 +1,62 @@
+[
+  {
+    "name": "needs-triage",
+    "color": "fbca04",
+    "description": "新提交的问题或建议，等待维护者分诊确认"
+  },
+  {
+    "name": "confirmed",
+    "color": "b60205",
+    "description": "已确认复现的问题"
+  },
+  {
+    "name": "planned",
+    "color": "0e8a16",
+    "description": "已纳入后续版本排期"
+  },
+  {
+    "name": "under-consideration",
+    "color": "c5def5",
+    "description": "合理建议，评估设计方案与优先级中"
+  },
+  {
+    "name": "in-progress",
+    "color": "1d76db",
+    "description": "正在开发或修复中"
+  },
+  {
+    "name": "waiting-for-author",
+    "color": "d4c5f9",
+    "description": "等待提单者补充版本、日志或复现信息"
+  },
+  {
+    "name": "area: keyboard",
+    "color": "5319e7",
+    "description": "键盘布局、按键交互、手势与候选栏"
+  },
+  {
+    "name": "area: codetable",
+    "color": "006b75",
+    "description": "小鹤音形、双拼、Rime 方案、快符与词库"
+  },
+  {
+    "name": "area: voice-jev",
+    "color": "0052cc",
+    "description": "语音识别、Jev 军师与 AI 帮写/翻译"
+  },
+  {
+    "name": "area: ui-settings",
+    "color": "bfdadc",
+    "description": "App 主界面、外观、设置页与检查更新"
+  },
+  {
+    "name": "area: rime-native",
+    "color": "e99695",
+    "description": "C++ librime / JNI 原生引擎与 NDK 构建"
+  },
+  {
+    "name": "area: release-ci",
+    "color": "fef2c0",
+    "description": "GitHub Actions CI/CD、发版与仓库工程化"
+  }
+]

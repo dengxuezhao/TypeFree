@@ -1,0 +1,46 @@
+name: ✨ 功能建议 (Feature Request)
+description: 提出新布局、按键手势、码表能力或 AI 交互改进建议
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎提出改进建议！清晰的使用场景描述能帮助我们更快评估交互方案与排期。
+  - type: checkboxes
+    id: check_existing
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已浏览近期 Releases 与 Open Issues，确认未重复提交同类需求
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及功能模块
+      options:
+        - 键盘布局与按键手势（如九键、底排、上滑/长按快捷操作）
+        - 码表引擎与词库管理（小鹤音形、双拼、导入方案、快符/造词）
+        - 语音输入 / Jev 军师 / 帮写
+        - 设置界面 / 外观 / 检查更新
+        - 其它
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 遇到什么痛点或使用场景？
+      description: 描述在什么场景下现有能力不够用，以及为什么会低效或不便。
+      placeholder: "例如：在单手打字或长句修改时……"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的实现方式（可选）
+      description: 你理想中的操作手势、快捷键或界面形态是什么样的？如有防误触顾虑也可以一并说明。
+  - type: input
+    id: app_version
+    attributes:
+      label: 当前使用版本（可选）
+      placeholder: "例如：v3.6.0（小鹤专享版 / 标准版）"

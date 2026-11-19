@@ -7,9 +7,21 @@ on:
         description: "Optional direct download URL for xiaohe_flypy_typefree_ready.zip (falls back to XIAOHE_READY_ZIP_URL / XIAOHE_READY_ZIP_B64 / GDRIVE_ACCESS_TOKEN+XIAOHE_GDRIVE_FILE_ID secrets)"
         required: false
         default: ""
+      build_type:
+        description: "APK build type (debug or release; release uses TYPEFREE_KEYSTORE_* secrets if configured)"
+        required: false
+        default: "debug"
+        type: choice
+        options:
+          - debug
+          - release
 
 permissions:
   contents: read
+
+concurrency:
+  group: xiaohe-apk-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-xiaohe-apk:
@@ -131,21 +143,64 @@ jobs:
       - name: Run Section 6.2 8-Gate Automated QA Unit Tests
         run: ./gradlew :core:test testXiaoheDebugUnitTest --no-daemon --stacktrace
 
-      - name: Assemble Xiaohe Exclusive Debug APK
+      - name: Decode release keystore (if building release and configured)
+        id: sign
+        env:
+          BUILD_TYPE: ${{ inputs.build_type || 'debug' }}
+          KS_B64: ${{ secrets.TYPEFREE_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.TYPEFREE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.TYPEFREE_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.TYPEFREE_KEY_PASSWORD }}
         run: |
-          ./gradlew assembleXiaoheDebug --no-daemon --stacktrace
-          APK_PATH=$(find app/build/outputs/apk/xiaohe/debug -name "*.apk" | head -n 1)
-          test -f "$APK_PATH"
-          cp "$APK_PATH" TypeFree-xiaohe-debug.apk
-          sha256sum TypeFree-xiaohe-debug.apk | tee TypeFree-xiaohe-debug.apk.sha256
+          set -euo pipefail
+          IS_SIGNED="false"
+          if [ "$BUILD_TYPE" = "release" ] && [ -n "$KS_B64" ] && [ -n "$KS_PASS" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASS" ]; then
+            printf '%s' "$KS_B64" | base64 -d > /tmp/typefree-release.jks
+            test -s /tmp/typefree-release.jks
+            IS_SIGNED="true"
+          fi
+          echo "is_signed=$IS_SIGNED" >> "$GITHUB_OUTPUT"
 
-      - name: Upload TypeFree-xiaohe-debug.apk & QA Reports
+      - name: Assemble Xiaohe Exclusive APK
+        id: apk
+        env:
+          BUILD_TYPE: ${{ inputs.build_type || 'debug' }}
+          TYPEFREE_KEYSTORE_PATH: ${{ steps.sign.outputs.is_signed == 'true' && '/tmp/typefree-release.jks' || '' }}
+          TYPEFREE_KEYSTORE_PASSWORD: ${{ secrets.TYPEFREE_KEYSTORE_PASSWORD }}
+          TYPEFREE_KEY_ALIAS: ${{ secrets.TYPEFREE_KEY_ALIAS }}
+          TYPEFREE_KEY_PASSWORD: ${{ secrets.TYPEFREE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ "$BUILD_TYPE" = "release" ]; then
+            ./gradlew assembleXiaoheRelease --no-daemon --stacktrace
+            APK_PATH=$(find app/build/outputs/apk/xiaohe/release -name "*.apk" | head -n 1)
+            if [ "${{ steps.sign.outputs.is_signed }}" = "true" ]; then
+              OUT_APK="TypeFree-xiaohe-release.apk"
+            else
+              OUT_APK="TypeFree-xiaohe-release-debugsigned.apk"
+            fi
+          else
+            ./gradlew assembleXiaoheDebug --no-daemon --stacktrace
+            APK_PATH=$(find app/build/outputs/apk/xiaohe/debug -name "*.apk" | head -n 1)
+            OUT_APK="TypeFree-xiaohe-debug.apk"
+          fi
+          test -f "$APK_PATH"
+          cp "$APK_PATH" "$OUT_APK"
+          sha256sum "$OUT_APK" | tee "${OUT_APK}.sha256"
+          echo "apk_file=$OUT_APK" >> "$GITHUB_OUTPUT"
+          echo "sha_file=${OUT_APK}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Clean up temporary keystore
+        if: always()
+        run: rm -f /tmp/typefree-release.jks
+
+      - name: Upload Xiaohe Exclusive APK & QA Reports
         uses: actions/upload-artifact@v4
         with:
-          name: TypeFree-xiaohe-debug-apk
+          name: TypeFree-xiaohe-${{ inputs.build_type || 'debug' }}-apk
           path: |
-            TypeFree-xiaohe-debug.apk
-            TypeFree-xiaohe-debug.apk.sha256
+            ${{ steps.apk.outputs.apk_file }}
+            ${{ steps.apk.outputs.sha_file }}
             core/build/reports/tests/test/
             app/build/reports/tests/testXiaoheDebugUnitTest/
           if-no-files-found: error
