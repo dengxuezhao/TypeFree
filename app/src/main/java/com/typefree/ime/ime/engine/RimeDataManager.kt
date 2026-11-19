@@ -2,6 +2,7 @@ package com.typefree.ime.ime.engine
 
 import android.content.Context
 import com.typefree.core.ime.enhancer.BriefPrefixIndex
+import com.typefree.core.ime.enhancer.OpenWordFrequencyTable
 import com.typefree.core.ime.enhancer.DirectCommandEngine
 import com.typefree.core.ime.enhancer.RimeCodeProber
 import com.typefree.core.ime.enhancer.ShadowDictManager
@@ -103,6 +104,27 @@ class RimeDataManager(
     @Volatile
     var activeReverseLookupMap: Map<String, List<String>> = emptyMap()
         private set
+
+    @Volatile
+    var activeLiveWordFrequencyLookup: ((String) -> Int)? = null
+        private set
+
+    @Volatile
+    private var cachedOpenWordFrequencyMap: Map<String, Int>? = null
+
+    private fun getOrLoadOpenWordFrequencyMap(): Map<String, Int> {
+        cachedOpenWordFrequencyMap?.let { return it }
+        val loaded = OpenWordFrequencyTable.loadFromRimeDictFiles(
+            listOf(
+                File(sharedDir, BASE_DICT_RELATIVE_PATH),
+                File(sharedDir, CHAR_DICT_RELATIVE_PATH)
+            )
+        )
+        if (loaded.isNotEmpty()) {
+            cachedOpenWordFrequencyMap = loaded
+        }
+        return loaded
+    }
 
     val isReady: Boolean
         get() = _deploymentState.value is RimeDeploymentState.Ready
@@ -954,6 +976,16 @@ class RimeDataManager(
             }.getOrDefault(BriefPrefixIndex.empty())
         } else {
             BriefPrefixIndex.empty()
+        }
+        activeLiveWordFrequencyLookup = if (activeSchemaProfile.reverseSplitEnabled && !dictFile.exists()) {
+            val freqMap = getOrLoadOpenWordFrequencyMap()
+            if (freqMap.isNotEmpty()) {
+                { word -> freqMap[word] ?: 0 }
+            } else {
+                null
+            }
+        } else {
+            null
         }
         activeReverseLookupMap = emptyMap()
         refreshReverseLookupFromDir(dir, activeSchemaProfile.reverseLookupDict)

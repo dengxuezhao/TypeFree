@@ -8,6 +8,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -43,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.view.HapticFeedbackConstants
+import android.view.inputmethod.EditorInfo
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.ime.ImeLogic
@@ -68,6 +70,15 @@ data class TopBarLeftSlotState(
     val showClipboardButton: Boolean = true,
     val showStyleBadge: Boolean = false,
     val showQwertyHoldVoiceCapsule: Boolean = false
+)
+
+data class QwertyTopBarLayoutPlan(
+    val bannerTakesOverMiddle: Boolean,
+    val showClipboardIconButton: Boolean,
+    val showRightAskAi: Boolean,
+    val showRightJevCopilot: Boolean,
+    val showRightVoicePen: Boolean,
+    val showLeftInlineBanner: Boolean
 )
 
 /**
@@ -117,6 +128,14 @@ object TopBarSlotPolicy {
         )
     }
 
+    const val MIN_INLINE_BANNER_WIDTH_DP = 72f
+    private const val WIDTH_TOOL_BUTTON_DP = 28f
+    private const val WIDTH_SMALL_ICON_SLOT_DP = 31f // 26dp icon + 5dp gap
+    private const val WIDTH_INCOGNITO_BADGE_DP = 52f
+    private const val WIDTH_GAP_BETWEEN_CLUSTERS_DP = 6f
+    private const val WIDTH_VOICE_CAPSULE_DP = 64f
+    private const val WIDTH_RIGHT_PILL_SLOT_DP = 60f // ~55dp pill + 5dp gap
+
     fun shouldShowTopBarAskAiPill(
         settings: AppSettings,
         activeTab: KeyboardTabMode,
@@ -124,11 +143,16 @@ object TopBarSlotPolicy {
         isToolPanelOpen: Boolean,
         isClipboardOpen: Boolean,
         currentInputType: Int,
-        currentEditorText: String
+        currentEditorText: String,
+        currentImeOptions: Int = 0
     ): Boolean {
         if (!settings.equalEqualAskAiEnabled) return false
         if (activeTab != KeyboardTabMode.QWERTY || isComposing || isToolPanelOpen || isClipboardOpen) return false
         if (ImeLogic.isPasswordEditorInputType(currentInputType)) return false
+        val imeAction = currentImeOptions and EditorInfo.IME_MASK_ACTION
+        if (imeAction == EditorInfo.IME_ACTION_SEARCH || imeAction == EditorInfo.IME_ACTION_GO) {
+            return false
+        }
         val inputClass = currentInputType and android.text.InputType.TYPE_MASK_CLASS
         if (inputClass == android.text.InputType.TYPE_CLASS_NUMBER ||
             inputClass == android.text.InputType.TYPE_CLASS_PHONE ||
@@ -137,6 +161,74 @@ object TopBarSlotPolicy {
             return false
         }
         return currentEditorText.trim().length >= 2
+    }
+
+    /**
+     * Resolves QWERTY idle top-bar width budget so transient banners (clipboard quick paste,
+     * in-place voice status, auto-learn / quick toasts) temporarily take over the middle lane
+     * instead of getting squished into an unreadable `[·]` sliver alongside 4 right-side pills.
+     */
+    fun resolveQwertyBarLayout(
+        availableWidthDp: Float,
+        showUndoButton: Boolean,
+        showClipboardButton: Boolean,
+        isIncognito: Boolean,
+        hasPriorityBanner: Boolean,
+        isClipboardBannerActive: Boolean,
+        wantAskAi: Boolean,
+        wantJevCopilot: Boolean,
+        wantVoicePen: Boolean
+    ): QwertyTopBarLayoutPlan {
+        // When a fresh clipboard paste banner takes over the middle, hide the redundant
+        // clipboard icon on the left to maximize readable preview space (user can dismiss via ×).
+        val effectiveClipboardIcon = showClipboardButton && !isClipboardBannerActive
+        val leftFixedWidth = WIDTH_TOOL_BUTTON_DP +
+            (if (showUndoButton) WIDTH_SMALL_ICON_SLOT_DP else 0f) +
+            (if (effectiveClipboardIcon) WIDTH_SMALL_ICON_SLOT_DP else 0f) +
+            (if (isIncognito) WIDTH_INCOGNITO_BADGE_DP else 0f) +
+            WIDTH_GAP_BETWEEN_CLUSTERS_DP
+
+        if (hasPriorityBanner) {
+            val remainingForBanner = availableWidthDp - leftFixedWidth - WIDTH_VOICE_CAPSULE_DP
+            val canShowBanner = remainingForBanner >= MIN_INLINE_BANNER_WIDTH_DP
+            return QwertyTopBarLayoutPlan(
+                bannerTakesOverMiddle = canShowBanner,
+                showClipboardIconButton = if (canShowBanner) effectiveClipboardIcon else showClipboardButton,
+                showRightAskAi = false,
+                showRightJevCopilot = false,
+                showRightVoicePen = false,
+                showLeftInlineBanner = canShowBanner
+            )
+        }
+
+        var showAskAi = wantAskAi
+        var showJev = wantJevCopilot
+        val showPen = wantVoicePen
+
+        fun rightClusterWidth(): Float {
+            var w = WIDTH_VOICE_CAPSULE_DP
+            if (showPen) w += WIDTH_RIGHT_PILL_SLOT_DP
+            if (showJev) w += WIDTH_RIGHT_PILL_SLOT_DP
+            if (showAskAi) w += WIDTH_RIGHT_PILL_SLOT_DP
+            return w
+        }
+
+        // Narrow-screen / split-screen overflow guard: drop lowest-priority secondary pills first
+        if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showAskAi) {
+            showAskAi = false
+        }
+        if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showJev) {
+            showJev = false
+        }
+
+        return QwertyTopBarLayoutPlan(
+            bannerTakesOverMiddle = false,
+            showClipboardIconButton = showClipboardButton,
+            showRightAskAi = showAskAi,
+            showRightJevCopilot = showJev,
+            showRightVoicePen = showPen,
+            showLeftInlineBanner = false
+        )
     }
 }
 
@@ -181,6 +273,7 @@ fun TypeFreeTopBar(
     onToggleStylePicker: () -> Unit,
     onPerformUndo: () -> Unit,
     onPasteClipboardText: (String) -> Unit,
+    onDismissFreshClipboardBanner: () -> Unit = {},
     onToggleManualIncognito: () -> Unit = {},
     onOpenJevCopilot: () -> Unit = {},
     onOpenAskAiCard: () -> Unit = {},
@@ -221,36 +314,85 @@ fun TypeFreeTopBar(
     val isQwertyRightCluster = slotState.showQwertyHoldVoiceCapsule && !uiState.isToolPanelOpen
     val isInPlaceQwertyVoiceActive = uiState.tabMode == KeyboardTabMode.QWERTY &&
         (uiState.voicePhase is VoicePhase.Recording || uiState.voicePhase is VoicePhase.Processing)
+    val learnedTerm = uiState.autoLearnedToastTerm
+    val quickToast = uiState.quickActionToast
+    val isClipboardBannerActive = !isInPlaceQwertyVoiceActive &&
+        learnedTerm.isNullOrBlank() &&
+        quickToast.isNullOrBlank() &&
+        slotState.showClipboardQuickPaste &&
+        freshClip != null
+    val hasPriorityBanner = isInPlaceQwertyVoiceActive ||
+        !learnedTerm.isNullOrBlank() ||
+        !quickToast.isNullOrBlank() ||
+        isClipboardBannerActive
 
-    Row(
+    val wantAskAi = if (isQwertyRightCluster) {
+        TopBarSlotPolicy.shouldShowTopBarAskAiPill(
+            settings = settings,
+            activeTab = uiState.tabMode,
+            isComposing = uiState.isFlypyComposing,
+            isToolPanelOpen = uiState.isToolPanelOpen,
+            isClipboardOpen = uiState.isClipboardOpen,
+            currentInputType = uiState.currentInputType,
+            currentEditorText = uiState.currentEditorText,
+            currentImeOptions = uiState.currentImeOptions
+        )
+    } else {
+        false
+    }
+
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .height(metrics.topBarHeight)
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    val start = down.position
-                    var last = start
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        last = change.position
-                        if (!change.pressed) break
-                    }
-                    val next = ImeLogic.resolveNextTabByHorizontalSwipe(
-                        currentTab = currentTab,
-                        dragOffsetX = last.x - start.x,
-                        dragOffsetY = last.y - start.y,
-                        thresholdPx = swipeThresholdPx
-                    )
-                    if (next != null) {
-                        currentOnSelectTab(next)
-                    }
-                }
-            },
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
     ) {
+        val qwertyPlan = if (isQwertyRightCluster) {
+            TopBarSlotPolicy.resolveQwertyBarLayout(
+                availableWidthDp = maxWidth.value,
+                showUndoButton = slotState.showUndoButton,
+                showClipboardButton = slotState.showClipboardButton,
+                isIncognito = uiState.isIncognitoMode,
+                hasPriorityBanner = hasPriorityBanner,
+                isClipboardBannerActive = isClipboardBannerActive,
+                wantAskAi = wantAskAi,
+                wantJevCopilot = slotState.showJevCopilotPill,
+                wantVoicePen = slotState.showVoicePenPill
+            )
+        } else {
+            null
+        }
+        val showClipboardBtn = qwertyPlan?.showClipboardIconButton ?: slotState.showClipboardButton
+        val allowInlineBanner = qwertyPlan?.showLeftInlineBanner ?: true
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight()
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val start = down.position
+                        var last = start
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            last = change.position
+                            if (!change.pressed) break
+                        }
+                        val next = ImeLogic.resolveNextTabByHorizontalSwipe(
+                            currentTab = currentTab,
+                            dragOffsetX = last.x - start.x,
+                            dragOffsetY = last.y - start.y,
+                            thresholdPx = swipeThresholdPx
+                        )
+                        if (next != null) {
+                            currentOnSelectTab(next)
+                        }
+                    }
+                },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
         // Left Cluster: [⊞] + [↶] + [📋] + Smart Paste / Status / Style Badge (VOICE only)
         Row(
             modifier = Modifier.weight(1f),
@@ -268,7 +410,7 @@ fun TypeFreeTopBar(
             }
 
             // 2. Permanent 1-Tap 26.dp Clipboard Button ([📋]) with green badge dot on fresh clip
-            if (slotState.showClipboardButton) {
+            if (showClipboardBtn) {
                 TopBarClipboardIconButton(
                     isOpen = uiState.isClipboardOpen,
                     hasFreshClip = freshClip != null,
@@ -318,9 +460,7 @@ fun TypeFreeTopBar(
                 }
             }
 
-            val learnedTerm = uiState.autoLearnedToastTerm
-            val quickToast = uiState.quickActionToast
-            if (isInPlaceQwertyVoiceActive) {
+            if (allowInlineBanner && isInPlaceQwertyVoiceActive) {
                 val statusLabel = if (uiState.voicePhase is VoicePhase.Processing) {
                     "🎙 正在转写上屏…"
                 } else {
@@ -343,7 +483,7 @@ fun TypeFreeTopBar(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-            } else if (!learnedTerm.isNullOrBlank()) {
+            } else if (allowInlineBanner && !learnedTerm.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
                         .weight(1f, fill = false)
@@ -361,7 +501,7 @@ fun TypeFreeTopBar(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-            } else if (!quickToast.isNullOrBlank()) {
+            } else if (allowInlineBanner && !quickToast.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
                         .weight(1f, fill = false)
@@ -379,7 +519,7 @@ fun TypeFreeTopBar(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-            } else if (slotState.showClipboardQuickPaste && freshClip != null) {
+            } else if (allowInlineBanner && isClipboardBannerActive && freshClip != null) {
                 val smart = remember(freshClip.text) {
                     ClipboardSmartExtractor.extractPrimary(freshClip.text)
                 }
@@ -404,9 +544,9 @@ fun TypeFreeTopBar(
                                 .background(TypeFreeEmerald.copy(alpha = 0.15f))
                                 .border(1.dp, TypeFreeEmerald.copy(alpha = 0.48f), RoundedCornerShape(13.dp))
                                 .clickable { onPasteClipboardText(smart.extractedValue) }
-                                .padding(horizontal = 7.dp),
+                                .padding(horizontal = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(
                                 imageVector = smartIcon,
@@ -448,35 +588,73 @@ fun TypeFreeTopBar(
                                 maxLines = 1
                             )
                         }
+                        Box(
+                            modifier = Modifier
+                                .requiredSize(22.dp)
+                                .clip(CircleShape)
+                                .background(palette.keyCapBg)
+                                .border(1.dp, palette.keyBorder, CircleShape)
+                                .clickable(onClick = onDismissFreshClipboardBanner),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = TypeFreeIcons.Close,
+                                contentDescription = "关闭粘贴提示",
+                                tint = palette.keyTextMuted,
+                                modifier = Modifier.size(10.dp)
+                            )
+                        }
                     }
                 } else {
-                    val previewText = ClipboardSmartExtractor.formatSingleLinePreview(freshClip.text, 7)
+                    val previewText = ClipboardSmartExtractor.formatSingleLinePreview(freshClip.text, 10)
                     Row(
-                        modifier = Modifier
-                            .weight(1f, fill = false)
-                            .height(26.dp)
-                            .clip(RoundedCornerShape(13.dp))
-                            .background(TypeFreeEmerald.copy(alpha = 0.15f))
-                            .border(1.dp, TypeFreeEmerald.copy(alpha = 0.48f), RoundedCornerShape(13.dp))
-                            .clickable { onPasteClipboardText(freshClip.text) }
-                            .padding(horizontal = 7.dp),
+                        modifier = Modifier.weight(1f, fill = false),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Icon(
-                            imageVector = TypeFreeIcons.Clipboard,
-                            contentDescription = null,
-                            tint = clipTint,
-                            modifier = Modifier.size(11.dp)
-                        )
-                        Text(
-                            text = "粘贴「$previewText」",
-                            color = clipTint,
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Row(
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .height(26.dp)
+                                .clip(RoundedCornerShape(13.dp))
+                                .background(TypeFreeEmerald.copy(alpha = 0.15f))
+                                .border(1.dp, TypeFreeEmerald.copy(alpha = 0.48f), RoundedCornerShape(13.dp))
+                                .clickable { onPasteClipboardText(freshClip.text) }
+                                .padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = TypeFreeIcons.Clipboard,
+                                contentDescription = null,
+                                tint = clipTint,
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Text(
+                                text = "粘贴「$previewText」",
+                                color = clipTint,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .requiredSize(22.dp)
+                                .clip(CircleShape)
+                                .background(palette.keyCapBg)
+                                .border(1.dp, palette.keyBorder, CircleShape)
+                                .clickable(onClick = onDismissFreshClipboardBanner),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = TypeFreeIcons.Close,
+                                contentDescription = "关闭粘贴提示",
+                                tint = palette.keyTextMuted,
+                                modifier = Modifier.size(10.dp)
+                            )
+                        }
                     }
                 }
             } else if (slotState.showStyleBadge) {
@@ -521,28 +699,20 @@ fun TypeFreeTopBar(
 
         // Right Cluster:
         // - In QWERTY mode: [✦ 军师] + [✍️ 帮写/改写] + Dark Primary [🎤 语音] (tap <220ms switches to VOICE; hold >=220ms dictates in-place)
+        //   When a transient banner (clipboard paste / toast / voice listening) takes over the middle, secondary AI pills yield cleanly.
         // - In VOICE / TRANSLATE mode: Compact 2-Segment Track [鹤 打字 | 文A]
-        if (isQwertyRightCluster) {
-            val showAskAi = TopBarSlotPolicy.shouldShowTopBarAskAiPill(
-                settings = settings,
-                activeTab = uiState.tabMode,
-                isComposing = uiState.isFlypyComposing,
-                isToolPanelOpen = uiState.isToolPanelOpen,
-                isClipboardOpen = uiState.isClipboardOpen,
-                currentInputType = uiState.currentInputType,
-                currentEditorText = uiState.currentEditorText
-            )
+        if (isQwertyRightCluster && qwertyPlan != null) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                if (showAskAi) {
+                if (qwertyPlan.showRightAskAi) {
                     TopBarAskAiPill(onClick = onOpenAskAiCard)
                 }
-                if (slotState.showJevCopilotPill) {
+                if (qwertyPlan.showRightJevCopilot) {
                     TopBarJevCopilotPill(onClick = onOpenJevCopilot)
                 }
-                if (slotState.showVoicePenPill) {
+                if (qwertyPlan.showRightVoicePen) {
                     TopBarVoicePenPill(
                         label = slotState.voicePenLabel,
                         isHighlighted = uiState.shouldShowTopBarSpeakToEditPill,
@@ -622,6 +792,7 @@ fun TypeFreeTopBar(
                 }
             }
         }
+        }
     }
 }
 
@@ -670,25 +841,27 @@ fun TopBarAskAiPill(
     onClick: () -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
-    val fgColor = if (palette.isDark) Color(0xFF818CF8) else Color(0xFF4F46E5)
+    val fgColor = if (palette.isDark) Color(0xFFA5B4FC) else Color(0xFF4F46E5)
     Row(
         modifier = Modifier
             .height(28.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(AskAiPillIndigo.copy(alpha = 0.14f))
+            .background(AskAiPillIndigo.copy(alpha = if (palette.isDark) 0.14f else 0.10f))
             .border(
                 width = 1.dp,
-                color = AskAiPillIndigo.copy(alpha = 0.50f),
+                color = AskAiPillIndigo.copy(alpha = if (palette.isDark) 0.38f else 0.35f),
                 shape = RoundedCornerShape(14.dp)
             )
             .clickable(onClick = onClick)
-            .padding(horizontal = 7.dp),
+            .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(3.dp)
     ) {
-        Text(
-            text = "🔍",
-            fontSize = 10.sp
+        Icon(
+            imageVector = TypeFreeIcons.Search,
+            contentDescription = "问AI",
+            tint = fgColor,
+            modifier = Modifier.size(11.dp)
         )
         Text(
             text = "问AI",

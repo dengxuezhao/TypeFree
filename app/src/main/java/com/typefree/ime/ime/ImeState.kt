@@ -419,10 +419,9 @@ object ImeLogic {
                 KeyboardTabMode.TRANSLATE.name -> KeyboardTabMode.TRANSLATE
                 else -> KeyboardTabMode.VOICE
             }
-            val rememberedChinese = settings.flypyEnabled && settings.lastQwertyIsChinese
             return InitialKeyboardResolution(
                 tabMode = rememberedTab,
-                isFlypyChineseMode = rememberedChinese,
+                isFlypyChineseMode = settings.lastQwertyIsChinese,
                 isPasswordOverride = false
             )
         }

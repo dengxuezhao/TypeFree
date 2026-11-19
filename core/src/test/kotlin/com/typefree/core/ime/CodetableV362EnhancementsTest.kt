@@ -8,6 +8,7 @@ import com.typefree.core.ime.coordinator.RimeDecodeFrame
 import com.typefree.core.ime.coordinator.SlashSnippetEntry
 import com.typefree.core.ime.coordinator.TypeFreeKeyCoordinator
 import com.typefree.core.ime.enhancer.BriefPrefixIndex
+import com.typefree.core.ime.enhancer.OpenWordFrequencyTable
 import com.typefree.core.ime.enhancer.CodetableCodeDeriver
 import com.typefree.core.ime.enhancer.DirectCommandEngine
 import com.typefree.core.ime.enhancer.EnglishWordTrie
@@ -694,5 +695,130 @@ class CodetableV362EnhancementsTest {
         val third = coord.onCharKey('z') as CoordinatorKeyOutcome.Consumed
         assertEquals(listOf("星云", "细雨"), third.ui.candidates.map { it.commitText })
         assertEquals(listOf("~a", "~f"), third.ui.candidates.map { it.codeHint })
+    }
+
+    @Test
+    fun `13_custom_continuation_limit_and_precompiled_frequency_rerank_leave_plaintext_order_untouched`() {
+        val freqMap = OpenWordFrequencyTable.parseLines(
+            sequenceOf(
+                "---",
+                "name: base",
+                "sort: by_weight",
+                "...",
+                "# comment",
+                "会在\thui zai\t500270",
+                "汇总\thui zong\t219395",
+                "会做\thui zuo\t81040",
+                "灰枣\thui zao\t0"
+            )
+        )
+        assertEquals(500270, freqMap["会在"])
+        assertEquals(219395, freqMap["汇总"])
+        assertEquals(81040, freqMap["会做"])
+        assertEquals(null, freqMap["灰枣"])
+
+        // A. Precompiled `.table.bin` path (empty static index -> 26-slot live probing):
+        //    `hvz` has 11 4-code entries; frequency ranker lifts 会在/汇总/会做 ahead of 灰枣/惠泽/回赠,
+        //    and custom limit = 3 caps output cleanly (and dynamic limit change to 5 expands without cache invalidation).
+        val hvzSlots = mapOf(
+            "hvzc" to listOf("灰枣"),
+            "hvzd" to listOf("会在"),
+            "hvze" to listOf("惠泽"),
+            "hvzg" to listOf("回赠"),
+            "hvzi" to listOf("汗珠子"),
+            "hvzj" to listOf("回赞"),
+            "hvzo" to listOf("会做"),
+            "hvzs" to listOf("汇总"),
+            "hvzu" to listOf("回族"),
+            "hvzv" to listOf("回嘴"),
+            "hvzz" to listOf("会走")
+        )
+        val precompiledPort = object : RimeCoreSessionPort {
+            private var buf = ""
+            override fun sendChar(ch: Char): RimeDecodeFrame {
+                buf += ch
+                // Also simulate Rime native `enable_completion: true` returning extra `~` items
+                val nativeCompletions = if (buf == "hvz") {
+                    listOf("灰枣" to "~c", "惠泽" to "~e", "回赠" to "~g", "回族" to "~u")
+                } else {
+                    emptyList()
+                }
+                return RimeDecodeFrame(rawInput = buf, preedit = buf, candidates = nativeCompletions)
+            }
+            override fun sendBackspace(): RimeDecodeFrame {
+                buf = buf.dropLast(1)
+                return RimeDecodeFrame(rawInput = buf, preedit = buf, candidates = emptyList())
+            }
+            override fun selectCandidate(index: Int): Pair<String?, RimeDecodeFrame> = null to RimeDecodeFrame()
+            override fun commitCurrentComposition(): String? = buf.also { buf = "" }
+            override fun clearComposition() { buf = "" }
+            override fun currentFrame(maxCandidates: Int): RimeDecodeFrame {
+                val nativeCompletions = if (buf == "hvz") {
+                    listOf("灰枣" to "~c", "惠泽" to "~e", "回赠" to "~g", "回族" to "~u")
+                } else {
+                    emptyList()
+                }
+                return RimeDecodeFrame(buf, buf, nativeCompletions)
+            }
+            override fun setOption(option: String, value: Boolean) {}
+            override fun getOption(option: String): Boolean = false
+            override fun probeBatchCandidates(codes: List<String>, maxCount: Int): List<List<String>> {
+                return codes.map { code -> hvzSlots[code].orEmpty() }
+            }
+        }
+
+        val precompiledCoord = TypeFreeKeyCoordinator(
+            profile = SchemaProfile.defaultXiaoheFlypy(),
+            rimePort = precompiledPort,
+            reverseSplitEngine = ReverseSplitEngine(BriefPrefixIndex.empty()),
+            naturalContinuationLimit = 3,
+            liveContinuationWordFrequencyLookup = { w -> freqMap[w] ?: 0 }
+        )
+        for (c in "hvz") precompiledCoord.onCharKey(c)
+        assertEquals(
+            listOf("会在", "汇总", "会做"),
+            precompiledCoord.snapshotUi().candidates.map { it.commitText }
+        )
+        assertEquals(
+            listOf("~d", "~s", "~o"),
+            precompiledCoord.snapshotUi().candidates.map { it.codeHint }
+        )
+
+        // Raising limit to 5 preserves alphabetical tie-break for zero-frequency entries
+        precompiledCoord.setNaturalContinuationLimit(5)
+        assertEquals(
+            listOf("会在", "汇总", "会做", "灰枣", "惠泽"),
+            precompiledCoord.snapshotUi().candidates.map { it.commitText }
+        )
+
+        // B. Plain-text `.dict.yaml` import path MUST keep exact original dict line order
+        //    even when a frequency lookup is attached!
+        val plainDictIndex = BriefPrefixIndex.buildFromDictLines(
+            mainDictLines = sequenceOf(
+                "---",
+                "name: flypy",
+                "sort: original",
+                "...",
+                "汇总\thvzs",
+                "回赠\thvzg",
+                "汗珠子\thvzi",
+                "会在\thvzd",
+                "灰枣\thvzc"
+            )
+        )
+        val plainCoord = TypeFreeKeyCoordinator(
+            profile = SchemaProfile.defaultXiaoheFlypy(),
+            rimePort = precompiledPort,
+            reverseSplitEngine = ReverseSplitEngine(plainDictIndex),
+            naturalContinuationLimit = 3,
+            liveContinuationWordFrequencyLookup = { w -> freqMap[w] ?: 0 }
+        )
+        precompiledPort.clearComposition()
+        for (c in "hvz") plainCoord.onCharKey(c)
+        // Must strictly follow `.dict.yaml` line order (汇总 -> 回赠 -> 汗珠子), NOT `会在` first!
+        assertEquals(
+            listOf("汇总", "回赠", "汗珠子"),
+            plainCoord.snapshotUi().candidates.map { it.commitText }
+        )
     }
 }

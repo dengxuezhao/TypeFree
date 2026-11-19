@@ -758,6 +758,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             ImeUiAction.ShowImePicker -> showImePicker()
 
             is ImeUiAction.PasteClipboardText -> pasteFromClipboard(action.text)
+            ImeUiAction.DismissFreshClipboardBanner -> dismissFreshClipboardBanner()
             is ImeUiAction.TogglePinClipboardItem -> togglePinClipboardEntry(action.id)
             is ImeUiAction.DeleteClipboardItem -> deleteClipboardEntry(action.id)
             ImeUiAction.ClearUnpinnedClipboard -> clearUnpinnedClipboardEntries()
@@ -1218,6 +1219,12 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         _imeState.update { it.copy(isClipboardOpen = false) }
     }
 
+    private fun dismissFreshClipboardBanner() {
+        performKeyFeedback(strong = false)
+        freshClipBannerJob?.cancel()
+        _imeState.update { it.copy(freshClipboardBannerItem = null) }
+    }
+
     private fun pasteFromClipboard(text: String) {
         if (text.isEmpty()) return
         if (_imeState.value.isFlypyComposing) {
@@ -1456,6 +1463,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         eng.setXiaoheDirectCommandsEnabled(settings.xiaoheDirectCommandsEnabled)
         eng.setXiaoheReverseSplitEnabled(settings.xiaoheReverseSplitEnabled)
         eng.setXiaoheNaturalContinuationEnabled(settings.xiaoheNaturalContinuationEnabled)
+        eng.setXiaoheNaturalContinuationLimit(settings.xiaoheNaturalContinuationLimit)
         eng.setPhraseSuggestionL2Enabled(settings.phraseSuggestionL2Enabled)
     }
 
@@ -1499,7 +1507,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 profile = dm.activeSchemaProfile,
                 symbolTrie = dm.activeSymbolTrie,
                 briefIndex = dm.activeBriefIndex,
-                reverseLookupMap = dm.activeReverseLookupMap
+                reverseLookupMap = dm.activeReverseLookupMap,
+                liveContinuationWordFrequencyLookup = dm.activeLiveWordFrequencyLookup
             )
             applyCodetableV362Settings(existing, latestSettings)
             existing.updateSnippets(latestSettings.snippets)
@@ -1597,7 +1606,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                         pinnedWordsForCurrentCode = pinnedWords
                     )
                 }
-            }
+            },
+            naturalContinuationLimit = latestSettings.xiaoheNaturalContinuationLimit,
+            liveContinuationWordFrequencyLookup = dm.activeLiveWordFrequencyLookup
         )
         applyCodetableV362Settings(created, latestSettings)
         created.updateSnippets(latestSettings.snippets)

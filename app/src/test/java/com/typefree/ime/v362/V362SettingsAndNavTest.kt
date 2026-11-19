@@ -34,6 +34,7 @@ class V362SettingsAndNavTest {
         assertTrue(defaults.xiaoheDirectCommandsEnabled)
         assertTrue(defaults.xiaoheReverseSplitEnabled)
         assertTrue(defaults.xiaoheNaturalContinuationEnabled)
+        assertEquals(3, defaults.xiaoheNaturalContinuationLimit)
         assertTrue(defaults.passiveCalculatorEnabled)
         assertTrue(defaults.englishModeWordSuggestionEnabled)
         assertTrue(defaults.phraseSuggestionL2Enabled)
@@ -69,6 +70,7 @@ class V362SettingsAndNavTest {
         assertTrue(loaded.xiaoheDirectCommandsEnabled)
         assertTrue(loaded.xiaoheReverseSplitEnabled)
         assertTrue(loaded.xiaoheNaturalContinuationEnabled)
+        assertEquals(3, loaded.xiaoheNaturalContinuationLimit)
         assertTrue(loaded.passiveCalculatorEnabled)
         assertTrue(loaded.englishModeWordSuggestionEnabled)
         assertTrue(loaded.phraseSuggestionL2Enabled)
@@ -82,6 +84,7 @@ class V362SettingsAndNavTest {
                 xiaoheDirectCommandsEnabled = false,
                 xiaoheReverseSplitEnabled = false,
                 xiaoheNaturalContinuationEnabled = false,
+                xiaoheNaturalContinuationLimit = 5,
                 passiveCalculatorEnabled = false,
                 englishModeWordSuggestionEnabled = false,
                 phraseSuggestionL2Enabled = false,
@@ -99,6 +102,7 @@ class V362SettingsAndNavTest {
         assertFalse(reloaded.xiaoheDirectCommandsEnabled)
         assertFalse(reloaded.xiaoheReverseSplitEnabled)
         assertFalse(reloaded.xiaoheNaturalContinuationEnabled)
+        assertEquals(5, reloaded.xiaoheNaturalContinuationLimit)
         assertFalse(reloaded.passiveCalculatorEnabled)
         assertFalse(reloaded.englishModeWordSuggestionEnabled)
         assertFalse(reloaded.phraseSuggestionL2Enabled)

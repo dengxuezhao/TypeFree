@@ -432,6 +432,10 @@ data class UsageStatsSummary(
     val categoryProgress: Map<String, Float>
 )
 
+const val DEFAULT_NATURAL_CONTINUATION_LIMIT = 3
+const val MAX_NATURAL_CONTINUATION_LIMIT = 8
+val NATURAL_CONTINUATION_LIMIT_OPTIONS = listOf(1, 2, 3, 5, 8)
+
 data class AppSettings(
     val pipelineMode: PipelineMode = PipelineMode.DUAL_STAGE,
     val sttConfig: SttConfig = SttConfig(),
@@ -468,6 +472,7 @@ data class AppSettings(
     val xiaoheDirectCommandsEnabled: Boolean = true,
     val xiaoheReverseSplitEnabled: Boolean = true,
     val xiaoheNaturalContinuationEnabled: Boolean = true,
+    val xiaoheNaturalContinuationLimit: Int = DEFAULT_NATURAL_CONTINUATION_LIMIT,
     val passiveCalculatorEnabled: Boolean = true,
     val englishModeWordSuggestionEnabled: Boolean = true,
     val phraseSuggestionL2Enabled: Boolean = true,

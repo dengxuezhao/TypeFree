@@ -60,6 +60,7 @@ object ApiConfigBackupHelper {
         "xiaoheDirectCommandsEnabled",
         "xiaoheReverseSplitEnabled",
         "xiaoheNaturalContinuationEnabled",
+        "xiaoheNaturalContinuationLimit",
         "passiveCalculatorEnabled",
         "englishModeWordSuggestionEnabled",
         "phraseSuggestionL2Enabled",
@@ -739,6 +740,10 @@ object ApiConfigBackupHelper {
                     ?: existingSettings.xiaoheReverseSplitEnabled,
                 xiaoheNaturalContinuationEnabled = rootObj.optBoolean("xiaoheNaturalContinuationEnabled")
                     ?: existingSettings.xiaoheNaturalContinuationEnabled,
+                xiaoheNaturalContinuationLimit = rootObj.optLong("xiaoheNaturalContinuationLimit")
+                    ?.toInt()
+                    ?.coerceIn(1, com.typefree.ime.data.MAX_NATURAL_CONTINUATION_LIMIT)
+                    ?: existingSettings.xiaoheNaturalContinuationLimit,
                 passiveCalculatorEnabled = rootObj.optBoolean("passiveCalculatorEnabled")
                     ?: existingSettings.passiveCalculatorEnabled,
                 englishModeWordSuggestionEnabled = rootObj.optBoolean("englishModeWordSuggestionEnabled")

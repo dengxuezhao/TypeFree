@@ -257,6 +257,11 @@ class AppRepository(
             } else {
                 true
             }
+            val resolvedXiaoheNaturalContinuationLimit = if (raw.contains("\"xiaoheNaturalContinuationLimit\"")) {
+                parsed.xiaoheNaturalContinuationLimit.coerceIn(1, MAX_NATURAL_CONTINUATION_LIMIT)
+            } else {
+                DEFAULT_NATURAL_CONTINUATION_LIMIT
+            }
             val resolvedPassiveCalculatorEnabled = if (raw.contains("\"passiveCalculatorEnabled\"")) {
                 parsed.passiveCalculatorEnabled
             } else {
@@ -448,6 +453,7 @@ class AppRepository(
                 xiaoheDirectCommandsEnabled = resolvedXiaoheDirectCommandsEnabled,
                 xiaoheReverseSplitEnabled = resolvedXiaoheReverseSplitEnabled,
                 xiaoheNaturalContinuationEnabled = resolvedXiaoheNaturalContinuationEnabled,
+                xiaoheNaturalContinuationLimit = resolvedXiaoheNaturalContinuationLimit,
                 passiveCalculatorEnabled = resolvedPassiveCalculatorEnabled,
                 englishModeWordSuggestionEnabled = resolvedEnglishModeWordSuggestionEnabled,
                 phraseSuggestionL2Enabled = resolvedPhraseSuggestionL2Enabled,

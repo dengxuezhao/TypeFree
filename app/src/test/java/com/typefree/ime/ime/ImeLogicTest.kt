@@ -427,11 +427,22 @@ class ImeLogicTest {
         assertEquals(KeyboardTabMode.VOICE, defaultRes.tabMode)
         assertTrue(defaultRes.isFlypyChineseMode)
 
-        // 5. When flypyEnabled is turned off globally, lastQwertyIsChinese cannot force Chinese
-        val flypyDisabled = rememberedFlypy.copy(flypyEnabled = false, lastQwertyIsChinese = true)
-        val noFlypyRes = ImeLogic.resolveInitialKeyboardMode(flypyDisabled, isPasswordField = false)
-        assertEquals(KeyboardTabMode.QWERTY, noFlypyRes.tabMode)
-        assertFalse(noFlypyRes.isFlypyChineseMode)
+        // 5. When rememberLastKeyboardMode is enabled, remembered lastQwertyIsChinese takes precedence
+        //    over the non-remember default `flypyEnabled = false` (e.g. custom Rime schemas like xkjd6).
+        val flypyDisabledRememberOn = rememberedFlypy.copy(flypyEnabled = false, lastQwertyIsChinese = true)
+        val rememberedOverDefault = ImeLogic.resolveInitialKeyboardMode(flypyDisabledRememberOn, isPasswordField = false)
+        assertEquals(KeyboardTabMode.QWERTY, rememberedOverDefault.tabMode)
+        assertTrue(rememberedOverDefault.isFlypyChineseMode)
+
+        // 6. When rememberLastKeyboardMode is disabled, `flypyEnabled = false` acts as the default initial language.
+        val flypyDisabledRememberOff = rememberedFlypy.copy(
+            rememberLastKeyboardMode = false,
+            flypyEnabled = false,
+            lastQwertyIsChinese = true
+        )
+        val defaultEnglishRes = ImeLogic.resolveInitialKeyboardMode(flypyDisabledRememberOff, isPasswordField = false)
+        assertEquals(KeyboardTabMode.VOICE, defaultEnglishRes.tabMode)
+        assertFalse(defaultEnglishRes.isFlypyChineseMode)
     }
 
     @Test

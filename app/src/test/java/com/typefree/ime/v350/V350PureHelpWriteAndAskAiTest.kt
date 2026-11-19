@@ -1,6 +1,7 @@
 package com.typefree.ime.v350
 
 import android.text.InputType
+import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import com.typefree.ime.bubble.TypeFreeAccessibilityService
 import com.typefree.ime.bubble.ViewportOcrExtractor
@@ -326,6 +327,101 @@ class V350PureHelpWriteAndAskAiTest {
                 currentEditorText = "打字中"
             )
         )
+
+        // 7. 搜索框 / 前往框（如桌面搜索“硬盘”、浏览器地址栏）防误弹
+        assertFalse(
+            TopBarSlotPolicy.shouldShowTopBarAskAiPill(
+                settings = enabledSettings,
+                activeTab = KeyboardTabMode.QWERTY,
+                isComposing = false,
+                isToolPanelOpen = false,
+                isClipboardOpen = false,
+                currentInputType = InputType.TYPE_CLASS_TEXT,
+                currentEditorText = "硬盘",
+                currentImeOptions = EditorInfo.IME_ACTION_SEARCH
+            )
+        )
+        assertFalse(
+            TopBarSlotPolicy.shouldShowTopBarAskAiPill(
+                settings = enabledSettings,
+                activeTab = KeyboardTabMode.QWERTY,
+                isComposing = false,
+                isToolPanelOpen = false,
+                isClipboardOpen = false,
+                currentInputType = InputType.TYPE_CLASS_TEXT,
+                currentEditorText = "example.com",
+                currentImeOptions = EditorInfo.IME_ACTION_GO
+            )
+        )
+    }
+
+    @Test
+    fun topBarLayoutPlan_transientBannerTakesOverAndNarrowScreenGuardsOverflow() {
+        // 1. 常规 360dp 手机宽度 + 新剪贴板粘贴条：临时接管中段，收起右侧非核心 AI 胶囊和冗余剪贴板图标
+        val clipPlan = TopBarSlotPolicy.resolveQwertyBarLayout(
+            availableWidthDp = 352f,
+            showUndoButton = true,
+            showClipboardButton = true,
+            isIncognito = false,
+            hasPriorityBanner = true,
+            isClipboardBannerActive = true,
+            wantAskAi = true,
+            wantJevCopilot = true,
+            wantVoicePen = true
+        )
+        assertTrue(clipPlan.bannerTakesOverMiddle)
+        assertTrue(clipPlan.showLeftInlineBanner)
+        assertFalse(clipPlan.showClipboardIconButton)
+        assertFalse(clipPlan.showRightAskAi)
+        assertFalse(clipPlan.showRightJevCopilot)
+        assertFalse(clipPlan.showRightVoicePen)
+
+        // 2. 极端窄分屏（仅 170dp）：剩余宽度不足 72dp 时隐藏内联横幅并保留剪贴板图标绿点，杜绝压成 `[·]`
+        val ultraNarrowClip = TopBarSlotPolicy.resolveQwertyBarLayout(
+            availableWidthDp = 170f,
+            showUndoButton = true,
+            showClipboardButton = true,
+            isIncognito = true,
+            hasPriorityBanner = true,
+            isClipboardBannerActive = true,
+            wantAskAi = false,
+            wantJevCopilot = true,
+            wantVoicePen = true
+        )
+        assertFalse(ultraNarrowClip.showLeftInlineBanner)
+        assertTrue(ultraNarrowClip.showClipboardIconButton)
+
+        // 3. 常态 352dp（无搜索框误弹，仅军师 + 帮写 + 语音）：完整展示右侧 3 胶囊 + 左侧全图标
+        val steadyPlan = TopBarSlotPolicy.resolveQwertyBarLayout(
+            availableWidthDp = 352f,
+            showUndoButton = true,
+            showClipboardButton = true,
+            isIncognito = false,
+            hasPriorityBanner = false,
+            isClipboardBannerActive = false,
+            wantAskAi = false,
+            wantJevCopilot = true,
+            wantVoicePen = true
+        )
+        assertFalse(steadyPlan.bannerTakesOverMiddle)
+        assertTrue(steadyPlan.showClipboardIconButton)
+        assertTrue(steadyPlan.showRightJevCopilot)
+        assertTrue(steadyPlan.showRightVoicePen)
+
+        // 4. 常态窄屏叠加无痕 + 4 个右侧胶囊时，按优先级先降级 AskAI，避免挤爆
+        val crowdedSteady = TopBarSlotPolicy.resolveQwertyBarLayout(
+            availableWidthDp = 340f,
+            showUndoButton = true,
+            showClipboardButton = true,
+            isIncognito = true,
+            hasPriorityBanner = false,
+            isClipboardBannerActive = false,
+            wantAskAi = true,
+            wantJevCopilot = true,
+            wantVoicePen = true
+        )
+        assertFalse(crowdedSteady.showRightAskAi)
+        assertTrue(crowdedSteady.showRightVoicePen)
     }
 
     @Test

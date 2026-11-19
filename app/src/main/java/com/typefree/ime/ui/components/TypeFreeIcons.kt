@@ -830,4 +830,22 @@ object TypeFreeIcons {
             }
         }.build()
     }
+
+    /** Monochrome magnifying glass icon replacing 🔍 emoji in Ask AI pill. */
+    val Search: ImageVector by lazy {
+        ImageVector.Builder("Search", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2.0f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(11f, 4.5f)
+                arcTo(6.5f, 6.5f, 0f, isMoreThanHalf = true, isPositiveArc = false, 11f, 17.5f)
+                arcTo(6.5f, 6.5f, 0f, isMoreThanHalf = true, isPositiveArc = false, 11f, 4.5f)
+                moveTo(16f, 16f)
+                lineTo(20.2f, 20.2f)
+            }
+        }.build()
+    }
 }

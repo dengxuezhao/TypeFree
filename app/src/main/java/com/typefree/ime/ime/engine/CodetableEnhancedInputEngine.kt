@@ -116,7 +116,9 @@ class CodetableEnhancedInputEngine(
     var isIncognitoPredicate: () -> Boolean = { false },
     var onSingleCharModeChanged: ((Boolean) -> Unit)? = null,
     var onPhraseSuggestion: ((PhraseSuggestion?) -> Unit)? = null,
-    var onUiStateSynced: ((EngineState, Boolean, Set<String>) -> Unit)? = null
+    var onUiStateSynced: ((EngineState, Boolean, Set<String>) -> Unit)? = null,
+    naturalContinuationLimit: Int = DEFAULT_NATURAL_CONTINUATION_LIMIT,
+    liveContinuationWordFrequencyLookup: ((String) -> Int)? = null
 ) : InputEngine {
 
     private val portAdapter = RimeSessionClientPortAdapter(rimeClient)
@@ -128,6 +130,9 @@ class CodetableEnhancedInputEngine(
     private var xiaoheDirectCommandsOverride: Boolean? = null
     private var xiaoheReverseSplitOverride: Boolean? = null
     private var naturalContinuationEnabled: Boolean = true
+    private var naturalContinuationLimit: Int =
+        naturalContinuationLimit.coerceIn(1, BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS)
+    private var liveContinuationWordFrequencyLookup: ((String) -> Int)? = liveContinuationWordFrequencyLookup
     var phraseSuggestionL2Enabled: Boolean = true
         private set
     private var currentSlashSnippets: List<SlashSnippetEntry> = emptyList()
@@ -222,7 +227,9 @@ class CodetableEnhancedInputEngine(
             ),
             applyInitialIsolationOptions = applyIsolation,
             shadowDictManager = shadowDictManager,
-            naturalContinuationEnabled = naturalContinuationEnabled
+            naturalContinuationEnabled = naturalContinuationEnabled,
+            naturalContinuationLimit = naturalContinuationLimit,
+            liveContinuationWordFrequencyLookup = liveContinuationWordFrequencyLookup
         )
         if (currentSlashSnippets.isNotEmpty()) {
             created.updateSlashSnippets(currentSlashSnippets)
@@ -244,6 +251,8 @@ class CodetableEnhancedInputEngine(
     private fun applyPreferenceOverrides() {
         coordinator.profile = resolveEffectiveProfile(baseProfile)
         coordinator.setNaturalContinuationEnabled(naturalContinuationEnabled)
+        coordinator.setNaturalContinuationLimit(naturalContinuationLimit)
+        coordinator.setLiveContinuationWordFrequencyLookup(liveContinuationWordFrequencyLookup)
         coordinator.updateSlashSnippets(currentSlashSnippets)
         coordinator.updateExtraUserWordsByCode(snapshotRuntimeUserWords())
     }
@@ -252,13 +261,15 @@ class CodetableEnhancedInputEngine(
         profile: SchemaProfile,
         symbolTrie: SymbolTrie,
         briefIndex: BriefPrefixIndex,
-        reverseLookupMap: Map<String, List<String>>
+        reverseLookupMap: Map<String, List<String>>,
+        liveContinuationWordFrequencyLookup: ((String) -> Int)? = this.liveContinuationWordFrequencyLookup
     ) {
         currentMaxCandidates = RimeInputEngine.DEFAULT_PAGE_SIZE
         baseProfile = profile
         currentSymbolTrie = symbolTrie
         currentBriefIndex = briefIndex
         currentReverseLookupMap = reverseLookupMap
+        this.liveContinuationWordFrequencyLookup = liveContinuationWordFrequencyLookup
         uniqueSingleChar4Codes = buildUniqueSingleChar4Codes(reverseLookupMap)
         reloadUserDictWordsCache(profile.schemaId)
 
@@ -351,6 +362,19 @@ class CodetableEnhancedInputEngine(
     fun setXiaoheNaturalContinuationEnabled(enabled: Boolean) {
         naturalContinuationEnabled = enabled
         coordinator.setNaturalContinuationEnabled(enabled)
+        if (coordinator.isComposing) syncUiState()
+    }
+
+    fun setXiaoheNaturalContinuationLimit(limit: Int) {
+        val clamped = limit.coerceIn(1, BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS)
+        naturalContinuationLimit = clamped
+        coordinator.setNaturalContinuationLimit(clamped)
+        if (coordinator.isComposing) syncUiState()
+    }
+
+    fun setLiveContinuationWordFrequencyLookup(lookup: ((String) -> Int)?) {
+        liveContinuationWordFrequencyLookup = lookup
+        coordinator.setLiveContinuationWordFrequencyLookup(lookup)
         if (coordinator.isComposing) syncUiState()
     }
 
@@ -721,6 +745,8 @@ class CodetableEnhancedInputEngine(
     }
 
     companion object {
+        const val DEFAULT_NATURAL_CONTINUATION_LIMIT = 3
+
         private fun buildUniqueSingleChar4Codes(reverseLookupMap: Map<String, List<String>>): Set<String> {
             if (reverseLookupMap.isEmpty()) return emptySet()
             val counts = HashMap<String, Int>(reverseLookupMap.size)

@@ -168,14 +168,19 @@ class T9PinyinEngineTest {
                 rimeClient = bridge,
                 initialProfile = dm.activeSchemaProfile,
                 briefIndex = dm.activeBriefIndex,
-                schemaDir = shared
+                schemaDir = shared,
+                liveContinuationWordFrequencyLookup = dm.activeLiveWordFrequencyLookup
             )
             enh.onKey(KeyInput.CharKey('h'))
             enh.onKey(KeyInput.CharKey('v'))
             assertEquals("会", enh.state.value.candidates.firstOrNull()?.text)
 
-            // 2. Pruned duplicate 3-code `hvz` should trigger live 4-code continuation `汇总(~s)`, then `s` commits `汇总`
+            // 2. Pruned duplicate 3-code `hvz` should trigger live 4-code continuation `汇总(~s)` within default top-3, then `s` commits `汇总`
             enh.onKey(KeyInput.CharKey('z'))
+            assertTrue(
+                "Expected default continuation limit <= 3, got ${enh.state.value.candidates}",
+                enh.state.value.candidates.size <= 3
+            )
             assertTrue(
                 "Expected 汇总 in hvz live continuations: ${enh.state.value.candidates}",
                 enh.state.value.candidates.any { it.text == "汇总" && it.codeHint == "~s" }

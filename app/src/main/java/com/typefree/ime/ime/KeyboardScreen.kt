@@ -379,6 +379,7 @@ fun KeyboardScreen(
                                         onToggleStylePicker = onToggleStylePicker,
                                         onPerformUndo = onPerformUndo,
                                         onPasteClipboardText = onPasteClipboardText,
+                                        onDismissFreshClipboardBanner = { onAction(ImeUiAction.DismissFreshClipboardBanner) },
                                         onToggleManualIncognito = onToggleManualIncognito,
                                         onOpenJevCopilot = { onAction(ImeUiAction.OpenJevCopilot) },
                                         onToggleClipboard = {

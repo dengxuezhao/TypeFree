@@ -125,6 +125,7 @@ sealed interface ImeUiAction {
 
     // Clipboard actions
     data class PasteClipboardText(val text: String) : ImeUiAction
+    data object DismissFreshClipboardBanner : ImeUiAction
     data class TogglePinClipboardItem(val id: String) : ImeUiAction
     data class DeleteClipboardItem(val id: String) : ImeUiAction
     data object ClearUnpinnedClipboard : ImeUiAction

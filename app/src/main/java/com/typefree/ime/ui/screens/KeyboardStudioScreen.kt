@@ -524,14 +524,50 @@ private fun KeyboardSchemeAndLayoutPane(
 
                         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
+                        val currentNatLimit = settings.xiaoheNaturalContinuationLimit
+                            .coerceIn(1, com.typefree.ime.data.MAX_NATURAL_CONTINUATION_LIMIT)
                         PreferenceSwitchRow(
                             title = "空码多条原序顺延",
-                            subtitle = "空码时按主码表原始行序展示最多 8 条更长编码顺延词，不打乱肌肉记忆",
+                            subtitle = "空码时展示最多 ${currentNatLimit} 条更长编码顺延词（明文码表按原行序，预编译包按常用词频）",
                             checked = settings.xiaoheNaturalContinuationEnabled,
                             onCheckedChange = { enabled ->
                                 repository.updateSettings { it.copy(xiaoheNaturalContinuationEnabled = enabled) }
                             }
                         )
+                        if (settings.xiaoheNaturalContinuationEnabled) {
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                com.typefree.ime.data.NATURAL_CONTINUATION_LIMIT_OPTIONS.forEach { count ->
+                                    val selected = currentNatLimit == count
+                                    FilterChip(
+                                        selected = selected,
+                                        onClick = {
+                                            repository.updateSettings {
+                                                it.copy(xiaoheNaturalContinuationLimit = count)
+                                            }
+                                        },
+                                        label = {
+                                            Text(
+                                                text = if (count == com.typefree.ime.data.DEFAULT_NATURAL_CONTINUATION_LIMIT) {
+                                                    "${count} 条 · 默认"
+                                                } else {
+                                                    "${count} 条"
+                                                },
+                                                fontSize = 12.sp,
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                            )
+                                        },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                        )
+                                    )
+                                }
+                            }
+                        }
 
                         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
@@ -620,14 +656,50 @@ private fun KeyboardSchemeAndLayoutPane(
 
                         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
+                        val customNatLimit = settings.xiaoheNaturalContinuationLimit
+                            .coerceIn(1, com.typefree.ime.data.MAX_NATURAL_CONTINUATION_LIMIT)
                         PreferenceSwitchRow(
                             title = "空码多条原序顺延",
-                            subtitle = "无精确匹配时按码表原始行序展示最多 8 条更长编码顺延词",
+                            subtitle = "无精确匹配时展示最多 ${customNatLimit} 条更长编码顺延词（明文码表按原行序，预编译包按常用词频）",
                             checked = settings.xiaoheNaturalContinuationEnabled,
                             onCheckedChange = { enabled ->
                                 repository.updateSettings { it.copy(xiaoheNaturalContinuationEnabled = enabled) }
                             }
                         )
+                        if (settings.xiaoheNaturalContinuationEnabled) {
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                com.typefree.ime.data.NATURAL_CONTINUATION_LIMIT_OPTIONS.forEach { count ->
+                                    val selected = customNatLimit == count
+                                    FilterChip(
+                                        selected = selected,
+                                        onClick = {
+                                            repository.updateSettings {
+                                                it.copy(xiaoheNaturalContinuationLimit = count)
+                                            }
+                                        },
+                                        label = {
+                                            Text(
+                                                text = if (count == com.typefree.ime.data.DEFAULT_NATURAL_CONTINUATION_LIMIT) {
+                                                    "${count} 条 · 默认"
+                                                } else {
+                                                    "${count} 条"
+                                                },
+                                                fontSize = 12.sp,
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                            )
+                                        },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                        )
+                                    )
+                                }
+                            }
+                        }
 
                         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
@@ -675,17 +747,6 @@ private fun KeyboardSchemeAndLayoutPane(
                                 repository.updateSettings { it.copy(predictionEnabled = enabled) }
                             }
                         )
-
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
-
-                        PreferenceSwitchRow(
-                            title = "打字面板默认开启中文",
-                            subtitle = "切换至全键盘时默认进入中文输入状态（长按空格或顶栏中/英可随时切换）",
-                            checked = settings.flypyEnabled,
-                            onCheckedChange = { enabled ->
-                                repository.updateSettings { it.copy(flypyEnabled = enabled) }
-                            }
-                        )
                     }
                 }
             }
@@ -709,6 +770,17 @@ private fun KeyboardSchemeAndLayoutPane(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
+
+                PreferenceSwitchRow(
+                    title = "打字面板默认开启中文",
+                    subtitle = "未开启“记忆上一次键盘模式”时默认进入中文状态（长按空格或顶栏中/英可随时切换）",
+                    checked = settings.flypyEnabled,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(flypyEnabled = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
                 PreferenceSwitchRow(
                     title = "顶部独立数字行 (1–0)",

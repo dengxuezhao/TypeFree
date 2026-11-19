@@ -83,7 +83,9 @@ class TypeFreeKeyCoordinator(
     val directCommandEngine: DirectCommandEngine = DirectCommandEngine(),
     applyInitialIsolationOptions: Boolean = true,
     private val shadowDictManager: ShadowDictManager? = null,
-    naturalContinuationEnabled: Boolean = true
+    naturalContinuationEnabled: Boolean = true,
+    naturalContinuationLimit: Int = BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS,
+    private var liveContinuationWordFrequencyLookup: ((String) -> Int)? = null
 ) {
     private data class CandidateSlot(
         val candidate: EnhancedCandidate,
@@ -94,6 +96,9 @@ class TypeFreeKeyCoordinator(
         private set
 
     var naturalContinuationEnabled: Boolean = naturalContinuationEnabled
+        private set
+
+    var naturalContinuationLimit: Int = naturalContinuationLimit.coerceIn(1, BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS)
         private set
 
     var orqDateOffsetDays: Int = 0
@@ -141,6 +146,17 @@ class TypeFreeKeyCoordinator(
 
     fun setNaturalContinuationEnabled(enabled: Boolean) {
         naturalContinuationEnabled = enabled
+    }
+
+    fun setNaturalContinuationLimit(limit: Int) {
+        naturalContinuationLimit = limit.coerceIn(1, BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS)
+    }
+
+    fun setLiveContinuationWordFrequencyLookup(lookup: ((String) -> Int)?) {
+        if (liveContinuationWordFrequencyLookup !== lookup) {
+            liveContinuationWordFrequencyLookup = lookup
+            liveContinuationCache.clear()
+        }
     }
 
     fun updateExtraUserWordsByCode(wordsByCode: Map<String, List<String>>) {
@@ -1012,10 +1028,19 @@ class TypeFreeKeyCoordinator(
         }
 
         val isSyntheticRimeFrame = syntheticRimeCandidatesOverride != null
+        val capRimeCompletions = naturalContinuationEnabled && !hasExactRimeMatch
+        var continuationCount = validNats.size
         rawRime.forEachIndexed { origIdx, (txt, comment) ->
             if (txt in blocked) return@forEachIndexed
             if (singleCharMode && !Utf8Safety.isSingleCharacter(txt)) return@forEachIndexed
+            val isComp = isCompletionComment(comment)
+            if (capRimeCompletions && isComp && continuationCount >= naturalContinuationLimit) {
+                return@forEachIndexed
+            }
             if (!seenWords.add(txt)) return@forEachIndexed
+            if (capRimeCompletions && isComp) {
+                continuationCount++
+            }
             slots.add(
                 CandidateSlot(
                     candidate = EnhancedCandidate(
@@ -1113,16 +1138,27 @@ class TypeFreeKeyCoordinator(
             probeLiveSingleStepContinuations(buffer)
         }
         if (rawList.isEmpty()) return emptyList()
-        return rawList.filter { nat ->
-            nat.word !in shadowRuleState.blockedWords &&
-                (!singleCharMode || Utf8Safety.isSingleCharacter(nat.word))
+        val limit = naturalContinuationLimit
+        val filtered = ArrayList<NaturalContinuation>(minOf(limit, rawList.size))
+        for (nat in rawList) {
+            if (nat.word in shadowRuleState.blockedWords) continue
+            if (singleCharMode && !Utf8Safety.isSingleCharacter(nat.word)) continue
+            filtered.add(nat)
+            if (filtered.size >= limit) break
         }
+        return filtered
     }
 
     /**
      * Lazy 26-slot on-demand probing for precompiled binary tables (e.g. official Xiaohe `.table.bin`,
      * Wubi 86, Keytao 6) when a `(maxCodeLength - 1)` prefix is empty: probes `buffer + 'a'..'z'`
      * via the isolated Rime probe session (`< 0.5ms`, zero decompilation) and caches per prefix.
+     *
+     * When [liveContinuationWordFrequencyLookup] is provided (precompiled binary tables without
+     * plain-text `.dict.yaml` line order), ranks the 26-slot candidates stably by descending
+     * open-source word frequency (keeping original `'a'..'z'` order for ties / unknown words).
+     * Plain-text `.dict.yaml` imports hit [BriefPrefixIndex.lookupNaturalContinuations] above
+     * and never enter this path.
      */
     private fun probeLiveSingleStepContinuations(buffer: String): List<NaturalContinuation> {
         if (profile.maxCodeLength < 3) return emptyList()
@@ -1145,8 +1181,10 @@ class TypeFreeKeyCoordinator(
         val probedSlots = rimePort.probeBatchCandidates(probeCodes, maxCount = 2)
         if (probedSlots.isEmpty()) return emptyList()
 
-        val found = ArrayList<NaturalContinuation>(BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS)
-        val seenWords = HashSet<String>(BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS)
+        val freqLookup = liveContinuationWordFrequencyLookup
+        val scanAllSlots = freqLookup != null
+        val found = ArrayList<NaturalContinuation>(if (scanAllSlots) 32 else BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS)
+        val seenWords = HashSet<String>(if (scanAllSlots) 32 else BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS)
         for (i in 0 until minOf(26, probedSlots.size)) {
             val suffixChar = ('a' + i)
             val fullCode = probeCodes[i]
@@ -1166,16 +1204,20 @@ class TypeFreeKeyCoordinator(
                         fullCode = fullCode
                     )
                 )
-                if (found.size >= BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS) break
+                if (!scanAllSlots && found.size >= BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS) break
             }
-            if (found.size >= BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS) break
+            if (!scanAllSlots && found.size >= BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS) break
+        }
+        val ranked = if (freqLookup != null && found.size > 1) {
+            found.sortedByDescending { freqLookup(it.word) }.take(BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS)
+        } else {
+            found.take(BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS)
         }
         if (liveContinuationCache.size >= 256) {
             liveContinuationCache.clear()
         }
-        val immutable = found.toList()
-        liveContinuationCache[buffer] = immutable
-        return immutable
+        liveContinuationCache[buffer] = ranked
+        return ranked
     }
 
     private fun isCompletionComment(comment: String): Boolean {
