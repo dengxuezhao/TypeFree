@@ -76,7 +76,8 @@ android {
 
         create("xiaohe") {
             dimension = "edition"
-            versionCode = 32
+            versionCode = 33
+            versionName = "3.6.2"
             buildConfigField("boolean", "USE_PRIVATE_DICT", "true")
             buildConfigField("boolean", "IS_XIAOHE_FLAVOR", "true")
         }
