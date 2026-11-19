@@ -821,4 +821,113 @@ class CodetableV362EnhancementsTest {
             plainCoord.snapshotUi().candidates.map { it.commitText }
         )
     }
+
+    @Test
+    fun `12_schema_inspector_parses_non_standard_columns_order_like_tigress_dict`() {
+        val tigressStyleDict = """
+            name: tigress
+            version: "2026.08.15"
+            sort: by_weight
+            columns:
+              - text
+              - weight
+              - code
+              - stem
+            ...
+            的	10359470	u	un
+            他	2260948	je	je
+            这	2256430	vu	vu
+            我们	116006	tuja
+        """.trimIndent()
+
+        // All 2-letter slots (`je`, `vu`) are single chars, so ratio MUST be 0.0 (FIXED_SHAPECODE)
+        val ratio = com.typefree.core.ime.profile.SchemaInspector.computeTwoBriefMultiCharRatioFromDict(tigressStyleDict)
+        assertEquals(0.0, ratio, 1e-9)
+
+        val multiPhraseColumnsDict = """
+            name: custom_yinxing
+            columns:
+              - text
+              - weight
+              - code
+            ...
+            功能	1000	gn
+            我们	1000	wm
+        """.trimIndent()
+        val ratio2 = com.typefree.core.ime.profile.SchemaInspector.computeTwoBriefMultiCharRatioFromDict(multiPhraseColumnsDict)
+        assertEquals(2.0 / 676.0, ratio2, 1e-9)
+    }
+
+    @Test
+    fun `13_phrase_suggestion_tracker_respects_3code_dedup_and_3code_two_char_window_units`() {
+        val tracker = com.typefree.core.ime.enhancer.PhraseSuggestionTracker(minRepeatCount = 3)
+        val reverseMap = mapOf(
+            "功" to "gsgl",
+            "能" to "ngyb",
+            "表" to "bnui",
+            "一" to "yi"
+        )
+        // Simulate existing 3-code entry `gsn -> 功能` in base table
+        val baseDictByCode = mapOf(
+            "gsn" to listOf("功能"),
+            "gn" to listOf("功能")
+        )
+        fun existsInBase(word: String, fullCode: String): Boolean {
+            val probes = listOfNotNull(
+                fullCode,
+                fullCode.takeIf { it.length >= 3 }?.substring(0, 3),
+                fullCode.takeIf { it.length >= 2 }?.substring(0, 2),
+                if (word.codePointCount(0, word.length) == 2 && fullCode.length >= 4) {
+                    "${fullCode[0]}${fullCode[2]}"
+                } else null
+            )
+            return probes.any { c -> word in baseDictByCode[c].orEmpty() }
+        }
+
+        // Typing `功` (gs) + `能` (ng) 3 times MUST NOT suggest `功能` because base table already has it!
+        repeat(3) {
+            assertNull(
+                tracker.recordCommittedUnitWithCodeCheck(
+                    text = "功",
+                    code = "gs",
+                    existsInDict = ::existsInBase,
+                    isUniqueSingleCharCode = { false },
+                    singleCharCodeLookup = { reverseMap[it] }
+                )
+            )
+            assertNull(
+                tracker.recordCommittedUnitWithCodeCheck(
+                    text = "能",
+                    code = "ng",
+                    existsInDict = ::existsInBase,
+                    isUniqueSingleCharCode = { false },
+                    singleCharCodeLookup = { reverseMap[it] }
+                )
+            )
+            tracker.resetWindow()
+        }
+
+        // Typing 3-code two-char phrase `功能` (gsn) + single char `表` (bn) 3 times
+        // MUST recover `功`/`能` codes from reverse lookup and suggest 3-char phrase `功能表` -> `gnbn`!
+        var suggested: com.typefree.core.ime.enhancer.PhraseSuggestion? = null
+        repeat(3) {
+            tracker.recordCommittedUnitWithCodeCheck(
+                text = "功能",
+                code = "gsn",
+                existsInDict = ::existsInBase,
+                isUniqueSingleCharCode = { false },
+                singleCharCodeLookup = { reverseMap[it] }
+            )
+            suggested = tracker.recordCommittedUnitWithCodeCheck(
+                text = "表",
+                code = "bn",
+                existsInDict = ::existsInBase,
+                isUniqueSingleCharCode = { false },
+                singleCharCodeLookup = { reverseMap[it] }
+            )
+            tracker.resetWindow()
+        }
+        assertEquals("功能表", suggested?.word)
+        assertEquals("gnbn", suggested?.code)
+    }
 }

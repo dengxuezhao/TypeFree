@@ -208,7 +208,16 @@ class V361CodetableIntegrationTest {
     fun `CodetableEnhancedInputEngine removes Chinese English veto and wires L2 PhraseSuggestionTracker cleanly`() {
         val tempDir = Files.createTempDirectory("v362_l2phrase_").toFile()
         try {
-            val fakeBridge = FakeCodetableRimeClient()
+            val fakeBridge = FakeCodetableRimeClient().apply {
+                tables = mapOf(
+                    "flypy" to mapOf(
+                        "n" to listOf("你" to "", "内容" to ""),
+                        "ni" to listOf("你" to "", "泥" to ""),
+                        "hc" to listOf("好" to "", "号" to ""),
+                        "an" to listOf("安" to "", "按" to "", "安全" to "")
+                    )
+                )
+            }
             val briefIdx = BriefPrefixIndex.buildFromDictLines(
                 mainDictLines = sequenceOf("---", "name: flypy", "...", "你\tni", "好\thc"),
                 gt4GuardTwoPrefixes = setOf("ok", "os")

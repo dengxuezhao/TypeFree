@@ -477,4 +477,222 @@ class V361NativeLibrimeAcceptanceTest {
             tempRoot.deleteRecursively()
         }
     }
+
+    @Test
+    fun `Real native librime deploys tigress_preset and tiger_preset zips with official Tiger Code tables`() {
+        val mainDir = resolveMainRimeAssetsDir() ?: return
+        val tigressZip = resolvePresetZip("tigress_preset.zip") ?: return
+        val tigerZip = resolvePresetZip("tiger_preset.zip") ?: return
+        val bridge = loadNativeBridgeOrSkip() ?: return
+
+        val tempRoot = Files.createTempDirectory("native_tiger_preset_").toFile()
+        try {
+            val sharedDir = File(tempRoot, "shared").apply { mkdirs() }
+            val userDir = File(tempRoot, "user").apply { mkdirs() }
+            mainDir.copyRecursively(sharedDir, overwrite = true)
+
+            val dm = RimeDataManager(sharedDir, userDir, bridge)
+
+            // 1. Deploy Tiger Word+Char (`tigress`)
+            val tigressResult = tigressZip.inputStream().use { dm.importEnhancedSchemaPackageSync(it) }
+            assertEquals("tigress", tigressResult.schemaId)
+            assertEquals(SchemaArchetype.FIXED_SHAPECODE, dm.activeSchemaProfile.archetype)
+            assertFalse(dm.activeSchemaProfile.directCommandsEnabled)
+            assertTrue(bridge.deploy("tigress"))
+            assertTrue(bridge.selectSchema("tigress"))
+
+            val tigressEngine = CodetableEnhancedInputEngine(
+                rimeClient = bridge,
+                initialProfile = dm.activeSchemaProfile,
+                symbolTrie = dm.activeSymbolTrie,
+                briefIndex = dm.activeBriefIndex,
+                reverseLookupMap = dm.activeReverseLookupMap,
+                schemaDir = sharedDir
+            )
+            typeChars(tigressEngine, "u")
+            val uCands = tigressEngine.state.value.candidates
+            assertEquals(
+                "Non-empty Tiger code `u` MUST only show exact matches ['的', '工作'] with zero ~ completions",
+                listOf("的", "工作"),
+                uCands.map { it.text }
+            )
+            assertTrue("Non-empty Tiger code `u` must have no completion hint", uCands.none { it.codeHint.startsWith("~") })
+            tigressEngine.clear()
+
+            // Verify native charset_filter removes non-BMP extension chars on `wfsi` (leaves only common `征` -> auto-commits!)
+            var wfsiCommitted: String? = null
+            for (ch in "wfsi") {
+                val res = tigressEngine.onKey(KeyInput.CharKey(ch))
+                if (res is EngineResult.Commit) wfsiCommitted = res.text
+            }
+            val wfsiCands = tigressEngine.state.value.candidates.map { it.text }
+            assertTrue(
+                "Expected charset_filter to filter out ext chars on `wfsi` leaving only `征`, autoCommitted=$wfsiCommitted, cands=$wfsiCands",
+                wfsiCommitted == "征" || wfsiCands == listOf("征")
+            )
+            tigressEngine.clear()
+
+            // Verify 4-code multi-candidate `hkhi` (`公子`/`孩子`) + 5th-key top commit on `u`
+            typeChars(tigressEngine, "hkhi")
+            assertEquals(listOf("公子", "孩子"), tigressEngine.state.value.candidates.map { it.text })
+            val fifthRes = tigressEngine.onKey(KeyInput.CharKey('u'))
+            assertTrue(
+                "5th key `u` after `hkhi` MUST push-commit `公子` and start composing `u`, got $fifthRes",
+                fifthRes is EngineResult.Commit && fifthRes.text == "公子" && fifthRes.remainComposing
+            )
+            assertEquals(listOf("的", "工作"), tigressEngine.state.value.candidates.map { it.text })
+            tigressEngine.clear()
+
+            // Verify true empty 4-code `qzxv` has empty candidates when continuation is off
+            tigressEngine.setXiaoheNaturalContinuationEnabled(false)
+            typeChars(tigressEngine, "qzxv")
+            assertTrue(
+                "True empty code `qzxv` with continuation disabled MUST yield empty candidates, got ${tigressEngine.state.value.candidates}",
+                tigressEngine.state.value.candidates.isEmpty()
+            )
+            tigressEngine.clear()
+
+            // Verify 4-code phrase `tuja` -> `我们` (auto-commits on 4th key)
+            var autoCommitted: String? = null
+            for (ch in "tuja") {
+                val res = tigressEngine.onKey(KeyInput.CharKey(ch))
+                if (res is EngineResult.Commit) autoCommitted = res.text
+            }
+            val tujaCands = tigressEngine.state.value.candidates.map { it.text }
+            assertTrue(
+                "Expected 我们 for Tiger code `tuja`, autoCommitted=$autoCommitted, cands=$tujaCands",
+                autoCommitted == "我们" || "我们" in tujaCands
+            )
+            tigressEngine.clear()
+
+            // 2. Deploy Tiger Single-Char (`tiger`)
+            val tigerResult = tigerZip.inputStream().use { dm.importEnhancedSchemaPackageSync(it) }
+            assertEquals("tiger", tigerResult.schemaId)
+            assertEquals(SchemaArchetype.FIXED_SHAPECODE, dm.activeSchemaProfile.archetype)
+            assertTrue(bridge.deploy("tiger"))
+            assertTrue(bridge.selectSchema("tiger"))
+
+            val tigerEngine = CodetableEnhancedInputEngine(
+                rimeClient = bridge,
+                initialProfile = dm.activeSchemaProfile,
+                symbolTrie = dm.activeSymbolTrie,
+                briefIndex = dm.activeBriefIndex,
+                reverseLookupMap = dm.activeReverseLookupMap,
+                schemaDir = sharedDir
+            )
+            typeChars(tigerEngine, "je")
+            assertTrue(
+                "Expected 他 for Tiger code `je`, got ${tigerEngine.state.value.candidates.map { it.text }}",
+                "他" in tigerEngine.state.value.candidates.map { it.text }
+            )
+            tigerEngine.clear()
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `L2 auto phrase suggestion probes live librime 2-3-4 codes and skips existing base-table phrase 功能`() {
+        val fakeBaseTable = mapOf(
+            "gs" to listOf("功"),
+            "ng" to listOf("能"),
+            "gsn" to listOf("功能"), // exists as 3-code phrase in base table
+            "ce" to listOf("测"),
+            "ui" to listOf("试"),
+            "jx" to listOf("简")
+        )
+        val fakeClient = object : com.typefree.rime.RimeSessionClient {
+            override var pageSize: Int = 8
+            override val isNativeLoaded: Boolean = true
+            override val isDeployed: Boolean = true
+            override val activeSchemaId: String = "flypy"
+            override val wordCount: Int = 100
+            private val buf = StringBuilder()
+
+            override fun initialize(sharedDir: String, userDir: String): Boolean = true
+            override fun deploy(schemaId: String): Boolean = true
+            override fun selectSchema(schemaId: String): Boolean = true
+            override fun processKey(keyCode: Int, mask: Int): Boolean {
+                if (keyCode in 'a'.code..'z'.code) buf.append(keyCode.toChar())
+                return true
+            }
+            override fun processKeyText(keys: String): com.typefree.rime.RimeContextSnapshot {
+                buf.clear()
+                buf.append(keys)
+                return getContext(pageSize)
+            }
+            override fun getContext(maxCandidates: Int): com.typefree.rime.RimeContextSnapshot {
+                val raw = buf.toString()
+                val cands = fakeBaseTable[raw].orEmpty().map { w ->
+                    com.typefree.rime.RimeCandidate(w, "")
+                }
+                return com.typefree.rime.RimeContextSnapshot(
+                    preedit = raw,
+                    rawInput = raw,
+                    candidates = cands,
+                    hasMore = false
+                )
+            }
+            override fun selectCandidate(index: Int): String? {
+                val chosen = fakeBaseTable[buf.toString()]?.getOrNull(index)
+                buf.clear()
+                return chosen
+            }
+            override fun commitComposition(): String? {
+                val chosen = fakeBaseTable[buf.toString()]?.firstOrNull()
+                buf.clear()
+                return chosen
+            }
+            override fun clearComposition() {
+                buf.clear()
+            }
+            override fun getCommit(): String? = null
+            override fun setOption(option: String, value: Boolean) {}
+            override fun getOption(option: String): Boolean = false
+            override fun syncUserData(): Boolean = true
+            override fun getVersion(): String = "1.17.0-test"
+            override fun probeCandidatesForCode(code: String, maxCount: Int): List<String> =
+                fakeBaseTable[code].orEmpty().take(maxCount)
+        }
+
+        val suggestions = mutableListOf<com.typefree.core.ime.enhancer.PhraseSuggestion>()
+        val engine = CodetableEnhancedInputEngine(
+            rimeClient = fakeClient,
+            initialProfile = com.typefree.core.ime.profile.SchemaProfile.defaultXiaoheFlypy(),
+            briefIndex = com.typefree.core.ime.enhancer.BriefPrefixIndex.empty(), // precompiled mode (no 3/4-code BriefPrefixIndex)
+            reverseLookupMap = mapOf(
+                "功" to listOf("gsgl"),
+                "能" to listOf("ngyb"),
+                "测" to listOf("ced"),
+                "简" to listOf("jxvr")
+            ),
+            onPhraseSuggestion = { s -> if (s != null) suggestions.add(s) }
+        )
+
+        // 1. Repeat `功` + `能` 3 times -> MUST NOT suggest `功能` because `gsn` exists in live librime!
+        repeat(3) {
+            typeChars(engine, "gs")
+            engine.onKey(KeyInput.Space)
+            typeChars(engine, "ng")
+            engine.onKey(KeyInput.Space)
+            engine.resetPhraseSuggestionWindow()
+        }
+        assertTrue(
+            "Existing 3-code phrase `功能` MUST NOT be suggested for auto-encoding, got $suggestions",
+            suggestions.none { it.word == "功能" }
+        )
+
+        // 2. Repeat novel phrase `测` + `简` 3 times -> MUST suggest `测简` -> `cejx`
+        repeat(3) {
+            typeChars(engine, "ce")
+            engine.onKey(KeyInput.Space)
+            typeChars(engine, "jx")
+            engine.onKey(KeyInput.Space)
+            engine.resetPhraseSuggestionWindow()
+        }
+        assertTrue(
+            "Novel phrase `测简` should be suggested with code `cejx`, got $suggestions",
+            suggestions.any { it.word == "测简" && it.code == "cejx" }
+        )
+    }
 }

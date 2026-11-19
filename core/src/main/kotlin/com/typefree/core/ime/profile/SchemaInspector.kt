@@ -162,37 +162,58 @@ object SchemaInspector {
     fun computeTwoBriefMultiCharRatioFromDict(dictYamlContent: CharSequence): Double {
         val top1BySlot = BooleanArray(676)
         val seenSlot = BooleanArray(676)
-        var inBody = false
-        var sawYamlHeader = false
+        val rawLines = dictYamlContent.toString().lines()
+        val bodyMarkerIndex = rawLines.indexOfFirst { it.trim() == "..." }
+        val hasYamlHeader = bodyMarkerIndex >= 0
+        var textColIdx = 0
+        var codeColIdx = 1
 
-        val lines = dictYamlContent.toString().lineSequence()
-        for (raw in lines) {
+        if (hasYamlHeader) {
+            val parsedColumns = mutableListOf<String>()
+            var inColumns = false
+            for (i in 0 until bodyMarkerIndex) {
+                val trimmed = stripYamlComment(rawLines[i]).trim()
+                if (trimmed.isEmpty() || trimmed == "---") continue
+                if (trimmed == "columns:") {
+                    inColumns = true
+                    continue
+                }
+                if (inColumns) {
+                    if (trimmed.startsWith("-")) {
+                        parsedColumns.add(cleanYamlScalar(trimmed.removePrefix("-")).lowercase())
+                    } else if (!rawLines[i].first().isWhitespace()) {
+                        inColumns = false
+                    }
+                }
+            }
+            if (parsedColumns.isNotEmpty()) {
+                val tIdx = parsedColumns.indexOf("text")
+                val cIdx = parsedColumns.indexOf("code")
+                if (tIdx >= 0) textColIdx = tIdx
+                if (cIdx >= 0) codeColIdx = cIdx
+            }
+        }
+
+        val startLine = if (hasYamlHeader) bodyMarkerIndex + 1 else 0
+        for (i in startLine until rawLines.size) {
+            val raw = rawLines[i]
             val trimmed = raw.trim()
-            if (trimmed == "---") {
-                sawYamlHeader = true
-                continue
-            }
-            if (sawYamlHeader && !inBody) {
-                if (trimmed == "...") inBody = true
-                continue
-            }
             if (trimmed.isEmpty() || trimmed.startsWith("#")) continue
-            val tab1 = raw.indexOf('\t')
-            if (tab1 <= 0 || tab1 >= raw.length - 1) continue
-            val col0 = raw.substring(0, tab1).trim()
-            val rest = raw.substring(tab1 + 1)
-            val tab2 = rest.indexOf('\t')
-            val col1 = (if (tab2 >= 0) rest.substring(0, tab2) else rest).trim()
+            val parts = raw.split('\t')
+            if (parts.size < 2) continue
 
-            // Rime .dict.yaml is `word \t code`, whereas TSV may be `code \t word`
-            val (word, code) = if (sawYamlHeader || !col0.all { it in 'a'..'z' || it == ';' }) {
-                col0 to col1
+            val (word, code) = if (hasYamlHeader) {
+                val w = parts.getOrNull(textColIdx)?.trim().orEmpty()
+                val c = parts.getOrNull(codeColIdx)?.trim().orEmpty()
+                w to c
             } else {
-                col1 to col0
+                val col0 = parts[0].trim()
+                val col1 = parts[1].trim()
+                if (!col0.all { it in 'a'..'z' || it == ';' }) col0 to col1 else col1 to col0
             }
 
             if (code.length == 2 && code[0] in 'a'..'z' && code[1] in 'a'..'z') {
-                if (word.contains('$') || word.contains('{')) continue
+                if (word.isEmpty() || word.contains('$') || word.contains('{')) continue
                 val idx = (code[0] - 'a') * 26 + (code[1] - 'a')
                 if (!seenSlot[idx]) {
                     seenSlot[idx] = true

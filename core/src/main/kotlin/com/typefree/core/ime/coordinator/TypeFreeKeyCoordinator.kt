@@ -9,6 +9,7 @@ import com.typefree.core.ime.enhancer.SplitResult
 import com.typefree.core.ime.enhancer.Utf8Safety
 import com.typefree.core.ime.overlay.OverlayStepResult
 import com.typefree.core.ime.overlay.OverlaySymbolController
+import com.typefree.core.ime.profile.SchemaArchetype
 import com.typefree.core.ime.profile.SchemaProfile
 import java.util.Locale
 
@@ -1028,12 +1029,17 @@ class TypeFreeKeyCoordinator(
         }
 
         val isSyntheticRimeFrame = syntheticRimeCandidatesOverride != null
+        val suppressFixedShapeCompletions = profile.archetype == SchemaArchetype.FIXED_SHAPECODE &&
+            (!naturalContinuationEnabled || hasExactRimeMatch)
         val capRimeCompletions = naturalContinuationEnabled && !hasExactRimeMatch
         var continuationCount = validNats.size
         rawRime.forEachIndexed { origIdx, (txt, comment) ->
             if (txt in blocked) return@forEachIndexed
             if (singleCharMode && !Utf8Safety.isSingleCharacter(txt)) return@forEachIndexed
             val isComp = isCompletionComment(comment)
+            if (suppressFixedShapeCompletions && isComp) {
+                return@forEachIndexed
+            }
             if (capRimeCompletions && isComp && continuationCount >= naturalContinuationLimit) {
                 return@forEachIndexed
             }

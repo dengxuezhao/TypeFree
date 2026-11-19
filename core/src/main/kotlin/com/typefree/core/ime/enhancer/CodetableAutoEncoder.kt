@@ -122,6 +122,23 @@ class PhraseSuggestionTracker(
         existsInDict: (String) -> Boolean,
         isUniqueSingleCharCode: (String) -> Boolean
     ): PhraseSuggestion? {
+        return recordCommittedUnitWithCodeCheck(
+            text = text,
+            code = code,
+            existsInDict = { word, _ -> existsInDict(word) },
+            isUniqueSingleCharCode = isUniqueSingleCharCode,
+            singleCharCodeLookup = null
+        )
+    }
+
+    @Synchronized
+    fun recordCommittedUnitWithCodeCheck(
+        text: String,
+        code: String,
+        existsInDict: (word: String, phraseCode: String) -> Boolean,
+        isUniqueSingleCharCode: (String) -> Boolean,
+        singleCharCodeLookup: ((String) -> String?)? = null
+    ): PhraseSuggestion? {
         val cleanText = text.trim()
         val cleanCode = code.trim().lowercase(Locale.ROOT)
         if (cleanText.isEmpty() || cleanCode.isEmpty() || !cleanCode.all { it in 'a'..'z' }) {
@@ -135,17 +152,42 @@ class PhraseSuggestionTracker(
             return null
         }
 
+        fun resolveFallbackCode(ch: String): String? {
+            val raw = singleCharCodeLookup?.invoke(ch)?.trim()?.lowercase(Locale.ROOT)
+            return raw?.takeIf { it.length >= 2 && it.all { c -> c in 'a'..'z' } }
+        }
+
         val newSlots = when (chars.size) {
-            1 -> listOf(CharSlot(chars[0], cleanCode))
-            2 -> {
-                if (cleanCode.length < 4) {
-                    window.clear()
-                    return null
+            1 -> {
+                val effectiveCode = if (cleanCode.length >= 2) {
+                    cleanCode
+                } else {
+                    resolveFallbackCode(chars[0]) ?: cleanCode
                 }
-                listOf(
-                    CharSlot(chars[0], cleanCode.substring(0, 2)),
-                    CharSlot(chars[1], cleanCode.substring(2, 4))
-                )
+                listOf(CharSlot(chars[0], effectiveCode))
+            }
+            2 -> {
+                if (cleanCode.length >= 4) {
+                    listOf(
+                        CharSlot(chars[0], cleanCode.substring(0, 2)),
+                        CharSlot(chars[1], cleanCode.substring(2, 4))
+                    )
+                } else {
+                    // 2-code or 3-code brief phrase (e.g., Xiaohe 3-code two-char phrase):
+                    // recover per-char full codes from single-char reverse lookup so it can still
+                    // combine into 3/4-char phrases without dropping the sliding window.
+                    val c0 = resolveFallbackCode(chars[0])
+                    val c1 = resolveFallbackCode(chars[1])
+                    if (c0 != null && c1 != null) {
+                        listOf(
+                            CharSlot(chars[0], c0.substring(0, 2)),
+                            CharSlot(chars[1], c1.substring(0, 2))
+                        )
+                    } else {
+                        window.clear()
+                        return null
+                    }
+                }
             }
             else -> emptyList()
         }
@@ -169,7 +211,7 @@ class PhraseSuggestionTracker(
             val phraseWord = phraseChars.joinToString(separator = "")
 
             if (phraseWord in dismissedWords) continue
-            if (existsInDict(phraseWord)) continue
+            if (existsInDict(phraseWord, phraseCode)) continue
             if (isUniqueSingleCharCode(phraseCode)) continue
 
             val nextCount = (trackedCounts[phraseWord] ?: 0) + 1
@@ -332,7 +374,12 @@ class CodetableAutoEncoder(
     }
 
     @Synchronized
-    fun recordCommittedUnit(text: String, code: String): EncodedPhrase? {
+    fun recordCommittedUnit(
+        text: String,
+        code: String,
+        existsInDict: ((word: String, code: String) -> Boolean)? = null,
+        singleCharCodeLookup: ((String) -> String?)? = null
+    ): EncodedPhrase? {
         val cleanText = text.trim()
         val cleanCode = code.trim().lowercase()
         if (cleanText.isEmpty() || cleanCode.isEmpty() || !cleanCode.all { it in 'a'..'z' }) {
@@ -346,17 +393,39 @@ class CodetableAutoEncoder(
             return null
         }
 
+        fun resolveFallbackCode(ch: String): String? {
+            val raw = singleCharCodeLookup?.invoke(ch)?.trim()?.lowercase(Locale.ROOT)
+            return raw?.takeIf { it.length >= 2 && it.all { c -> c in 'a'..'z' } }
+        }
+
         val newSlots = when (chars.size) {
-            1 -> listOf(CharSlot(chars[0], cleanCode))
-            2 -> {
-                if (cleanCode.length < 4) {
-                    sessionSlots.clear()
-                    return null
+            1 -> {
+                val effectiveCode = if (cleanCode.length >= 2) {
+                    cleanCode
+                } else {
+                    resolveFallbackCode(chars[0]) ?: cleanCode
                 }
-                listOf(
-                    CharSlot(chars[0], cleanCode.substring(0, 2)),
-                    CharSlot(chars[1], cleanCode.substring(2, 4))
-                )
+                listOf(CharSlot(chars[0], effectiveCode))
+            }
+            2 -> {
+                if (cleanCode.length >= 4) {
+                    listOf(
+                        CharSlot(chars[0], cleanCode.substring(0, 2)),
+                        CharSlot(chars[1], cleanCode.substring(2, 4))
+                    )
+                } else {
+                    val c0 = resolveFallbackCode(chars[0])
+                    val c1 = resolveFallbackCode(chars[1])
+                    if (c0 != null && c1 != null) {
+                        listOf(
+                            CharSlot(chars[0], c0.substring(0, 2)),
+                            CharSlot(chars[1], c1.substring(0, 2))
+                        )
+                    } else {
+                        sessionSlots.clear()
+                        return null
+                    }
+                }
             }
             else -> emptyList()
         }
@@ -372,6 +441,9 @@ class CodetableAutoEncoder(
             sessionSlots.clear()
         }
         if (phraseCode == null) {
+            return null
+        }
+        if (existsInDict?.invoke(phraseWord, phraseCode) == true) {
             return null
         }
 

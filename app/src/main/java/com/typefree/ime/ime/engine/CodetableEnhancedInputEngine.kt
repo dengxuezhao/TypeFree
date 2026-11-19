@@ -138,6 +138,11 @@ class CodetableEnhancedInputEngine(
     private var currentSlashSnippets: List<SlashSnippetEntry> = emptyList()
     private val knownUserWords: MutableSet<String> = HashSet()
     private val runtimeUserWordsByCode: MutableMap<String, MutableList<String>> = LinkedHashMap()
+    private val knownDictExistenceCache = object : LinkedHashMap<String, Boolean>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean {
+            return size > 512
+        }
+    }
     private var uniqueSingleChar4Codes: Set<String> = buildUniqueSingleChar4Codes(reverseLookupMap)
 
     val phraseSuggestionTracker: PhraseSuggestionTracker = PhraseSuggestionTracker()
@@ -271,6 +276,7 @@ class CodetableEnhancedInputEngine(
         currentReverseLookupMap = reverseLookupMap
         this.liveContinuationWordFrequencyLookup = liveContinuationWordFrequencyLookup
         uniqueSingleChar4Codes = buildUniqueSingleChar4Codes(reverseLookupMap)
+        knownDictExistenceCache.clear()
         reloadUserDictWordsCache(profile.schemaId)
 
         val effectiveProfile = resolveEffectiveProfile(profile)
@@ -340,6 +346,7 @@ class CodetableEnhancedInputEngine(
         val cleanCode = code.trim().lowercase()
         if (cleanWord.isEmpty() || cleanCode.isEmpty()) return
         knownUserWords.add(cleanWord)
+        knownDictExistenceCache.clear()
         val list = runtimeUserWordsByCode.getOrPut(cleanCode) { ArrayList(2) }
         if (cleanWord !in list) {
             list.add(cleanWord)
@@ -460,15 +467,23 @@ class CodetableEnhancedInputEngine(
                 val candidateCode = if (
                     !coordinator.overlayController.isActive &&
                     !rawBefore.startsWith("/") &&
-                    !rawBefore.startsWith(";") &&
-                    key.char in 'a'..'z'
+                    !rawBefore.startsWith(";")
                 ) {
-                    if (rawBefore.length >= coordinator.profile.maxCodeLength &&
-                        coordinator.profile.maxCodeLength > 0
-                    ) {
-                        rawBefore
-                    } else {
-                        rawBefore + key.char
+                    when {
+                        key.char in 'a'..'z' -> {
+                            if (rawBefore.length >= coordinator.profile.maxCodeLength &&
+                                coordinator.profile.maxCodeLength > 0
+                            ) {
+                                rawBefore
+                            } else {
+                                rawBefore + key.char
+                            }
+                        }
+                        key.char == ';' &&
+                            coordinator.profile.semicolonSelectsSecond &&
+                            rawBefore.isNotEmpty() &&
+                            rawBefore.all { it in 'a'..'z' } -> rawBefore
+                        else -> ""
                     }
                 } else {
                     ""
@@ -617,32 +632,93 @@ class CodetableEnhancedInputEngine(
             phraseSuggestionTracker.resetWindow()
             return
         }
-        val suggestion = phraseSuggestionTracker.recordCommittedUnit(
+        val suggestion = phraseSuggestionTracker.recordCommittedUnitWithCodeCheck(
             text = plain.text,
             code = commitSourceCode,
             existsInDict = ::wordExistsInKnownDict,
-            isUniqueSingleCharCode = { code -> code in uniqueSingleChar4Codes }
+            isUniqueSingleCharCode = { code -> code in uniqueSingleChar4Codes },
+            singleCharCodeLookup = ::bestSingleCharCodeForAutoEncode
         )
         if (suggestion != null) {
             onPhraseSuggestion?.invoke(suggestion)
         }
     }
 
-    private fun wordExistsInKnownDict(word: String): Boolean {
-        if (word in knownUserWords) return true
-        if (word in currentReverseLookupMap) return true
-        val derived = CodetableCodeDeriver.deriveXiaohe4Code(word, currentReverseLookupMap)
-        if (derived != null && derived.length == 4) {
-            if (word in currentBriefIndex.lookup2(derived[0], derived[1])) return true
-            if (currentBriefIndex.lookupNaturalContinuations(
-                    prefix = derived.substring(0, 3),
-                    limit = BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS
-                ).any { it.word == word && it.fullCode == derived }
-            ) {
-                return true
+    private fun bestSingleCharCodeForAutoEncode(ch: String): String? {
+        val codes = currentReverseLookupMap[ch] ?: return null
+        var best: String? = null
+        for (raw in codes) {
+            val clean = raw.trim().lowercase()
+            if (clean.length < 2 || !clean.all { it in 'a'..'z' }) continue
+            if (best == null || clean.length > best.length) {
+                best = clean
             }
         }
-        return false
+        return best
+    }
+
+    private fun wordExistsInKnownDict(word: String, suggestedCode: String? = null): Boolean {
+        if (word in knownUserWords) return true
+        if (word in currentReverseLookupMap) return true
+        val cleanSuggested = suggestedCode?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+        val cacheKey = if (cleanSuggested != null) "$word|$cleanSuggested" else word
+        knownDictExistenceCache[cacheKey]?.let { return it }
+
+        val candidateFullCodes = LinkedHashSet<String>(2)
+        if (cleanSuggested != null && cleanSuggested.all { it in 'a'..'z' }) {
+            candidateFullCodes.add(cleanSuggested)
+        }
+        CodetableCodeDeriver.deriveXiaohe4Code(word, currentReverseLookupMap)
+            ?.takeIf { it.length == 4 }
+            ?.let { candidateFullCodes.add(it) }
+
+        val codesToProbe = LinkedHashSet<String>(8)
+        val isTwoCharWord = word.codePointCount(0, word.length) == 2
+        for (fullCode in candidateFullCodes) {
+            if (fullCode.length >= 2) {
+                if (word in currentBriefIndex.lookup2(fullCode[0], fullCode[1])) {
+                    knownDictExistenceCache[cacheKey] = true
+                    return true
+                }
+            }
+            if (isTwoCharWord && fullCode.length >= 4) {
+                if (word in currentBriefIndex.lookup2(fullCode[0], fullCode[2])) {
+                    knownDictExistenceCache[cacheKey] = true
+                    return true
+                }
+            }
+            if (fullCode.length == 4) {
+                if (currentBriefIndex.lookupNaturalContinuations(
+                        prefix = fullCode.substring(0, 3),
+                        limit = BriefPrefixIndex.MAX_NATURAL_CONTINUATIONS
+                    ).any { it.word == word && it.fullCode == fullCode }
+                ) {
+                    knownDictExistenceCache[cacheKey] = true
+                    return true
+                }
+            }
+            // Probe exact 4-code, 3-code brief, and 2-code brief slots (including AaBa initials for
+            // 2-char phrases) directly against librime so precompiled `.table.bin` and 2/3-code
+            // phrases (e.g. `功能`) are never falsely re-suggested.
+            if (fullCode.length >= 4) codesToProbe.add(fullCode.substring(0, 4))
+            if (fullCode.length >= 3) codesToProbe.add(fullCode.substring(0, 3))
+            if (fullCode.length >= 2) codesToProbe.add(fullCode.substring(0, 2))
+            if (isTwoCharWord && fullCode.length >= 4) {
+                codesToProbe.add("${fullCode[0]}${fullCode[2]}")
+            }
+        }
+
+        val existsInLiveRime = if (codesToProbe.isNotEmpty()) {
+            val probeList = codesToProbe.toList()
+            val batches = runCatching {
+                rimeClient.probeBatchCandidatesForCodes(probeList, maxCount = 16)
+            }.getOrDefault(emptyList())
+            batches.any { candidates -> word in candidates }
+        } else {
+            false
+        }
+        knownDictExistenceCache[cacheKey] = existsInLiveRime
+        return existsInLiveRime
     }
 
     private fun handleCommitAction(
