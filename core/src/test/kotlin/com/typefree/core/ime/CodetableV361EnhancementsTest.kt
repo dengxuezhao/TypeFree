@@ -30,7 +30,6 @@ import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.time.LocalDate
-import java.util.BitSet
 
 class CodetableV361EnhancementsTest {
 
@@ -120,28 +119,38 @@ class CodetableV361EnhancementsTest {
         assertEquals(NaturalContinuation("八码长词", "h", "abcdefgh"), idx.lookupNaturalFirstContinuation("abcdefg"))
         assertNull(idx.lookupNaturalFirstContinuation("a"))
 
-        // Snapshot v2 roundtrip
-        val tempDir = Files.createTempDirectory("brief_v2_").toFile()
+        // Snapshot v3 roundtrip + rejection of legacy v1/v2
+        val tempDir = Files.createTempDirectory("brief_v3_").toFile()
         try {
-            val snapV2 = File(tempDir, "flypy.brief.idx")
-            idx.writeSnapshot(snapV2)
-            val reloaded = BriefPrefixIndex.readSnapshot(snapV2)
+            val snapV3 = File(tempDir, "flypy.brief.idx")
+            idx.writeSnapshot(snapV3)
+            val reloaded = BriefPrefixIndex.readSnapshot(snapV3)
             assertEquals(NaturalContinuation("丁", "uu", "okhguu"), reloaded.lookupNaturalFirstContinuation("okhg"))
+            assertEquals(
+                listOf("丁", "百", "下", "𠀢"),
+                reloaded.lookupNaturalContinuations("okhg").map { it.word }
+            )
             assertEquals(NaturalContinuation("清风徐来", "l", "qfxl"), reloaded.lookupNaturalFirstContinuation("qfx"))
 
-            // Snapshot v1 backwards compatibility (must not crash)
-            val snapV1 = File(tempDir, "legacy_v1.brief.idx")
-            DataOutputStream(BufferedOutputStream(FileOutputStream(snapV1))).use { out ->
-                out.writeInt(0x54464249) // SNAPSHOT_MAGIC
-                out.writeInt(1) // v1
-                repeat(26) { out.writeShort(0) }
-                repeat(676) { out.writeShort(0) }
-                out.writeInt(0) // bitLen
-                out.writeInt(0) // gt4Count
-                out.writeShort(0) // guardCount
+            for (legacyVer in listOf(1, 2)) {
+                val snapLegacy = File(tempDir, "legacy_v$legacyVer.brief.idx")
+                DataOutputStream(BufferedOutputStream(FileOutputStream(snapLegacy))).use { out ->
+                    out.writeInt(0x54464249) // SNAPSHOT_MAGIC
+                    out.writeInt(legacyVer)
+                    repeat(26) { out.writeShort(0) }
+                    repeat(676) { out.writeShort(0) }
+                    out.writeInt(0) // bitLen
+                    out.writeInt(0) // gt4Count
+                    out.writeShort(0) // guardCount
+                }
+                var rejected = false
+                try {
+                    BriefPrefixIndex.readSnapshot(snapLegacy)
+                } catch (_: IllegalArgumentException) {
+                    rejected = true
+                }
+                assertTrue("Snapshot v$legacyVer must be rejected so index rebuilds as v3", rejected)
             }
-            val v1Idx = BriefPrefixIndex.readSnapshot(snapV1)
-            assertNull(v1Idx.lookupNaturalFirstContinuation("okhg"))
         } finally {
             tempDir.deleteRecursively()
         }
@@ -161,7 +170,7 @@ class CodetableV361EnhancementsTest {
             reverseSplitEngine = ReverseSplitEngine(idx)
         )
 
-        // a) okhg hoists 丁 (~uu) to index 0 ahead of abc-sorted completions without duplicating 丁
+        // a) okhg hoists [丁, 百, 下, 𠀢] in original dictionary order without duplicating
         for (c in "okhg") coord.onCharKey(c)
         val okhgCands = coord.snapshotUi().candidates
         assertEquals(listOf("丁", "百", "下", "𠀢"), okhgCands.map { it.commitText })
@@ -199,13 +208,17 @@ class CodetableV361EnhancementsTest {
     }
 
     @Test
-    fun `2_english_word_trie_veto_and_schema_toml_roundtrip`() {
+    fun `2_english_word_trie_expanded_and_chinese_mode_has_no_english_veto`() {
         val trie = EnglishWordTrie.defaultBuiltIn()
         val requiredWords = listOf(
             "github", "kotlin", "python", "android", "google", "gradle", "studio", "docker",
             "gemini", "claude", "typescript", "javascript", "flutter", "chrome", "apple",
             "iphone", "macbook", "keyboard", "shadow", "phrase", "config", "commit",
-            "branch", "merge", "deploy", "search", "import", "export"
+            "branch", "merge", "deploy", "search", "import", "export",
+            "the", "and", "for", "you", "are", "not", "can", "app", "api", "git",
+            "url", "sql", "code", "work", "time", "good", "make", "test", "user",
+            "data", "file", "line", "list", "name", "plan", "send", "show", "take",
+            "text", "view", "week", "year"
         )
         for (w in requiredWords) {
             assertTrue("Missing required English word: $w", trie.containsWord(w))
@@ -213,29 +226,23 @@ class CodetableV361EnhancementsTest {
         assertTrue(trie.hasLongerWordPrefix("gith"))
         assertTrue(trie.hasLongerWordPrefix("githu"))
         assertTrue(trie.suggestWords("gith", 6).contains("github"))
+        assertTrue(trie.suggestWords("ap", 8).contains("app"))
+        assertTrue(trie.suggestWords("co", 8).contains("code"))
 
-        // Verify >= 600 embedded words via suggestWords across a..z
+        // Verify >= 2,500 embedded words via suggestWords across a..z (length >= 2)
         val allEmbedded = ('a'..'z').flatMap { c -> trie.suggestWords(c.toString(), 500) }.distinct()
-        assertTrue("Expected >= 600 built-in English words, got ${allEmbedded.size}", allEmbedded.size >= 600)
-        assertTrue(allEmbedded.all { it.length >= 5 && it.all { ch -> ch in 'a'..'z' } })
+        assertTrue("Expected >= 2500 built-in English words, got ${allEmbedded.size}", allEmbedded.size >= 2500)
+        assertTrue(allEmbedded.all { it.length >= 2 && it.all { ch -> ch in 'a'..'z' } })
 
-        // SchemaProfile & TypeFreeTomlParser roundtrip
+        // SchemaProfile & TypeFreeTomlParser roundtrip (legacy english_prefix_veto_enabled ignored cleanly)
         val defaultProfile = SchemaProfile.defaultXiaoheFlypy()
-        assertTrue(defaultProfile.englishPrefixVetoEnabled)
-        assertFalse(defaultProfile.autoEncodePhrasesEnabled)
-
-        val customized = defaultProfile.copy(
-            englishPrefixVetoEnabled = false,
-            autoEncodePhrasesEnabled = true
-        )
-        val toml = TypeFreeTomlParser.serialize(customized)
-        assertTrue(toml.contains("english_prefix_veto_enabled = false"))
-        assertTrue(toml.contains("auto_encode_phrases_enabled = true"))
+        val customized = defaultProfile.copy(directCommandsEnabled = false, autoEncodePhrasesEnabled = true)
+        val toml = TypeFreeTomlParser.serialize(customized) + "\nenglish_prefix_veto_enabled = true\n"
         val parsed = TypeFreeTomlParser.parse(toml)
-        assertFalse(parsed.englishPrefixVetoEnabled)
+        assertFalse(parsed.directCommandsEnabled)
         assertTrue(parsed.autoEncodePhrasesEnabled)
 
-        // Coordinator English veto flow: gith -> githu -> github (vetoes split & 5th-key commit)
+        // Chinese mode no longer hijacks 4-char code with English veto; `gith` falls through to reverse split
         val idx = BriefPrefixIndex.buildFromDictLines(
             mainDictLines = sequenceOf(
                 "---",
@@ -248,161 +255,14 @@ class CodetableV361EnhancementsTest {
             ),
             gt4GuardTwoPrefixes = setOf("ok", "os")
         )
-        val port = StubRimePort(
-            mapOf(
-                "git" to listOf("给" to "~i"),
-                "word" to listOf("我日" to "") // exact Chinese match on 4-char buffer
-            )
-        )
-        val customTrie = EnglishWordTrie(listOf("github", "typescript", "implementation"))
         val coord = TypeFreeKeyCoordinator(
             profile = SchemaProfile.defaultXiaoheFlypy(),
-            rimePort = port,
-            reverseSplitEngine = ReverseSplitEngine(idx),
-            englishWordTrie = customTrie
+            rimePort = StubRimePort(),
+            reverseSplitEngine = ReverseSplitEngine(idx)
         )
-
-        for (c in "gith") {
-            assertTrue(coord.onCharKey(c) is CoordinatorKeyOutcome.Consumed)
-        }
-        assertFalse("gith must veto reverse split", coord.snapshotUi().isReverseSplitActive)
-        assertEquals(listOf("github"), coord.snapshotUi().candidates.map { it.commitText })
-
-        // 5th key 'u' and 6th key 'b' extend buffer cleanly without 5th-key auto-commit
-        val fifth = coord.onCharKey('u')
-        assertTrue(fifth is CoordinatorKeyOutcome.Consumed)
-        assertEquals("githu", (fifth as CoordinatorKeyOutcome.Consumed).ui.rawCode)
-        assertEquals(listOf("github"), fifth.ui.candidates.map { it.commitText })
-
-        val sixth = coord.onCharKey('b')
-        assertTrue(sixth is CoordinatorKeyOutcome.Consumed)
-        assertEquals("github", (sixth as CoordinatorKeyOutcome.Consumed).ui.rawCode)
-
-        val spaceOut = coord.onSpace() as CoordinatorKeyOutcome.Commit
-        assertEquals("github", (spaceOut.action as CommitAction.PlainText).text)
-        assertFalse(coord.isComposing)
-
-        // Long 14-char English word stays extensible up to 14 letters
-        for (c in "implementation") {
-            assertTrue(coord.onCharKey(c) is CoordinatorKeyOutcome.Consumed)
-        }
-        assertEquals("implementation", coord.snapshotUi().rawCode)
-        assertEquals("implementation", ((coord.onSpace() as CoordinatorKeyOutcome.Commit).action as CommitAction.PlainText).text)
-
-        // Backspace from githu -> gith -> git restores Rime candidates
-        for (c in "githu") coord.onCharKey(c)
-        coord.onBackspace()
-        assertEquals("gith", coord.snapshotUi().rawCode)
-        coord.onBackspace()
-        assertEquals("git", coord.snapshotUi().rawCode)
-        assertEquals("给", coord.snapshotUi().candidates.first().commitText)
-        coord.reset()
-
-        // Exact Rime Chinese match on 4-char code is NOT hijacked by English veto
-        val chinesePort = StubRimePort(mapOf("word" to listOf("字一" to "", "字二" to "")))
-        val coordWithExact = TypeFreeKeyCoordinator(
-            profile = SchemaProfile.defaultXiaoheFlypy(),
-            rimePort = chinesePort,
-            reverseSplitEngine = ReverseSplitEngine(idx),
-            englishWordTrie = EnglishWordTrie(listOf("words"))
-        )
-        for (c in "word") coordWithExact.onCharKey(c)
-        assertEquals(listOf("字一", "字二"), coordWithExact.snapshotUi().candidates.map { it.commitText })
-        coordWithExact.reset()
-
-        // setEnglishPrefixVetoEnabled(false) allows reverse split on gith again
-        coord.setEnglishPrefixVetoEnabled(false)
         for (c in "gith") coord.onCharKey(c)
         assertTrue(coord.snapshotUi().isReverseSplitActive)
         assertEquals("给他", coord.snapshotUi().candidates.first().commitText)
-    }
-
-    @Test
-    fun `2b_english_veto_handles_real_librime_speller_reject_and_3code_autocommit_on_4th_key`() {
-        // Simulates real flypy.schema.yaml speller (`auto_select: true`, `auto_select_pattern: ^(?!o[ks])[a-z]{4}$`):
-        // 1) `gith`: `git` has no dict entry -> Rime discards `git` at 4th key 'h' and returns rawInput="h", candidates=[和, 忽略]
-        // 2) `goog`: `goo` has dict entry `腘` -> Rime auto-commits `腘` at 4th key 'g' and returns rawInput="g"
-        // 3) `pyth`: valid 4-code Chinese entry -> Rime keeps rawInput="pyth", candidates=[跑一趟, 朋友] (NOT hijacked)
-        val rimeSpellerPort = object : RimeCoreSessionPort {
-            private val buf = StringBuilder()
-            override fun sendChar(ch: Char): RimeDecodeFrame {
-                buf.append(ch)
-                return when (val cur = buf.toString()) {
-                    "gith" -> {
-                        buf.clear().append('h')
-                        RimeDecodeFrame(rawInput = "h", preedit = "h", candidates = listOf("和" to "", "忽略" to ""))
-                    }
-                    "goog" -> {
-                        buf.clear().append('g')
-                        RimeDecodeFrame(
-                            rawInput = "g",
-                            preedit = "g",
-                            candidates = listOf("个" to ""),
-                            autoCommittedText = "腘"
-                        )
-                    }
-                    "pyth" -> RimeDecodeFrame(
-                        rawInput = "pyth",
-                        preedit = "pyth",
-                        candidates = listOf("跑一趟" to "", "朋友" to "")
-                    )
-                    else -> RimeDecodeFrame(rawInput = cur, preedit = cur, candidates = emptyList())
-                }
-            }
-            override fun sendBackspace(): RimeDecodeFrame {
-                if (buf.isNotEmpty()) buf.deleteCharAt(buf.length - 1)
-                val cur = buf.toString()
-                return RimeDecodeFrame(rawInput = cur, preedit = cur)
-            }
-            override fun selectCandidate(index: Int): Pair<String?, RimeDecodeFrame> = null to RimeDecodeFrame()
-            override fun commitCurrentComposition(): String? = null
-            override fun clearComposition() { buf.clear() }
-            override fun currentFrame(maxCandidates: Int): RimeDecodeFrame {
-                val cur = buf.toString()
-                val cands = if (cur == "pyth") {
-                    listOf("跑一趟" to "", "朋友" to "")
-                } else {
-                    emptyList()
-                }
-                return RimeDecodeFrame(rawInput = cur, preedit = cur, candidates = cands)
-            }
-            override fun setOption(option: String, value: Boolean) {}
-            override fun getOption(option: String): Boolean = false
-        }
-
-        val coord = TypeFreeKeyCoordinator(
-            profile = SchemaProfile.defaultXiaoheFlypy(),
-            rimePort = rimeSpellerPort
-        )
-
-        // 1) `gith` -> vetoed despite Rime returning rawInput="h"
-        for (c in "gith") {
-            assertTrue(coord.onCharKey(c) is CoordinatorKeyOutcome.Consumed)
-        }
-        assertEquals("gith", coord.snapshotUi().rawCode)
-        assertTrue(coord.snapshotUi().candidates.any { it.commitText == "github" })
-        coord.onCharKey('u')
-        coord.onCharKey('b')
-        val gitCommit = coord.onSpace() as CoordinatorKeyOutcome.Commit
-        assertEquals("github", (gitCommit.action as CommitAction.PlainText).text)
-
-        // 2) `goog` -> vetoed despite Rime auto-committing 3-code `腘` and leaving rawInput="g"
-        for (c in "goog") {
-            val out = coord.onCharKey(c)
-            assertTrue("goog must NOT prematurely commit 腘 at key '$c'", out is CoordinatorKeyOutcome.Consumed)
-        }
-        assertEquals("goog", coord.snapshotUi().rawCode)
-        assertTrue(coord.snapshotUi().candidates.any { it.commitText == "google" })
-        coord.onCharKey('l')
-        coord.onCharKey('e')
-        val googleCommit = coord.onSpace() as CoordinatorKeyOutcome.Commit
-        assertEquals("google", (googleCommit.action as CommitAction.PlainText).text)
-
-        // 3) `pyth` -> real 4-code Chinese candidates preserved
-        for (c in "pyth") {
-            assertTrue(coord.onCharKey(c) is CoordinatorKeyOutcome.Consumed)
-        }
-        assertEquals(listOf("跑一趟", "朋友"), coord.snapshotUi().candidates.map { it.commitText })
     }
 
     @Test
@@ -476,7 +336,7 @@ class CodetableV361EnhancementsTest {
     }
 
     @Test
-    fun `4_codetable_auto_encoder_disabled_by_default_and_encodes_2_3_4_char_phrases`() {
+    fun `4_codetable_auto_encoder_standalone_and_coordinator_does_not_auto_write_user_txt`() {
         val tempDir = Files.createTempDirectory("auto_enc_").toFile()
         try {
             val userDictFile = File(tempDir, "flypy_user.txt")
@@ -518,140 +378,27 @@ class CodetableV361EnhancementsTest {
             assertTrue(reloaded.removePhrase("天下", "tmxx"))
             assertTrue(reloaded.lookupExact("tmxx").isEmpty())
 
-            // Coordinator: strictly disabled by default!
-            val coordUserFile = File(tempDir, "coord_user.txt")
-            val coordEncoder = CodetableAutoEncoder(coordUserFile, "flypy")
+            // Coordinator never silently creates or writes `_user.txt`
             val port = StubRimePort(
                 mapOf(
                     "tm" to listOf("天" to ""),
-                    "xx" to listOf("下" to ""),
-                    "tmxx" to listOf("同心" to "")
+                    "xx" to listOf("下" to "")
                 )
             )
             val coord = TypeFreeKeyCoordinator(
                 profile = SchemaProfile.defaultXiaoheFlypy().copy(autoCommitUniqueFull = false),
-                rimePort = port,
-                autoEncoder = coordEncoder
+                rimePort = port
             )
-            assertFalse(coord.autoEncodeEnabled)
-
-            // Disabled: committing 天 then 下 must NOT encode tmxx
             coord.onCharKey('t'); coord.onCharKey('m'); coord.onSpace()
             coord.onCharKey('x'); coord.onCharKey('x'); coord.onSpace()
-            assertTrue(coordEncoder.lookupExact("tmxx").isEmpty())
-
-            // Enabled explicitly: committing 天 then 下 encodes tmxx and serves as Layer +2!
-            coord.setAutoEncodeEnabled(true)
-            coord.onCharKey('t'); coord.onCharKey('m'); coord.onSpace()
-            coord.onCharKey('x'); coord.onCharKey('x'); coord.onSpace()
-            assertEquals(listOf("天下"), coordEncoder.lookupExact("tmxx"))
-
-            for (c in "tmxx") coord.onCharKey(c)
-            val cands = coord.snapshotUi().candidates
-            assertEquals(listOf("同心", "天下"), cands.map { it.commitText })
-            assertEquals("造词", cands[1].codeHint)
+            assertFalse(File(tempDir, "coord_user.txt").exists())
         } finally {
             tempDir.deleteRecursively()
         }
     }
 
     @Test
-    fun `4b_auto_encoder_and_shadow_override_4code_speller_autocommit_and_3char_reject`() {
-        val tempDir = Files.createTempDirectory("auto_enc_speller_").toFile()
-        try {
-            val encoder = CodetableAutoEncoder(File(tempDir, "flypy_user.txt"), "flypy")
-            val shadowMgr = ShadowDictManager(tempDir, "flypy")
-
-            // Encode two 2-char phrases:
-            // 1) 正(vg) + 并(bk) -> 正并 (vgbk), which collides with unique static Rime entry 征兵 (vgbk)
-            assertNull(encoder.recordCommittedUnit("正", "vg"))
-            assertEquals(EncodedPhrase("正并", "vgbk"), encoder.recordCommittedUnit("并", "bk"))
-            // 2) 但(dj) + 正(vg) -> 但正 (djvg), which is absent from static Rime table
-            encoder.resetSession()
-            assertNull(encoder.recordCommittedUnit("但", "dj"))
-            assertEquals(EncodedPhrase("但正", "djvg"), encoder.recordCommittedUnit("正", "vg"))
-            encoder.resetSession()
-
-            // Simulates real librime speller with auto_select: true:
-            // - `vgbk`: unique 4-code static entry `征兵` -> Rime returns rawInput="", autoCommittedText="征兵"
-            // - `djvg`: absent 4-code entry -> Rime auto-commits 3-char `单机` and leaves rawInput="g"
-            val spellerPort = object : RimeCoreSessionPort {
-                private val buf = StringBuilder()
-                override fun sendChar(ch: Char): RimeDecodeFrame {
-                    buf.append(ch)
-                    return when (val cur = buf.toString()) {
-                        "vgbk" -> {
-                            buf.clear()
-                            RimeDecodeFrame(rawInput = "", preedit = "", candidates = emptyList(), autoCommittedText = "征兵")
-                        }
-                        "djvg" -> {
-                            buf.clear().append('g')
-                            RimeDecodeFrame(rawInput = "g", preedit = "g", candidates = listOf("个" to ""), autoCommittedText = "单机")
-                        }
-                        else -> RimeDecodeFrame(rawInput = cur, preedit = cur)
-                    }
-                }
-                override fun sendBackspace(): RimeDecodeFrame {
-                    if (buf.isNotEmpty()) buf.deleteCharAt(buf.length - 1)
-                    val cur = buf.toString()
-                    return RimeDecodeFrame(rawInput = cur, preedit = cur)
-                }
-                override fun selectCandidate(index: Int): Pair<String?, RimeDecodeFrame> = null to RimeDecodeFrame()
-                override fun commitCurrentComposition(): String? = null
-                override fun clearComposition() { buf.clear() }
-                override fun currentFrame(maxCandidates: Int): RimeDecodeFrame {
-                    val cur = buf.toString()
-                    return RimeDecodeFrame(rawInput = cur, preedit = cur)
-                }
-                override fun setOption(option: String, value: Boolean) {}
-                override fun getOption(option: String): Boolean = false
-            }
-
-            val coord = TypeFreeKeyCoordinator(
-                profile = SchemaProfile.defaultXiaoheFlypy(),
-                rimePort = spellerPort,
-                shadowDictManager = shadowMgr,
-                autoEncoder = encoder
-            )
-            coord.setAutoEncodeEnabled(true)
-
-            // 1) `vgbk`: must NOT silently auto-commit 征兵; must surface [征兵, 正并] cleanly
-            for (c in "vgbk") {
-                val out = coord.onCharKey(c)
-                assertTrue("vgbk must stay composing with both 征兵 and 正并", out is CoordinatorKeyOutcome.Consumed)
-            }
-            assertEquals(listOf("征兵", "正并"), coord.snapshotUi().candidates.map { it.commitText })
-            val pickUser = coord.selectCandidate(1) as CoordinatorKeyOutcome.Commit
-            assertEquals("正并", (pickUser.action as CommitAction.PlainText).text)
-            assertFalse(coord.isComposing)
-
-            // 2) Pin `正并` on `vgbk` -> hoisted to #1 ahead of `征兵`
-            shadowMgr.pinWord("vgbk", "正并")
-            coord.reloadShadowRules()
-            for (c in "vgbk") coord.onCharKey(c)
-            assertEquals(listOf("正并", "征兵"), coord.snapshotUi().candidates.map { it.commitText })
-            assertEquals("正并", ((coord.selectCandidate(0) as CoordinatorKeyOutcome.Commit).action as CommitAction.PlainText).text)
-
-            // 3) `djvg`: must veto premature 3-char `单机` auto-commit and auto-commit unique `但正`
-            coord.onCharKey('d'); coord.onCharKey('j'); coord.onCharKey('v')
-            val djvgOutcome = coord.onCharKey('g')
-            assertTrue("djvg must commit 但正 on 4th key", djvgOutcome is CoordinatorKeyOutcome.Commit)
-            assertEquals("但正", ((djvgOutcome as CoordinatorKeyOutcome.Commit).action as CommitAction.PlainText).text)
-            assertFalse(coord.isComposing)
-
-            // 4) With autoCommitUniqueFull=false, `djvg` stays composing with [`但正`]
-            coord.updateProfile(SchemaProfile.defaultXiaoheFlypy().copy(autoCommitUniqueFull = false, autoEncodePhrasesEnabled = true))
-            for (c in "djvg") {
-                assertTrue(coord.onCharKey(c) is CoordinatorKeyOutcome.Consumed)
-            }
-            assertEquals(listOf("但正"), coord.snapshotUi().candidates.map { it.commitText })
-        } finally {
-            tempDir.deleteRecursively()
-        }
-    }
-
-    @Test
-    fun `5_direct_commands_orq_offset_odz_oqm_restriction_and_zz_symbol_groups`() {
+    fun `5_direct_commands_orq_offset_odz_and_strict_flypy_only_restriction`() {
         val fixedDate = LocalDate.of(2026, 11, 18)
         var currentSchema = "flypy"
         var singleChar = false
@@ -661,30 +408,38 @@ class CodetableV361EnhancementsTest {
             dateProvider = { fixedDate }
         )
 
-        // orq+N / orq-N / date+N / date-N
-        val tomorrow = engine.evaluate("orq+1")
+        // orq with default offset 0 includes tomorrow & yesterday shortcuts
+        val today = engine.evaluate("orq")
+        assertEquals("2026年11月18日", today[0].commitText)
+        assertEquals("2026-11-18", today[1].commitText)
+        assertEquals("星期三", today[2].commitText)
+        assertEquals("农历", today[3].codeHint)
+        assertEquals("明天（11月19日）", today[4].displayText)
+        assertEquals("2026年11月19日", today[4].commitText)
+        assertEquals("昨天（11月17日）", today[5].displayText)
+        assertEquals("2026年11月17日", today[5].commitText)
+
+        // orq with explicit offset omits tomorrow/yesterday shortcuts
+        val tomorrow = engine.evaluate("orq", dateOffsetDays = 1)
+        assertEquals(4, tomorrow.size)
         assertEquals("2026年11月19日", tomorrow[0].commitText)
         assertEquals("2026-11-19", tomorrow[1].commitText)
-        assertEquals("农历", tomorrow[2].codeHint)
+        assertEquals("星期四", tomorrow[2].commitText)
 
-        val weekAgo = engine.evaluate("orq-7")
-        assertEquals("2026年11月11日", weekAgo[0].commitText)
-        assertEquals("2026-11-11", weekAgo[1].commitText)
+        // Legacy zz / zza..zzf / date / time / oxq / orq+1 / =1+1 are completely removed
+        for (removed in listOf("zz", "zza", "zzb", "date", "time", "oxq", "orq+1", "date+1", "=1+1")) {
+            assertTrue("Removed command '$removed' must return empty", engine.evaluate(removed).isEmpty())
+            assertFalse("Removed command '$removed' must not match prefix", engine.isCommandPrefixOrMatch(removed))
+        }
 
-        val datePlus30 = engine.evaluate("date+30")
-        assertEquals("2026-12-18", datePlus30[1].commitText)
-        val dateMinus0 = engine.evaluate("date-0")
-        assertEquals("2026-11-18", dateMinus0[1].commitText)
-        assertEquals(3, engine.evaluate("orq+3650").size)
-        assertTrue(engine.evaluate("orq+3651").isEmpty())
-
-        // oqm strictly restricted to flypy
-        assertTrue(engine.evaluate("oqm").isNotEmpty())
-        currentSchema = "xkjd6"
-        assertTrue(engine.evaluate("oqm").isEmpty())
-        assertFalse(engine.isCommandPrefixOrMatch("oqm"))
-        currentSchema = "wubi86"
-        assertTrue(engine.evaluate("oqm").isEmpty())
+        // Strict flypy-only restriction across all commands
+        for (nonFlypy in listOf("xkjd6", "wubi86", "rime_ice")) {
+            currentSchema = nonFlypy
+            for (cmd in listOf("orq", "ouj", "ofi", "oqm", "ovy", "ojf", "oai", "odz")) {
+                assertTrue("$nonFlypy must return empty for $cmd", engine.evaluate(cmd).isEmpty())
+                assertFalse("$nonFlypy must not match $cmd", engine.isCommandPrefixOrMatch(cmd))
+            }
+        }
         currentSchema = "flypy"
 
         // odz toggle candidate text
@@ -694,28 +449,11 @@ class CodetableV361EnhancementsTest {
         singleChar = true
         assertEquals("关闭单字模式", engine.evaluate("odz")[0].displayText)
 
-        // zz overview & zza..zzf groups
-        val zz = engine.evaluate("zz")
-        val zzDisplay = zz.map { it.displayText }
-        assertTrue(zzDisplay.contains("zza 常用符号"))
-        assertTrue(zzDisplay.contains("zzb 数学/单位"))
-        assertTrue(zzDisplay.contains("zzc 序号/编号"))
-        assertTrue(zzDisplay.contains("zzd 箭头/方向"))
-        assertTrue(zzDisplay.contains("zze 制表/几何"))
-        assertTrue(zzDisplay.contains("zzf 标点/括号"))
-        assertTrue(zz.any { it.commitText == "★" })
-
-        for (group in listOf("zza", "zzb", "zzc", "zzd", "zze", "zzf")) {
-            val groupCands = engine.evaluate(group)
-            assertTrue("Expected rich symbols for $group", groupCands.size >= 20)
-            assertTrue(groupCands.all { it.commitText.isNotEmpty() })
-        }
-
-        // Coordinator end-to-end: orq+1 typing + odz toggling singleCharMode + zzba fallback to Rime
+        // Coordinator end-to-end: orq + adjustOrqDateOffset + odz + xkjd6 isolation
         val port = StubRimePort(
             mapOf(
-                "zzba" to listOf("走吧" to ""),
-                "oqm" to listOf("全码词" to "")
+                "oqm" to listOf("全码词" to ""),
+                "orq" to listOf("哦日期" to "")
             )
         )
         val coord = TypeFreeKeyCoordinator(
@@ -724,9 +462,15 @@ class CodetableV361EnhancementsTest {
             directCommandEngine = DirectCommandEngine(dateProvider = { fixedDate })
         )
 
-        for (c in "orq+1") coord.onCharKey(c)
+        for (c in "orq") coord.onCharKey(c)
+        assertTrue(coord.snapshotUi().isOrqDateActive)
+        assertEquals(0, coord.snapshotUi().orqDateOffsetDays)
+        val plus1Snap = coord.adjustOrqDateOffset(1)
+        assertEquals(1, plus1Snap.orqDateOffsetDays)
+        assertEquals("2026年11月19日", plus1Snap.candidates[0].commitText)
         val dateCommit = coord.onSpace() as CoordinatorKeyOutcome.Commit
         assertEquals("2026年11月19日", (dateCommit.action as CommitAction.PlainText).text)
+        assertEquals(0, coord.orqDateOffsetDays)
 
         // odz toggles singleCharMode ON then OFF
         assertFalse(coord.singleCharMode)
@@ -741,15 +485,12 @@ class CodetableV361EnhancementsTest {
         coord.onSpace()
         assertFalse(coord.singleCharMode)
 
-        // zz -> zzb (direct symbol) -> zzba (replays into Rime and hits 走吧)
-        for (c in "zzb") coord.onCharKey(c)
-        assertTrue(coord.snapshotUi().candidates.any { it.commitText == "℃" })
-        val zzbaOut = coord.onCharKey('a') as CoordinatorKeyOutcome.Commit
-        assertEquals("走吧", (zzbaOut.action as CommitAction.PlainText).text)
-
-        // xkjd6 does not steal oqm
+        // xkjd6 does not steal oqm or orq even if directCommandsEnabled=true
         coord.updateProfile(SchemaProfile.defaultXiaoheFlypy().copy(schemaId = "xkjd6", archetype = SchemaArchetype.PUSH_TOPUP_CODE))
         for (c in "oqm") coord.onCharKey(c)
         assertEquals("全码词", coord.snapshotUi().candidates[0].commitText)
+        coord.reset()
+        for (c in "orq") coord.onCharKey(c)
+        assertEquals("哦日期", coord.snapshotUi().candidates[0].commitText)
     }
 }

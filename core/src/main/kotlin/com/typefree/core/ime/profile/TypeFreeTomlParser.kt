@@ -70,8 +70,6 @@ object TypeFreeTomlParser {
             gt4GuardPrefixes = guardPrefixes,
             spellerAlphabet = rawMap["speller_alphabet"]?.let(::unquote)?.ifBlank { null }
                 ?: fallback.spellerAlphabet,
-            englishPrefixVetoEnabled = rawMap["english_prefix_veto_enabled"]?.toBooleanStrictOrNull()
-                ?: fallback.englishPrefixVetoEnabled,
             autoEncodePhrasesEnabled = rawMap["auto_encode_phrases_enabled"]?.toBooleanStrictOrNull()
                 ?: fallback.autoEncodePhrasesEnabled
         )
@@ -97,7 +95,6 @@ object TypeFreeTomlParser {
             appendLine("fifth_key_top_commit = ${profile.fifthKeyTopCommit}")
             appendLine("auto_commit_unique_full = ${profile.autoCommitUniqueFull}")
             appendLine("direct_commands_enabled = ${profile.directCommandsEnabled}")
-            appendLine("english_prefix_veto_enabled = ${profile.englishPrefixVetoEnabled}")
             appendLine("auto_encode_phrases_enabled = ${profile.autoEncodePhrasesEnabled}")
             if (revDict.isNotEmpty()) {
                 appendLine("reverse_lookup_dict = \"${escape(revDict)}\"")
@@ -116,6 +113,7 @@ object TypeFreeTomlParser {
         displayName: String,
         archetype: SchemaArchetype
     ): SchemaProfile {
+        val isFlypy = schemaId == "flypy"
         return when (archetype) {
             SchemaArchetype.FIXED_YINXING -> SchemaProfile(
                 schemaId = schemaId,
@@ -129,7 +127,7 @@ object TypeFreeTomlParser {
                 reverseSplitSuffixOnly = true,
                 fifthKeyTopCommit = true,
                 autoCommitUniqueFull = true,
-                directCommandsEnabled = true
+                directCommandsEnabled = isFlypy
             )
             SchemaArchetype.PUSH_TOPUP_CODE -> SchemaProfile(
                 schemaId = schemaId,
@@ -142,7 +140,7 @@ object TypeFreeTomlParser {
                 reverseSplitEnabled = false,
                 fifthKeyTopCommit = false,
                 autoCommitUniqueFull = false,
-                directCommandsEnabled = true
+                directCommandsEnabled = isFlypy
             )
             SchemaArchetype.FIXED_SHAPECODE -> SchemaProfile(
                 schemaId = schemaId,
@@ -155,7 +153,7 @@ object TypeFreeTomlParser {
                 reverseSplitEnabled = false,
                 fifthKeyTopCommit = true,
                 autoCommitUniqueFull = true,
-                directCommandsEnabled = true
+                directCommandsEnabled = isFlypy
             )
             SchemaArchetype.SENTENCE_PINYIN -> SchemaProfile.defaultSentencePinyin(schemaId, displayName)
         }

@@ -243,6 +243,7 @@ object SchemaInspector {
         }
         val guideKey: Char? = if (';' in sanitizedAlphabet) null else ';'
 
+        val isFlypyDirect = meta.schemaId == "flypy"
         val inferred = when (archetype) {
             SchemaArchetype.FIXED_YINXING -> SchemaProfile(
                 schemaId = meta.schemaId,
@@ -258,7 +259,7 @@ object SchemaInspector {
                 reverseSplitSuffixOnly = true,
                 fifthKeyTopCommit = true,
                 autoCommitUniqueFull = true,
-                directCommandsEnabled = true,
+                directCommandsEnabled = isFlypyDirect,
                 reverseLookupDict = meta.reverseLookupDict,
                 gt4GuardPrefixes = meta.affixPrefixes.ifEmpty {
                     if (meta.schemaId == "flypy") setOf("ok", "os") else emptySet()
@@ -280,7 +281,7 @@ object SchemaInspector {
                 reverseSplitSuffixOnly = false,
                 fifthKeyTopCommit = false,
                 autoCommitUniqueFull = false,
-                directCommandsEnabled = true,
+                directCommandsEnabled = isFlypyDirect,
                 reverseLookupDict = meta.reverseLookupDict,
                 gt4GuardPrefixes = meta.affixPrefixes,
                 spellerAlphabet = sanitizedAlphabet
@@ -300,7 +301,7 @@ object SchemaInspector {
                 reverseSplitSuffixOnly = true,
                 fifthKeyTopCommit = true,
                 autoCommitUniqueFull = true,
-                directCommandsEnabled = true,
+                directCommandsEnabled = isFlypyDirect,
                 reverseLookupDict = meta.reverseLookupDict,
                 gt4GuardPrefixes = meta.affixPrefixes,
                 spellerAlphabet = sanitizedAlphabet
@@ -320,7 +321,7 @@ object SchemaInspector {
                 reverseSplitSuffixOnly = false,
                 fifthKeyTopCommit = false,
                 autoCommitUniqueFull = false,
-                directCommandsEnabled = true,
+                directCommandsEnabled = isFlypyDirect,
                 reverseLookupDict = meta.reverseLookupDict,
                 gt4GuardPrefixes = emptySet(),
                 spellerAlphabet = sanitizedAlphabet

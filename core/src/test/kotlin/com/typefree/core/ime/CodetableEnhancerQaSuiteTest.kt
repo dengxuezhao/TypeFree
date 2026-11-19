@@ -781,7 +781,7 @@ class CodetableEnhancerQaSuiteTest {
             override fun sendChar(ch: Char): RimeDecodeFrame {
                 buf.append(ch)
                 val raw = buf.toString()
-                if (raw == "date") {
+                if (raw == "orq") {
                     buf.clear()
                     return RimeDecodeFrame(rawInput = "", preedit = "", candidates = emptyList(), autoCommittedText = "大特")
                 }
@@ -789,12 +789,14 @@ class CodetableEnhancerQaSuiteTest {
                     buf.clear()
                     return RimeDecodeFrame(rawInput = "", preedit = "", candidates = emptyList(), autoCommittedText = "可能")
                 }
-                return RimeDecodeFrame(rawInput = raw, preedit = raw, candidates = listOf("字$raw" to ""))
+                val candText = if (raw == "abc") "安" else "字$raw"
+                return RimeDecodeFrame(rawInput = raw, preedit = raw, candidates = listOf(candText to ""))
             }
             override fun sendBackspace(): RimeDecodeFrame {
                 if (buf.isNotEmpty()) buf.deleteCharAt(buf.length - 1)
                 val raw = buf.toString()
-                return RimeDecodeFrame(rawInput = raw, preedit = raw, candidates = listOf("字$raw" to ""))
+                val candText = if (raw == "abc") "安" else "字$raw"
+                return RimeDecodeFrame(rawInput = raw, preedit = raw, candidates = listOf(candText to ""))
             }
             override fun selectCandidate(index: Int): Pair<String?, RimeDecodeFrame> = null to RimeDecodeFrame()
             override fun commitCurrentComposition(): String? = null
@@ -811,26 +813,31 @@ class CodetableEnhancerQaSuiteTest {
             profile = SchemaProfile.defaultXiaoheFlypy(),
             rimePort = autoCommitPort
         )
-        coord.onCharKey('d')
-        coord.onCharKey('a')
-        coord.onCharKey('t')
-        val dateOut = coord.onCharKey('e')
-        assertTrue("date command must NOT auto-commit librime candidate", dateOut is CoordinatorKeyOutcome.Consumed)
-        assertTrue((dateOut as CoordinatorKeyOutcome.Consumed).ui.candidates.any { it.commitText.contains("年") })
+        coord.onCharKey('o')
+        coord.onCharKey('r')
+        val orqOut = coord.onCharKey('q')
+        assertTrue("orq command must NOT auto-commit librime candidate", orqOut is CoordinatorKeyOutcome.Consumed)
+        assertTrue((orqOut as CoordinatorKeyOutcome.Consumed).ui.candidates.any { it.commitText.contains("年") })
 
-        // Backspace from `date` restores `dat` native Rime candidates cleanly
+        // Backspace from `orq` restores `or` native Rime candidates cleanly
         val backOut = coord.onBackspace() as CoordinatorKeyOutcome.Consumed
-        assertEquals("dat", backOut.ui.rawCode)
-        assertEquals("字dat", backOut.ui.candidates.first().commitText)
+        assertEquals("or", backOut.ui.rawCode)
+        assertEquals("字or", backOut.ui.candidates.first().commitText)
         coord.reset()
 
-        // Single-char mode intercepts multi-char autoCommittedText (`可能`)
+        // Single-char mode intercepts multi-char autoCommittedText (`可能`) and recovers cleanly on Backspace
         coord.setSingleCharModeEnabled(true)
         coord.onCharKey('a')
         coord.onCharKey('b')
         coord.onCharKey('c')
         val abcdOut = coord.onCharKey('d')
         assertTrue("Multi-char auto-commit must be blocked in single-char mode", abcdOut is CoordinatorKeyOutcome.Consumed)
+        assertEquals("abcd", (abcdOut as CoordinatorKeyOutcome.Consumed).ui.rawCode)
+        assertTrue(abcdOut.ui.candidates.isEmpty())
+
+        val afterBs = coord.onBackspace() as CoordinatorKeyOutcome.Consumed
+        assertEquals("abc", afterBs.ui.rawCode)
+        assertEquals("安", afterBs.ui.candidates.first().commitText)
     }
 
     @Test

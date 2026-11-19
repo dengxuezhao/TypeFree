@@ -53,3 +53,13 @@ data class EnhancedCandidate(
     val codeHint: String = "",
     val action: CommitAction = CommitAction.PlainText(commitText)
 )
+
+/**
+ * Slash-guided snippet entry (`/` prefix mode) where [code] is the pure lowercase letters
+ * after stripping any leading `/` or `;` (e.g. `sd`, `yx`, `dz`).
+ */
+data class SlashSnippetEntry(
+    val code: String,
+    val title: String,
+    val content: String
+)

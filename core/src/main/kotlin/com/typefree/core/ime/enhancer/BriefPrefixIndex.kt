@@ -22,7 +22,7 @@ fun interface RimeCodeProber {
 }
 
 /**
- * First continuation entry encountered in original `.dict.yaml` line order for a prefix of length `2..7`.
+ * Continuation entry encountered in original `.dict.yaml` line order for a prefix of length `2..7`.
  */
 data class NaturalContinuation(
     val word: String,
@@ -44,7 +44,7 @@ class BriefPrefixIndex(
     private val has4CodeFor3Prefix: BitSet,
     private val gt4PackedTable: IntArray,
     private val gt4GuardTwoPrefixes: Set<String> = emptySet(),
-    private val naturalContinuations: Map<String, NaturalContinuation> = emptyMap()
+    private val naturalContinuations: Map<String, List<NaturalContinuation>> = emptyMap()
 ) {
     private val hasExactGt4Table: Boolean = gt4PackedTable.any { it != EMPTY_SLOT }
 
@@ -114,9 +114,17 @@ class BriefPrefixIndex(
         }
     }
 
+    fun lookupNaturalContinuations(
+        prefix: String,
+        limit: Int = MAX_NATURAL_CONTINUATIONS
+    ): List<NaturalContinuation> {
+        if (limit <= 0 || prefix.length !in 2..7) return emptyList()
+        val list = naturalContinuations[prefix] ?: return emptyList()
+        return if (list.size <= limit) list else list.subList(0, limit)
+    }
+
     fun lookupNaturalFirstContinuation(prefix: String): NaturalContinuation? {
-        if (prefix.length !in 2..7) return null
-        return naturalContinuations[prefix]
+        return lookupNaturalContinuations(prefix, limit = 1).firstOrNull()
     }
 
     /**
@@ -151,17 +159,26 @@ class BriefPrefixIndex(
             for (p in gt4GuardTwoPrefixes) out.writeUTF(p)
 
             out.writeInt(naturalContinuations.size)
-            for ((prefix, nat) in naturalContinuations) {
+            for ((prefix, list) in naturalContinuations) {
                 out.writeUTF(prefix)
-                out.writeUTF(nat.word)
-                out.writeUTF(nat.fullCode)
+                val capped = if (list.size <= MAX_NATURAL_CONTINUATIONS) {
+                    list
+                } else {
+                    list.subList(0, MAX_NATURAL_CONTINUATIONS)
+                }
+                out.writeShort(capped.size)
+                for (nat in capped) {
+                    out.writeUTF(nat.word)
+                    out.writeUTF(nat.fullCode)
+                }
             }
         }
     }
 
     companion object {
         private const val SNAPSHOT_MAGIC = 0x54464249 // "TFBI"
-        private const val SNAPSHOT_VERSION = 2
+        const val SNAPSHOT_VERSION = 3
+        const val MAX_NATURAL_CONTINUATIONS = 8
         private const val EMPTY_SLOT = -1
 
         fun empty(): BriefPrefixIndex = BriefPrefixIndex(
@@ -177,8 +194,8 @@ class BriefPrefixIndex(
             DataInputStream(BufferedInputStream(FileInputStream(file), 16 * 1024)).use { input ->
                 val magic = input.readInt()
                 val version = input.readInt()
-                require(magic == SNAPSHOT_MAGIC && (version == 1 || version == SNAPSHOT_VERSION)) {
-                    "Invalid BriefPrefixIndex snapshot header in ${file.name}"
+                require(magic == SNAPSHOT_MAGIC && version == SNAPSHOT_VERSION) {
+                    "Unsupported BriefPrefixIndex snapshot header (version=$version) in ${file.name}"
                 }
                 val b1 = Array<List<String>>(26) {
                     val count = input.readUnsignedShort()
@@ -201,11 +218,13 @@ class BriefPrefixIndex(
                 val guards = LinkedHashSet<String>(guardCount)
                 repeat(guardCount) { guards.add(input.readUTF()) }
 
-                val natMap = if (version >= 2) {
-                    val natCount = input.readInt()
-                    val map = LinkedHashMap<String, NaturalContinuation>(natCount.coerceAtLeast(0))
-                    repeat(natCount) {
-                        val prefix = input.readUTF()
+                val natCount = input.readInt()
+                val natMap = LinkedHashMap<String, List<NaturalContinuation>>(natCount.coerceAtLeast(0))
+                repeat(natCount) {
+                    val prefix = input.readUTF()
+                    val itemCount = input.readUnsignedShort()
+                    val list = ArrayList<NaturalContinuation>(itemCount)
+                    repeat(itemCount) {
                         val word = input.readUTF()
                         val fullCode = input.readUTF()
                         val suffix = if (fullCode.length > prefix.length) {
@@ -213,15 +232,17 @@ class BriefPrefixIndex(
                         } else {
                             ""
                         }
-                        map[prefix] = NaturalContinuation(
-                            word = word,
-                            suffixCode = suffix,
-                            fullCode = fullCode
+                        list.add(
+                            NaturalContinuation(
+                                word = word,
+                                suffixCode = suffix,
+                                fullCode = fullCode
+                            )
                         )
                     }
-                    map
-                } else {
-                    emptyMap()
+                    if (list.isNotEmpty()) {
+                        natMap[prefix] = list
+                    }
                 }
 
                 return BriefPrefixIndex(
@@ -250,7 +271,7 @@ class BriefPrefixIndex(
             val b2 = Array(676) { ArrayList<String>(2) }
             val has4Bits = BitSet(17_576)
             val gt4Raw = LinkedHashSet<Int>(1536)
-            val naturalMap = LinkedHashMap<String, NaturalContinuation>()
+            val naturalMap = LinkedHashMap<String, MutableList<NaturalContinuation>>()
 
             fun addBriefCandidate(code: String, word: String, prepend: Boolean = false) {
                 if (word.isEmpty() || word in blockedWords || word.contains('$') || word.contains('{')) return
@@ -319,11 +340,14 @@ class BriefPrefixIndex(
                     val maxPrefixLen = minOf(7, code.length - 1)
                     for (len in 2..maxPrefixLen) {
                         val prefix = code.substring(0, len)
-                        if (!naturalMap.containsKey(prefix)) {
-                            naturalMap[prefix] = NaturalContinuation(
-                                word = word,
-                                suffixCode = code.substring(len),
-                                fullCode = code
+                        val list = naturalMap.getOrPut(prefix) { ArrayList(MAX_NATURAL_CONTINUATIONS) }
+                        if (list.size < MAX_NATURAL_CONTINUATIONS && list.none { it.word == word }) {
+                            list.add(
+                                NaturalContinuation(
+                                    word = word,
+                                    suffixCode = code.substring(len),
+                                    fullCode = code
+                                )
                             )
                         }
                     }

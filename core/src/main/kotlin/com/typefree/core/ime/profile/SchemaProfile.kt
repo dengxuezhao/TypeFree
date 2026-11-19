@@ -39,7 +39,6 @@ data class SchemaProfile(
     val reverseLookupDict: String? = null,       // 绑定的单字反查词库名（如 flypydz）
     val gt4GuardPrefixes: Set<String> = emptySet(), // 超四码引导前缀（如小鹤 ok, os）
     val spellerAlphabet: String = "abcdefghijklmnopqrstuvwxyz'",
-    val englishPrefixVetoEnabled: Boolean = true,
     val autoEncodePhrasesEnabled: Boolean = false
 ) {
     val overlayEnabled: Boolean
@@ -85,7 +84,7 @@ data class SchemaProfile(
             reverseSplitSuffixOnly = false,
             fifthKeyTopCommit = false,
             autoCommitUniqueFull = false,
-            directCommandsEnabled = true,
+            directCommandsEnabled = (schemaId == "flypy"),
             reverseLookupDict = null,
             gt4GuardPrefixes = emptySet(),
             spellerAlphabet = "abcdefghijklmnopqrstuvwxyz'"

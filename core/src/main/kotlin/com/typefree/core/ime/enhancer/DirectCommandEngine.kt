@@ -86,7 +86,16 @@ object Utf8Safety {
 }
 
 /**
- * Lua-free direct command engine (`orq`, `orq±N`, `ouj`, `=expr`, `ofi`, `oqm`, `ovy`, `ojf`, `oai`, `odz`, `zz`, `zza..zzf`).
+ * Passive trailing arithmetic detection result for `:app` prediction bar suggestions.
+ */
+data class PassiveMathSuggestion(
+    val expression: String,
+    val formattedResult: String,
+    val endsWithEquals: Boolean
+)
+
+/**
+ * Lua-free direct command engine strictly for Xiaohe Flypy (`orq`, `ouj`, `ofi`, `oqm`, `ovy`, `ojf`, `oai`, `odz`).
  */
 class DirectCommandEngine(
     private var reverseLookupMap: Map<String, List<String>> = emptyMap(),
@@ -117,33 +126,18 @@ class DirectCommandEngine(
     fun hasReverseLookupLoaded(): Boolean = reverseLookupMap.isNotEmpty()
 
     fun isCommandPrefixOrMatch(code: String, enabled: Boolean = true): Boolean {
-        if (!enabled || code.isEmpty()) return false
-        if (code.startsWith("=")) return code.length >= 2
-        if (code == "oqm") return currentSchemaId() == "flypy"
-        if (parseDateOffsetDays(code) != null) return true
+        if (!enabled || code.isEmpty() || currentSchemaId() != "flypy") return false
         return code in DIRECT_COMMAND_CODES
     }
 
-    fun evaluate(code: String, nowMillis: Long = System.currentTimeMillis(), enabled: Boolean = true): List<EnhancedCandidate> {
-        if (!enabled || code.isEmpty()) return emptyList()
-
-        if (code.startsWith("=")) {
-            val expr = code.removePrefix("=").trim()
-            if (expr.isEmpty()) return emptyList()
-            val valueStr = SafeMathEvaluator.evaluateFormatted(expr) ?: return emptyList()
-            return listOf(
-                EnhancedCandidate(
-                    displayText = valueStr,
-                    commitText = valueStr,
-                    codeHint = "算式"
-                ),
-                EnhancedCandidate(
-                    displayText = "$expr=$valueStr",
-                    commitText = "$expr=$valueStr",
-                    codeHint = "含原式"
-                )
-            )
-        }
+    @JvmOverloads
+    fun evaluate(
+        code: String,
+        nowMillis: Long = System.currentTimeMillis(),
+        enabled: Boolean = true,
+        dateOffsetDays: Int = 0
+    ): List<EnhancedCandidate> {
+        if (!enabled || code.isEmpty() || currentSchemaId() != "flypy") return emptyList()
 
         val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(nowMillis), zoneId)
         val baseDate = if (dateProvider !== DEFAULT_DATE_PROVIDER) {
@@ -152,15 +146,10 @@ class DirectCommandEngine(
             zdt.toLocalDate()
         }
 
-        val offsetDays = parseDateOffsetDays(code)
-        if (offsetDays != null) {
-            return formatDateCandidates(baseDate.plusDays(offsetDays))
-        }
-
         return when (code) {
-            "orq", "date" -> formatDateCandidates(baseDate)
+            "orq" -> formatDateCandidates(baseDate, dateOffsetDays)
 
-            "ouj", "time" -> {
+            "ouj" -> {
                 val hm = zdt.format(HM_FMT)
                 val hmsCn = zdt.format(HMS_CN_FMT)
                 val unixSec = (nowMillis / 1000L).toString()
@@ -168,22 +157,6 @@ class DirectCommandEngine(
                     EnhancedCandidate(displayText = hm, commitText = hm),
                     EnhancedCandidate(displayText = hmsCn, commitText = hmsCn),
                     EnhancedCandidate(displayText = unixSec, commitText = unixSec, codeHint = "时间戳")
-                )
-            }
-
-            "oxq" -> {
-                val wd = when (zdt.dayOfWeek.value) {
-                    1 -> "一"
-                    2 -> "二"
-                    3 -> "三"
-                    4 -> "四"
-                    5 -> "五"
-                    6 -> "六"
-                    else -> "日"
-                }
-                listOf(
-                    EnhancedCandidate(displayText = "星期$wd", commitText = "星期$wd"),
-                    EnhancedCandidate(displayText = "周$wd", commitText = "周$wd")
                 )
             }
 
@@ -283,61 +256,53 @@ class DirectCommandEngine(
                 )
             }
 
-            "zz" -> buildZzOverviewCandidates()
-
-            "zza", "zzb", "zzc", "zzd", "zze", "zzf" -> buildZzGroupCandidates(code)
-
             else -> emptyList()
         }
     }
 
-    private fun formatDateCandidates(date: LocalDate): List<EnhancedCandidate> {
+    private fun formatDateCandidates(baseDate: LocalDate, dateOffsetDays: Int = 0): List<EnhancedCandidate> {
+        val date = baseDate.plusDays(dateOffsetDays.toLong())
         val cnDate = date.format(CN_DATE_FMT)
         val isoDate = date.format(ISO_DATE_FMT)
+        val wdChar = when (date.dayOfWeek.value) {
+            1 -> "一"
+            2 -> "二"
+            3 -> "三"
+            4 -> "四"
+            5 -> "五"
+            6 -> "六"
+            else -> "日"
+        }
+        val weekday = "星期$wdChar"
         val lunar = ChineseLunarCalendar.formatGanZhiLunar(date)
-        return listOf(
-            EnhancedCandidate(displayText = cnDate, commitText = cnDate),
-            EnhancedCandidate(displayText = isoDate, commitText = isoDate),
-            EnhancedCandidate(displayText = lunar, commitText = lunar, codeHint = "农历")
-        )
-    }
-
-    private fun parseDateOffsetDays(code: String): Long? {
-        val match = DATE_OFFSET_REGEX.matchEntire(code) ?: return null
-        val sign = match.groupValues[1]
-        val n = match.groupValues[2].toLongOrNull() ?: return null
-        if (n !in 0L..3650L) return null
-        return if (sign == "-") -n else n
-    }
-
-    private fun buildZzOverviewCandidates(): List<EnhancedCandidate> {
-        val hints = ZZ_CATEGORY_HINTS.map { (hintLabel, sampleHint) ->
-            EnhancedCandidate(
-                displayText = hintLabel,
-                commitText = "",
-                codeHint = sampleHint,
-                action = CommitAction.PlainText("")
+        val list = ArrayList<EnhancedCandidate>(6)
+        list.add(EnhancedCandidate(displayText = cnDate, commitText = cnDate))
+        list.add(EnhancedCandidate(displayText = isoDate, commitText = isoDate))
+        list.add(EnhancedCandidate(displayText = weekday, commitText = weekday))
+        list.add(EnhancedCandidate(displayText = lunar, commitText = lunar, codeHint = "农历"))
+        if (dateOffsetDays == 0) {
+            val tomorrow = baseDate.plusDays(1)
+            val tomorrowShort = tomorrow.format(MD_DATE_FMT)
+            val tomorrowFull = tomorrow.format(CN_DATE_FMT)
+            list.add(
+                EnhancedCandidate(
+                    displayText = "明天（$tomorrowShort）",
+                    commitText = tomorrowFull,
+                    codeHint = "明天"
+                )
+            )
+            val yesterday = baseDate.minusDays(1)
+            val yesterdayShort = yesterday.format(MD_DATE_FMT)
+            val yesterdayFull = yesterday.format(CN_DATE_FMT)
+            list.add(
+                EnhancedCandidate(
+                    displayText = "昨天（$yesterdayShort）",
+                    commitText = yesterdayFull,
+                    codeHint = "昨天"
+                )
             )
         }
-        val popular = ZZ_POPULAR_SYMBOLS.map { sym ->
-            EnhancedCandidate(
-                displayText = sym,
-                commitText = sym,
-                action = CommitAction.PlainText(sym)
-            )
-        }
-        return hints + popular
-    }
-
-    private fun buildZzGroupCandidates(code: String): List<EnhancedCandidate> {
-        val symbols = ZZ_GROUPS[code].orEmpty()
-        return symbols.map { sym ->
-            EnhancedCandidate(
-                displayText = sym,
-                commitText = sym,
-                action = CommitAction.PlainText(sym)
-            )
-        }
+        return list
     }
 
     companion object {
@@ -345,65 +310,12 @@ class DirectCommandEngine(
         internal val DEFAULT_SINGLE_CHAR_PROVIDER: () -> Boolean = { false }
         internal val DEFAULT_DATE_PROVIDER: () -> LocalDate = { LocalDate.now() }
 
-        private val DATE_OFFSET_REGEX = Regex("^(?:orq|date)([+-])(\\d{1,4})$")
-
         val DIRECT_COMMAND_CODES = setOf(
-            "orq", "date", "ouj", "time", "oxq", "ofi", "oqm", "ovy", "ojf", "oai", "odz",
-            "zz", "zza", "zzb", "zzc", "zzd", "zze", "zzf"
-        )
-
-        private val ZZ_CATEGORY_HINTS = listOf(
-            "zza 常用符号" to "★ ✓ ※",
-            "zzb 数学/单位" to "± × ℃",
-            "zzc 序号/编号" to "① Ⅰ 一",
-            "zzd 箭头/方向" to "→ ↑ ↙",
-            "zze 制表/几何" to "─ ■ ●",
-            "zzf 标点/括号" to "「」【】"
-        )
-
-        private val ZZ_POPULAR_SYMBOLS = listOf(
-            "★", "✓", "✗", "→", "←", "↑", "↓", "℃", "①", "②", "③",
-            "•", "…", "—", "±", "×", "÷", "°", "￥", "©", "®", "™"
-        )
-
-        private val ZZ_GROUPS: Map<String, List<String>> = mapOf(
-            "zza" to listOf(
-                "★", "☆", "✓", "✗", "✕", "※", "•", "·", "…", "—", "～", "｜",
-                "＠", "＃", "￥", "＄", "€", "£", "©", "®", "™", "§", "¶", "†",
-                "‡", "♠", "♥", "♦", "♣", "☀", "☁", "☂", "☃", "♪", "♫", "⚡"
-            ),
-            "zzb" to listOf(
-                "＋", "－", "×", "÷", "±", "＝", "≠", "≈", "≡", "＜", "＞", "≤",
-                "≥", "∞", "√", "∑", "∏", "∫", "∂", "∆", "∇", "∈", "∉", "⊂",
-                "⊃", "∪", "∩", "∧", "∨", "¬", "∀", "∃", "∴", "∵", "°", "℃",
-                "℉", "‰", "㎡", "㎥", "㎝", "㎜", "㎞", "㎏", "㎖", "Ω", "μ", "π"
-            ),
-            "zzc" to listOf(
-                "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫",
-                "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳", "⑴", "⑵", "⑶", "⑷",
-                "⑸", "⑹", "⑺", "⑻", "⑼", "⑽", "⒈", "⒉", "⒊", "⒋", "⒌", "Ⅰ",
-                "Ⅱ", "Ⅲ", "Ⅳ", "Ⅴ", "Ⅵ", "Ⅶ", "Ⅷ", "Ⅸ", "Ⅹ", "一", "二", "三",
-                "四", "五", "六", "七", "八", "九", "十"
-            ),
-            "zzd" to listOf(
-                "→", "←", "↑", "↓", "↔", "↕", "↖", "↗", "↘", "↙", "⇒", "⇐",
-                "⇑", "⇓", "⇔", "⇕", "➜", "➡", "⬅", "⬆", "⬇", "↩", "↪", "↺",
-                "↻", "⇄", "⇅", "⇆", "➔", "➤", "➢", "➣", "▶", "◀", "▲", "▼"
-            ),
-            "zze" to listOf(
-                "─", "│", "┌", "┐", "└", "┘", "├", "┤", "┬", "┴", "┼", "═",
-                "║", "╔", "╗", "╚", "╝", "╠", "╣", "╦", "╩", "╬", "■", "□",
-                "▪", "▫", "●", "○", "◎", "◉", "▲", "△", "▼", "▽", "◆", "◇",
-                "◈", "★", "☆", "◢", "◣", "◤", "◥"
-            ),
-            "zzf" to listOf(
-                "「", "」", "『", "』", "【", "】", "〔", "〕", "《", "》", "〈", "〉",
-                "（", "）", "［", "］", "｛", "｝", "＂", "＇", "‘", "’", "“", "”",
-                "、", "。", "，", "．", "；", "：", "？", "！", "～", "·", "…", "—"
-            )
+            "orq", "ouj", "ofi", "oqm", "ovy", "ojf", "oai", "odz"
         )
 
         private val CN_DATE_FMT = DateTimeFormatter.ofPattern("yyyy年MM月dd日", Locale.CHINA)
+        private val MD_DATE_FMT = DateTimeFormatter.ofPattern("M月d日", Locale.CHINA)
         private val ISO_DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.US)
         private val HM_FMT = DateTimeFormatter.ofPattern("HH:mm", Locale.US)
         private val HMS_CN_FMT = DateTimeFormatter.ofPattern("HH时mm分ss秒", Locale.CHINA)
@@ -455,6 +367,54 @@ class DirectCommandEngine(
  * Built-in zero-dependency recursive-descent arithmetic evaluator supporting `+ - * / % ^ ()`.
  */
 object SafeMathEvaluator {
+
+    @JvmStatic
+    fun detectTrailingExpression(surroundingText: String): PassiveMathSuggestion? {
+        if (surroundingText.isEmpty()) return null
+        val tail = if (surroundingText.length > 96) surroundingText.takeLast(96) else surroundingText
+        if (tail.last().isWhitespace()) return null
+
+        val endsWithEquals = tail.endsWith('=')
+        val exprEnd = if (endsWithEquals) tail.length - 1 else tail.length
+        if (exprEnd <= 0) return null
+
+        var i = exprEnd - 1
+        while (i >= 0 && isMathExpressionChar(tail[i])) {
+            i--
+        }
+        val rawSlice = tail.substring(i + 1, exprEnd).trim()
+        if (rawSlice.isEmpty() || rawSlice.length > 96) return null
+        if (!hasArithmeticOperator(rawSlice)) return null
+
+        val formatted = evaluateFormatted(rawSlice) ?: return null
+        return PassiveMathSuggestion(
+            expression = rawSlice,
+            formattedResult = formatted,
+            endsWithEquals = endsWithEquals
+        )
+    }
+
+    private fun isMathExpressionChar(ch: Char): Boolean {
+        return ch in '0'..'9' || ch in ".+-*/%^×÷()（） "
+    }
+
+    private fun hasArithmeticOperator(expr: String): Boolean {
+        var lastNonSpace: Char? = null
+        for (ch in expr) {
+            if (ch == ' ') continue
+            if (ch == '*' || ch == '/' || ch == '%' || ch == '^' || ch == '×' || ch == '÷') {
+                return true
+            }
+            if ((ch == '+' || ch == '-') &&
+                lastNonSpace != null &&
+                (lastNonSpace.isDigit() || lastNonSpace == ')' || lastNonSpace == '）')
+            ) {
+                return true
+            }
+            lastNonSpace = ch
+        }
+        return false
+    }
 
     fun evaluateFormatted(expression: String): String? {
         if (expression.isBlank() || expression.length > 96) return null
