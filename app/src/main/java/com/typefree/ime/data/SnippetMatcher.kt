@@ -54,14 +54,20 @@ object SnippetMatcher {
     fun normalizeFlypyCode(rawCode: String): String {
         val clean = rawCode.trim().lowercase()
         if (clean.isEmpty()) return ""
-        val filtered = buildString {
-            clean.forEachIndexed { idx, c ->
-                if ((idx == 0 && c == ';') || c in 'a'..'z') {
+        val withoutPrefix = clean.trimStart('/', ';')
+        val letters = buildString {
+            for (c in withoutPrefix) {
+                if (c in 'a'..'z') {
                     append(c)
+                    if (length >= 4) break
                 }
             }
         }
-        return filtered.take(5)
+        return if (letters.isEmpty()) "" else "/$letters"
+    }
+
+    fun extractSlashSnippetCode(rawCode: String): String {
+        return normalizeFlypyCode(rawCode).removePrefix("/")
     }
 
     /**

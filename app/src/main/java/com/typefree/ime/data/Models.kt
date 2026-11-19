@@ -165,7 +165,7 @@ data class SnippetEntry(
     val id: String = UUID.randomUUID().toString(),
     val title: String,
     val voiceTriggers: String, // 逗号分隔的语音触发口令（如：发我的邮箱,插入邮箱）
-    val flypyCode: String = "", // 小鹤/键盘快捷码（如：;yx）
+    val flypyCode: String = "", // 键盘短语快捷码（如：/yx）
     val content: String,
     val enabled: Boolean = true
 )
@@ -449,8 +449,16 @@ data class AppSettings(
     val liveWriteToEditor: Boolean = true, // 实时写入输入框（v3.0 默认开启）
     val inputScheme: InputScheme = if (com.typefree.ime.BuildConfig.USE_PRIVATE_DICT) InputScheme.FLYPY_TABLE else InputScheme.RIME_PINYIN, // 音形专享版或老用户升级默认 FLYPY_TABLE；标准版新装默认 RIME_PINYIN (真实 librime 1.17.0)
     val fixedCandidateOrder: Boolean? = null, // null = 按方案自动
-    val englishPrefixVetoEnabled: Boolean = true,
+    val englishPrefixVetoEnabled: Boolean = false,
     val codetableAutoEncodeEnabled: Boolean = false,
+    val codetableFiveKeyBottomRow: Boolean = false,
+    val xiaoheDirectCommandsEnabled: Boolean = true,
+    val xiaoheReverseSplitEnabled: Boolean = true,
+    val xiaoheNaturalContinuationEnabled: Boolean = true,
+    val passiveCalculatorEnabled: Boolean = true,
+    val englishModeWordSuggestionEnabled: Boolean = true,
+    val phraseSuggestionL2Enabled: Boolean = true,
+    val customKeyGesturesJson: String = "",
     val predictionEnabled: Boolean = true,
     val aiCompletionEnabled: Boolean = false,
     val chatContextReplyEnabled: Boolean = false, // 读屏上下文「AI 帮回」（默认关闭，需首次披露同意后开启）
@@ -618,7 +626,7 @@ object DefaultPresets {
             id = "builtin_reply_ack",
             title = "职场礼貌收到",
             voiceTriggers = "回复收到稍后处理,礼貌收到模板",
-            flypyCode = ";sd",
+            flypyCode = "/sd",
             content = "收到，我先核对一下细节，稍后给您准确答复。",
             enabled = true
         ),
@@ -626,7 +634,7 @@ object DefaultPresets {
             id = "builtin_email_tpl",
             title = "常用邮箱 (示例)",
             voiceTriggers = "插入我的邮箱,发我的邮箱",
-            flypyCode = ";yx",
+            flypyCode = "/yx",
             content = "your.name@example.com",
             enabled = false
         ),
@@ -634,7 +642,7 @@ object DefaultPresets {
             id = "builtin_addr_tpl",
             title = "收货地址 (示例)",
             voiceTriggers = "插入我的收货地址,发我的地址",
-            flypyCode = ";dz",
+            flypyCode = "/dz",
             content = "请在此修改为您的常用收货地址与联系电话",
             enabled = false
         )

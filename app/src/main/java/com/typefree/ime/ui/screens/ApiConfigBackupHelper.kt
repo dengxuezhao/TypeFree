@@ -55,6 +55,14 @@ object ApiConfigBackupHelper {
         "liveWriteToEditor",
         "inputScheme",
         "fixedCandidateOrder",
+        "codetableFiveKeyBottomRow",
+        "xiaoheDirectCommandsEnabled",
+        "xiaoheReverseSplitEnabled",
+        "xiaoheNaturalContinuationEnabled",
+        "passiveCalculatorEnabled",
+        "englishModeWordSuggestionEnabled",
+        "phraseSuggestionL2Enabled",
+        "customKeyGesturesJson",
         "predictionEnabled",
         "aiCompletionEnabled",
         "jevCopilotEnabled",
@@ -717,6 +725,22 @@ object ApiConfigBackupHelper {
                     ?: existingSettings.liveWriteToEditor,
                 inputScheme = mergedInputScheme,
                 fixedCandidateOrder = mergedFixedOrder,
+                codetableFiveKeyBottomRow = rootObj.optBoolean("codetableFiveKeyBottomRow")
+                    ?: existingSettings.codetableFiveKeyBottomRow,
+                xiaoheDirectCommandsEnabled = rootObj.optBoolean("xiaoheDirectCommandsEnabled")
+                    ?: existingSettings.xiaoheDirectCommandsEnabled,
+                xiaoheReverseSplitEnabled = rootObj.optBoolean("xiaoheReverseSplitEnabled")
+                    ?: existingSettings.xiaoheReverseSplitEnabled,
+                xiaoheNaturalContinuationEnabled = rootObj.optBoolean("xiaoheNaturalContinuationEnabled")
+                    ?: existingSettings.xiaoheNaturalContinuationEnabled,
+                passiveCalculatorEnabled = rootObj.optBoolean("passiveCalculatorEnabled")
+                    ?: existingSettings.passiveCalculatorEnabled,
+                englishModeWordSuggestionEnabled = rootObj.optBoolean("englishModeWordSuggestionEnabled")
+                    ?: existingSettings.englishModeWordSuggestionEnabled,
+                phraseSuggestionL2Enabled = rootObj.optBoolean("phraseSuggestionL2Enabled")
+                    ?: existingSettings.phraseSuggestionL2Enabled,
+                customKeyGesturesJson = rootObj.optString("customKeyGesturesJson")
+                    ?: existingSettings.customKeyGesturesJson,
                 predictionEnabled = rootObj.optBoolean("predictionEnabled")
                     ?: existingSettings.predictionEnabled,
                 aiCompletionEnabled = rootObj.optBoolean("aiCompletionEnabled")

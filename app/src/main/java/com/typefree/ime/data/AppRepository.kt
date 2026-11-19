@@ -230,13 +230,49 @@ class AppRepository(
             val resolvedEnglishPrefixVetoEnabled = if (raw.contains("\"englishPrefixVetoEnabled\"")) {
                 parsed.englishPrefixVetoEnabled
             } else {
-                true
+                false
             }
             val resolvedCodetableAutoEncodeEnabled = if (raw.contains("\"codetableAutoEncodeEnabled\"")) {
                 parsed.codetableAutoEncodeEnabled
             } else {
                 false
             }
+            val resolvedCodetableFiveKeyBottomRow = if (raw.contains("\"codetableFiveKeyBottomRow\"")) {
+                parsed.codetableFiveKeyBottomRow
+            } else {
+                false
+            }
+            val resolvedXiaoheDirectCommandsEnabled = if (raw.contains("\"xiaoheDirectCommandsEnabled\"")) {
+                parsed.xiaoheDirectCommandsEnabled
+            } else {
+                true
+            }
+            val resolvedXiaoheReverseSplitEnabled = if (raw.contains("\"xiaoheReverseSplitEnabled\"")) {
+                parsed.xiaoheReverseSplitEnabled
+            } else {
+                true
+            }
+            val resolvedXiaoheNaturalContinuationEnabled = if (raw.contains("\"xiaoheNaturalContinuationEnabled\"")) {
+                parsed.xiaoheNaturalContinuationEnabled
+            } else {
+                true
+            }
+            val resolvedPassiveCalculatorEnabled = if (raw.contains("\"passiveCalculatorEnabled\"")) {
+                parsed.passiveCalculatorEnabled
+            } else {
+                true
+            }
+            val resolvedEnglishModeWordSuggestionEnabled = if (raw.contains("\"englishModeWordSuggestionEnabled\"")) {
+                parsed.englishModeWordSuggestionEnabled
+            } else {
+                true
+            }
+            val resolvedPhraseSuggestionL2Enabled = if (raw.contains("\"phraseSuggestionL2Enabled\"")) {
+                parsed.phraseSuggestionL2Enabled
+            } else {
+                true
+            }
+            val resolvedCustomKeyGesturesJson = (parsed.customKeyGesturesJson ?: "").trim()
             val resolvedPredictionEnabled = if (raw.contains("\"predictionEnabled\"")) {
                 parsed.predictionEnabled
             } else {
@@ -408,6 +444,14 @@ class AppRepository(
                 fixedCandidateOrder = resolvedFixedCandidateOrder,
                 englishPrefixVetoEnabled = resolvedEnglishPrefixVetoEnabled,
                 codetableAutoEncodeEnabled = resolvedCodetableAutoEncodeEnabled,
+                codetableFiveKeyBottomRow = resolvedCodetableFiveKeyBottomRow,
+                xiaoheDirectCommandsEnabled = resolvedXiaoheDirectCommandsEnabled,
+                xiaoheReverseSplitEnabled = resolvedXiaoheReverseSplitEnabled,
+                xiaoheNaturalContinuationEnabled = resolvedXiaoheNaturalContinuationEnabled,
+                passiveCalculatorEnabled = resolvedPassiveCalculatorEnabled,
+                englishModeWordSuggestionEnabled = resolvedEnglishModeWordSuggestionEnabled,
+                phraseSuggestionL2Enabled = resolvedPhraseSuggestionL2Enabled,
+                customKeyGesturesJson = resolvedCustomKeyGesturesJson,
                 predictionEnabled = resolvedPredictionEnabled,
                 aiCompletionEnabled = resolvedAiCompletionEnabled,
                 chatContextReplyEnabled = resolvedChatContextReplyEnabled,

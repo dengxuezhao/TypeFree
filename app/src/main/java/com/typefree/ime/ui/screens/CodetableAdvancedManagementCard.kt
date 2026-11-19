@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -65,6 +66,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.core.ime.coordinator.CommitAction
+import com.typefree.core.ime.enhancer.DirectCommandEngine
 import com.typefree.core.ime.enhancer.ShadowDictManager
 import com.typefree.core.ime.importer.CustomUserPhraseFileEditor
 import com.typefree.core.ime.importer.SubDictToggleManager
@@ -110,10 +112,8 @@ fun CodetableAdvancedManagementCard(
     var feedbackMessage by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
 
     var presetsExpanded by rememberSaveable { mutableStateOf(false) }
-    var phrasesExpanded by rememberSaveable { mutableStateOf(false) }
-    var symbolsExpanded by rememberSaveable { mutableStateOf(false) }
+    var phrasesExpanded by rememberSaveable { mutableStateOf(true) }
     var subDictsExpanded by rememberSaveable { mutableStateOf(false) }
-    var smartTogglesExpanded by rememberSaveable { mutableStateOf(true) }
     var shadowExpanded by rememberSaveable { mutableStateOf(false) }
 
     Card(
@@ -164,7 +164,7 @@ fun CodetableAdvancedManagementCard(
                             )
                         }
                         Text(
-                            text = "方案一键安装、置顶/自造词、; 快符、子词库与阴影规则",
+                            text = "方案一键安装、置顶/自造词、子词库与阴影规则",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -262,24 +262,7 @@ fun CodetableAdvancedManagementCard(
                         )
                     }
 
-                    // 3. 快符映射编辑 (; quick_symbols.yaml)
-                    ExpandableCodetableSubsection(
-                        title = "快符映射编辑 (; quick_symbols.yaml)",
-                        badge = "${rimeDataManager.activeSymbolTrie.size} 项",
-                        expanded = symbolsExpanded,
-                        onToggle = { symbolsExpanded = !symbolsExpanded }
-                    ) {
-                        QuickSymbolsEditorSection(
-                            context = context,
-                            rimeDataManager = rimeDataManager,
-                            schemaId = schemaId,
-                            deployState = rimeDeployState,
-                            metadataVersion = metadataVersion,
-                            onFeedback = { ok, msg -> feedbackMessage = ok to msg }
-                        )
-                    }
-
-                    // 4. 分类子词库与扩展词库 (flypy_full / ext/)
+                    // 3. 分类子词库与扩展词库 (flypy_full / ext/)
                     ExpandableCodetableSubsection(
                         title = "分类子词库与扩展词库 (ext/)",
                         badge = "Layer +1",
@@ -297,20 +280,7 @@ fun CodetableAdvancedManagementCard(
                         )
                     }
 
-                    // 5. 智能输入开关
-                    ExpandableCodetableSubsection(
-                        title = "智能输入开关",
-                        badge = if (settings.englishPrefixVetoEnabled || settings.codetableAutoEncodeEnabled) "已配置" else "默认",
-                        expanded = smartTogglesExpanded,
-                        onToggle = { smartTogglesExpanded = !smartTogglesExpanded }
-                    ) {
-                        SmartCodetableTogglesSection(
-                            repository = repository,
-                            settings = settings
-                        )
-                    }
-
-                    // 6. 明暗调频 / 屏蔽规则 (shadow.yaml)
+                    // 4. 明暗调频 / 屏蔽规则 (shadow.yaml)
                     ExpandableCodetableSubsection(
                         title = "明暗调频 / 屏蔽规则 (shadow.yaml)",
                         badge = "置顶/屏蔽",
@@ -500,6 +470,41 @@ private fun PresetSchemaInstallSection(
     }
 }
 
+object XiaohePhraseCodeHelper {
+    fun deriveXiaohe4Code(
+        phrase: String,
+        reverseLookupMap: Map<String, List<String>>
+    ): String? {
+        val clean = phrase.trim()
+        if (clean.isEmpty() || reverseLookupMap.isEmpty()) return null
+        val chars = ArrayList<String>(clean.length)
+        var offset = 0
+        while (offset < clean.length) {
+            val cp = clean.codePointAt(offset)
+            val count = Character.charCount(cp)
+            val isHan = Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN
+            if (!isHan) return null
+            chars.add(clean.substring(offset, offset + count))
+            offset += count
+        }
+        if (chars.size < 2) return null
+
+        fun bestCodeForChar(ch: String): String? {
+            val candidates = reverseLookupMap[ch].orEmpty()
+                .map { it.trim().lowercase() }
+                .filter { code -> code.length >= 2 && code.all { it in 'a'..'z' } }
+            return candidates.maxByOrNull { it.length }
+        }
+
+        val codes = chars.map { bestCodeForChar(it) ?: return null }
+        return when (codes.size) {
+            2 -> codes[0].take(2) + codes[1].take(2)
+            3 -> "${codes[0][0]}${codes[1][0]}${codes[2].take(2)}"
+            else -> "${codes[0][0]}${codes[1][0]}${codes[2][0]}${codes.last()[0]}"
+        }
+    }
+}
+
 @Composable
 private fun UserPhraseEditorSection(
     context: Context,
@@ -514,10 +519,26 @@ private fun UserPhraseEditorSection(
     var selectedTab by rememberSaveable { mutableIntStateOf(0) } // 0 = _top.txt, 1 = _user.txt
     val isTopPinned = selectedTab == 0
 
-    var wordInput by rememberSaveable { mutableStateOf("") }
-    var codeInput by rememberSaveable { mutableStateOf("") }
+    var showAddPhraseDialog by remember { mutableStateOf(false) }
     var entries by remember { mutableStateOf<List<CustomUserPhraseFileEditor.UserPhraseEntry>>(emptyList()) }
     var isReloading by remember { mutableStateOf(false) }
+    var fallbackReverseMap by remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
+
+    val effectiveReverseMap = remember(rimeDataManager.activeReverseLookupMap, fallbackReverseMap, metadataVersion) {
+        rimeDataManager.activeReverseLookupMap.ifEmpty { fallbackReverseMap }
+    }
+
+    LaunchedEffect(schemaId, metadataVersion) {
+        if (rimeDataManager.activeReverseLookupMap.isEmpty() && fallbackReverseMap.isEmpty()) {
+            fallbackReverseMap = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.assets.open("flypy_dz.tsv").bufferedReader(Charsets.UTF_8).useLines { lines ->
+                        DirectCommandEngine.loadReverseLookupFromDictLines(lines)
+                    }
+                }.getOrDefault(emptyMap())
+            }
+        }
+    }
 
     fun reloadList() {
         scope.launch {
@@ -562,66 +583,21 @@ private fun UserPhraseEditorSection(
             }
         }
 
-        Row(
+        Button(
+            onClick = { showAddPhraseDialog = true },
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
+            shape = RoundedCornerShape(10.dp)
         ) {
-            OutlinedTextField(
-                value = wordInput,
-                onValueChange = { wordInput = it },
-                modifier = Modifier.weight(1.2f),
-                singleLine = true,
-                shape = RoundedCornerShape(10.dp),
-                label = { Text("词条") },
-                placeholder = { Text("如：双拼输入") }
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp)
             )
-            OutlinedTextField(
-                value = codeInput,
-                onValueChange = { codeInput = it },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                shape = RoundedCornerShape(10.dp),
-                label = { Text("编码") },
-                placeholder = { Text("如：uupb") }
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = if (isTopPinned) "添加置顶词条（支持自动算小鹤 4 码）" else "添加自造词条（支持自动算小鹤 4 码）",
+                fontWeight = FontWeight.Bold
             )
-            Button(
-                onClick = {
-                    val cleanWord = wordInput.trim()
-                    val cleanCode = codeInput.trim()
-                    if (cleanWord.isEmpty() || cleanCode.isEmpty()) {
-                        onFeedback(false, "请填写词条与编码")
-                        return@Button
-                    }
-                    scope.launch {
-                        val err = withContext(Dispatchers.IO) {
-                            runCatching {
-                                rimeDataManager.getUserPhraseEditor(schemaId)
-                                    .addPhrase(cleanWord, cleanCode, isTopPinned)
-                            }.exceptionOrNull()
-                        }
-                        if (err != null) {
-                            onFeedback(false, "添加失败: ${err.message ?: "输入不合法"}")
-                        } else {
-                            wordInput = ""
-                            codeInput = ""
-                            reloadList()
-                            onFeedback(true, "✓ 已写入「$cleanWord ($cleanCode)」，点击重新部署生效")
-                        }
-                    }
-                },
-                enabled = wordInput.isNotBlank() && codeInput.isNotBlank(),
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("添加", fontWeight = FontWeight.Bold)
-            }
         }
 
         if (entries.isEmpty()) {
@@ -723,6 +699,233 @@ private fun UserPhraseEditorSection(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("重新部署生效", fontWeight = FontWeight.SemiBold)
             }
+        }
+    }
+
+    if (showAddPhraseDialog) {
+        AddUserPhraseDialog(
+            schemaId = schemaId,
+            initialIsTopPinned = isTopPinned,
+            reverseLookupMap = effectiveReverseMap,
+            onDismiss = { showAddPhraseDialog = false },
+            onConfirmAdd = { cleanWord, cleanCode, targetTopPinned ->
+                scope.launch {
+                    val err = withContext(Dispatchers.IO) {
+                        runCatching {
+                            rimeDataManager.getUserPhraseEditor(schemaId)
+                                .addPhrase(cleanWord, cleanCode, targetTopPinned)
+                        }.exceptionOrNull()
+                    }
+                    if (err != null) {
+                        onFeedback(false, "添加失败: ${err.message ?: "输入不合法"}")
+                    } else {
+                        selectedTab = if (targetTopPinned) 0 else 1
+                        showAddPhraseDialog = false
+                        reloadList()
+                        onFeedback(true, "✓ 已写入「$cleanWord ($cleanCode)」，点击重新部署生效")
+                    }
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun AddUserPhraseDialog(
+    schemaId: String,
+    initialIsTopPinned: Boolean,
+    reverseLookupMap: Map<String, List<String>>,
+    onDismiss: () -> Unit,
+    onConfirmAdd: (word: String, code: String, isTopPinned: Boolean) -> Unit
+) {
+    var wordInput by rememberSaveable { mutableStateOf("") }
+    var codeInput by rememberSaveable { mutableStateOf("") }
+    var codeManuallyEdited by rememberSaveable { mutableStateOf(false) }
+    var targetTopPinned by rememberSaveable { mutableStateOf(initialIsTopPinned) }
+
+    val derivedCode = remember(wordInput, reverseLookupMap) {
+        XiaohePhraseCodeHelper.deriveXiaohe4Code(wordInput, reverseLookupMap)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("添加个人词条 ($schemaId)") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    CodetableSegmentTab(
+                        title = "置顶词 (_top.txt)",
+                        selected = targetTopPinned,
+                        onClick = { targetTopPinned = true },
+                        modifier = Modifier.weight(1f)
+                    )
+                    CodetableSegmentTab(
+                        title = "自造词 (_user.txt)",
+                        selected = !targetTopPinned,
+                        onClick = { targetTopPinned = false },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                OutlinedTextField(
+                    value = wordInput,
+                    onValueChange = { next ->
+                        wordInput = next
+                        if (!codeManuallyEdited) {
+                            val auto = XiaohePhraseCodeHelper.deriveXiaohe4Code(next, reverseLookupMap)
+                            if (auto != null) {
+                                codeInput = auto
+                            } else if (next.trim().length < 2) {
+                                codeInput = ""
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    label = { Text("词条 *") },
+                    placeholder = { Text("输入 2~4+ 汉字，如：双拼输入") }
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = codeInput,
+                        onValueChange = {
+                            codeInput = it
+                            codeManuallyEdited = true
+                        },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        shape = RoundedCornerShape(10.dp),
+                        label = { Text("编码 *") },
+                        placeholder = { Text("如：uupb") }
+                    )
+                    FilledTonalButton(
+                        onClick = {
+                            if (derivedCode != null) {
+                                codeInput = derivedCode
+                                codeManuallyEdited = false
+                            }
+                        },
+                        enabled = derivedCode != null,
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 14.dp)
+                    ) {
+                        Text(
+                            text = "自动算小鹤 4 码",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                if (derivedCode != null) {
+                    Text(
+                        text = "按单字反查表推算小鹤 4 码：$derivedCode",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TypeFreeEmerald,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                } else if (wordInput.trim().isNotEmpty()) {
+                    Text(
+                        text = "输入 2~4+ 个纯汉字可自动推导小鹤 4 码，也可手动填写自定义编码",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = wordInput.isNotBlank() && codeInput.isNotBlank(),
+                onClick = {
+                    onConfirmAdd(wordInput.trim(), codeInput.trim(), targetTopPinned)
+                }
+            ) {
+                Text("写入词库")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+fun QuickSymbolsEditorCard(
+    schemaId: String,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val rimeDataManager = remember { TypeFreeApp.instance.rimeDataManager }
+    val deployState by rimeDataManager.deploymentState.collectAsState()
+    val metadataVersion by rimeDataManager.metadataVersion.collectAsState()
+    var feedbackMessage by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.52f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = "`;` 多码快符表 (quick_symbols.yaml)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "供分号引导多码快符（如 `;mq -> ①`）或外接物理键盘使用",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                CodetableBadgePill(text = "${rimeDataManager.activeSymbolTrie.size} 项", highlight = true)
+            }
+
+            feedbackMessage?.let { (ok, text) ->
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (ok) TypeFreeEmerald else MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            QuickSymbolsEditorSection(
+                context = context,
+                rimeDataManager = rimeDataManager,
+                schemaId = schemaId,
+                deployState = deployState,
+                metadataVersion = metadataVersion,
+                onFeedback = { ok, msg -> feedbackMessage = ok to msg }
+            )
         }
     }
 }
@@ -1098,84 +1301,6 @@ private fun SubDictManagerSection(
                     fontWeight = FontWeight.SemiBold
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun SmartCodetableTogglesSection(
-    repository: AppRepository,
-    settings: AppSettings
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                Text(
-                    text = "英文前缀防误上屏",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = "输入第 4 码无中文精确匹配且命中常见英文词前缀（如 gith → github）时，保留英文候选并阻止第 4/5 码自动顶屏。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    lineHeight = 16.sp
-                )
-            }
-            Switch(
-                checked = settings.englishPrefixVetoEnabled,
-                onCheckedChange = { enabled ->
-                    repository.updateSettings { it.copy(englishPrefixVetoEnabled = enabled) }
-                }
-            )
-        }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        text = "构词自动造词 (AaAbBaBb)",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    CodetableBadgePill(text = "默认关闭", highlight = false)
-                }
-                Text(
-                    text = "关闭（OFF）可完整保护静态小鹤音形肌肉记忆；开启后连续上屏单字将按构词规则自动写入 _user.txt。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    lineHeight = 16.sp
-                )
-            }
-            Switch(
-                checked = settings.codetableAutoEncodeEnabled,
-                onCheckedChange = { enabled ->
-                    repository.updateSettings { it.copy(codetableAutoEncodeEnabled = enabled) }
-                }
-            )
         }
     }
 }
