@@ -31,10 +31,10 @@ jobs:
 
     steps:
       - name: Checkout TypeFree branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
@@ -46,10 +46,10 @@ jobs:
           fi
 
       - name: Setup Gradle cache
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Cache upstream librime 1.17.0 C++ dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             rime/src/main/cpp/librime
@@ -195,7 +195,7 @@ jobs:
         run: rm -f /tmp/typefree-release.jks
 
       - name: Upload Xiaohe Exclusive APK & QA Reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: TypeFree-xiaohe-${{ inputs.build_type || 'debug' }}-apk
           path: |
