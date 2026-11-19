@@ -66,11 +66,19 @@ fun PredictionCandidateBar(
     onToggleToolPanel: () -> Unit,
     onSelectPrediction: (Int) -> Unit,
     onSelectAiCompletion: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    passiveMathResult: String? = null,
+    onSelectPassiveMath: ((String) -> Unit)? = null,
+    phraseSuggestionLabel: String? = null,
+    onAcceptPhraseSuggestion: (() -> Unit)? = null,
+    onDismissPhraseSuggestion: (() -> Unit)? = null,
+    englishSuggestions: List<String> = emptyList(),
+    onSelectEnglishSuggestion: ((String) -> Unit)? = null
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val metrics = LocalKeyboardMetrics.current
     val scrollState = rememberScrollState()
+    val emeraldAccentText = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
 
     Row(
         modifier = Modifier
@@ -85,7 +93,7 @@ fun PredictionCandidateBar(
             onClick = onToggleToolPanel
         )
 
-        // 2. Scrollable L1/L2 Prediction Chips
+        // 2. Scrollable Passive Math / L2 Phrase / EN Suggestions / L1-L2 Prediction Chips
         Row(
             modifier = Modifier
                 .weight(1f)
@@ -94,6 +102,100 @@ fun PredictionCandidateBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
+            val cleanMath = passiveMathResult?.trim().orEmpty()
+            if (cleanMath.isNotEmpty()) {
+                val mathDisplay = if (cleanMath.startsWith("=")) cleanMath else "= $cleanMath"
+                Box(
+                    modifier = Modifier
+                        .height(28.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.16f else 0.12f))
+                        .border(1.dp, TypeFreeEmerald.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
+                        .clickable { onSelectPassiveMath?.invoke(cleanMath) }
+                        .padding(horizontal = 9.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = mathDisplay,
+                        color = emeraldAccentText,
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1
+                    )
+                }
+            }
+
+            val cleanPhraseLabel = phraseSuggestionLabel?.trim().orEmpty()
+            if (cleanPhraseLabel.isNotEmpty()) {
+                val displayPhrase = if (
+                    cleanPhraseLabel.startsWith("+") ||
+                    cleanPhraseLabel.startsWith("录入")
+                ) {
+                    cleanPhraseLabel
+                } else {
+                    "+ 录入: $cleanPhraseLabel"
+                }
+                Row(
+                    modifier = Modifier
+                        .height(28.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(palette.capsuleSelectedBg)
+                        .border(1.dp, TypeFreeEmerald.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
+                        .padding(start = 8.dp, end = if (onDismissPhraseSuggestion != null) 4.dp else 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = displayPhrase,
+                        color = emeraldAccentText,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        modifier = Modifier.clickable { onAcceptPhraseSuggestion?.invoke() }
+                    )
+                    if (onDismissPhraseSuggestion != null) {
+                        Box(
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable(onClick = onDismissPhraseSuggestion),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "×",
+                                color = palette.keyTextMuted,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+
+            englishSuggestions.forEach { word ->
+                if (word.isNotBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .height(28.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(palette.keyCapBg)
+                            .border(1.dp, palette.keyBorder, RoundedCornerShape(8.dp))
+                            .clickable { onSelectEnglishSuggestion?.invoke(word) }
+                            .padding(horizontal = 9.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = word,
+                            color = palette.keyTextPrimary,
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+
             predictions.forEachIndexed { idx, cand ->
                 val visualText = if (cand.text.length > 16 || cand.text.contains('\n')) {
                     cand.text.replace('\n', '↵').take(16) + "…"
@@ -253,7 +355,10 @@ fun CandidateStrip(
     pinnedWordsForCurrentCode: Set<String> = emptySet(),
     onPinCandidate: (String) -> Unit = {},
     onUnpinCandidate: (String) -> Unit = {},
-    onBlockCandidate: (String) -> Unit = {}
+    onBlockCandidate: (String) -> Unit = {},
+    isOrqDateActive: Boolean = false,
+    orqDateOffsetDays: Int = 0,
+    onStepOrqDate: ((Int) -> Unit)? = null
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val metrics = LocalKeyboardMetrics.current
@@ -332,6 +437,44 @@ fun CandidateStrip(
                         onUnpin = { onUnpinCandidate(cand.text) },
                         onBlock = { onBlockCandidate(cand.text) }
                     )
+                }
+            }
+        }
+
+        // 2.5 Optional `orq` Date Offset Stepper Buttons (`[-1天]` `[+1天]`)
+        if (isOrqDateActive) {
+            val stepActiveBorder = if (orqDateOffsetDays != 0) {
+                TypeFreeEmerald.copy(alpha = 0.72f)
+            } else {
+                palette.keyBorder
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                listOf(-1 to "-1天", 1 to "+1天").forEach { (delta, label) ->
+                    Box(
+                        modifier = Modifier
+                            .height(28.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(palette.keyCapSecondaryBg)
+                            .border(1.dp, stepActiveBorder, RoundedCornerShape(8.dp))
+                            .clickable { onStepOrqDate?.invoke(delta) }
+                            .padding(horizontal = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = label,
+                            style = TextStyle(
+                                color = palette.keyTextPrimary,
+                                fontSize = 11.sp,
+                                lineHeight = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                platformStyle = PlatformTextStyle(includeFontPadding = false)
+                            ),
+                            maxLines = 1
+                        )
+                    }
                 }
             }
         }
