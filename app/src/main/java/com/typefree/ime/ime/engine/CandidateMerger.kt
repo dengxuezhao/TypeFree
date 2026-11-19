@@ -71,7 +71,16 @@ object CandidateMerger {
     }
 
     fun prefixSnippetsForCode(code: String, normalizedSnippets: List<SnippetEntry>): List<FlypyCandidate> {
-        if (!code.startsWith(";") || code.length < 2) return emptyList()
+        if (code == "/") {
+            return normalizedSnippets
+                .filter { it.flypyCode.startsWith("/") }
+                .map { entry ->
+                    val label = entry.title.trim().take(6)
+                    val hint = if (label.isNotEmpty()) "${entry.flypyCode} $label" else entry.flypyCode
+                    FlypyCandidate(text = entry.content, codeHint = hint)
+                }
+        }
+        if (!(code.startsWith("/") || code.startsWith(";")) || code.length < 2) return emptyList()
         return normalizedSnippets
             .filter { it.flypyCode.length > code.length && it.flypyCode.startsWith(code) }
             .map { entry ->
@@ -85,23 +94,6 @@ object CandidateMerger {
                 val date = Date(nowMillis)
                 val cnFmt = SimpleDateFormat("yyyy年MM月dd日", Locale.CHINA).format(date)
                 val isoFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(date)
-                val compactFmt = SimpleDateFormat("yyyyMMdd", Locale.US).format(date)
-                listOf(
-                    FlypyCandidate(cnFmt),
-                    FlypyCandidate(isoFmt),
-                    FlypyCandidate(compactFmt)
-                )
-            }
-            "ouj" -> {
-                val date = Date(nowMillis)
-                val hm = SimpleDateFormat("HH:mm", Locale.US).format(date)
-                val hms = SimpleDateFormat("HH:mm:ss", Locale.US).format(date)
-                listOf(
-                    FlypyCandidate(hm),
-                    FlypyCandidate(hms)
-                )
-            }
-            "oxq" -> {
                 val cal = Calendar.getInstance().apply { timeInMillis = nowMillis }
                 val suffix = when (cal.get(Calendar.DAY_OF_WEEK)) {
                     Calendar.MONDAY -> "一"
@@ -113,8 +105,18 @@ object CandidateMerger {
                     else -> "日"
                 }
                 listOf(
-                    FlypyCandidate("星期$suffix"),
-                    FlypyCandidate("周$suffix")
+                    FlypyCandidate(cnFmt),
+                    FlypyCandidate(isoFmt),
+                    FlypyCandidate("星期$suffix")
+                )
+            }
+            "ouj" -> {
+                val date = Date(nowMillis)
+                val hm = SimpleDateFormat("HH:mm", Locale.US).format(date)
+                val hms = SimpleDateFormat("HH:mm:ss", Locale.US).format(date)
+                listOf(
+                    FlypyCandidate(hm),
+                    FlypyCandidate(hms)
                 )
             }
             else -> emptyList()

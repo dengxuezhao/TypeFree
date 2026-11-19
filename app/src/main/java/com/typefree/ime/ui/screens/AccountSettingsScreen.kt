@@ -104,22 +104,21 @@ fun AccountSettingsScreen(
     initialSubTab: Int = AppDestinations.SUBTAB_API,
     onSubTabChanged: ((Int) -> Unit)? = null
 ) {
+    val validSubTabs = setOf(
+        AppDestinations.SUBTAB_API,
+        AppDestinations.SUBTAB_STYLES,
+        AppDestinations.SUBTAB_PREFERENCES
+    )
     var activeSubTab by rememberSaveable {
         mutableIntStateOf(
-            initialSubTab.coerceIn(
-                AppDestinations.SUBTAB_API,
-                AppDestinations.SUBTAB_PREFERENCES
-            )
+            if (initialSubTab in validSubTabs) initialSubTab else AppDestinations.SUBTAB_API
         )
     }
 
     LaunchedEffect(initialSubTab) {
-        val coerced = initialSubTab.coerceIn(
-            AppDestinations.SUBTAB_API,
-            AppDestinations.SUBTAB_PREFERENCES
-        )
-        if (activeSubTab != coerced) {
-            activeSubTab = coerced
+        val resolved = if (initialSubTab in validSubTabs) initialSubTab else AppDestinations.SUBTAB_API
+        if (activeSubTab != resolved) {
+            activeSubTab = resolved
         }
     }
 
@@ -152,12 +151,9 @@ fun AccountSettingsScreen(
     }
 
     fun selectSubTab(index: Int) {
-        val coerced = index.coerceIn(
-            AppDestinations.SUBTAB_API,
-            AppDestinations.SUBTAB_PREFERENCES
-        )
-        activeSubTab = coerced
-        onSubTabChanged?.invoke(coerced)
+        val resolved = if (index in validSubTabs) index else AppDestinations.SUBTAB_API
+        activeSubTab = resolved
+        onSubTabChanged?.invoke(resolved)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -288,41 +284,6 @@ fun AccountSettingsScreen(
             onOpenUrl = { url -> openExternalUrl(context, url) },
             onDismiss = { updateDialogState = null }
         )
-    }
-}
-
-@Composable
-private fun StudioSubTabPill(
-    title: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(10.dp),
-        color = if (selected) MaterialTheme.colorScheme.surface else Color.Transparent,
-        shadowElevation = if (selected) 1.dp else 0.dp
-    ) {
-        Box(
-            modifier = Modifier.padding(vertical = 9.dp, horizontal = 6.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                color = if (selected) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
     }
 }
 
@@ -1180,7 +1141,7 @@ private fun AppearanceAndPreferencesPane(
 
                 PreferenceSwitchRow(
                     title = "自动记录剪贴板历史",
-                    subtitle = "自动收纳最近 40 条复制文本，自动过滤密码管理器敏感内容",
+                    subtitle = "自动收纳最近 200 条复制文本，自动过滤密码管理器敏感内容",
                     checked = settings.clipboardEnabled,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(clipboardEnabled = enabled) }
@@ -2044,43 +2005,5 @@ private fun ThemePreviewOptionCard(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun PreferenceSwitchRow(
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .padding(end = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                lineHeight = 18.sp
-            )
-        }
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange
-        )
     }
 }

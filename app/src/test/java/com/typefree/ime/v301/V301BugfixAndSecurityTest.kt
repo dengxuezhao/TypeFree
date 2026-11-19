@@ -591,7 +591,9 @@ class V301BugfixAndSecurityTest {
             assertFalse(manager.hasCustomSchemaImported())
             assertFalse(File(sharedDir, "rime.lua").exists())
             assertFalse(File(sharedDir, "lua").exists())
-            assertFalse(File(sharedDir, "opencc").exists())
+            assertFalse(File(sharedDir, "opencc/emoji.json").exists())
+            assertFalse(File(sharedDir, "opencc/emoji.txt").exists())
+            assertTrue(File(sharedDir, "opencc/s2tw.json").exists())
             assertFalse(File(sharedDir, "cn_dicts/custom_ext.dict.yaml").exists())
         } finally {
             tempRoot.deleteRecursively()

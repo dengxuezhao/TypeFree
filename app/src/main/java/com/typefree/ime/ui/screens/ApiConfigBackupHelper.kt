@@ -13,6 +13,7 @@ import com.typefree.ime.data.DictionarySource
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
+import com.typefree.ime.data.KeycapBadgeMode
 import com.typefree.ime.data.LlmConfig
 import com.typefree.ime.data.MultimodalConfig
 import com.typefree.ime.data.MultimodalProtocol
@@ -55,6 +56,15 @@ object ApiConfigBackupHelper {
         "liveWriteToEditor",
         "inputScheme",
         "fixedCandidateOrder",
+        "codetableFiveKeyBottomRow",
+        "xiaoheDirectCommandsEnabled",
+        "xiaoheReverseSplitEnabled",
+        "xiaoheNaturalContinuationEnabled",
+        "passiveCalculatorEnabled",
+        "englishModeWordSuggestionEnabled",
+        "phraseSuggestionL2Enabled",
+        "customKeyGesturesJson",
+        "keycapBadgeMode",
         "predictionEnabled",
         "aiCompletionEnabled",
         "jevCopilotEnabled",
@@ -689,6 +699,10 @@ object ApiConfigBackupHelper {
                 InputScheme.entries.firstOrNull { it.name.equals(rawScheme, ignoreCase = true) }
             } ?: existingSettings.inputScheme
 
+            val mergedKeycapBadgeMode = rootObj.optString("keycapBadgeMode")?.let { rawBadgeMode ->
+                KeycapBadgeMode.entries.firstOrNull { it.name.equals(rawBadgeMode, ignoreCase = true) }
+            } ?: existingSettings.keycapBadgeMode
+
             val mergedFixedOrder = if (rootObj.has("fixedCandidateOrder")) {
                 rootObj.optBoolean("fixedCandidateOrder")
             } else {
@@ -717,6 +731,23 @@ object ApiConfigBackupHelper {
                     ?: existingSettings.liveWriteToEditor,
                 inputScheme = mergedInputScheme,
                 fixedCandidateOrder = mergedFixedOrder,
+                codetableFiveKeyBottomRow = rootObj.optBoolean("codetableFiveKeyBottomRow")
+                    ?: existingSettings.codetableFiveKeyBottomRow,
+                xiaoheDirectCommandsEnabled = rootObj.optBoolean("xiaoheDirectCommandsEnabled")
+                    ?: existingSettings.xiaoheDirectCommandsEnabled,
+                xiaoheReverseSplitEnabled = rootObj.optBoolean("xiaoheReverseSplitEnabled")
+                    ?: existingSettings.xiaoheReverseSplitEnabled,
+                xiaoheNaturalContinuationEnabled = rootObj.optBoolean("xiaoheNaturalContinuationEnabled")
+                    ?: existingSettings.xiaoheNaturalContinuationEnabled,
+                passiveCalculatorEnabled = rootObj.optBoolean("passiveCalculatorEnabled")
+                    ?: existingSettings.passiveCalculatorEnabled,
+                englishModeWordSuggestionEnabled = rootObj.optBoolean("englishModeWordSuggestionEnabled")
+                    ?: existingSettings.englishModeWordSuggestionEnabled,
+                phraseSuggestionL2Enabled = rootObj.optBoolean("phraseSuggestionL2Enabled")
+                    ?: existingSettings.phraseSuggestionL2Enabled,
+                customKeyGesturesJson = rootObj.optString("customKeyGesturesJson")
+                    ?: existingSettings.customKeyGesturesJson,
+                keycapBadgeMode = mergedKeycapBadgeMode,
                 predictionEnabled = rootObj.optBoolean("predictionEnabled")
                     ?: existingSettings.predictionEnabled,
                 aiCompletionEnabled = rootObj.optBoolean("aiCompletionEnabled")

@@ -24,7 +24,7 @@ sealed interface ImeUiAction {
     data object ToggleStylePicker : ImeUiAction
     data object OpenStylePickerFromToolPanel : ImeUiAction
     data object TogglePunctuationStrip : ImeUiAction
-    data class OpenHostApp(val tabIndex: Int) : ImeUiAction
+    data class OpenHostApp(val tabIndex: Int, val subTabIndex: Int? = null) : ImeUiAction
 
     // v3.2.0 Jev Copilot mode actions
     data object OpenJevCopilot : ImeUiAction
@@ -87,6 +87,18 @@ sealed interface ImeUiAction {
 
     // Typing & Editor actions
     data object TriggerUndo : ImeUiAction
+    data class PinCandidate(val word: String) : ImeUiAction
+    data class UnpinCandidate(val word: String) : ImeUiAction
+    data class BlockCandidate(val word: String) : ImeUiAction
+    data object ToggleSingleCharMode : ImeUiAction
+    data class TriggerKeyGesture(val binding: KeyGestureBinding) : ImeUiAction
+    data object SwipeUpPeriodSlash : ImeUiAction
+    data class StepOrqDate(val deltaDays: Int) : ImeUiAction
+    data object TogglePhraseRecording : ImeUiAction
+    data object AcceptPhraseSuggestion : ImeUiAction
+    data object DismissPhraseSuggestion : ImeUiAction
+    data class SelectPassiveMath(val result: String) : ImeUiAction
+    data class SelectEnglishSuggestion(val word: String) : ImeUiAction
     data class CommitText(val text: String) : ImeUiAction
     data class CommitQwertyChar(val char: String) : ImeUiAction
     data class CommaOrPeriodKey(val isComma: Boolean) : ImeUiAction

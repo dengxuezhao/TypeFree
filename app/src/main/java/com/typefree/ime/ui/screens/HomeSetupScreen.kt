@@ -10,6 +10,7 @@ import android.net.Uri
 import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -40,9 +41,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -295,7 +297,8 @@ fun HomeSetupScreen(
     repository: AppRepository,
     aiEngine: AiPipelineEngine,
     onNavigateToTab: (Int) -> Unit,
-    onNavigateToSettingsSubTab: (Int) -> Unit = { onNavigateToTab(AppDestinations.TAB_SETTINGS) }
+    onNavigateToSettingsSubTab: (Int) -> Unit = { onNavigateToTab(AppDestinations.TAB_VOICE_AI) },
+    onNavigateToVoiceAiSubTab: (Int) -> Unit = onNavigateToSettingsSubTab
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -325,6 +328,57 @@ fun HomeSetupScreen(
     var isImeSelected by remember { mutableStateOf(checkImeSelected(context)) }
     var permissionDeniedOnce by remember { mutableStateOf(false) }
     var isPlaygroundSheetOpen by rememberSaveable { mutableStateOf(false) }
+    var showHistoryPage by rememberSaveable { mutableStateOf(false) }
+
+    BackHandler(enabled = showHistoryPage) {
+        showHistoryPage = false
+    }
+
+    if (showHistoryPage) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface,
+                shadowElevation = 1.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    TextButton(onClick = { showHistoryPage = false }) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                            contentDescription = "返回首页",
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(2.dp))
+                        Text("返回首页", fontWeight = FontWeight.SemiBold)
+                    }
+                    Text(
+                        text = "识别历史 (${history.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(72.dp))
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                HistoryScreen(
+                    repository = repository,
+                    aiEngine = aiEngine
+                )
+            }
+        }
+        return
+    }
 
     val isApiReady = remember(settings) { SetupStatsHelper.isApiConfigured(settings) }
     val isA11yReady = isAccessibilityEnabled || a11yLiveConnected
@@ -444,7 +498,7 @@ fun HomeSetupScreen(
             settings = settings,
             isApiReady = isApiReady,
             onClickApiCapsule = {
-                onNavigateToSettingsSubTab(AppDestinations.SUBTAB_API)
+                onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_API)
             }
         )
 
@@ -452,7 +506,14 @@ fun HomeSetupScreen(
         HeroMetricsCard(
             usageStats = usageStats,
             hasHistory = history.isNotEmpty(),
-            onClickViewHistory = { onNavigateToTab(AppDestinations.TAB_HISTORY) }
+            onClickViewHistory = { showHistoryPage = true }
+        )
+
+        // 2.5 Prominent Entry Card for Recognition History (no longer a bottom tab)
+        HistoryEntryCard(
+            totalCount = history.size,
+            latestSnippet = history.firstOrNull()?.polishedText.orEmpty(),
+            onOpenHistory = { showHistoryPage = true }
         )
 
         // 3. Keyboard Setup Wizard (Auto-collapses to 1-line emerald banner when IME enabled + selected + API ready)
@@ -480,7 +541,7 @@ fun HomeSetupScreen(
                 }
             },
             onOpenApiConfig = {
-                onNavigateToSettingsSubTab(AppDestinations.SUBTAB_API)
+                onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_API)
             }
         )
 
@@ -544,10 +605,10 @@ fun HomeSetupScreen(
             usageStats = usageStats,
             dictionarySize = settings.dictionary.size,
             onOpenStyles = {
-                onNavigateToSettingsSubTab(AppDestinations.SUBTAB_STYLES)
+                onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_AI_STYLE)
             },
             onOpenDictionary = {
-                onNavigateToTab(AppDestinations.TAB_DICTIONARY)
+                onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_MAIN)
             }
         )
 
@@ -594,15 +655,15 @@ fun HomeSetupScreen(
             sandboxDiff = sandboxDiff,
             onOpenStyles = {
                 isPlaygroundSheetOpen = false
-                onNavigateToSettingsSubTab(AppDestinations.SUBTAB_STYLES)
+                onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_AI_STYLE)
             },
             onOpenApiConfig = {
                 isPlaygroundSheetOpen = false
-                onNavigateToSettingsSubTab(AppDestinations.SUBTAB_API)
+                onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_API)
             },
             onOpenDictionary = {
                 isPlaygroundSheetOpen = false
-                onNavigateToTab(AppDestinations.TAB_DICTIONARY)
+                onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_MAIN)
             },
             onSelectSamplePhrase = {
                 undoSnapshot = sandboxValue
@@ -901,7 +962,7 @@ private fun TopBrandBar(
                     overflow = TextOverflow.Ellipsis
                 )
                 Icon(
-                    imageVector = Icons.Default.KeyboardArrowRight,
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(15.dp)
@@ -1033,6 +1094,94 @@ private fun HeroMetricsCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryEntryCard(
+    totalCount: Int,
+    latestSnippet: String,
+    onOpenHistory: () -> Unit
+) {
+    Card(
+        onClick = onOpenHistory,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = TypeFreeIcons.History,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "识别历史",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Text(
+                                text = "$totalCount 条",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = if (latestSnippet.isNotBlank()) {
+                            "最近：$latestSnippet"
+                        } else {
+                            "查看本机口述、帮写、改写与翻译历史记录"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            FilledTonalButton(
+                onClick = onOpenHistory,
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text("查看", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
             }
         }
     }

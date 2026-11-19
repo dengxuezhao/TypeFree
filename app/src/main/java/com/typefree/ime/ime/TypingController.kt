@@ -6,6 +6,10 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
 import kotlin.math.abs
+import com.typefree.core.ime.enhancer.CodetableCodeDeriver
+import com.typefree.core.ime.enhancer.PhraseSuggestion
+import com.typefree.core.ime.enhancer.SafeMathEvaluator
+import com.typefree.core.ime.enhancer.Utf8Safety
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.DefaultPresets
@@ -13,12 +17,15 @@ import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.SnippetEntry
 import com.typefree.ime.data.SnippetMatcher
+import com.typefree.ime.ime.engine.CodetableEnhancedInputEngine
 import com.typefree.ime.ime.engine.EngineResult
 import com.typefree.ime.ime.engine.FlypyInputEngine
 import com.typefree.ime.ime.engine.InputEngine
 import com.typefree.ime.ime.engine.KeyInput
 import com.typefree.ime.ime.flypy.FlypyDictionary
 import com.typefree.ime.ime.predict.AiSentenceCompleter
+import com.typefree.ime.ime.predict.EnglishWordSuggester
+import com.typefree.ime.ime.predict.PassiveCalculatorHelper
 import com.typefree.ime.ime.predict.PredictionCoordinator
 import com.typefree.ime.ime.predict.PredictionStore
 import com.typefree.ime.ime.predict.StaticPredictor
@@ -63,6 +70,7 @@ interface ImeHostCallbacks {
     fun readSystemClipboardText(): String
     fun syncSystemClipboardIfNeeded(allowFreshBanner: Boolean)
     fun copyTextToClipboard(text: String) {}
+    fun openJevCopilotFromCommand() {}
 
     fun archiveWavForHistory(wavFile: File, retention: HistoryRetention): File
     fun getLastRecordingWavFile(): File
@@ -79,7 +87,8 @@ class TypingController(
     val predictionStore: PredictionStore = PredictionStore.fromContextOrInMemory { host as? Context },
     val staticPredictor: StaticPredictor = StaticPredictor(),
     aiSentenceCompleter: AiSentenceCompleter? = null,
-    predictionIdleDismissMs: Long = PredictionCoordinator.IDLE_DISMISS_MS
+    predictionIdleDismissMs: Long = PredictionCoordinator.IDLE_DISMISS_MS,
+    private val settingsOverride: (() -> AppSettings)? = null
 ) {
     var isIncognitoMode: Boolean = false
         private set
@@ -90,7 +99,29 @@ class TypingController(
             value?.setIncognitoMode(isIncognitoMode)
         }
 
+    var codetableEnhancedEngine: CodetableEnhancedInputEngine? = null
+        set(value) {
+            field = value
+            value?.isActiveEnginePredicate = { activeEngine === value }
+            if (value != null && activeEngine === value) {
+                value.setIncognitoMode(isIncognitoMode)
+                value.setFixedCandidateOrder(safeSettings().fixedCandidateOrder)
+            }
+            value?.updateSnippets(safeSettings().snippets)
+        }
+
+    var enhancedSchemePredicate: (InputScheme) -> Boolean = { scheme ->
+        (scheme == InputScheme.FLYPY_TABLE && codetableEnhancedEngine?.activeProfile?.schemaId == "flypy") ||
+            scheme == InputScheme.RIME_CUSTOM
+    }
+
     var isRimeReady: Boolean = false
+
+    val englishWordSuggester: EnglishWordSuggester = EnglishWordSuggester()
+    var reverseLookupMapProvider: () -> Map<String, List<String>> = { emptyMap() }
+    var onSaveUserPhrase: ((word: String, code: String) -> Unit)? = null
+    var onUndoRequested: (() -> Unit)? = null
+    private var lastCommittedForRepeat: String = ""
 
     val aiCompleter: AiSentenceCompleter = aiSentenceCompleter ?: AiSentenceCompleter(
         scope = host.scope,
@@ -120,18 +151,32 @@ class TypingController(
     )
 
     private fun safeSettings(): AppSettings {
-        return runCatching { host.repository.settings.value }.getOrDefault(AppSettings())
+        return settingsOverride?.invoke()
+            ?: runCatching { host.repository.settings.value }.getOrDefault(AppSettings())
     }
 
     val activeEngine: InputEngine
         get() {
             val scheme = safeSettings().inputScheme
+            val enhanced = codetableEnhancedEngine
+            if (enhanced != null && isRimeReady && enhancedSchemePredicate(scheme)) {
+                return enhanced
+            }
             val rime = rimeInputEngine
             return if (scheme.usesRime && isRimeReady && rime != null) {
                 rime
             } else {
                 flypyInputEngine
             }
+        }
+
+    val activeAllowsAutoLearn: Boolean
+        get() {
+            val eng = activeEngine
+            if (eng is CodetableEnhancedInputEngine) {
+                return eng.activeProfile.allowAutoLearn
+            }
+            return safeSettings().inputScheme != InputScheme.FLYPY_TABLE
         }
 
     val isDictionaryLoaded: Boolean
@@ -148,6 +193,7 @@ class TypingController(
     fun updateSnippets(snippets: List<SnippetEntry>) {
         flypyInputEngine.updateSnippets(snippets)
         rimeInputEngine?.updateSnippets(snippets)
+        codetableEnhancedEngine?.updateSnippets(snippets)
         if (isComposing) {
             syncEngineStateToUi()
         }
@@ -157,17 +203,20 @@ class TypingController(
         isIncognitoMode = incognito
         flypyInputEngine.setIncognitoMode(incognito)
         rimeInputEngine?.setIncognitoMode(incognito)
+        codetableEnhancedEngine?.setIncognitoMode(incognito)
         predictionCoordinator.setIncognitoMode(incognito)
     }
 
     fun setFixedCandidateOrder(fixedOrder: Boolean?) {
         flypyInputEngine.setFixedCandidateOrder(fixedOrder)
         rimeInputEngine?.setFixedCandidateOrder(fixedOrder)
+        codetableEnhancedEngine?.setFixedCandidateOrder(fixedOrder)
     }
 
     fun resetComposing() {
         flypyInputEngine.clear()
         rimeInputEngine?.clear()
+        codetableEnhancedEngine?.clear()
         predictionCoordinator.onPanelSwitched()
         syncEngineStateToUi()
     }
@@ -183,8 +232,10 @@ class TypingController(
 
     fun recordExternalCommit(text: String) {
         if (text.isNotBlank()) {
+            lastCommittedForRepeat = text
             flypyInputEngine.recordExternalCommit(text)
             rimeInputEngine?.recordExternalCommit(text)
+            codetableEnhancedEngine?.recordExternalCommit(text)
         }
     }
 
@@ -200,8 +251,15 @@ class TypingController(
                 preeditDisplay = preedit,
                 flypyCandidates = cands,
                 hasMoreCandidates = engineState.hasMore,
+                isOrqDateActive = engineState.isOrqDateActive,
+                orqDateOffsetDays = engineState.orqDateOffsetDays,
                 activeInputScheme = scheme,
                 isRimeDeploying = scheme.usesRime && !isRimeReady && rimeInputEngine != null,
+                passiveMathResult = if (engineState.isComposing) null else prev.passiveMathResult,
+                passiveMathExpression = if (engineState.isComposing) null else prev.passiveMathExpression,
+                passiveMathEndsWithEquals = if (engineState.isComposing) false else prev.passiveMathEndsWithEquals,
+                englishSuggestions = if (engineState.isComposing) emptyList() else prev.englishSuggestions,
+                englishSuggestionReplaceLength = if (engineState.isComposing) 0 else prev.englishSuggestionReplaceLength,
                 isFlypyCandidateSheetExpanded = if (!engineState.isComposing || cands.size <= 4) {
                     false
                 } else {
@@ -236,19 +294,328 @@ class TypingController(
                     host.commitDirectText(
                         text = result.text,
                         recordUndo = true,
-                        markManualEdit = true,
+                        markManualEdit = activeAllowsAutoLearn,
                         playFeedback = false
                     )
+                    onCommittedTextForPhraseTracking(result.text)
                     predictionCoordinator.onWordCommitted(
                         committedText = result.text,
                         isComposing = stillComposing
                     )
+                    if (!stillComposing) {
+                        refreshPassiveMathSuggestion()
+                    }
                 } else if (stillComposing) {
                     predictionCoordinator.onComposingStarted()
                 } else {
                     predictionCoordinator.dismissPredictions(resetChain = false)
                 }
             }
+        }
+    }
+
+    fun stepOrqDate(deltaDays: Int) {
+        val eng = codetableEnhancedEngine ?: return
+        host.performKeyFeedback(strong = false)
+        eng.adjustOrqDateOffset(deltaDays)
+        syncEngineStateToUi()
+    }
+
+    fun handleKeyGesture(binding: KeyGestureBinding) {
+        if (!binding.isEnabled) return
+        when (binding.type) {
+            KeyGestureActionType.NONE -> Unit
+            KeyGestureActionType.COMMIT_TEXT -> {
+                if (binding.text.isNotEmpty()) {
+                    commitSecondarySymbol(binding.text)
+                }
+            }
+            KeyGestureActionType.COMMIT_PAIRED -> {
+                commitPairedSymbol(binding.text, binding.rightText)
+            }
+            KeyGestureActionType.UNDO_LAST -> {
+                onUndoRequested?.invoke()
+            }
+            KeyGestureActionType.REPEAT_LAST -> {
+                repeatLastCommittedText()
+            }
+            KeyGestureActionType.EDITOR_SHORTCUT -> {
+                binding.editorShortcut?.let(::handleEditorShortcutAction)
+            }
+        }
+    }
+
+    fun repeatLastCommittedText() {
+        if (isComposing) {
+            flushFlypyComposing()
+        }
+        val last = codetableEnhancedEngine?.coordinator?.lastCommittedPreview?.ifEmpty { null }
+            ?: lastCommittedForRepeat.ifEmpty { null }
+            ?: flypyInputEngine.delegate.lastCommittedText.ifEmpty { null }
+            ?: return
+        host.commitDirectText(
+            text = last,
+            recordUndo = true,
+            markManualEdit = false,
+            playFeedback = true
+        )
+        onCommittedTextForPhraseTracking(last)
+        refreshPassiveMathSuggestion()
+    }
+
+    fun triggerSwipeUpPeriodSlash() {
+        val curr = host.stateFlow.value
+        if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode && !isComposing) {
+            commitQwertyChar("/")
+        } else {
+            commitSecondarySymbol("/")
+        }
+    }
+
+    fun refreshPassiveMathSuggestion() {
+        val curr = host.stateFlow.value
+        if (isComposing ||
+            curr.tabMode != KeyboardTabMode.QWERTY ||
+            !safeSettings().passiveCalculatorEnabled ||
+            ImeLogic.isPasswordEditorInputType(curr.currentInputType)
+        ) {
+            if (curr.passiveMathResult != null || curr.passiveMathExpression != null || curr.passiveMathEndsWithEquals) {
+                host.stateFlow.update {
+                    it.copy(
+                        passiveMathResult = null,
+                        passiveMathExpression = null,
+                        passiveMathEndsWithEquals = false
+                    )
+                }
+            }
+            return
+        }
+        val before = host.readSurroundingBeforeCursor(64)
+        val helperRes = PassiveCalculatorHelper.evaluateTrailing(before)
+        val coreRes = if (helperRes != null) {
+            SafeMathEvaluator.detectTrailingExpression(before)
+        } else {
+            null
+        }
+        val nextResult = coreRes?.formattedResult ?: helperRes?.formattedResult
+        val nextExpr = coreRes?.expression ?: helperRes?.expression
+        val nextEndsWithEquals = coreRes?.endsWithEquals ?: helperRes?.endsWithEquals ?: false
+        if (curr.passiveMathResult != nextResult ||
+            curr.passiveMathExpression != nextExpr ||
+            curr.passiveMathEndsWithEquals != nextEndsWithEquals
+        ) {
+            host.stateFlow.update {
+                it.copy(
+                    passiveMathResult = nextResult,
+                    passiveMathExpression = nextExpr,
+                    passiveMathEndsWithEquals = nextEndsWithEquals
+                )
+            }
+        }
+    }
+
+    fun selectPassiveMath(result: String) {
+        val clean = result.trim().removePrefix("=").trim()
+        if (clean.isEmpty()) return
+        val stateEndsWithEquals = host.stateFlow.value.passiveMathEndsWithEquals
+        val tail = host.readSurroundingBeforeCursor(4).trimEnd()
+        val alreadyHasEquals = stateEndsWithEquals || tail.endsWith('=') || tail.endsWith('＝')
+        val textToCommit = if (alreadyHasEquals) clean else "=$clean"
+        host.stateFlow.update {
+            it.copy(
+                passiveMathResult = null,
+                passiveMathExpression = null,
+                passiveMathEndsWithEquals = false
+            )
+        }
+        host.commitDirectText(
+            text = textToCommit,
+            recordUndo = true,
+            markManualEdit = false,
+            playFeedback = true
+        )
+    }
+
+    fun refreshEnglishWordSuggestions() {
+        val curr = host.stateFlow.value
+        if (curr.tabMode != KeyboardTabMode.QWERTY ||
+            curr.isFlypyChineseMode ||
+            !safeSettings().englishModeWordSuggestionEnabled ||
+            ImeLogic.isPasswordEditorInputType(curr.currentInputType)
+        ) {
+            if (curr.englishSuggestions.isNotEmpty() || curr.englishSuggestionReplaceLength != 0) {
+                host.stateFlow.update {
+                    it.copy(englishSuggestions = emptyList(), englishSuggestionReplaceLength = 0)
+                }
+            }
+            return
+        }
+        val before = host.readSurroundingBeforeCursor(32)
+        val suggestion = englishWordSuggester.suggestForBeforeCursor(before, limit = 6)
+        val nextWords = suggestion?.suggestions.orEmpty()
+        val nextReplace = suggestion?.replaceLength ?: 0
+        if (curr.englishSuggestions != nextWords || curr.englishSuggestionReplaceLength != nextReplace) {
+            host.stateFlow.update {
+                it.copy(
+                    englishSuggestions = nextWords,
+                    englishSuggestionReplaceLength = nextReplace
+                )
+            }
+        }
+    }
+
+    fun selectEnglishSuggestion(word: String) {
+        val clean = word.trim()
+        if (clean.isEmpty()) return
+        val replaceLen = host.stateFlow.value.englishSuggestionReplaceLength
+        host.stateFlow.update {
+            it.copy(englishSuggestions = emptyList(), englishSuggestionReplaceLength = 0)
+        }
+        host.performKeyFeedback(strong = false)
+        val ic = host.currentInputConnection()
+        if (ic != null) {
+            ic.beginBatchEdit()
+            if (replaceLen > 0) {
+                ic.deleteSurroundingText(replaceLen, 0)
+            }
+            ic.commitText("$clean ", 1)
+            ic.endBatchEdit()
+            recordExternalCommit(clean)
+            host.recordManualEditTouch()
+        } else {
+            host.commitDirectText(
+                text = "$clean ",
+                recordUndo = true,
+                markManualEdit = true,
+                playFeedback = false
+            )
+        }
+        refreshPassiveMathSuggestion()
+    }
+
+    fun togglePhraseRecording() {
+        val curr = host.stateFlow.value
+        val nextRecording = !curr.isPhraseRecording
+        host.performKeyFeedback(strong = false)
+        host.stateFlow.update {
+            it.copy(
+                isPhraseRecording = nextRecording,
+                recordedPhraseBuffer = "",
+                recordedPhraseCode = null,
+                isToolPanelOpen = if (nextRecording) false else it.isToolPanelOpen,
+                isToolPanelHeightExpanded = if (nextRecording) false else it.isToolPanelHeightExpanded
+            )
+        }
+        host.showQuickActionToast(
+            if (nextRecording) "🎙️ 造词模式已开启，连续打字后点击顶部芯片保存" else "造词模式已关闭"
+        )
+    }
+
+    fun onL2PhraseSuggestion(suggestion: PhraseSuggestion?) {
+        if (suggestion == null) {
+            host.stateFlow.update {
+                it.copy(l2PhraseSuggestionWord = null, l2PhraseSuggestionCode = null)
+            }
+            return
+        }
+        val curr = host.stateFlow.value
+        if (!safeSettings().phraseSuggestionL2Enabled ||
+            isIncognitoMode ||
+            curr.isIncognitoMode ||
+            ImeLogic.isPasswordEditorInputType(curr.currentInputType) ||
+            curr.isPhraseRecording
+        ) {
+            return
+        }
+        host.stateFlow.update {
+            it.copy(
+                l2PhraseSuggestionWord = suggestion.word,
+                l2PhraseSuggestionCode = suggestion.code
+            )
+        }
+    }
+
+    fun onExternalCommittedTextForV362(committedText: String) {
+        onCommittedTextForPhraseTracking(committedText)
+        refreshPassiveMathSuggestion()
+    }
+
+    fun onCommittedTextForPhraseTracking(committedText: String) {
+        val curr = host.stateFlow.value
+        if (!curr.isPhraseRecording) return
+        if (isIncognitoMode || curr.isIncognitoMode || ImeLogic.isPasswordEditorInputType(curr.currentInputType)) {
+            return
+        }
+        val trimmed = committedText.trim()
+        if (trimmed.isEmpty()) return
+        val hanzi = Utf8Safety.extractHanziCodePoints(trimmed, limit = 8)
+        if (hanzi.isEmpty() || hanzi.joinToString("") != trimmed) return
+
+        val combinedChars = Utf8Safety.extractHanziCodePoints(curr.recordedPhraseBuffer + trimmed, limit = 8)
+        val nextPhrase = combinedChars.joinToString("")
+        val derivedCode = CodetableCodeDeriver.deriveXiaohe4Code(nextPhrase, reverseLookupMapProvider())
+        host.stateFlow.update {
+            it.copy(
+                recordedPhraseBuffer = nextPhrase,
+                recordedPhraseCode = derivedCode
+            )
+        }
+    }
+
+    fun acceptPhraseSuggestion() {
+        val curr = host.stateFlow.value
+        if (curr.isPhraseRecording) {
+            val word = curr.recordedPhraseBuffer.trim()
+            val code = curr.recordedPhraseCode?.trim().orEmpty()
+            if (word.codePointCount(0, word.length) < 2 || code.isEmpty()) {
+                host.showQuickActionToast("请继续打出至少 2 个汉字以自动生成 4 码")
+                return
+            }
+            host.performKeyFeedback(strong = true)
+            host.stateFlow.update {
+                it.copy(
+                    isPhraseRecording = false,
+                    recordedPhraseBuffer = "",
+                    recordedPhraseCode = null
+                )
+            }
+            codetableEnhancedEngine?.addRuntimeUserPhrase(word, code)
+            codetableEnhancedEngine?.markPhraseSuggestionAccepted(word)
+            onSaveUserPhrase?.invoke(word, code)
+            return
+        }
+
+        val l2Word = curr.l2PhraseSuggestionWord?.trim().orEmpty()
+        val l2Code = curr.l2PhraseSuggestionCode?.trim().orEmpty()
+        if (l2Word.isEmpty() || l2Code.isEmpty()) return
+        host.performKeyFeedback(strong = true)
+        host.stateFlow.update {
+            it.copy(l2PhraseSuggestionWord = null, l2PhraseSuggestionCode = null)
+        }
+        codetableEnhancedEngine?.addRuntimeUserPhrase(l2Word, l2Code)
+        codetableEnhancedEngine?.markPhraseSuggestionAccepted(l2Word)
+        onSaveUserPhrase?.invoke(l2Word, l2Code)
+    }
+
+    fun dismissPhraseSuggestion() {
+        val curr = host.stateFlow.value
+        host.performKeyFeedback(strong = false)
+        if (curr.isPhraseRecording) {
+            host.stateFlow.update {
+                it.copy(
+                    isPhraseRecording = false,
+                    recordedPhraseBuffer = "",
+                    recordedPhraseCode = null
+                )
+            }
+            return
+        }
+        val l2Word = curr.l2PhraseSuggestionWord?.trim().orEmpty()
+        if (l2Word.isNotEmpty()) {
+            codetableEnhancedEngine?.markPhraseSuggestionDismissed(l2Word)
+        }
+        host.stateFlow.update {
+            it.copy(l2PhraseSuggestionWord = null, l2PhraseSuggestionCode = null)
         }
     }
 
@@ -290,9 +657,13 @@ class TypingController(
                 preeditDisplay = "",
                 flypyCandidates = emptyList(),
                 hasMoreCandidates = false,
+                isOrqDateActive = false,
+                orqDateOffsetDays = 0,
                 isFlypyCandidateSheetExpanded = false,
                 predictionCandidates = emptyList(),
-                aiCompletionSuggestion = null
+                aiCompletionSuggestion = null,
+                englishSuggestions = emptyList(),
+                englishSuggestionReplaceLength = 0
             )
         }
         val toastText = if (nextChinese) {
@@ -322,10 +693,12 @@ class TypingController(
                     recordUndo = true,
                     markManualEdit = true
                 )
+                onCommittedTextForPhraseTracking(combined)
                 predictionCoordinator.onWordCommitted(
                     committedText = combined,
                     isComposing = false
                 )
+                refreshPassiveMathSuggestion()
                 return
             }
         }
@@ -335,6 +708,8 @@ class TypingController(
             predictionCoordinator.dismissPredictions(resetChain = true)
         }
         host.commitDirectText(text = ch, recordUndo = true, markManualEdit = true)
+        refreshEnglishWordSuggestions()
+        refreshPassiveMathSuggestion()
     }
 
     fun handleCommaOrPeriodKey(isComma: Boolean) {
@@ -396,10 +771,38 @@ class TypingController(
     fun dismissPredictions() {
         host.performKeyFeedback(strong = false)
         predictionCoordinator.dismissPredictions(resetChain = false)
+        val curr = host.stateFlow.value
+        val l2Word = curr.l2PhraseSuggestionWord?.trim().orEmpty()
+        if (l2Word.isNotEmpty()) {
+            codetableEnhancedEngine?.markPhraseSuggestionDismissed(l2Word)
+        }
+        host.stateFlow.update {
+            it.copy(
+                passiveMathResult = null,
+                passiveMathExpression = null,
+                passiveMathEndsWithEquals = false,
+                englishSuggestions = emptyList(),
+                englishSuggestionReplaceLength = 0,
+                l2PhraseSuggestionWord = null,
+                l2PhraseSuggestionCode = null,
+                isPhraseRecording = false,
+                recordedPhraseBuffer = "",
+                recordedPhraseCode = null
+            )
+        }
     }
 
     fun onPanelSwitched() {
         predictionCoordinator.onPanelSwitched()
+        host.stateFlow.update {
+            it.copy(
+                passiveMathResult = null,
+                passiveMathExpression = null,
+                passiveMathEndsWithEquals = false,
+                englishSuggestions = emptyList(),
+                englishSuggestionReplaceLength = 0
+            )
+        }
     }
 
     fun clearFlypyComposing() {
@@ -453,6 +856,15 @@ class TypingController(
             return
         }
         predictionCoordinator.dismissPredictions(resetChain = true)
+        host.stateFlow.update {
+            it.copy(
+                passiveMathResult = null,
+                passiveMathExpression = null,
+                passiveMathEndsWithEquals = false,
+                englishSuggestions = emptyList(),
+                englishSuggestionReplaceLength = 0
+            )
+        }
         host.tryAutoLearnFromRecentEdit()
         host.commitDirectText(" ", recordUndo = false, markManualEdit = false)
     }
@@ -483,6 +895,8 @@ class TypingController(
             host.onUserDeleteOrCutForJev()
         } catch (_: Exception) {
         }
+        refreshEnglishWordSuggestions()
+        refreshPassiveMathSuggestion()
     }
 
     fun performEnterOrNewline(onRunEqualEqualAskAi: (String, String) -> Unit) {
@@ -491,15 +905,26 @@ class TypingController(
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode && isComposing) {
             val res = activeEngine.onKey(KeyInput.Enter)
             syncEngineStateToUi()
-            if (res is EngineResult.Commit && res.text.isNotEmpty()) {
-                predictionCoordinator.dismissPredictions(resetChain = true)
-                host.commitDirectText(
-                    text = res.text,
-                    recordUndo = true,
-                    markManualEdit = true,
-                    playFeedback = true
-                )
-                return
+            when (res) {
+                is EngineResult.Commit -> {
+                    if (res.text.isNotEmpty()) {
+                        predictionCoordinator.dismissPredictions(resetChain = true)
+                        host.commitDirectText(
+                            text = res.text,
+                            recordUndo = true,
+                            markManualEdit = true,
+                            playFeedback = true
+                        )
+                    }
+                    return
+                }
+                EngineResult.Consumed -> {
+                    predictionCoordinator.dismissPredictions(resetChain = true)
+                    host.performKeyFeedback(strong = false)
+                    refreshPassiveMathSuggestion()
+                    return
+                }
+                EngineResult.PassThrough -> Unit
             }
         }
 
@@ -604,6 +1029,8 @@ class TypingController(
             markManualEdit = true,
             playFeedback = true
         )
+        refreshEnglishWordSuggestions()
+        refreshPassiveMathSuggestion()
     }
 
     fun commitPairedSymbol(open: String, close: String) {

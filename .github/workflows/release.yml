@@ -48,7 +48,10 @@ jobs:
             exit 1
           fi
 
-          APP_VERSION=$(grep -E 'versionName\s*=' app/build.gradle.kts | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
+          APP_VERSION=$(grep -E '^TYPEFREE_VERSION_NAME=' gradle.properties 2>/dev/null | head -n 1 | cut -d'=' -f2- | tr -d '[:space:]')
+          if [ -z "$APP_VERSION" ]; then
+            APP_VERSION=$(grep -E 'versionName\s*=' app/build.gradle.kts | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
+          fi
           IS_PRERELEASE="false"
           if [[ "$TAG" == *-* ]]; then
             IS_PRERELEASE="true"
@@ -196,7 +199,11 @@ jobs:
           EOF
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$APK_FILE" "$SHA_FILE" --clobber
+            if [ "$IS_SIGNED" = "true" ]; then
+              gh release upload "$TAG" "$APK_FILE" "$SHA_FILE" --clobber
+            else
+              echo "Release $TAG already exists and repository keystore secrets are not configured; skipping unsigned debugsigned APK upload to preserve existing release signing."
+            fi
           else
             EXTRA_FLAGS=()
             if [ "$IS_PRERELEASE" = "true" ]; then

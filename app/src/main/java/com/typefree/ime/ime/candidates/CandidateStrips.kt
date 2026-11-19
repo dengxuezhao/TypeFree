@@ -1,8 +1,10 @@
 package com.typefree.ime.ime.candidates
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,11 +22,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,11 +66,19 @@ fun PredictionCandidateBar(
     onToggleToolPanel: () -> Unit,
     onSelectPrediction: (Int) -> Unit,
     onSelectAiCompletion: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    passiveMathResult: String? = null,
+    onSelectPassiveMath: ((String) -> Unit)? = null,
+    phraseSuggestionLabel: String? = null,
+    onAcceptPhraseSuggestion: (() -> Unit)? = null,
+    onDismissPhraseSuggestion: (() -> Unit)? = null,
+    englishSuggestions: List<String> = emptyList(),
+    onSelectEnglishSuggestion: ((String) -> Unit)? = null
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val metrics = LocalKeyboardMetrics.current
     val scrollState = rememberScrollState()
+    val emeraldAccentText = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
 
     Row(
         modifier = Modifier
@@ -78,7 +93,7 @@ fun PredictionCandidateBar(
             onClick = onToggleToolPanel
         )
 
-        // 2. Scrollable L1/L2 Prediction Chips
+        // 2. Scrollable Passive Math / L2 Phrase / EN Suggestions / L1-L2 Prediction Chips
         Row(
             modifier = Modifier
                 .weight(1f)
@@ -87,6 +102,101 @@ fun PredictionCandidateBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
+            val cleanMath = passiveMathResult?.trim().orEmpty()
+            if (cleanMath.isNotEmpty()) {
+                val mathDisplay = if (cleanMath.startsWith("=")) cleanMath else "= $cleanMath"
+                Box(
+                    modifier = Modifier
+                        .height(28.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.16f else 0.12f))
+                        .border(1.dp, TypeFreeEmerald.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
+                        .clickable { onSelectPassiveMath?.invoke(cleanMath) }
+                        .padding(horizontal = 9.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = mathDisplay,
+                        color = emeraldAccentText,
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1
+                    )
+                }
+            }
+
+            val cleanPhraseLabel = phraseSuggestionLabel?.trim().orEmpty()
+            if (cleanPhraseLabel.isNotEmpty()) {
+                val displayPhrase = if (
+                    cleanPhraseLabel.startsWith("+") ||
+                    cleanPhraseLabel.startsWith("录入")
+                ) {
+                    cleanPhraseLabel
+                } else {
+                    "+ 录入: $cleanPhraseLabel"
+                }
+                Row(
+                    modifier = Modifier
+                        .height(28.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(palette.capsuleSelectedBg)
+                        .border(1.dp, TypeFreeEmerald.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
+                        .padding(start = 8.dp, end = if (onDismissPhraseSuggestion != null) 4.dp else 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = displayPhrase,
+                        color = emeraldAccentText,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        modifier = Modifier.clickable { onAcceptPhraseSuggestion?.invoke() }
+                    )
+                    if (onDismissPhraseSuggestion != null) {
+                        Box(
+                            modifier = Modifier
+                                .size(26.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(palette.keyCapSecondaryBg.copy(alpha = 0.72f))
+                                .clickable(onClick = onDismissPhraseSuggestion),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "×",
+                                color = palette.keyTextPrimary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+
+            englishSuggestions.forEach { word ->
+                if (word.isNotBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .height(28.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(palette.keyCapBg)
+                            .border(1.dp, palette.keyBorder, RoundedCornerShape(8.dp))
+                            .clickable { onSelectEnglishSuggestion?.invoke(word) }
+                            .padding(horizontal = 9.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = word,
+                            color = palette.keyTextPrimary,
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+
             predictions.forEachIndexed { idx, cand ->
                 val visualText = if (cand.text.length > 16 || cand.text.contains('\n')) {
                     cand.text.replace('\n', '↵').take(16) + "…"
@@ -241,7 +351,15 @@ fun CandidateStrip(
     onSelectCandidate: (Int) -> Unit,
     onToggleSheet: () -> Unit,
     onClearCode: () -> Unit,
-    onRequestMoreCandidates: () -> Unit = {}
+    onRequestMoreCandidates: () -> Unit = {},
+    codetableEnhancerActive: Boolean = false,
+    pinnedWordsForCurrentCode: Set<String> = emptySet(),
+    onPinCandidate: (String) -> Unit = {},
+    onUnpinCandidate: (String) -> Unit = {},
+    onBlockCandidate: (String) -> Unit = {},
+    isOrqDateActive: Boolean = false,
+    orqDateOffsetDays: Int = 0,
+    onStepOrqDate: ((Int) -> Unit)? = null
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val metrics = LocalKeyboardMetrics.current
@@ -290,7 +408,12 @@ fun CandidateStrip(
                 index = 0,
                 cand = firstCand,
                 isFirst = true,
-                onClick = { onSelectCandidate(0) }
+                codetableEnhancerActive = codetableEnhancerActive,
+                isPinned = firstCand.text in pinnedWordsForCurrentCode,
+                onClick = { onSelectCandidate(0) },
+                onPin = { onPinCandidate(firstCand.text) },
+                onUnpin = { onUnpinCandidate(firstCand.text) },
+                onBlock = { onBlockCandidate(firstCand.text) }
             )
 
             // 2. Scrollable 2..N candidates
@@ -308,8 +431,51 @@ fun CandidateStrip(
                         index = actualIdx,
                         cand = cand,
                         isFirst = false,
-                        onClick = { onSelectCandidate(actualIdx) }
+                        codetableEnhancerActive = codetableEnhancerActive,
+                        isPinned = cand.text in pinnedWordsForCurrentCode,
+                        onClick = { onSelectCandidate(actualIdx) },
+                        onPin = { onPinCandidate(cand.text) },
+                        onUnpin = { onUnpinCandidate(cand.text) },
+                        onBlock = { onBlockCandidate(cand.text) }
                     )
+                }
+            }
+        }
+
+        // 2.5 Optional `orq` Date Offset Stepper Buttons (`[-1天]` `[+1天]`)
+        if (isOrqDateActive) {
+            val stepActiveBorder = if (orqDateOffsetDays != 0) {
+                TypeFreeEmerald.copy(alpha = 0.72f)
+            } else {
+                palette.keyBorder
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                listOf(-1 to "-1天", 1 to "+1天").forEach { (delta, label) ->
+                    Box(
+                        modifier = Modifier
+                            .height(28.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(palette.keyCapSecondaryBg)
+                            .border(1.dp, stepActiveBorder, RoundedCornerShape(8.dp))
+                            .clickable { onStepOrqDate?.invoke(delta) }
+                            .padding(horizontal = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = label,
+                            style = TextStyle(
+                                color = palette.keyTextPrimary,
+                                fontSize = 11.sp,
+                                lineHeight = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                platformStyle = PlatformTextStyle(includeFontPadding = false)
+                            ),
+                            maxLines = 1
+                        )
+                    }
                 }
             }
         }
@@ -362,71 +528,139 @@ fun CandidateStrip(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CandidateChipItem(
     index: Int,
     cand: FlypyCandidate,
     isFirst: Boolean,
-    onClick: () -> Unit
+    codetableEnhancerActive: Boolean = false,
+    isPinned: Boolean = false,
+    onClick: () -> Unit,
+    onPin: () -> Unit = {},
+    onUnpin: () -> Unit = {},
+    onBlock: () -> Unit = {}
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
-    Row(
-        modifier = Modifier
-            .height(29.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (isFirst) palette.capsuleSelectedBg else palette.keyCapBg)
-            .border(
-                width = 1.dp,
-                color = if (isFirst) palette.keyTextPrimary.copy(alpha = 0.28f) else palette.keyBorder,
-                shape = RoundedCornerShape(8.dp)
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 9.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
-    ) {
-        if (index < 3) {
-            Text(
-                text = "${index + 1}",
-                style = TextStyle(
-                    color = palette.keyTextMuted,
-                    fontSize = 10.5.sp,
-                    lineHeight = 12.sp,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.SemiBold,
-                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+    var menuExpanded by remember { mutableStateOf(false) }
+    val longPressEnabled = codetableEnhancerActive && cand.text.isNotBlank() && !cand.text.startsWith("[")
+
+    Box {
+        Row(
+            modifier = Modifier
+                .height(29.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (isFirst) palette.capsuleSelectedBg else palette.keyCapBg)
+                .border(
+                    width = 1.dp,
+                    color = if (isFirst) palette.keyTextPrimary.copy(alpha = 0.28f) else palette.keyBorder,
+                    shape = RoundedCornerShape(8.dp)
                 )
-            )
-        }
-        val visualCandText = if (cand.text.length > 16 || cand.text.contains('\n')) {
-            cand.text.replace('\n', '↵').take(16) + "…"
-        } else {
-            cand.text
-        }
-        Text(
-            text = visualCandText,
-            style = TextStyle(
-                color = palette.keyTextPrimary,
-                fontSize = 14.5.sp,
-                lineHeight = 17.sp,
-                fontWeight = if (isFirst) FontWeight.Bold else FontWeight.Medium,
-                platformStyle = PlatformTextStyle(includeFontPadding = false)
-            ),
-            maxLines = 1
-        )
-        if (cand.codeHint.isNotEmpty()) {
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = if (longPressEnabled) {
+                        { menuExpanded = true }
+                    } else {
+                        null
+                    }
+                )
+                .padding(horizontal = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+        ) {
+            if (index < 3) {
+                Text(
+                    text = "${index + 1}",
+                    style = TextStyle(
+                        color = palette.keyTextMuted,
+                        fontSize = 10.5.sp,
+                        lineHeight = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                    )
+                )
+            }
+            val rawDisplay = cand.displayText.ifEmpty { cand.text }
+            val visualCandText = if (rawDisplay.length > 16 || rawDisplay.contains('\n')) {
+                rawDisplay.replace('\n', '↵').take(16) + "…"
+            } else {
+                rawDisplay
+            }
             Text(
-                text = "〔${cand.codeHint}〕",
+                text = visualCandText,
                 style = TextStyle(
-                    color = palette.keyTextMuted,
-                    fontSize = 10.sp,
-                    lineHeight = 12.sp,
-                    fontFamily = FontFamily.Monospace,
+                    color = palette.keyTextPrimary,
+                    fontSize = 14.5.sp,
+                    lineHeight = 17.sp,
+                    fontWeight = if (isFirst) FontWeight.Bold else FontWeight.Medium,
                     platformStyle = PlatformTextStyle(includeFontPadding = false)
                 ),
                 maxLines = 1
             )
+            if (cand.codeHint.isNotEmpty()) {
+                Text(
+                    text = "〔${cand.codeHint}〕",
+                    style = TextStyle(
+                        color = palette.keyTextMuted,
+                        fontSize = 10.sp,
+                        lineHeight = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                    ),
+                    maxLines = 1
+                )
+            }
         }
+
+        CandidateActionDropdownMenu(
+            expanded = menuExpanded,
+            isPinned = isPinned,
+            onDismiss = { menuExpanded = false },
+            onPin = onPin,
+            onUnpin = onUnpin,
+            onBlock = onBlock
+        )
+    }
+}
+
+@Composable
+private fun CandidateActionDropdownMenu(
+    expanded: Boolean,
+    isPinned: Boolean,
+    onDismiss: () -> Unit,
+    onPin: () -> Unit,
+    onUnpin: () -> Unit,
+    onBlock: () -> Unit
+) {
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss
+    ) {
+        if (isPinned) {
+            DropdownMenuItem(
+                text = { Text("取消置顶", fontSize = 13.sp) },
+                onClick = {
+                    onDismiss()
+                    onUnpin()
+                }
+            )
+        } else {
+            DropdownMenuItem(
+                text = { Text("置顶首选", fontSize = 13.sp) },
+                onClick = {
+                    onDismiss()
+                    onPin()
+                }
+            )
+        }
+        DropdownMenuItem(
+            text = { Text("屏蔽该词", fontSize = 13.sp, color = TypeFreeRose) },
+            onClick = {
+                onDismiss()
+                onBlock()
+            }
+        )
     }
 }
 
@@ -451,7 +685,7 @@ fun FlypyComposingCandidateBar(
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun CandidateGridOverlay(
     candidates: List<FlypyCandidate>,
@@ -459,7 +693,12 @@ fun CandidateGridOverlay(
     onSelectCandidate: (Int) -> Unit,
     onBackspace: () -> Unit,
     onCollapse: () -> Unit,
-    onRequestMoreCandidates: () -> Unit = {}
+    onRequestMoreCandidates: () -> Unit = {},
+    codetableEnhancerActive: Boolean = false,
+    pinnedWordsForCurrentCode: Set<String> = emptySet(),
+    onPinCandidate: (String) -> Unit = {},
+    onUnpinCandidate: (String) -> Unit = {},
+    onBlockCandidate: (String) -> Unit = {}
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val vScroll = rememberScrollState()
@@ -491,35 +730,56 @@ fun CandidateGridOverlay(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 candidates.forEachIndexed { idx, cand ->
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(if (idx == 0) palette.capsuleSelectedBg else palette.keyCapBg)
-                            .border(1.dp, palette.keyBorder, RoundedCornerShape(8.dp))
-                            .clickable { onSelectCandidate(idx) }
-                            .padding(horizontal = 10.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(3.dp)
-                    ) {
-                        val gridCandText = if (cand.text.length > 22 || cand.text.contains('\n')) {
-                            cand.text.replace('\n', '↵').take(22) + "…"
-                        } else {
-                            cand.text
-                        }
-                        Text(
-                            text = gridCandText,
-                            color = palette.keyTextPrimary,
-                            fontSize = 15.sp,
-                            fontWeight = if (idx == 0) FontWeight.Bold else FontWeight.Medium
-                        )
-                        if (cand.codeHint.isNotEmpty()) {
+                    var gridMenuExpanded by remember(cand.text, idx) { mutableStateOf(false) }
+                    val longPressEnabled = codetableEnhancerActive && cand.text.isNotBlank() && !cand.text.startsWith("[")
+                    Box {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (idx == 0) palette.capsuleSelectedBg else palette.keyCapBg)
+                                .border(1.dp, palette.keyBorder, RoundedCornerShape(8.dp))
+                                .combinedClickable(
+                                    onClick = { onSelectCandidate(idx) },
+                                    onLongClick = if (longPressEnabled) {
+                                        { gridMenuExpanded = true }
+                                    } else {
+                                        null
+                                    }
+                                )
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            val rawGridDisplay = cand.displayText.ifEmpty { cand.text }
+                            val gridCandText = if (rawGridDisplay.length > 22 || rawGridDisplay.contains('\n')) {
+                                rawGridDisplay.replace('\n', '↵').take(22) + "…"
+                            } else {
+                                rawGridDisplay
+                            }
                             Text(
-                                text = "〔${cand.codeHint}〕",
-                                color = palette.keyTextMuted,
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace
+                                text = gridCandText,
+                                color = palette.keyTextPrimary,
+                                fontSize = 15.sp,
+                                fontWeight = if (idx == 0) FontWeight.Bold else FontWeight.Medium
                             )
+                            if (cand.codeHint.isNotEmpty()) {
+                                Text(
+                                    text = "〔${cand.codeHint}〕",
+                                    color = palette.keyTextMuted,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
                         }
+
+                        CandidateActionDropdownMenu(
+                            expanded = gridMenuExpanded,
+                            isPinned = cand.text in pinnedWordsForCurrentCode,
+                            onDismiss = { gridMenuExpanded = false },
+                            onPin = { onPinCandidate(cand.text) },
+                            onUnpin = { onUnpinCandidate(cand.text) },
+                            onBlock = { onBlockCandidate(cand.text) }
+                        )
                     }
                 }
             }

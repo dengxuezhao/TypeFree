@@ -369,9 +369,16 @@ class ChatScreenContextExtractorTest {
             a11yXml.contains("android:canTakeScreenshot=\"true\"")
         )
 
+        val gradleProps = File(root, "gradle.properties").readText()
+        val versionCodeMatch = Regex("""TYPEFREE_VERSION_CODE=(\d+)""").find(gradleProps)
+        val versionNameMatch = Regex("""TYPEFREE_VERSION_NAME=([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)""").find(gradleProps)
+        assertNotNull("gradle.properties must define TYPEFREE_VERSION_CODE", versionCodeMatch)
+        assertNotNull("gradle.properties must define SemVer TYPEFREE_VERSION_NAME", versionNameMatch)
+        assertTrue((versionCodeMatch!!.groupValues[1].toInt()) >= 30)
+
         val gradleKts = File(root, "app/build.gradle.kts").readText()
-        assertTrue(gradleKts.contains("versionCode = 30"))
-        assertTrue(gradleKts.contains("versionName = \"3.6.0\""))
+        assertTrue(gradleKts.contains("TYPEFREE_VERSION_CODE"))
+        assertTrue(gradleKts.contains("TYPEFREE_VERSION_NAME"))
         assertTrue(gradleKts.contains("com.google.mlkit:text-recognition-chinese:16.0.1"))
 
         assertEquals(JevDomainProfile.IM_CHAT, JevDomainProfile.fromPackage("com.alibaba.aliding"))

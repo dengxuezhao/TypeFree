@@ -15,5 +15,6 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "TypeFree"
-include(":app")
+include(":core")
 include(":rime")
+include(":app")

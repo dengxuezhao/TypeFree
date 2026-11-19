@@ -9,7 +9,9 @@ data class EngineState(
     val rawCode: String = "",
     val candidates: List<FlypyCandidate> = emptyList(),
     val hasMore: Boolean = false,
-    val isComposing: Boolean = false
+    val isComposing: Boolean = false,
+    val isOrqDateActive: Boolean = false,
+    val orqDateOffsetDays: Int = 0
 )
 
 sealed interface KeyInput {

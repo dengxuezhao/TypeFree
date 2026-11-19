@@ -117,6 +117,11 @@ class FlypyEngine(
         if (!isComposing) {
             return FlypyAction.CommitText(" ", remainComposing = false)
         }
+        if (composingCode == "/") {
+            resetComposing()
+            lastCommittedText = "/"
+            return FlypyAction.CommitText("/", remainComposing = false)
+        }
         val top = candidates.firstOrNull()?.text
         resetComposing()
         return if (top != null) {
@@ -194,6 +199,58 @@ class FlypyEngine(
     }
 
     fun onCharInput(ch: Char, nowMillis: Long = System.currentTimeMillis()): FlypyAction {
+        // 0. Slash (`/`): idle enters `/xx` snippet mode, `//` commits literal `/`
+        if (ch == '/') {
+            return when {
+                composingCode.isEmpty() -> {
+                    composingCode = "/"
+                    candidates = resolveCandidates("/", nowMillis)
+                    FlypyAction.ConsumedComposing
+                }
+                composingCode == "/" -> {
+                    resetComposing()
+                    lastCommittedText = "/"
+                    FlypyAction.CommitText("/", remainComposing = false)
+                }
+                else -> {
+                    val pushed = flushTopCandidateOrClear()
+                    val out = pushed + '/'
+                    lastCommittedText = out
+                    FlypyAction.CommitText(out, remainComposing = false)
+                }
+            }
+        }
+
+        // 0b. Active `/xx` custom snippet mode
+        if (composingCode.startsWith("/")) {
+            if (ch in 'a'..'z' || ch in 'A'..'Z') {
+                val nextCode = composingCode + ch.lowercaseChar()
+                composingCode = nextCode
+                candidates = resolveCandidates(nextCode, nowMillis)
+                return FlypyAction.ConsumedComposing
+            }
+            if ((ch == ';' || ch == '；') && composingCode.length > 1) {
+                return when {
+                    candidates.size >= 2 -> selectCandidate(1)
+                    candidates.size == 1 -> selectCandidate(0)
+                    else -> {
+                        resetComposing()
+                        FlypyAction.ConsumedComposing
+                    }
+                }
+            }
+            if (composingCode == "/") {
+                resetComposing()
+                val out = "/$ch"
+                lastCommittedText = out
+                return FlypyAction.CommitText(out, remainComposing = false)
+            }
+            val pushed = flushTopCandidateOrClear()
+            val out = pushed + ch
+            if (out.isNotBlank()) lastCommittedText = out
+            return FlypyAction.CommitText(out, remainComposing = false)
+        }
+
         // 1. Semicolon (`;`) — Quick-symbol prefix when idle, secondary select (`分号次选`) when menu active
         if (ch == ';') {
             return when {
@@ -409,7 +466,15 @@ class FlypyEngine(
                 FlypyCandidate(text = entry.content, codeHint = hint)
             }
 
-        val prefixSnippets = if (code.startsWith(";") && code.length >= 2) {
+        val prefixSnippets = if (code == "/") {
+            customSnippets
+                .filter { it.flypyCode.startsWith("/") }
+                .map { entry ->
+                    val label = entry.title.trim().take(6)
+                    val hint = if (label.isNotEmpty()) "${entry.flypyCode} $label" else entry.flypyCode
+                    FlypyCandidate(text = entry.content, codeHint = hint)
+                }
+        } else if ((code.startsWith("/") || code.startsWith(";")) && code.length >= 2) {
             customSnippets
                 .filter { it.flypyCode.length > code.length && it.flypyCode.startsWith(code) }
                 .map { entry ->
@@ -417,6 +482,10 @@ class FlypyEngine(
                 }
         } else {
             emptyList()
+        }
+
+        if (code.startsWith("/")) {
+            return exactSnippets + prefixSnippets
         }
 
         if (code == ";f") {
@@ -432,11 +501,20 @@ class FlypyEngine(
             val date = Date(nowMillis)
             val cnFmt = SimpleDateFormat("yyyy年MM月dd日", Locale.CHINA).format(date)
             val isoFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(date)
-            val compactFmt = SimpleDateFormat("yyyyMMdd", Locale.US).format(date)
+            val cal = Calendar.getInstance().apply { timeInMillis = nowMillis }
+            val suffix = when (cal.get(Calendar.DAY_OF_WEEK)) {
+                Calendar.MONDAY -> "一"
+                Calendar.TUESDAY -> "二"
+                Calendar.WEDNESDAY -> "三"
+                Calendar.THURSDAY -> "四"
+                Calendar.FRIDAY -> "五"
+                Calendar.SATURDAY -> "六"
+                else -> "日"
+            }
             val dynamic = listOf(
                 FlypyCandidate(cnFmt),
                 FlypyCandidate(isoFmt),
-                FlypyCandidate(compactFmt)
+                FlypyCandidate("星期$suffix")
             )
             return exactSnippets + dynamic + dictionary.lookupExact(code)
         }
@@ -448,25 +526,6 @@ class FlypyEngine(
             val dynamic = listOf(
                 FlypyCandidate(hm),
                 FlypyCandidate(hms)
-            )
-            return exactSnippets + dynamic + dictionary.lookupExact(code)
-        }
-
-        if (code == "oxq") {
-            val cal = Calendar.getInstance().apply { timeInMillis = nowMillis }
-            val dayIdx = cal.get(Calendar.DAY_OF_WEEK)
-            val suffix = when (dayIdx) {
-                Calendar.MONDAY -> "一"
-                Calendar.TUESDAY -> "二"
-                Calendar.WEDNESDAY -> "三"
-                Calendar.THURSDAY -> "四"
-                Calendar.FRIDAY -> "五"
-                Calendar.SATURDAY -> "六"
-                else -> "日"
-            }
-            val dynamic = listOf(
-                FlypyCandidate("星期$suffix"),
-                FlypyCandidate("周$suffix")
             )
             return exactSnippets + dynamic + dictionary.lookupExact(code)
         }

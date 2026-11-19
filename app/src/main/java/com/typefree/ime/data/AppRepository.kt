@@ -81,6 +81,9 @@ class AppRepository(
         val raw = publicStore.getString(KEY_SETTINGS, null)
         if (raw == null) {
             publicStore.putBoolean(KEY_MIGRATED_V340_COMPACT_4ROW_AND_LIFT, true)
+            if (com.typefree.ime.BuildConfig.IS_XIAOHE_FLAVOR) {
+                publicStore.putBoolean(KEY_MIGRATED_V360_XIAOHE_SCHEME, true)
+            }
             return secretVault.hydrateSettingsWithSecrets(AppSettings())
         }
         return try {
@@ -206,17 +209,70 @@ class AppRepository(
             } else {
                 true
             }
+            val migratedXiaoheScheme = !com.typefree.ime.BuildConfig.IS_XIAOHE_FLAVOR ||
+                publicStore.getBoolean(KEY_MIGRATED_V360_XIAOHE_SCHEME, false)
             // 新用户默认 Rime 全拼 (真实 librime 1.17.0)；老用户升级（存在旧 JSON 但无 inputScheme 字段）保持 FLYPY_TABLE
-            val resolvedInputScheme = if (raw.contains("\"inputScheme\"")) {
+            val rawInputScheme = if (raw.contains("\"inputScheme\"")) {
                 parsed.inputScheme ?: InputScheme.RIME_PINYIN
             } else {
                 InputScheme.FLYPY_TABLE
             }
+            val resolvedInputScheme = resolveUpgradedInputScheme(
+                rawInputScheme = rawInputScheme,
+                isXiaoheFlavor = com.typefree.ime.BuildConfig.IS_XIAOHE_FLAVOR,
+                alreadyMigratedXiaoheScheme = migratedXiaoheScheme
+            )
             val resolvedFixedCandidateOrder = if (raw.contains("\"fixedCandidateOrder\"")) {
                 parsed.fixedCandidateOrder
             } else {
                 null
             }
+            val resolvedEnglishPrefixVetoEnabled = if (raw.contains("\"englishPrefixVetoEnabled\"")) {
+                parsed.englishPrefixVetoEnabled
+            } else {
+                false
+            }
+            val resolvedCodetableAutoEncodeEnabled = if (raw.contains("\"codetableAutoEncodeEnabled\"")) {
+                parsed.codetableAutoEncodeEnabled
+            } else {
+                false
+            }
+            val resolvedCodetableFiveKeyBottomRow = if (raw.contains("\"codetableFiveKeyBottomRow\"")) {
+                parsed.codetableFiveKeyBottomRow
+            } else {
+                false
+            }
+            val resolvedXiaoheDirectCommandsEnabled = if (raw.contains("\"xiaoheDirectCommandsEnabled\"")) {
+                parsed.xiaoheDirectCommandsEnabled
+            } else {
+                true
+            }
+            val resolvedXiaoheReverseSplitEnabled = if (raw.contains("\"xiaoheReverseSplitEnabled\"")) {
+                parsed.xiaoheReverseSplitEnabled
+            } else {
+                true
+            }
+            val resolvedXiaoheNaturalContinuationEnabled = if (raw.contains("\"xiaoheNaturalContinuationEnabled\"")) {
+                parsed.xiaoheNaturalContinuationEnabled
+            } else {
+                true
+            }
+            val resolvedPassiveCalculatorEnabled = if (raw.contains("\"passiveCalculatorEnabled\"")) {
+                parsed.passiveCalculatorEnabled
+            } else {
+                true
+            }
+            val resolvedEnglishModeWordSuggestionEnabled = if (raw.contains("\"englishModeWordSuggestionEnabled\"")) {
+                parsed.englishModeWordSuggestionEnabled
+            } else {
+                true
+            }
+            val resolvedPhraseSuggestionL2Enabled = if (raw.contains("\"phraseSuggestionL2Enabled\"")) {
+                parsed.phraseSuggestionL2Enabled
+            } else {
+                true
+            }
+            val resolvedCustomKeyGesturesJson = (parsed.customKeyGesturesJson ?: "").trim()
             val resolvedPredictionEnabled = if (raw.contains("\"predictionEnabled\"")) {
                 parsed.predictionEnabled
             } else {
@@ -386,6 +442,17 @@ class AppRepository(
                 liveWriteToEditor = resolvedLiveWriteToEditor,
                 inputScheme = resolvedInputScheme,
                 fixedCandidateOrder = resolvedFixedCandidateOrder,
+                englishPrefixVetoEnabled = resolvedEnglishPrefixVetoEnabled,
+                codetableAutoEncodeEnabled = resolvedCodetableAutoEncodeEnabled,
+                codetableFiveKeyBottomRow = resolvedCodetableFiveKeyBottomRow,
+                xiaoheDirectCommandsEnabled = resolvedXiaoheDirectCommandsEnabled,
+                xiaoheReverseSplitEnabled = resolvedXiaoheReverseSplitEnabled,
+                xiaoheNaturalContinuationEnabled = resolvedXiaoheNaturalContinuationEnabled,
+                passiveCalculatorEnabled = resolvedPassiveCalculatorEnabled,
+                englishModeWordSuggestionEnabled = resolvedEnglishModeWordSuggestionEnabled,
+                phraseSuggestionL2Enabled = resolvedPhraseSuggestionL2Enabled,
+                customKeyGesturesJson = resolvedCustomKeyGesturesJson,
+                keycapBadgeMode = parsed.keycapBadgeMode ?: KeycapBadgeMode.SWIPE_UP,
                 predictionEnabled = resolvedPredictionEnabled,
                 aiCompletionEnabled = resolvedAiCompletionEnabled,
                 chatContextReplyEnabled = resolvedChatContextReplyEnabled,
@@ -408,12 +475,15 @@ class AppRepository(
                 dictionary = safeDict
             )
             val hydrated = secretVault.hydrateSettingsWithSecrets(preliminary)
-            if (SecretVault.containsPlaintextSecrets(preliminary) || !migratedV340CompactLift) {
+            if (SecretVault.containsPlaintextSecrets(preliminary) || !migratedV340CompactLift || !migratedXiaoheScheme) {
                 secretVault.saveSecretsFromSettings(hydrated)
                 val sanitized = secretVault.stripSecretsForPublicPersistence(hydrated)
                 publicStore.putString(KEY_SETTINGS, gson.toJson(sanitized))
                 if (!migratedV340CompactLift) {
                     publicStore.putBoolean(KEY_MIGRATED_V340_COMPACT_4ROW_AND_LIFT, true)
+                }
+                if (!migratedXiaoheScheme) {
+                    publicStore.putBoolean(KEY_MIGRATED_V360_XIAOHE_SCHEME, true)
                 }
             }
             hydrated
@@ -680,10 +750,23 @@ class AppRepository(
         internal const val KEY_CLIPBOARD = "clipboard_v1"
         private const val KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT = "migrated_v30_live_write_default"
         internal const val KEY_MIGRATED_V340_COMPACT_4ROW_AND_LIFT = "mig_v340_compact_4row_and_lift"
+        internal const val KEY_MIGRATED_V360_XIAOHE_SCHEME = "mig_v360_xiaohe_scheme"
         private const val MAX_HISTORY_ITEMS = 200
-        private const val MAX_CLIPBOARD_UNPINNED = 40
+        private const val MAX_CLIPBOARD_UNPINNED = 200
         private const val MAX_CLIP_CHARS = 4000
         private val PUNCT_OR_SPACE_ONLY = Regex("^[\\s\\p{Punct}，。？！、：；“”‘’（）【】《》…—\\-]+$")
+
+        internal fun resolveUpgradedInputScheme(
+            rawInputScheme: InputScheme,
+            isXiaoheFlavor: Boolean,
+            alreadyMigratedXiaoheScheme: Boolean
+        ): InputScheme {
+            return if (isXiaoheFlavor && !alreadyMigratedXiaoheScheme && rawInputScheme != InputScheme.RIME_CUSTOM) {
+                InputScheme.FLYPY_TABLE
+            } else {
+                rawInputScheme
+            }
+        }
 
         fun migrateStretchLevelToLiftLevel(
             oldMode: KeyboardHeightMode,

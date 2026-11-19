@@ -21,7 +21,9 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class RimeInputEngine(
     val rimeBridge: RimeSessionClient = RimeBridge(),
-    initialScheme: InputScheme = InputScheme.RIME_PINYIN
+    initialScheme: InputScheme = InputScheme.RIME_PINYIN,
+    var externalEnhancedSchemePredicate: (InputScheme) -> Boolean = { it == InputScheme.FLYPY_TABLE },
+    var customSchemaIdProvider: () -> String = { "custom" }
 ) : InputEngine {
 
     var inputScheme: InputScheme = initialScheme
@@ -47,11 +49,20 @@ class RimeInputEngine(
         get() = currentRawCode.isNotEmpty()
 
     init {
-        applySchemeToBridge(initialScheme)
+        if (!externalEnhancedSchemePredicate(initialScheme)) {
+            applySchemeToBridge(initialScheme)
+        }
     }
 
     fun setInputScheme(scheme: InputScheme) {
-        if (inputScheme == scheme && rimeBridge.activeSchemaId == resolveSchemaId(scheme)) {
+        if (externalEnhancedSchemePredicate(scheme)) {
+            inputScheme = scheme
+            currentRawCode = ""
+            _state.value = EngineState()
+            return
+        }
+        val targetSchema = resolveSchemaId(scheme)
+        if (inputScheme == scheme && rimeBridge.activeSchemaId == targetSchema) {
             return
         }
         inputScheme = scheme
@@ -62,7 +73,7 @@ class RimeInputEngine(
     private fun resolveSchemaId(scheme: InputScheme): String {
         return when (scheme) {
             InputScheme.RIME_DOUBLE_PINYIN_FLYPY -> "double_pinyin_flypy"
-            InputScheme.RIME_CUSTOM -> "custom"
+            InputScheme.RIME_CUSTOM -> customSchemaIdProvider().ifBlank { "custom" }
             else -> "rime_ice"
         }
     }
@@ -103,6 +114,7 @@ class RimeInputEngine(
 
     override fun setIncognitoMode(incognito: Boolean) {
         isIncognito = incognito
+        if (externalEnhancedSchemePredicate(inputScheme)) return
         rimeBridge.setOption("_incognito", incognito)
         rimeBridge.setOption("enable_user_dict", !incognito)
         if (currentRawCode.isNotEmpty()) {
@@ -113,6 +125,7 @@ class RimeInputEngine(
     override fun setFixedCandidateOrder(fixedOrder: Boolean?) {
         val resolved = fixedOrder ?: false
         isFixedCandidateOrder = resolved
+        if (externalEnhancedSchemePredicate(inputScheme)) return
         rimeBridge.setOption("fixed_candidate_order", resolved)
         if (currentRawCode.isNotEmpty()) {
             syncState()
@@ -132,7 +145,7 @@ class RimeInputEngine(
     override fun select(index: Int): EngineResult {
         val cands = _state.value.candidates
         val picked = cands.getOrNull(index) ?: return EngineResult.Consumed
-        if (!currentRawCode.startsWith(";")) {
+        if (!currentRawCode.startsWith(";") && !currentRawCode.startsWith("/")) {
             val prefixCount = CandidateMerger.exactSnippetsForCode(currentRawCode, normalizedSnippets).size +
                 CandidateMerger.dynamicCommandCandidates(currentRawCode).size
             val rimeIdx = index - prefixCount
@@ -157,10 +170,13 @@ class RimeInputEngine(
     }
 
     override fun clear() {
+        val wasComposing = currentRawCode.isNotEmpty()
         currentRawCode = ""
         currentMaxCandidates = DEFAULT_PAGE_SIZE
-        rimeBridge.pageSize = DEFAULT_PAGE_SIZE
-        rimeBridge.clearComposition()
+        if (!externalEnhancedSchemePredicate(inputScheme) || wasComposing) {
+            rimeBridge.pageSize = DEFAULT_PAGE_SIZE
+            rimeBridge.clearComposition()
+        }
         _state.value = EngineState()
     }
 
@@ -168,7 +184,7 @@ class RimeInputEngine(
         if (currentRawCode.isEmpty()) return ""
         val cands = _state.value.candidates
         if (cands.isNotEmpty()) {
-            if (!currentRawCode.startsWith(";")) {
+            if (!currentRawCode.startsWith(";") && !currentRawCode.startsWith("/")) {
                 val committed = rimeBridge.commitComposition()
                 if (!committed.isNullOrEmpty()) {
                     clear()
@@ -188,8 +204,60 @@ class RimeInputEngine(
     }
 
     private fun onCharInput(ch: Char, nowMillis: Long): EngineResult {
-        // 1. Semicolon (`;`) — Quick-symbol prefix when idle, secondary select (`分号次选`) when composing
-        if (ch == ';') {
+        // 0. Slash (`/`): idle enters `/xx` snippet mode, `//` commits literal `/`
+        if (ch == '/') {
+            return when {
+                currentRawCode.isEmpty() -> {
+                    currentRawCode = "/"
+                    rimeBridge.clearComposition()
+                    syncState(nowMillis)
+                    EngineResult.Consumed
+                }
+                currentRawCode == "/" -> {
+                    clear()
+                    lastCommittedText = "/"
+                    EngineResult.Commit("/", remainComposing = false)
+                }
+                else -> {
+                    val pushed = flush()
+                    val out = pushed + '/'
+                    lastCommittedText = out
+                    EngineResult.Commit(out, remainComposing = false)
+                }
+            }
+        }
+
+        // 0b. Active `/xx` custom snippet mode
+        if (currentRawCode.startsWith("/")) {
+            if (ch in 'a'..'z' || ch in 'A'..'Z') {
+                currentRawCode += ch.lowercaseChar()
+                syncState(nowMillis)
+                return EngineResult.Consumed
+            }
+            if ((ch == ';' || ch == '；') && currentRawCode.length > 1) {
+                return when {
+                    _state.value.candidates.size >= 2 -> select(1)
+                    _state.value.candidates.size == 1 -> select(0)
+                    else -> {
+                        clear()
+                        EngineResult.Consumed
+                    }
+                }
+            }
+            if (currentRawCode == "/") {
+                clear()
+                val out = "/$ch"
+                lastCommittedText = out
+                return EngineResult.Commit(out, remainComposing = false)
+            }
+            val pushed = flush()
+            val out = pushed + ch
+            if (out.isNotBlank()) lastCommittedText = out
+            return EngineResult.Commit(out, remainComposing = false)
+        }
+
+        // 1. Semicolon (`;` / `；`) — Quick-symbol prefix when idle, secondary select (`分号次选`) when composing
+        if (ch == ';' || ch == '；') {
             return when {
                 currentRawCode.isEmpty() -> {
                     currentRawCode = ";"
@@ -308,7 +376,7 @@ class RimeInputEngine(
 
     private fun onBackspace(nowMillis: Long): EngineResult {
         if (currentRawCode.isEmpty()) return EngineResult.PassThrough
-        if (currentRawCode.startsWith(";")) {
+        if (currentRawCode.startsWith(";") || currentRawCode.startsWith("/")) {
             currentRawCode = currentRawCode.dropLast(1)
             if (currentRawCode.isEmpty()) {
                 clear()
@@ -332,6 +400,11 @@ class RimeInputEngine(
 
     private fun onSpace(): EngineResult {
         if (currentRawCode.isEmpty()) return EngineResult.PassThrough
+        if (currentRawCode == "/") {
+            clear()
+            lastCommittedText = "/"
+            return EngineResult.Commit("/", remainComposing = false)
+        }
         val cands = _state.value.candidates
         return if (cands.isNotEmpty()) {
             select(0)
@@ -398,14 +471,14 @@ class RimeInputEngine(
             _state.value = EngineState()
             return
         }
-        if (currentRawCode.startsWith(";")) {
+        if (currentRawCode.startsWith(";") || currentRawCode.startsWith("/")) {
             val merged = CandidateMerger.mergeCandidates(
                 rawCode = currentRawCode,
                 engineCandidates = emptyList(),
                 normalizedSnippets = normalizedSnippets,
                 lastCommittedText = lastCommittedText,
                 nowMillis = nowMillis,
-                includeBuiltInQuickSymbols = true
+                includeBuiltInQuickSymbols = currentRawCode.startsWith(";")
             )
             _state.value = EngineState(
                 preedit = currentRawCode,

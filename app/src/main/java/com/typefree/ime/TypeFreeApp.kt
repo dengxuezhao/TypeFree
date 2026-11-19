@@ -46,7 +46,9 @@ class TypeFreeApp : Application() {
         rimeDataManager = RimeDataManager(this)
         rimeInputEngine = RimeInputEngine(
             rimeBridge = rimeDataManager.rimeBridge,
-            initialScheme = repository.settings.value.inputScheme
+            initialScheme = repository.settings.value.inputScheme,
+            externalEnhancedSchemePredicate = { rimeDataManager.isSchemeHandledByEnhancedEngine(it) },
+            customSchemaIdProvider = { rimeDataManager.resolveCustomSchemaId() }
         )
         rimeInputEngine.setFixedCandidateOrder(repository.settings.value.fixedCandidateOrder)
         TypeFreeBubbleController.syncBubbleService(this)
@@ -61,7 +63,11 @@ class TypeFreeApp : Application() {
             try {
                 val initialScheme = repository.settings.value.inputScheme
                 val state = rimeDataManager.deployDefaultSync(initialScheme)
-                rimeInputEngine.setInputScheme(initialScheme)
+                val latestScheme = repository.settings.value.inputScheme
+                if (rimeDataManager.isSchemeHandledByEnhancedEngine(latestScheme)) {
+                    rimeDataManager.activateEnhancedSchemeSync(latestScheme)
+                }
+                rimeInputEngine.setInputScheme(latestScheme)
                 rimeInputEngine.setFixedCandidateOrder(repository.settings.value.fixedCandidateOrder)
                 if (state is RimeDeploymentState.Ready) {
                     Log.i(

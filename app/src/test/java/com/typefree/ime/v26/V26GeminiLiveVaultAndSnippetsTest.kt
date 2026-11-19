@@ -421,7 +421,7 @@ class V26GeminiLiveVaultAndSnippetsTest {
         assertNotNull(SnippetMatcher.matchVoiceTranscript("请帮我输入我的收货地址。", snippets))
         assertNull(SnippetMatcher.matchVoiceTranscript("请问我的收货地址改成功了吗？", snippets))
 
-        // 3. FlypyEngine `;sd` 3-char snippet vs built-in 2-char `;s` (`……`) & `;q` (`：`)
+        // 3. FlypyEngine `/sd` slash snippet vs built-in 2-char `;s` (`……`) & `;q` (`：“`)
         val dictFile = listOf(
             File("src/main/assets/flypy_dict.tsv"),
             File("app/src/main/assets/flypy_dict.tsv")
@@ -437,32 +437,27 @@ class V26GeminiLiveVaultAndSnippetsTest {
             }
         }
         val engine = FlypyEngine(dict)
-        engine.updateSnippets(snippets)
+        engine.updateSnippets(snippets) // legacy `;sd` auto-normalized to `/sd`
 
-        // `;q` has NO 3-char custom snippet continuation -> auto-commits `：“` on 2nd key!
+        // `;q` and `;s` stay 100% pure 2-key quick symbols with zero snippet interference!
         assertEquals(FlypyAction.ConsumedComposing, engine.onCharInput(';'))
         assertEquals(FlypyAction.CommitText("：“", remainComposing = false), engine.onCharInput('q'))
-
-        // `;sd` -> holds on `;s` (showing `……` as #1 candidate), then auto-commits full address on `d`!
         assertEquals(FlypyAction.ConsumedComposing, engine.onCharInput(';'))
+        assertEquals(FlypyAction.CommitText("……", remainComposing = false), engine.onCharInput('s'))
+
+        // `/sd` expands normalized snippet cleanly via `/` prefix
+        assertEquals(FlypyAction.ConsumedComposing, engine.onCharInput('/'))
+        assertTrue(engine.candidates.any { it.text == "上海市浦东新区张江高科技园区88号" })
         assertEquals(FlypyAction.ConsumedComposing, engine.onCharInput('s'))
-        assertEquals("……", engine.candidates.firstOrNull()?.text)
+        assertEquals(FlypyAction.ConsumedComposing, engine.onCharInput('d'))
         assertEquals(
             FlypyAction.CommitText("上海市浦东新区张江高科技园区88号", remainComposing = false),
-            engine.onCharInput('d')
+            engine.onSpace()
         )
 
-        // `;s` + Space still outputs `……` cleanly
-        assertEquals(FlypyAction.ConsumedComposing, engine.onCharInput(';'))
-        assertEquals(FlypyAction.ConsumedComposing, engine.onCharInput('s'))
-        assertEquals(FlypyAction.CommitText("……", remainComposing = false), engine.onSpace())
-
-        // `;sw` push-commits `……` and starts composing `w` (`我`) without breaking Xiaohe muscle memory!
-        assertEquals(FlypyAction.ConsumedComposing, engine.onCharInput(';'))
-        assertEquals(FlypyAction.ConsumedComposing, engine.onCharInput('s'))
-        assertEquals(FlypyAction.CommitText("……", remainComposing = true), engine.onCharInput('w'))
-        assertEquals("w", engine.composingCode)
-        assertEquals("我", engine.candidates.firstOrNull()?.text)
+        // `//` commits literal `/`
+        assertEquals(FlypyAction.ConsumedComposing, engine.onCharInput('/'))
+        assertEquals(FlypyAction.CommitText("/", remainComposing = false), engine.onCharInput('/'))
     }
 
     @Test

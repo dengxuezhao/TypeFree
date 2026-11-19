@@ -9,7 +9,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-add_link_options("LINKER:--build-id=none" "LINKER:--strip-debug" "LINKER:--gc-sections")
+if(ANDROID)
+  add_link_options("LINKER:--build-id=none" "LINKER:--strip-debug" "LINKER:--gc-sections")
+elseif(APPLE)
+  set(CMAKE_MACOSX_RPATH ON)
+endif()
 
 # Ensure upstream librime & dependencies are fetched before configuring subdirectories
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/librime/CMakeLists.txt")
@@ -72,17 +76,29 @@ include_directories("${X11Keysym}")
 include(Rime)
 
 find_package(Opencc REQUIRED)
-find_library(ANDROID_LOG_LIB log)
+if(ANDROID)
+  find_library(ANDROID_LOG_LIB log)
+else()
+  find_package(JNI COMPONENTS JVM REQUIRED)
+endif()
 
-# Build thin JNI bridge (librime_jni.so) over librime C API (rime_get_api())
+# Build thin JNI bridge (librime_jni.so / librime_jni.dylib) over librime C API (rime_get_api())
 add_library(rime_jni SHARED rime_jni.cpp)
 target_include_directories(rime_jni PRIVATE
   "${CMAKE_BINARY_DIR}/librime/src"
   "${CMAKE_SOURCE_DIR}/librime/src"
   "${Opencc_INCLUDE_PATH}"
+  $<$<NOT:$<BOOL:${ANDROID}>>:${JNI_INCLUDE_DIRS}>
 )
 target_link_libraries(rime_jni
   rime
   ${Opencc_LIBRARY}
-  ${ANDROID_LOG_LIB}
+  $<$<BOOL:${ANDROID}>:${ANDROID_LOG_LIB}>
 )
+if(APPLE)
+  set_target_properties(rime rime_jni PROPERTIES
+    BUILD_RPATH "@loader_path"
+    INSTALL_RPATH "@loader_path"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+  )
+endif()

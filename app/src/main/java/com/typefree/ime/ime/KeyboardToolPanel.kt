@@ -9,6 +9,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -69,8 +71,13 @@ fun KeyboardToolPanel(
     onOpenHelpMeWrite: () -> Unit = {},
     onOpenJevCopilot: () -> Unit = {},
     onToggleManualIncognito: () -> Unit = {},
+    onToggleSingleCharMode: () -> Unit = {},
     onOpenDictionary: () -> Unit,
     onOpenSettings: () -> Unit,
+    showLanguageTogglePill: Boolean = false,
+    onToggleLanguageMode: () -> Unit = {},
+    isPhraseRecording: Boolean = false,
+    onTogglePhraseRecording: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val metrics = LocalKeyboardMetrics.current
@@ -104,17 +111,18 @@ fun KeyboardToolPanel(
             val whisperEnabled = settings.whisperModeEnabled
             val activeAccent = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
 
+            val topStripScroll = rememberScrollState()
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(28.dp),
+                    .height(28.dp)
+                    .horizontalScroll(topStripScroll),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 // 1. Incognito Mode Pill (`TypeFreeIcons.IncognitoMask`)
                 Row(
                     modifier = Modifier
-                        .weight(1f)
                         .fillMaxHeight()
                         .clip(RoundedCornerShape(9.dp))
                         .background(
@@ -136,7 +144,7 @@ fun KeyboardToolPanel(
                         .clickable(onClick = onToggleManualIncognito)
                         .padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Icon(
                         imageVector = TypeFreeIcons.IncognitoMask,
@@ -154,8 +162,7 @@ fun KeyboardToolPanel(
                         fontSize = 10.5.sp,
                         fontWeight = if (isEffectiveIncognito) FontWeight.SemiBold else FontWeight.Medium,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
@@ -248,6 +255,110 @@ fun KeyboardToolPanel(
                         )
                         Text(
                             text = "军师",
+                            color = palette.keyTextPrimary,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                // 5. Codetable Single-Char Mode Toggle Pill (`单字`)
+                if (uiState.codetableEnhancerActive) {
+                    val singleCharEnabled = uiState.singleCharModeEnabled
+                    Row(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(
+                                if (singleCharEnabled) {
+                                    TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.16f else 0.12f)
+                                } else {
+                                    palette.capsuleTrackBg
+                                }
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = if (singleCharEnabled) {
+                                    TypeFreeEmerald.copy(alpha = 0.65f)
+                                } else {
+                                    palette.keyBorder
+                                },
+                                shape = RoundedCornerShape(9.dp)
+                            )
+                            .clickable(onClick = onToggleSingleCharMode)
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Text(
+                            text = "单字",
+                            color = if (singleCharEnabled) activeAccent else palette.keyTextMuted,
+                            fontSize = 10.5.sp,
+                            fontWeight = if (singleCharEnabled) FontWeight.SemiBold else FontWeight.Medium,
+                            maxLines = 1
+                        )
+                    }
+
+                    // 6. Codetable Phrase Recording Toggle Pill (`造词`)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(
+                                if (isPhraseRecording) {
+                                    TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.18f else 0.14f)
+                                } else {
+                                    palette.capsuleTrackBg
+                                }
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = if (isPhraseRecording) {
+                                    TypeFreeEmerald.copy(alpha = 0.72f)
+                                } else {
+                                    palette.keyBorder
+                                },
+                                shape = RoundedCornerShape(9.dp)
+                            )
+                            .clickable(onClick = onTogglePhraseRecording)
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (isPhraseRecording) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(TypeFreeEmerald)
+                            )
+                        }
+                        Text(
+                            text = if (isPhraseRecording) "造词中" else "造词",
+                            color = if (isPhraseRecording) activeAccent else palette.keyTextMuted,
+                            fontSize = 10.5.sp,
+                            fontWeight = if (isPhraseRecording) FontWeight.SemiBold else FontWeight.Medium,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                // 7. Compact Language Toggle Pill (`中/英`), e.g. when 5-key bottom row hides 🌐
+                if (showLanguageTogglePill) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(palette.capsuleTrackBg)
+                            .border(1.dp, palette.keyBorder, RoundedCornerShape(9.dp))
+                            .clickable(onClick = onToggleLanguageMode)
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Text(
+                            text = "中/英",
                             color = palette.keyTextPrimary,
                             fontSize = 10.5.sp,
                             fontWeight = FontWeight.SemiBold,

@@ -21,14 +21,18 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import com.typefree.ime.bubble.TypeFreeBubbleController
@@ -36,10 +40,10 @@ import com.typefree.ime.data.AppRepository
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.components.TypeFreeIcons
-import com.typefree.ime.ui.screens.AccountSettingsScreen
-import com.typefree.ime.ui.screens.DictionaryScreen
-import com.typefree.ime.ui.screens.HistoryScreen
+import com.typefree.ime.ui.screens.GeneralSettingsScreen
 import com.typefree.ime.ui.screens.HomeSetupScreen
+import com.typefree.ime.ui.screens.KeyboardStudioScreen
+import com.typefree.ime.ui.screens.VoiceAiStudioScreen
 import com.typefree.ime.ui.theme.TypeFreeTheme
 import com.typefree.ime.ui.theme.resolveDarkTheme
 
@@ -52,7 +56,8 @@ private data class NavTabItem(
 class MainActivity : ComponentActivity() {
 
     private val selectedTabState = mutableIntStateOf(AppDestinations.TAB_HOME)
-    private val settingsSubTabState = mutableIntStateOf(AppDestinations.SUBTAB_API)
+    private val keyboardSubTabState = mutableIntStateOf(AppDestinations.SUBTAB_KB_SCHEME)
+    private val voiceAiSubTabState = mutableIntStateOf(AppDestinations.SUBTAB_VOICE_MAIN)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -78,35 +83,53 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            TypeFreeTheme(themePreference = settings.themePreference) {
-                val currentTab by selectedTabState
-                val currentSettingsSubTab by settingsSubTabState
-
-                TypeFreeMainScaffold(
-                    repository = repository,
-                    aiEngine = aiEngine,
-                    selectedTab = currentTab,
-                    settingsSubTab = currentSettingsSubTab,
-                    onSelectTab = { newTab ->
-                        selectedTabState.intValue = newTab.coerceIn(
-                            AppDestinations.TAB_HOME,
-                            AppDestinations.TAB_SETTINGS
-                        )
-                    },
-                    onNavigateToSettingsSubTab = { subTab ->
-                        settingsSubTabState.intValue = subTab.coerceIn(
-                            AppDestinations.SUBTAB_API,
-                            AppDestinations.SUBTAB_PREFERENCES
-                        )
-                        selectedTabState.intValue = AppDestinations.TAB_SETTINGS
-                    },
-                    onSettingsSubTabChanged = { subTab ->
-                        settingsSubTabState.intValue = subTab.coerceIn(
-                            AppDestinations.SUBTAB_API,
-                            AppDestinations.SUBTAB_PREFERENCES
-                        )
-                    }
+            val baseDensity = LocalDensity.current
+            val clampedAppDensity = remember(baseDensity.density, baseDensity.fontScale) {
+                Density(
+                    density = baseDensity.density,
+                    fontScale = baseDensity.fontScale.coerceIn(0.85f, 1.15f)
                 )
+            }
+
+            CompositionLocalProvider(LocalDensity provides clampedAppDensity) {
+                TypeFreeTheme(themePreference = settings.themePreference) {
+                    val currentTab by selectedTabState
+                    val currentKeyboardSubTab by keyboardSubTabState
+                    val currentVoiceAiSubTab by voiceAiSubTabState
+
+                    TypeFreeMainScaffold(
+                        repository = repository,
+                        aiEngine = aiEngine,
+                        selectedTab = currentTab,
+                        keyboardSubTab = currentKeyboardSubTab,
+                        voiceAiSubTab = currentVoiceAiSubTab,
+                        onSelectTab = { newTab ->
+                            selectedTabState.intValue = newTab.coerceIn(
+                                AppDestinations.TAB_HOME,
+                                AppDestinations.TAB_GENERAL
+                            )
+                        },
+                        onNavigateToVoiceAiSubTab = { subTab ->
+                            voiceAiSubTabState.intValue = subTab.coerceIn(
+                                AppDestinations.SUBTAB_VOICE_MAIN,
+                                AppDestinations.SUBTAB_VOICE_API
+                            )
+                            selectedTabState.intValue = AppDestinations.TAB_VOICE_AI
+                        },
+                        onKeyboardSubTabChanged = { subTab ->
+                            keyboardSubTabState.intValue = subTab.coerceIn(
+                                AppDestinations.SUBTAB_KB_SCHEME,
+                                AppDestinations.SUBTAB_KB_DICT
+                            )
+                        },
+                        onVoiceAiSubTabChanged = { subTab ->
+                            voiceAiSubTabState.intValue = subTab.coerceIn(
+                                AppDestinations.SUBTAB_VOICE_MAIN,
+                                AppDestinations.SUBTAB_VOICE_API
+                            )
+                        }
+                    )
+                }
             }
         }
     }
@@ -125,58 +148,51 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putInt(KEY_SELECTED_TAB, selectedTabState.intValue)
-        outState.putInt(KEY_SETTINGS_SUBTAB, settingsSubTabState.intValue)
+        outState.putInt(KEY_KEYBOARD_SUBTAB, keyboardSubTabState.intValue)
+        outState.putInt(KEY_VOICE_AI_SUBTAB, voiceAiSubTabState.intValue)
     }
 
     private fun applyNavigationIntent(intent: Intent?, savedInstanceState: Bundle?) {
-        val hasSubTabExtra = intent?.hasExtra(AppDestinations.EXTRA_SETTINGS_SUBTAB) == true
-        val hasTabExtra = intent?.hasExtra(AppDestinations.EXTRA_OPEN_TAB) == true
-
-        if (hasSubTabExtra) {
-            val subTab = intent?.getIntExtra(
-                AppDestinations.EXTRA_SETTINGS_SUBTAB,
-                AppDestinations.SUBTAB_API
-            ) ?: AppDestinations.SUBTAB_API
-            intent?.removeExtra(AppDestinations.EXTRA_SETTINGS_SUBTAB)
-            settingsSubTabState.intValue = subTab.coerceIn(
-                AppDestinations.SUBTAB_API,
-                AppDestinations.SUBTAB_PREFERENCES
-            )
-        } else if (savedInstanceState != null) {
-            settingsSubTabState.intValue = savedInstanceState.getInt(
-                KEY_SETTINGS_SUBTAB,
-                AppDestinations.SUBTAB_API
-            ).coerceIn(
-                AppDestinations.SUBTAB_API,
-                AppDestinations.SUBTAB_PREFERENCES
-            )
+        val openTabExtra = if (intent?.hasExtra(AppDestinations.EXTRA_OPEN_TAB) == true) {
+            val v = intent.getIntExtra(AppDestinations.EXTRA_OPEN_TAB, AppDestinations.TAB_HOME)
+            intent.removeExtra(AppDestinations.EXTRA_OPEN_TAB)
+            v
+        } else {
+            null
         }
 
-        val resolvedTab = when {
-            hasTabExtra -> {
-                val tab = intent?.getIntExtra(
-                    AppDestinations.EXTRA_OPEN_TAB,
-                    AppDestinations.TAB_HOME
-                ) ?: AppDestinations.TAB_HOME
-                intent?.removeExtra(AppDestinations.EXTRA_OPEN_TAB)
-                tab
-            }
-            hasSubTabExtra -> AppDestinations.TAB_SETTINGS
-            savedInstanceState != null -> {
-                savedInstanceState.getInt(KEY_SELECTED_TAB, AppDestinations.TAB_HOME)
-            }
-            else -> selectedTabState.intValue
+        val settingsSubTabExtra = if (intent?.hasExtra(AppDestinations.EXTRA_SETTINGS_SUBTAB) == true) {
+            val v = intent.getIntExtra(AppDestinations.EXTRA_SETTINGS_SUBTAB, AppDestinations.SUBTAB_API)
+            intent.removeExtra(AppDestinations.EXTRA_SETTINGS_SUBTAB)
+            v
+        } else {
+            null
         }
 
-        selectedTabState.intValue = resolvedTab.coerceIn(
-            AppDestinations.TAB_HOME,
-            AppDestinations.TAB_SETTINGS
+        val baseTab = savedInstanceState?.getInt(KEY_SELECTED_TAB, AppDestinations.TAB_HOME)
+            ?: selectedTabState.intValue
+        val baseKbSub = savedInstanceState?.getInt(KEY_KEYBOARD_SUBTAB, AppDestinations.SUBTAB_KB_SCHEME)
+            ?: keyboardSubTabState.intValue
+        val baseVoiceSub = savedInstanceState?.getInt(KEY_VOICE_AI_SUBTAB, AppDestinations.SUBTAB_VOICE_MAIN)
+            ?: voiceAiSubTabState.intValue
+
+        val routed = AppDestinations.resolveNavigationRoute(
+            openTabExtra = openTabExtra,
+            settingsSubTabExtra = settingsSubTabExtra,
+            currentTab = baseTab,
+            currentKeyboardSubTab = baseKbSub,
+            currentVoiceAiSubTab = baseVoiceSub
         )
+
+        selectedTabState.intValue = routed.tab
+        keyboardSubTabState.intValue = routed.keyboardSubTab
+        voiceAiSubTabState.intValue = routed.voiceAiSubTab
     }
 
     companion object {
         private const val KEY_SELECTED_TAB = "state_selected_tab"
-        private const val KEY_SETTINGS_SUBTAB = "state_settings_subtab"
+        private const val KEY_KEYBOARD_SUBTAB = "state_keyboard_subtab"
+        private const val KEY_VOICE_AI_SUBTAB = "state_voice_ai_subtab"
     }
 }
 
@@ -185,10 +201,12 @@ private fun TypeFreeMainScaffold(
     repository: AppRepository,
     aiEngine: AiPipelineEngine,
     selectedTab: Int,
-    settingsSubTab: Int,
+    keyboardSubTab: Int,
+    voiceAiSubTab: Int,
     onSelectTab: (Int) -> Unit,
-    onNavigateToSettingsSubTab: (Int) -> Unit,
-    onSettingsSubTabChanged: (Int) -> Unit
+    onNavigateToVoiceAiSubTab: (Int) -> Unit,
+    onKeyboardSubTabChanged: (Int) -> Unit,
+    onVoiceAiSubTabChanged: (Int) -> Unit
 ) {
     val navItems = listOf(
         NavTabItem(
@@ -197,18 +215,18 @@ private fun TypeFreeMainScaffold(
             icon = Icons.Default.Home
         ),
         NavTabItem(
-            index = AppDestinations.TAB_HISTORY,
-            label = "历史",
-            icon = TypeFreeIcons.History
+            index = AppDestinations.TAB_KEYBOARD,
+            label = "键盘",
+            icon = TypeFreeIcons.KeyboardGrid
         ),
         NavTabItem(
-            index = AppDestinations.TAB_DICTIONARY,
-            label = "词典",
-            icon = TypeFreeIcons.Book
+            index = AppDestinations.TAB_VOICE_AI,
+            label = "语音与 AI",
+            icon = TypeFreeIcons.VoiceWaveform
         ),
         NavTabItem(
-            index = AppDestinations.TAB_SETTINGS,
-            label = "设置 / API",
+            index = AppDestinations.TAB_GENERAL,
+            label = "通用",
             icon = TypeFreeIcons.Tune
         )
     )
@@ -268,26 +286,29 @@ private fun TypeFreeMainScaffold(
                     repository = repository,
                     aiEngine = aiEngine,
                     onNavigateToTab = onSelectTab,
-                    onNavigateToSettingsSubTab = onNavigateToSettingsSubTab
+                    onNavigateToSettingsSubTab = onNavigateToVoiceAiSubTab,
+                    onNavigateToVoiceAiSubTab = onNavigateToVoiceAiSubTab
                 )
-                AppDestinations.TAB_HISTORY -> HistoryScreen(
+                AppDestinations.TAB_KEYBOARD -> KeyboardStudioScreen(
                     repository = repository,
-                    aiEngine = aiEngine
+                    initialSubTab = keyboardSubTab,
+                    onSubTabChanged = onKeyboardSubTabChanged
                 )
-                AppDestinations.TAB_DICTIONARY -> DictionaryScreen(
-                    repository = repository
-                )
-                AppDestinations.TAB_SETTINGS -> AccountSettingsScreen(
+                AppDestinations.TAB_VOICE_AI -> VoiceAiStudioScreen(
                     repository = repository,
                     aiEngine = aiEngine,
-                    initialSubTab = settingsSubTab,
-                    onSubTabChanged = onSettingsSubTabChanged
+                    initialSubTab = voiceAiSubTab,
+                    onSubTabChanged = onVoiceAiSubTabChanged
+                )
+                AppDestinations.TAB_GENERAL -> GeneralSettingsScreen(
+                    repository = repository
                 )
                 else -> HomeSetupScreen(
                     repository = repository,
                     aiEngine = aiEngine,
                     onNavigateToTab = onSelectTab,
-                    onNavigateToSettingsSubTab = onNavigateToSettingsSubTab
+                    onNavigateToSettingsSubTab = onNavigateToVoiceAiSubTab,
+                    onNavigateToVoiceAiSubTab = onNavigateToVoiceAiSubTab
                 )
             }
         }

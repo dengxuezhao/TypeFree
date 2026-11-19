@@ -19,14 +19,20 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import com.typefree.ime.TypeFreeApp
 import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.bubble.CapturedChatContext
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.HistoryRetention
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.core.ime.coordinator.DirectCommandType
+import com.typefree.ime.commit.AndroidCommitExecutor
+import com.typefree.ime.ime.engine.CodetableEnhancedInputEngine
 import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.ui.AppDestinations
@@ -41,6 +47,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks {
@@ -68,6 +75,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     }
 
     private val undoStack = ArrayDeque<UndoSnapshot>()
+    private var androidCommitExecutor: AndroidCommitExecutor? = null
 
     // Auto-Learned Dictionary (`Auto-added`) tracking state
     private var lastDictatedFullText: String? = null
@@ -112,7 +120,18 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         }
         TypeFreeApp.instance.ensureFlypyDictionaryLoaded()
         typingController.rimeInputEngine = TypeFreeApp.instance.rimeInputEngine
+        typingController.enhancedSchemePredicate = { scheme ->
+            TypeFreeApp.instance.rimeDataManager.isSchemeHandledByEnhancedEngine(scheme)
+        }
+        typingController.onUndoRequested = { performUndo() }
+        typingController.reverseLookupMapProvider = {
+            TypeFreeApp.instance.rimeDataManager.activeReverseLookupMap
+        }
+        typingController.onSaveUserPhrase = { word, code ->
+            saveUserPhraseAsync(word, code)
+        }
         typingController.isRimeReady = TypeFreeApp.instance.rimeDataManager.isReady
+        bindCodetableEnhancedEngineIfAvailable()
         TypeFreeApp.instance.ensureRimeDeployed()
         serviceScope.launch {
             TypeFreeApp.instance.flypyDictionary.collect { dict ->
@@ -125,9 +144,25 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             TypeFreeApp.instance.rimeDataManager.deploymentState.collect { deployState ->
                 val ready = deployState is RimeDeploymentState.Ready
                 typingController.isRimeReady = ready
+                if (ready) {
+                    val activeScheme = repository.settings.value.inputScheme
+                    val dm = TypeFreeApp.instance.rimeDataManager
+                    if (dm.isSchemeHandledByEnhancedEngine(activeScheme)) {
+                        dm.activateEnhancedSchemeSync(activeScheme)
+                    }
+                    bindCodetableEnhancedEngineIfAvailable()
+                    if (!dm.isSchemeHandledByEnhancedEngine(activeScheme)) {
+                        TypeFreeApp.instance.rimeInputEngine.setInputScheme(activeScheme)
+                    }
+                    typingController.setFixedCandidateOrder(repository.settings.value.fixedCandidateOrder)
+                    typingController.setIncognitoMode(_imeState.value.isIncognitoMode)
+                }
                 _imeState.update { prev ->
                     prev.copy(
-                        isRimeDeploying = prev.activeInputScheme.usesRime && !ready
+                        isRimeDeploying = prev.activeInputScheme.usesRime && !ready,
+                        codetableEnhancerActive = typingController.activeEngine is CodetableEnhancedInputEngine,
+                        singleCharModeEnabled = typingController.codetableEnhancedEngine?.singleCharModeEnabled ?: false,
+                        pinnedWordsForCurrentCode = typingController.codetableEnhancedEngine?.currentPinnedWordsForBuffer().orEmpty()
                     )
                 }
                 if (ready && typingController.isComposing) {
@@ -136,13 +171,48 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             }
         }
         serviceScope.launch {
+            var lastVersion = TypeFreeApp.instance.rimeDataManager.metadataVersion.value
+            TypeFreeApp.instance.rimeDataManager.metadataVersion.collect { version ->
+                if (version != lastVersion) {
+                    lastVersion = version
+                    bindCodetableEnhancedEngineIfAvailable()
+                    typingController.codetableEnhancedEngine?.let { eng ->
+                        eng.reloadUserDictWordsCache()
+                        eng.reloadShadowRules()
+                        applyCodetableV362Settings(eng, repository.settings.value)
+                    }
+                    syncCodetableUiFlags()
+                }
+            }
+        }
+        serviceScope.launch {
             var lastFlypySetting: Boolean? = null
             var lastScheme = initialSettings.inputScheme
             repository.settings.collect { currentSettings ->
+                val dm = TypeFreeApp.instance.rimeDataManager
+                val schemeChanged = lastScheme != currentSettings.inputScheme
                 TypeFreeApp.instance.rimeInputEngine.setInputScheme(currentSettings.inputScheme)
+                if (dm.isSchemeHandledByEnhancedEngine(currentSettings.inputScheme)) {
+                    val expectedSchemaId = if (currentSettings.inputScheme == InputScheme.FLYPY_TABLE) {
+                        "flypy"
+                    } else {
+                        dm.resolveCustomSchemaId()
+                    }
+                    val needsActivation = schemeChanged ||
+                        typingController.codetableEnhancedEngine == null ||
+                        dm.rimeBridge.activeSchemaId != expectedSchemaId ||
+                        typingController.codetableEnhancedEngine?.activeProfile?.schemaId != expectedSchemaId
+                    if (needsActivation) {
+                        dm.activateEnhancedSchemeSync(currentSettings.inputScheme)
+                        bindCodetableEnhancedEngineIfAvailable()
+                    }
+                }
                 typingController.updateSnippets(currentSettings.snippets)
                 typingController.setFixedCandidateOrder(currentSettings.fixedCandidateOrder)
-                if (lastScheme != currentSettings.inputScheme) {
+                typingController.codetableEnhancedEngine?.let { eng ->
+                    applyCodetableV362Settings(eng, currentSettings)
+                }
+                if (schemeChanged) {
                     lastScheme = currentSettings.inputScheme
                     typingController.resetComposing()
                 }
@@ -155,6 +225,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 _imeState.update {
                     it.copy(
                         activeInputScheme = currentSettings.inputScheme,
+                        codetableEnhancerActive = typingController.activeEngine is CodetableEnhancedInputEngine,
+                        singleCharModeEnabled = typingController.codetableEnhancedEngine?.singleCharModeEnabled ?: false,
+                        pinnedWordsForCurrentCode = typingController.codetableEnhancedEngine?.currentPinnedWordsForBuffer().orEmpty(),
                         isRimeDeploying = currentSettings.inputScheme.usesRime && !typingController.isRimeReady,
                         activeHeightLevel = currentSettings.keyboardHeightLevel,
                         activeHeightMode = currentSettings.keyboardHeightMode,
@@ -228,6 +301,15 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     flypyComposingCode = "",
                     preeditDisplay = "",
                     flypyCandidates = emptyList(),
+                    isOrqDateActive = false,
+                    orqDateOffsetDays = 0,
+                    passiveMathResult = null,
+                    passiveMathExpression = null,
+                    passiveMathEndsWithEquals = false,
+                    l2PhraseSuggestionWord = null,
+                    l2PhraseSuggestionCode = null,
+                    englishSuggestions = emptyList(),
+                    englishSuggestionReplaceLength = 0,
                     isFlypyCandidateSheetExpanded = false,
                     predictionCandidates = emptyList(),
                     aiCompletionSuggestion = null,
@@ -246,6 +328,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             }
         }
         syncEditorMetadata(info, restarting)
+        typingController.codetableEnhancedEngine?.let { eng ->
+            eng.reloadShadowRules()
+            eng.reloadUserDictWordsCache()
+        }
+        syncCodetableUiFlags()
         syncSystemClipboardIfNeeded(allowFreshBanner = true)
         syncCurrentEditorText()
         voiceController.warmVoiceConnectionsInBackground()
@@ -419,6 +506,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             )
         }
         val isFlypyComposing = _imeState.value.isFlypyComposing
+        androidCommitExecutor?.notifyExternalCursorChange(newSelStart, newSelEnd)
         if (!isFlypyComposing) {
             syncCurrentEditorText()
         }
@@ -467,6 +555,18 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 flypyComposingCode = "",
                 preeditDisplay = "",
                 flypyCandidates = emptyList(),
+                isOrqDateActive = false,
+                orqDateOffsetDays = 0,
+                passiveMathResult = null,
+                passiveMathExpression = null,
+                passiveMathEndsWithEquals = false,
+                isPhraseRecording = false,
+                recordedPhraseBuffer = "",
+                recordedPhraseCode = null,
+                l2PhraseSuggestionWord = null,
+                l2PhraseSuggestionCode = null,
+                englishSuggestions = emptyList(),
+                englishSuggestionReplaceLength = 0,
                 isFlypyCandidateSheetExpanded = false,
                 predictionCandidates = emptyList(),
                 aiCompletionSuggestion = null
@@ -527,8 +627,16 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             repository.resolveActiveStyle(uiState.targetPackage, uiState.currentInputType)
         }
 
+        val baseDensity = LocalDensity.current
+        val lockedImeDensity = remember(baseDensity.density) {
+            Density(density = baseDensity.density, fontScale = 1.0f)
+        }
+
         TypeFreeTheme(themePreference = settings.themePreference) {
-            CompositionLocalProvider(LocalKeyboardMetrics provides keyboardMetrics) {
+            CompositionLocalProvider(
+                LocalDensity provides lockedImeDensity,
+                LocalKeyboardMetrics provides keyboardMetrics
+            ) {
                 KeyboardScreen(
                     uiState = uiState,
                     settings = settings,
@@ -558,7 +666,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             ImeUiAction.ToggleStylePicker -> toggleStylePicker()
             ImeUiAction.OpenStylePickerFromToolPanel -> openStylePickerFromToolPanel()
             ImeUiAction.TogglePunctuationStrip -> voiceController.togglePunctuationStrip()
-            is ImeUiAction.OpenHostApp -> openHostApp(action.tabIndex)
+            is ImeUiAction.OpenHostApp -> openHostApp(action.tabIndex, action.subTabIndex)
             ImeUiAction.OpenJevCopilot -> voiceController.openJevCopilotPanel()
             is ImeUiAction.SelectJevStrategyCard -> voiceController.selectJevStrategyCard(action.index)
             ImeUiAction.RefreshJevStrategies -> voiceController.refreshJevStrategies()
@@ -613,6 +721,18 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             is ImeUiAction.SelectKeyboardLiftLevel -> selectKeyboardLiftLevel(action.liftLevel)
 
             ImeUiAction.TriggerUndo -> performUndo()
+            is ImeUiAction.PinCandidate -> pinCandidateFromBar(action.word)
+            is ImeUiAction.UnpinCandidate -> unpinCandidateFromBar(action.word)
+            is ImeUiAction.BlockCandidate -> blockCandidateFromBar(action.word)
+            ImeUiAction.ToggleSingleCharMode -> toggleSingleCharMode()
+            is ImeUiAction.TriggerKeyGesture -> typingController.handleKeyGesture(action.binding)
+            ImeUiAction.SwipeUpPeriodSlash -> typingController.triggerSwipeUpPeriodSlash()
+            is ImeUiAction.StepOrqDate -> typingController.stepOrqDate(action.deltaDays)
+            ImeUiAction.TogglePhraseRecording -> typingController.togglePhraseRecording()
+            ImeUiAction.AcceptPhraseSuggestion -> typingController.acceptPhraseSuggestion()
+            ImeUiAction.DismissPhraseSuggestion -> typingController.dismissPhraseSuggestion()
+            is ImeUiAction.SelectPassiveMath -> typingController.selectPassiveMath(action.result)
+            is ImeUiAction.SelectEnglishSuggestion -> typingController.selectEnglishSuggestion(action.word)
             is ImeUiAction.CommitText -> commitDirectText(action.text, recordUndo = true, markManualEdit = true)
             is ImeUiAction.CommitQwertyChar -> typingController.commitQwertyChar(action.char)
             is ImeUiAction.CommaOrPeriodKey -> typingController.handleCommaOrPeriodKey(action.isComma)
@@ -826,7 +946,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     }
 
     override fun tryAutoLearnFromRecentEdit() {
-        if (_imeState.value.isIncognitoMode) {
+        if (_imeState.value.isIncognitoMode || !typingController.activeAllowsAutoLearn) {
             clearAutoLearnBaseline()
             return
         }
@@ -997,7 +1117,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         typingController.deleteBackward()
     }
 
-    fun openHostApp(tabIndex: Int = AppDestinations.TAB_HOME) {
+    fun openHostApp(tabIndex: Int = AppDestinations.TAB_HOME, subTabIndex: Int? = null) {
         performKeyFeedback(strong = false)
         tryAutoLearnFromRecentEdit()
         try {
@@ -1009,6 +1129,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                         Intent.FLAG_ACTIVITY_SINGLE_TOP
                 )
                 putExtra(AppDestinations.EXTRA_OPEN_TAB, tabIndex)
+                if (subTabIndex != null) {
+                    putExtra(AppDestinations.EXTRA_SETTINGS_SUBTAB, subTabIndex)
+                }
             }
             startActivity(intent)
             requestHideSelf(0)
@@ -1164,7 +1287,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                         Intent.FLAG_ACTIVITY_CLEAR_TOP or
                         Intent.FLAG_ACTIVITY_SINGLE_TOP
                 )
-                putExtra(AppDestinations.EXTRA_OPEN_TAB, AppDestinations.TAB_SETTINGS)
+                putExtra(AppDestinations.EXTRA_OPEN_TAB, AppDestinations.TAB_GENERAL)
                 putExtra(AppDestinations.EXTRA_SETTINGS_SUBTAB, AppDestinations.SUBTAB_PREFERENCES)
             }
             startActivity(intent)
@@ -1319,6 +1442,246 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
             cm.setPrimaryClip(android.content.ClipData.newPlainText("TypeFree AskAI", text))
         }
+    }
+
+    override fun openJevCopilotFromCommand() {
+        voiceController.openJevCopilotPanel()
+    }
+
+    private fun applyCodetableV362Settings(
+        eng: CodetableEnhancedInputEngine,
+        settings: com.typefree.ime.data.AppSettings
+    ) {
+        eng.setXiaoheDirectCommandsEnabled(settings.xiaoheDirectCommandsEnabled)
+        eng.setXiaoheReverseSplitEnabled(settings.xiaoheReverseSplitEnabled)
+        eng.setXiaoheNaturalContinuationEnabled(settings.xiaoheNaturalContinuationEnabled)
+        eng.setPhraseSuggestionL2Enabled(settings.phraseSuggestionL2Enabled)
+    }
+
+    private fun saveUserPhraseAsync(word: String, code: String) {
+        val cleanWord = word.trim()
+        val cleanCode = code.trim().lowercase()
+        if (cleanWord.isEmpty() || cleanCode.isEmpty()) return
+        serviceScope.launch(Dispatchers.IO) {
+            val dm = TypeFreeApp.instance.rimeDataManager
+            val schemaId = dm.activeSchemaProfile.schemaId.ifBlank { "flypy" }
+            val result = runCatching {
+                dm.getUserPhraseEditor(schemaId).addPhrase(cleanWord, cleanCode, isTopPinned = false)
+                val sharedUserFile = File(dm.sharedDir, "${schemaId}_user.txt")
+                if (sharedUserFile.isFile) {
+                    runCatching {
+                        dm.userDir.mkdirs()
+                        sharedUserFile.copyTo(File(dm.userDir, "${schemaId}_user.txt"), overwrite = true)
+                    }
+                }
+                dm.reloadActiveEnhancedSchemaSync(schemaId)
+            }
+            withContext(Dispatchers.Main) {
+                if (result.isSuccess) {
+                    typingController.codetableEnhancedEngine?.reloadUserDictWordsCache(schemaId)
+                    showQuickActionToast("✓ 已存入个人词：$cleanWord · $cleanCode")
+                } else {
+                    showQuickActionToast("保存个人词失败：${result.exceptionOrNull()?.message ?: "未知错误"}")
+                }
+            }
+        }
+    }
+
+    private fun bindCodetableEnhancedEngineIfAvailable() {
+        val dm = TypeFreeApp.instance.rimeDataManager
+        if (!dm.hasXiaoheSchemaInstalled() && !dm.hasCustomSchemaImported()) return
+
+        val latestSettings = repository.settings.value
+        val existing = typingController.codetableEnhancedEngine
+        if (existing != null) {
+            existing.refreshFromMetadata(
+                profile = dm.activeSchemaProfile,
+                symbolTrie = dm.activeSymbolTrie,
+                briefIndex = dm.activeBriefIndex,
+                reverseLookupMap = dm.activeReverseLookupMap
+            )
+            applyCodetableV362Settings(existing, latestSettings)
+            existing.updateSnippets(latestSettings.snippets)
+            syncCodetableUiFlags()
+            return
+        }
+
+        val executor = AndroidCommitExecutor.fromInputConnection(
+            inputConnectionProvider = { currentInputConnection() },
+            onCopyClipboard = { code, toast ->
+                copyTextToClipboard(code)
+                showQuickActionToast(toast)
+            },
+            onDirectCommand = { cmd ->
+                when (cmd) {
+                    DirectCommandType.OPEN_JEV_COPILOT ->
+                        openJevCopilotFromCommand()
+                    DirectCommandType.TOGGLE_FULL_CODE_DICT -> {
+                        val next = typingController.codetableEnhancedEngine
+                            ?.subDictToggleManager
+                            ?.toggleFullCodeDict(dm.activeSchemaProfile.schemaId) ?: false
+                        showQuickActionToast(if (next) "✓ 全码字词库已开启 (oqm)" else "✓ 全码字词库已关闭 (oqm)")
+                    }
+                    DirectCommandType.TOGGLE_ASCII_PUNCT -> {
+                        val next = !dm.rimeBridge.getOption("ascii_punct")
+                        dm.rimeBridge.setOption("ascii_punct", next)
+                        showQuickActionToast(if (next) "英文标点 (.)" else "中文标点 (。)")
+                    }
+                    DirectCommandType.TOGGLE_SIMPLIFICATION -> {
+                        val next = !dm.rimeBridge.getOption("simplification")
+                        dm.rimeBridge.setOption("simplification", next)
+                        showQuickActionToast(if (next) "繁體中文模式" else "简体中文模式")
+                    }
+                    DirectCommandType.TOGGLE_SINGLE_CHAR_MODE -> {
+                        val enabled = typingController.codetableEnhancedEngine?.singleCharModeEnabled ?: false
+                        _imeState.update { it.copy(singleCharModeEnabled = enabled) }
+                        showQuickActionToast(if (enabled) "✓ 单字模式已开启 (odz)" else "✓ 单字模式已关闭 (odz)")
+                    }
+                }
+            },
+            onAutoLearnEligibleCommit = { recordManualEditTouch() },
+            onTextCommitted = { committedText, allowAutoLearn ->
+                onEnhancedEngineCommitted(committedText, allowAutoLearn)
+            },
+            onUndoExecuted = {
+                onEnhancedEngineUndo()
+            }
+        )
+        androidCommitExecutor = executor
+        val created = CodetableEnhancedInputEngine(
+            rimeClient = dm.rimeBridge,
+            initialProfile = dm.activeSchemaProfile,
+            symbolTrie = dm.activeSymbolTrie,
+            briefIndex = dm.activeBriefIndex,
+            reverseLookupMap = dm.activeReverseLookupMap,
+            schemaDir = dm.sharedDir,
+            clipboardReader = { readSystemClipboardText() },
+            commitExecutor = executor,
+            onToast = { msg -> showQuickActionToast(msg) },
+            onOpenJevCopilot = { openJevCopilotFromCommand() },
+            onAsyncReloadSchema = { schemaId ->
+                serviceScope.launch(Dispatchers.IO) {
+                    dm.rimeBridge.deploy(schemaId)
+                    withContext(Dispatchers.Main) {
+                        typingController.codetableEnhancedEngine?.let { eng ->
+                            if (typingController.activeEngine === eng) {
+                                eng.coordinator.updateProfile(eng.activeProfile)
+                                val s = repository.settings.value
+                                applyCodetableV362Settings(eng, s)
+                                eng.setIncognitoMode(_imeState.value.isIncognitoMode)
+                                eng.setFixedCandidateOrder(s.fixedCandidateOrder)
+                            }
+                        }
+                    }
+                }
+            },
+            isActiveEnginePredicate = {
+                typingController.activeEngine === typingController.codetableEnhancedEngine
+            },
+            isIncognitoPredicate = {
+                _imeState.value.isIncognitoMode ||
+                    ImeLogic.isPasswordEditorInputType(_imeState.value.currentInputType)
+            },
+            onSingleCharModeChanged = { enabled ->
+                _imeState.update { it.copy(singleCharModeEnabled = enabled) }
+            },
+            onPhraseSuggestion = { suggestion ->
+                typingController.onL2PhraseSuggestion(suggestion)
+            },
+            onUiStateSynced = { _, singleCharEnabled, pinnedWords ->
+                _imeState.update {
+                    it.copy(
+                        codetableEnhancerActive = typingController.activeEngine is CodetableEnhancedInputEngine,
+                        singleCharModeEnabled = singleCharEnabled,
+                        pinnedWordsForCurrentCode = pinnedWords
+                    )
+                }
+            }
+        )
+        applyCodetableV362Settings(created, latestSettings)
+        created.updateSnippets(latestSettings.snippets)
+        typingController.codetableEnhancedEngine = created
+        syncCodetableUiFlags()
+    }
+
+    private fun syncCodetableUiFlags() {
+        val eng = typingController.codetableEnhancedEngine
+        _imeState.update {
+            it.copy(
+                codetableEnhancerActive = typingController.activeEngine is CodetableEnhancedInputEngine,
+                singleCharModeEnabled = eng?.singleCharModeEnabled ?: false,
+                pinnedWordsForCurrentCode = eng?.currentPinnedWordsForBuffer().orEmpty()
+            )
+        }
+    }
+
+    private fun pinCandidateFromBar(word: String) {
+        val eng = typingController.codetableEnhancedEngine ?: return
+        performKeyFeedback(strong = false)
+        eng.pinCandidate(word)
+        typingController.syncEngineStateToUi()
+        syncCodetableUiFlags()
+        showQuickActionToast("📌 已置顶首选「$word」")
+    }
+
+    private fun unpinCandidateFromBar(word: String) {
+        val eng = typingController.codetableEnhancedEngine ?: return
+        performKeyFeedback(strong = false)
+        eng.unpinCandidate(word)
+        typingController.syncEngineStateToUi()
+        syncCodetableUiFlags()
+        showQuickActionToast("已取消置顶「$word」")
+    }
+
+    private fun blockCandidateFromBar(word: String) {
+        val eng = typingController.codetableEnhancedEngine ?: return
+        performKeyFeedback(strong = true)
+        eng.blockCandidate(word)
+        typingController.syncEngineStateToUi()
+        syncCodetableUiFlags()
+        showQuickActionToast("已屏蔽「$word」")
+    }
+
+    private fun toggleSingleCharMode() {
+        val eng = typingController.codetableEnhancedEngine ?: return
+        performKeyFeedback(strong = false)
+        val next = eng.toggleSingleCharMode()
+        typingController.syncEngineStateToUi()
+        syncCodetableUiFlags()
+        showQuickActionToast(if (next) "✓ 单字模式已开启" else "✓ 单字模式已关闭")
+    }
+
+    private fun onEnhancedEngineCommitted(committedText: String, @Suppress("UNUSED_PARAMETER") allowAutoLearn: Boolean) {
+        if (committedText.isNotEmpty()) {
+            typingController.recordExternalCommit(committedText)
+            val undo = ImeLogic.createUndoSnapshot(
+                committedText = committedText,
+                replacedSelection = ""
+            )
+            pushUndoSnapshot(undo)
+            _imeState.update {
+                it.copy(
+                    undoSnapshot = undoStack.firstOrNull(),
+                    rawSelectedText = "",
+                    ignoreSelectionForThisTurn = false
+                )
+            }
+        }
+        syncCurrentEditorText()
+        if (committedText.isNotEmpty()) {
+            typingController.onExternalCommittedTextForV362(committedText)
+            typingController.predictionCoordinator.onWordCommitted(
+                committedText = committedText,
+                isComposing = typingController.isComposing
+            )
+        }
+    }
+
+    private fun onEnhancedEngineUndo() {
+        undoStack.removeFirstOrNull()
+        _imeState.update { it.copy(undoSnapshot = undoStack.firstOrNull()) }
+        onUserUndoForJev()
+        syncCurrentEditorText()
     }
 
     private fun syncCurrentEditorText() {
