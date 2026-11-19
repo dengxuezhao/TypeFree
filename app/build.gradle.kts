@@ -12,8 +12,8 @@ android {
     ndkVersion = "26.1.10909125"
 
     val usePrivateDict = project.findProperty("usePrivateDict") == "true"
-    val appVersionCode = (project.findProperty("TYPEFREE_VERSION_CODE") as? String)?.trim()?.toIntOrNull() ?: 36
-    val appVersionName = (project.findProperty("TYPEFREE_VERSION_NAME") as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: "3.7.0-beta.1"
+    val appVersionCode = (project.findProperty("TYPEFREE_VERSION_CODE") as? String)?.trim()?.toIntOrNull() ?: 37
+    val appVersionName = (project.findProperty("TYPEFREE_VERSION_NAME") as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: "3.7.0"
 
     defaultConfig {
         applicationId = "com.typefree.ime"
