@@ -7,6 +7,7 @@ import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.InMemoryKeyValueStore
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.JvmAesGcmCipher
+import com.typefree.ime.data.KeycapBadgeMode
 import com.typefree.ime.data.SecretVault
 import com.typefree.ime.data.SnippetMatcher
 import com.typefree.ime.ui.AppDestinations
@@ -37,6 +38,7 @@ class V362SettingsAndNavTest {
         assertTrue(defaults.englishModeWordSuggestionEnabled)
         assertTrue(defaults.phraseSuggestionL2Enabled)
         assertEquals("", defaults.customKeyGesturesJson)
+        assertEquals(KeycapBadgeMode.SWIPE_UP, defaults.keycapBadgeMode)
 
         val publicStore = InMemoryKeyValueStore()
         val secretStore = InMemoryKeyValueStore()
@@ -71,6 +73,7 @@ class V362SettingsAndNavTest {
         assertTrue(loaded.englishModeWordSuggestionEnabled)
         assertTrue(loaded.phraseSuggestionL2Enabled)
         assertEquals("", loaded.customKeyGesturesJson)
+        assertEquals(KeycapBadgeMode.SWIPE_UP, loaded.keycapBadgeMode)
         assertEquals("/sd", loaded.snippets.first().flypyCode)
 
         repo.updateSettings {
@@ -82,7 +85,8 @@ class V362SettingsAndNavTest {
                 passiveCalculatorEnabled = false,
                 englishModeWordSuggestionEnabled = false,
                 phraseSuggestionL2Enabled = false,
-                customKeyGesturesJson = """{"swipeUp":{},"longPress":{}}"""
+                customKeyGesturesJson = """{"swipeUp":{},"longPress":{}}""",
+                keycapBadgeMode = KeycapBadgeMode.LONG_PRESS
             )
         }
 
@@ -99,6 +103,7 @@ class V362SettingsAndNavTest {
         assertFalse(reloaded.englishModeWordSuggestionEnabled)
         assertFalse(reloaded.phraseSuggestionL2Enabled)
         assertTrue(reloaded.customKeyGesturesJson.contains("swipeUp"))
+        assertEquals(KeycapBadgeMode.LONG_PRESS, reloaded.keycapBadgeMode)
     }
 
     @Test

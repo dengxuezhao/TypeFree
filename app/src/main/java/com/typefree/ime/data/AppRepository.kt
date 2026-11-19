@@ -452,6 +452,7 @@ class AppRepository(
                 englishModeWordSuggestionEnabled = resolvedEnglishModeWordSuggestionEnabled,
                 phraseSuggestionL2Enabled = resolvedPhraseSuggestionL2Enabled,
                 customKeyGesturesJson = resolvedCustomKeyGesturesJson,
+                keycapBadgeMode = parsed.keycapBadgeMode ?: KeycapBadgeMode.SWIPE_UP,
                 predictionEnabled = resolvedPredictionEnabled,
                 aiCompletionEnabled = resolvedAiCompletionEnabled,
                 chatContextReplyEnabled = resolvedChatContextReplyEnabled,

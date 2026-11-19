@@ -495,6 +495,7 @@ fun KeyboardScreen(
                                         keyGestureProfile = effectiveKeyGestureProfile,
                                         onTriggerKeyGesture = { onAction(ImeUiAction.TriggerKeyGesture(it)) },
                                         fiveKeyBottomRow = fiveKeyBottomRowActive,
+                                        keycapBadgeMode = settings.keycapBadgeMode,
                                         onSwipeUpPeriodSlash = { onAction(ImeUiAction.SwipeUpPeriodSlash) }
                                     )
 

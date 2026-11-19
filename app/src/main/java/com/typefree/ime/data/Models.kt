@@ -46,6 +46,12 @@ enum class DictionarySource(val label: String) {
     AUTO_LEARNED("自动学习")
 }
 
+enum class KeycapBadgeMode(val label: String) {
+    SWIPE_UP("上滑角标"),
+    LONG_PRESS("长按角标"),
+    NONE("隐藏角标")
+}
+
 enum class ModelCapabilitySlot(val label: String) {
     STT("STT 语音识别"),
     LLM("LLM 语义润色"),
@@ -459,6 +465,7 @@ data class AppSettings(
     val englishModeWordSuggestionEnabled: Boolean = true,
     val phraseSuggestionL2Enabled: Boolean = true,
     val customKeyGesturesJson: String = "",
+    val keycapBadgeMode: KeycapBadgeMode = KeycapBadgeMode.SWIPE_UP,
     val predictionEnabled: Boolean = true,
     val aiCompletionEnabled: Boolean = false,
     val chatContextReplyEnabled: Boolean = false, // 读屏上下文「AI 帮回」（默认关闭，需首次披露同意后开启）

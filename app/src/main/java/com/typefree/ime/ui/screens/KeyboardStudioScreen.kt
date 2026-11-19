@@ -61,6 +61,7 @@ import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
+import com.typefree.ime.data.KeycapBadgeMode
 import com.typefree.ime.ime.KeyboardMetrics
 import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.ime.flypy.FlypyDictionary
@@ -793,6 +794,41 @@ private fun KeyboardSchemeAndLayoutPane(
                         repository.updateSettings { it.copy(qwertyKeyPopupPreview = enabled) }
                     }
                 )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "键帽角标显示（${settings.keycapBadgeMode.label}）",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = "自定义键帽顶部提示内容；选择「隐藏角标」后字母自动居中复原，不留顶空",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        KeycapBadgeMode.entries.forEach { mode ->
+                            val selected = settings.keycapBadgeMode == mode
+                            FilterChip(
+                                selected = selected,
+                                onClick = {
+                                    repository.updateSettings { it.copy(keycapBadgeMode = mode) }
+                                },
+                                label = { Text(mode.label, fontSize = 12.sp, maxLines = 1) },
+                                modifier = Modifier.weight(1f),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                )
+                            )
+                        }
+                    }
+                }
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 

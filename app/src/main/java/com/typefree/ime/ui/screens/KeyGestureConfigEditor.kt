@@ -37,6 +37,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -48,13 +49,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
+import com.typefree.ime.data.KeycapBadgeMode
 import com.typefree.ime.ime.EditorShortcutAction
 import com.typefree.ime.ime.KeyGestureActionType
 import com.typefree.ime.ime.KeyGestureBinding
@@ -118,6 +122,11 @@ data class KeyGestureBindingSpec(
     fun displayBadge(): String {
         if (type == KeyGestureActionKind.NONE) return "—"
         return toCoreBinding().displayBadge().ifEmpty { "—" }
+    }
+
+    fun compactKeycapBadge(): String {
+        if (type == KeyGestureActionKind.NONE) return "—"
+        return toCoreBinding().compactKeycapBadge().ifEmpty { "—" }
     }
 
     companion object {
@@ -274,6 +283,41 @@ fun KeyGestureCustomizerCard(
                 }
             }
 
+            // Keycap badge display mode selector (Swipe-up / Long-press / Hidden)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "键盘键帽顶部角标",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    KeycapBadgeMode.entries.forEach { mode ->
+                        val selected = settings.keycapBadgeMode == mode
+                        FilterChip(
+                            selected = selected,
+                            onClick = {
+                                repository.updateSettings { it.copy(keycapBadgeMode = mode) }
+                            },
+                            label = { Text(mode.label, fontSize = 12.sp, maxLines = 1) },
+                            modifier = Modifier.weight(1f),
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                            )
+                        )
+                    }
+                }
+                Text(
+                    text = "选择「隐藏角标」可切换极简纯字母键帽（字母自动居中复原），所有上滑与长按手势仍可正常触发",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
             // Legend
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -281,7 +325,7 @@ fun KeyGestureCustomizerCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "右上角：↑ 上滑",
+                    text = "顶部：↑ 上滑",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.SemiBold
@@ -293,87 +337,93 @@ fun KeyGestureCustomizerCard(
                 )
             }
 
-            // 3-Row QWERTY Mini Keyboard Preview
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 6.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+            // 3-Row QWERTY Mini Keyboard Preview (fontScale locked to 1.0f to prevent distortion under large system fonts)
+            val baseDensity = LocalDensity.current
+            val lockedMiniPreviewDensity = remember(baseDensity.density) {
+                Density(density = baseDensity.density, fontScale = 1.0f)
+            }
+            CompositionLocalProvider(LocalDensity provides lockedMiniPreviewDensity) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
                 ) {
-                    KeyGestureConfigCodec.QWERTY_ROWS.forEachIndexed { rowIdx, rowKeys ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = when (rowIdx) {
-                                    1 -> 10.dp
-                                    2 -> 24.dp
-                                    else -> 0.dp
-                                }),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            rowKeys.forEach { ch ->
-                                val swipeSpec = profile.swipeUp[ch] ?: KeyGestureBindingSpec(KeyGestureActionKind.NONE)
-                                val longSpec = profile.longPress[ch] ?: KeyGestureBindingSpec(KeyGestureActionKind.NONE)
-                                val isKeyModified = swipeSpec != defaults.swipeUp[ch] || longSpec != defaults.longPress[ch]
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 6.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        KeyGestureConfigCodec.QWERTY_ROWS.forEachIndexed { rowIdx, rowKeys ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = when (rowIdx) {
+                                        1 -> 10.dp
+                                        2 -> 24.dp
+                                        else -> 0.dp
+                                    }),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                rowKeys.forEach { ch ->
+                                    val swipeSpec = profile.swipeUp[ch] ?: KeyGestureBindingSpec(KeyGestureActionKind.NONE)
+                                    val longSpec = profile.longPress[ch] ?: KeyGestureBindingSpec(KeyGestureActionKind.NONE)
+                                    val isKeyModified = swipeSpec != defaults.swipeUp[ch] || longSpec != defaults.longPress[ch]
 
-                                Surface(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(52.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable { editingKey = ch },
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (isKeyModified) {
-                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
-                                    } else {
-                                        MaterialTheme.colorScheme.surface
-                                    },
-                                    border = BorderStroke(
-                                        width = if (isKeyModified) 1.2.dp else 0.8.dp,
-                                        color = if (isKeyModified) {
-                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
-                                        } else {
-                                            MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
-                                        }
-                                    )
-                                ) {
-                                    Column(
+                                    Surface(
                                         modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 2.dp, vertical = 3.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.SpaceBetween
+                                            .weight(1f)
+                                            .height(52.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { editingKey = ch },
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isKeyModified) {
+                                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+                                        } else {
+                                            MaterialTheme.colorScheme.surface
+                                        },
+                                        border = BorderStroke(
+                                            width = if (isKeyModified) 1.2.dp else 0.8.dp,
+                                            color = if (isKeyModified) {
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
+                                            } else {
+                                                MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                                            }
+                                        )
                                     ) {
-                                        Text(
-                                            text = swipeSpec.displayBadge(),
-                                            fontSize = 8.sp,
-                                            lineHeight = 9.sp,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Clip
-                                        )
-                                        Text(
-                                            text = ch.uppercaseChar().toString(),
-                                            fontSize = 13.sp,
-                                            lineHeight = 14.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Text(
-                                            text = longSpec.displayBadge(),
-                                            fontSize = 8.sp,
-                                            lineHeight = 9.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Clip
-                                        )
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 2.dp, vertical = 3.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = swipeSpec.compactKeycapBadge(),
+                                                fontSize = 8.sp,
+                                                lineHeight = 9.sp,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Clip
+                                            )
+                                            Text(
+                                                text = ch.uppercaseChar().toString(),
+                                                fontSize = 13.sp,
+                                                lineHeight = 14.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = longSpec.compactKeycapBadge(),
+                                                fontSize = 8.sp,
+                                                lineHeight = 9.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Clip
+                                            )
+                                        }
                                     }
                                 }
                             }

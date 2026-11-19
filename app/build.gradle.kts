@@ -12,13 +12,15 @@ android {
     ndkVersion = "26.1.10909125"
 
     val usePrivateDict = project.findProperty("usePrivateDict") == "true"
+    val appVersionCode = (project.findProperty("TYPEFREE_VERSION_CODE") as? String)?.trim()?.toIntOrNull() ?: 36
+    val appVersionName = (project.findProperty("TYPEFREE_VERSION_NAME") as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: "3.7.0-beta.1"
 
     defaultConfig {
         applicationId = "com.typefree.ime"
         minSdk = 26
         targetSdk = 35
-        versionCode = 30
-        versionName = "3.6.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
         buildConfigField("boolean", "USE_PRIVATE_DICT", usePrivateDict.toString())
         buildConfigField("boolean", "IS_XIAOHE_FLAVOR", "false")
 
@@ -76,8 +78,6 @@ android {
 
         create("xiaohe") {
             dimension = "edition"
-            versionCode = 35
-            versionName = "3.6.4"
             buildConfigField("boolean", "USE_PRIVATE_DICT", "true")
             buildConfigField("boolean", "IS_XIAOHE_FLAVOR", "true")
         }

@@ -50,6 +50,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -60,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.typefree.ime.data.InputScheme
+import com.typefree.ime.data.KeycapBadgeMode
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.LocalTypeFreeKeyboardPalette
 import kotlinx.coroutines.Job
@@ -294,6 +297,7 @@ fun BuiltInQwertyKeyboard(
     onTriggerKeyGesture: ((KeyGestureBinding) -> Unit)? = null,
     fiveKeyBottomRow: Boolean = false,
     onSwipeUpPeriodSlash: (() -> Unit)? = null,
+    keycapBadgeMode: KeycapBadgeMode = KeycapBadgeMode.SWIPE_UP,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
@@ -428,10 +432,17 @@ fun BuiltInQwertyKeyboard(
                         val keyChar = ch.first()
                         val swipeBinding = effectiveGestureProfile.resolveSwipeUp(keyChar)
                         val longBinding = effectiveGestureProfile.resolveLongPress(keyChar)
+                        val visibleCapBadge = when (keycapBadgeMode) {
+                            KeycapBadgeMode.SWIPE_UP -> swipeBinding?.compactKeycapBadge()?.ifEmpty { null }
+                            KeycapBadgeMode.LONG_PRESS -> longBinding?.compactKeycapBadge()?.ifEmpty { null }
+                            KeycapBadgeMode.NONE -> null
+                        }
                         QwertyCharKey(
                             label = display,
-                            swipeUpBadge = swipeBinding?.displayBadge(),
-                            longPressBadge = longBinding?.displayBadge(),
+                            swipeUpBadge = visibleCapBadge,
+                            swipeUpPreviewBadge = swipeBinding?.compactKeycapBadge()?.ifEmpty { null },
+                            longPressBadge = longBinding?.compactKeycapBadge()?.ifEmpty { null },
+                            topCenterBadge = true,
                             fontSize = letterFontSize,
                             fontWeight = letterFontWeight,
                             verticalCellPad = rowVPad,
@@ -1007,8 +1018,10 @@ private fun QwertyCharKey(
     label: String,
     modifier: Modifier = Modifier,
     swipeUpBadge: String? = null,
+    swipeUpPreviewBadge: String? = swipeUpBadge,
     longPressBadge: String? = null,
     highlightSwipeUpBadge: Boolean = false,
+    topCenterBadge: Boolean = false,
     fontSize: TextUnit = 20.sp,
     fontWeight: FontWeight = FontWeight.Normal,
     cornerRadius: Dp = ALPHA_KEY_CORNER,
@@ -1027,7 +1040,7 @@ private fun QwertyCharKey(
     val swipeUpThresholdPx = with(density) { ImeLogic.SECONDARY_KEY_SWIPE_UP_DP.dp.toPx() }
 
     val currentLabel by rememberUpdatedState(label)
-    val currentSwipeUpBadge by rememberUpdatedState(swipeUpBadge)
+    val currentSwipeUpBadge by rememberUpdatedState(swipeUpPreviewBadge)
     val currentLongPressBadge by rememberUpdatedState(longPressBadge)
     val currentOnClick by rememberUpdatedState(onClick)
     val currentOnSwipeUp by rememberUpdatedState(onSwipeUp)
@@ -1159,30 +1172,57 @@ private fun QwertyCharKey(
                 borderColor = palette.keyBorder.copy(alpha = if (palette.isDark) 0.58f else 0.50f),
                 shadowColor = palette.keyShadow
             ) {
+                val hasTopCenterBadge = topCenterBadge && !swipeUpBadge.isNullOrEmpty()
                 if (!swipeUpBadge.isNullOrEmpty()) {
+                    val isPairedWide = topCenterBadge && swipeUpBadge.length >= 2 &&
+                        swipeUpBadge.any { it.code > 0x7F }
                     Text(
                         text = swipeUpBadge,
-                        color = if (highlightSwipeUpBadge) {
-                            palette.keyTextPrimary
-                        } else {
-                            palette.keyTextMuted.copy(alpha = 0.64f)
-                        },
-                        fontSize = if (highlightSwipeUpBadge) 9.5.sp else 7.5.sp,
-                        fontWeight = if (highlightSwipeUpBadge) FontWeight.Bold else FontWeight.Medium,
+                        style = TextStyle(
+                            color = if (highlightSwipeUpBadge) {
+                                palette.keyTextPrimary
+                            } else {
+                                palette.keyTextMuted.copy(alpha = if (topCenterBadge) 0.78f else 0.68f)
+                            },
+                            fontSize = when {
+                                highlightSwipeUpBadge -> 9.5.sp
+                                topCenterBadge -> 8.5.sp
+                                else -> 8.sp
+                            },
+                            lineHeight = 10.sp,
+                            letterSpacing = if (isPairedWide) (-1.2).sp else 0.sp,
+                            fontWeight = if (highlightSwipeUpBadge) FontWeight.Bold else FontWeight.Medium,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        ),
                         maxLines = 1,
                         overflow = TextOverflow.Clip,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(top = 1.5.dp, end = 2.5.dp)
+                        modifier = if (topCenterBadge) {
+                            Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 2.dp, start = 1.dp, end = 1.dp)
+                        } else {
+                            Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(top = 1.5.dp, end = 2.5.dp)
+                        }
                     )
                 }
                 val opticalOffsetX = if (label == "，" || label == "。") 3.5.dp else 0.dp
-                val opticalOffsetY = if (label == "，" || label == "。") (-1).dp else 0.dp
+                val opticalOffsetY = when {
+                    label == "，" || label == "。" -> (-1).dp
+                    // Shift primary letter gently down ONLY when top-center badge is visible;
+                    // restores exact center (`0.dp`) when badge is hidden!
+                    hasTopCenterBadge -> 3.8.dp
+                    else -> 0.dp
+                }
                 Text(
                     text = label,
-                    color = palette.keyTextPrimary,
-                    fontSize = fontSize,
-                    fontWeight = fontWeight,
+                    style = TextStyle(
+                        color = palette.keyTextPrimary,
+                        fontSize = fontSize,
+                        fontWeight = fontWeight,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                    ),
                     maxLines = 1,
                     modifier = Modifier
                         .align(Alignment.Center)

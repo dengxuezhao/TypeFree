@@ -29,6 +29,13 @@ class V362KeyboardFeaturesTest {
         assertEquals("）", cnProfile.resolveSwipeUp('r')?.text)
         assertEquals("\t", cnProfile.resolveSwipeUp('t')?.text)
         assertEquals("Tab", cnProfile.resolveSwipeUp('t')?.displayBadge())
+        assertEquals("⇥", cnProfile.resolveSwipeUp('t')?.compactKeycapBadge())
+        assertEquals("↩", cnProfile.resolveSwipeUp('i')?.compactKeycapBadge())
+        assertEquals("↻", cnProfile.resolveSwipeUp('f')?.compactKeycapBadge())
+        assertEquals("␣", cnProfile.resolveSwipeUp('b')?.compactKeycapBadge())
+        assertEquals("…", cnProfile.resolveSwipeUp('s')?.compactKeycapBadge())
+        assertEquals("—", cnProfile.resolveSwipeUp('v')?.compactKeycapBadge())
+        assertEquals(":“", cnProfile.resolveSwipeUp('q')?.compactKeycapBadge())
 
         val ySwipe = cnProfile.resolveSwipeUp('y')!!
         assertEquals(KeyGestureActionType.COMMIT_PAIRED, ySwipe.type)

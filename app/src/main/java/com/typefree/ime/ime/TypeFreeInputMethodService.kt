@@ -19,6 +19,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import com.typefree.ime.TypeFreeApp
 import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.bubble.CapturedChatContext
@@ -625,8 +627,16 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             repository.resolveActiveStyle(uiState.targetPackage, uiState.currentInputType)
         }
 
+        val baseDensity = LocalDensity.current
+        val lockedImeDensity = remember(baseDensity.density) {
+            Density(density = baseDensity.density, fontScale = 1.0f)
+        }
+
         TypeFreeTheme(themePreference = settings.themePreference) {
-            CompositionLocalProvider(LocalKeyboardMetrics provides keyboardMetrics) {
+            CompositionLocalProvider(
+                LocalDensity provides lockedImeDensity,
+                LocalKeyboardMetrics provides keyboardMetrics
+            ) {
                 KeyboardScreen(
                     uiState = uiState,
                     settings = settings,

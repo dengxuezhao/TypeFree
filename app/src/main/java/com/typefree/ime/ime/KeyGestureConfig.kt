@@ -44,6 +44,48 @@ data class KeyGestureBinding(
         }
         return if (raw.length > maxChars) raw.take(maxChars) else raw
     }
+
+    /**
+     * Compact 1~2 char glyph intended specifically for the top slot of a physical keycap
+     * without colliding with tall letters (`t`, `i`, `f`, `b`, `h`, `k`, `l`).
+     * Does NOT alter committed text or popup preview labels.
+     */
+    fun compactKeycapBadge(): String {
+        if (type == KeyGestureActionType.NONE) return ""
+        return when (type) {
+            KeyGestureActionType.UNDO_LAST -> "↩"
+            KeyGestureActionType.REPEAT_LAST -> "↻"
+            KeyGestureActionType.EDITOR_SHORTCUT -> when (editorShortcut) {
+                EditorShortcutAction.SELECT_ALL -> "全"
+                EditorShortcutAction.CUT -> "剪"
+                EditorShortcutAction.COPY -> "复"
+                EditorShortcutAction.PASTE -> "粘"
+                null -> ""
+            }
+            KeyGestureActionType.COMMIT_TEXT -> when (text) {
+                "\t" -> "⇥"
+                "\u3000" -> "␣"
+                "……" -> "…"
+                "——" -> "—"
+                "：“" -> ":“"
+                else -> {
+                    val base = label.ifEmpty { text }
+                    when (base) {
+                        "Tab" -> "⇥"
+                        "全角", "全角空格" -> "␣"
+                        "……" -> "…"
+                        "——" -> "—"
+                        else -> if (base.length > 2) base.take(2) else base
+                    }
+                }
+            }
+            KeyGestureActionType.COMMIT_PAIRED -> {
+                val pair = label.ifEmpty { "$text$rightText" }
+                if (pair.length > 2) pair.take(2) else pair
+            }
+            KeyGestureActionType.NONE -> ""
+        }
+    }
 }
 
 data class KeyGestureProfile(

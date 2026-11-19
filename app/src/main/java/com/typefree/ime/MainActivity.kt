@@ -21,14 +21,18 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import com.typefree.ime.bubble.TypeFreeBubbleController
@@ -79,43 +83,53 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            TypeFreeTheme(themePreference = settings.themePreference) {
-                val currentTab by selectedTabState
-                val currentKeyboardSubTab by keyboardSubTabState
-                val currentVoiceAiSubTab by voiceAiSubTabState
-
-                TypeFreeMainScaffold(
-                    repository = repository,
-                    aiEngine = aiEngine,
-                    selectedTab = currentTab,
-                    keyboardSubTab = currentKeyboardSubTab,
-                    voiceAiSubTab = currentVoiceAiSubTab,
-                    onSelectTab = { newTab ->
-                        selectedTabState.intValue = newTab.coerceIn(
-                            AppDestinations.TAB_HOME,
-                            AppDestinations.TAB_GENERAL
-                        )
-                    },
-                    onNavigateToVoiceAiSubTab = { subTab ->
-                        voiceAiSubTabState.intValue = subTab.coerceIn(
-                            AppDestinations.SUBTAB_VOICE_MAIN,
-                            AppDestinations.SUBTAB_VOICE_API
-                        )
-                        selectedTabState.intValue = AppDestinations.TAB_VOICE_AI
-                    },
-                    onKeyboardSubTabChanged = { subTab ->
-                        keyboardSubTabState.intValue = subTab.coerceIn(
-                            AppDestinations.SUBTAB_KB_SCHEME,
-                            AppDestinations.SUBTAB_KB_DICT
-                        )
-                    },
-                    onVoiceAiSubTabChanged = { subTab ->
-                        voiceAiSubTabState.intValue = subTab.coerceIn(
-                            AppDestinations.SUBTAB_VOICE_MAIN,
-                            AppDestinations.SUBTAB_VOICE_API
-                        )
-                    }
+            val baseDensity = LocalDensity.current
+            val clampedAppDensity = remember(baseDensity.density, baseDensity.fontScale) {
+                Density(
+                    density = baseDensity.density,
+                    fontScale = baseDensity.fontScale.coerceIn(0.85f, 1.15f)
                 )
+            }
+
+            CompositionLocalProvider(LocalDensity provides clampedAppDensity) {
+                TypeFreeTheme(themePreference = settings.themePreference) {
+                    val currentTab by selectedTabState
+                    val currentKeyboardSubTab by keyboardSubTabState
+                    val currentVoiceAiSubTab by voiceAiSubTabState
+
+                    TypeFreeMainScaffold(
+                        repository = repository,
+                        aiEngine = aiEngine,
+                        selectedTab = currentTab,
+                        keyboardSubTab = currentKeyboardSubTab,
+                        voiceAiSubTab = currentVoiceAiSubTab,
+                        onSelectTab = { newTab ->
+                            selectedTabState.intValue = newTab.coerceIn(
+                                AppDestinations.TAB_HOME,
+                                AppDestinations.TAB_GENERAL
+                            )
+                        },
+                        onNavigateToVoiceAiSubTab = { subTab ->
+                            voiceAiSubTabState.intValue = subTab.coerceIn(
+                                AppDestinations.SUBTAB_VOICE_MAIN,
+                                AppDestinations.SUBTAB_VOICE_API
+                            )
+                            selectedTabState.intValue = AppDestinations.TAB_VOICE_AI
+                        },
+                        onKeyboardSubTabChanged = { subTab ->
+                            keyboardSubTabState.intValue = subTab.coerceIn(
+                                AppDestinations.SUBTAB_KB_SCHEME,
+                                AppDestinations.SUBTAB_KB_DICT
+                            )
+                        },
+                        onVoiceAiSubTabChanged = { subTab ->
+                            voiceAiSubTabState.intValue = subTab.coerceIn(
+                                AppDestinations.SUBTAB_VOICE_MAIN,
+                                AppDestinations.SUBTAB_VOICE_API
+                            )
+                        }
+                    )
+                }
             }
         }
     }
