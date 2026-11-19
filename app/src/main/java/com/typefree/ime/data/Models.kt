@@ -89,6 +89,13 @@ enum class InputScheme(
         defaultFixedOrder = false,
         rimeSchemaId = "rime_ice"
     ),
+    RIME_T9_PINYIN(
+        label = "九键拼音（雾凇 T9）",
+        shortBadge = "九",
+        usesRime = true,
+        defaultFixedOrder = false,
+        rimeSchemaId = "t9"
+    ),
     RIME_DOUBLE_PINYIN_FLYPY(
         label = "小鹤双拼（整句）",
         shortBadge = "拼",

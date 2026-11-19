@@ -98,6 +98,8 @@ class RimeDataManager(
     var activeSymbolTrie: SymbolTrie = SymbolTrie.defaultXiaohe()
         private set
 
+    private val deployLock = Any()
+
     @Volatile
     var activeReverseLookupMap: Map<String, List<String>> = emptyMap()
         private set
@@ -126,6 +128,7 @@ class RimeDataManager(
         }
         val builtinSchemas = setOf(
             "rime_ice.schema.yaml",
+            "t9.schema.yaml",
             "double_pinyin_flypy.schema.yaml",
             "flypy.schema.yaml"
         )
@@ -143,7 +146,7 @@ class RimeDataManager(
             if (!parsedId.isNullOrBlank()) return parsedId
         }
         val activeId = activeSchemaProfile.schemaId
-        if (activeId.isNotBlank() && activeId != "rime_ice" && activeId != "double_pinyin_flypy") {
+        if (activeId.isNotBlank() && activeId != "rime_ice" && activeId != "t9" && activeId != "double_pinyin_flypy") {
             return activeId
         }
         return if (hasXiaoheSchemaInstalled()) "flypy" else "custom"
@@ -157,16 +160,24 @@ class RimeDataManager(
         }
     }
 
-    fun activateEnhancedSchemeSync(scheme: InputScheme): Boolean {
-        if (!isSchemeHandledByEnhancedEngine(scheme)) return false
+    fun activateEnhancedSchemeSync(scheme: InputScheme): Boolean = synchronized(deployLock) {
+        if (!isSchemeHandledByEnhancedEngine(scheme)) return@synchronized false
         val targetSchemaId = when (scheme) {
             InputScheme.FLYPY_TABLE -> "flypy"
             InputScheme.RIME_CUSTOM -> resolveCustomSchemaId()
-            else -> return false
+            else -> return@synchronized false
+        }
+        if (targetSchemaId == "flypy") {
+            ensurePrecompiledXiaoheBinariesPresent()
+        }
+        var selected = rimeBridge.selectSchema(targetSchemaId)
+        if (!selected && rimeBridge.isNativeLoaded) {
+            ensureDefaultCustomYaml(sharedDir, primarySchemaId = targetSchemaId)
+            rimeBridge.initialize(sharedDir.absolutePath, userDir.absolutePath)
+            selected = rimeBridge.deploy(targetSchemaId)
         }
         refreshEnhancedMetadataFromDir(sharedDir, targetSchemaId)
-        rimeBridge.selectSchema(targetSchemaId)
-        return true
+        selected
     }
 
     data class InstalledCustomSchema(
@@ -178,6 +189,7 @@ class RimeDataManager(
         if (!sharedDir.isDirectory) return emptyList()
         val builtinSchemas = setOf(
             "rime_ice.schema.yaml",
+            "t9.schema.yaml",
             "double_pinyin_flypy.schema.yaml",
             "flypy.schema.yaml"
         )
@@ -203,21 +215,21 @@ class RimeDataManager(
         return out
     }
 
-    fun selectCustomSchemaSync(schemaId: String): Boolean {
+    fun selectCustomSchemaSync(schemaId: String): Boolean = synchronized(deployLock) {
         val cleanId = schemaId.trim()
-        if (cleanId.isEmpty()) return false
+        if (cleanId.isEmpty()) return@synchronized false
         val schemaFile = File(sharedDir, "$cleanId.schema.yaml")
-        if (!schemaFile.isFile) return false
+        if (!schemaFile.isFile) return@synchronized false
         val (_, parsedName) = parseSchemaMetadata(schemaFile)
         val presetName = PresetSchemaCatalog.BUILT_IN_PRESETS.firstOrNull { it.id == cleanId }?.displayName
         val displayName = parsedName?.takeIf { it.isNotBlank() } ?: presetName ?: cleanId
         File(sharedDir, CUSTOM_SCHEMA_ID_FILENAME).writeText(cleanId, Charsets.UTF_8)
         File(sharedDir, CUSTOM_SCHEMA_META_FILENAME).writeText(displayName, Charsets.UTF_8)
         ensureDefaultCustomYaml(sharedDir, primarySchemaId = cleanId)
-        refreshEnhancedMetadataFromDir(sharedDir, cleanId)
         rimeBridge.selectSchema(cleanId)
+        refreshEnhancedMetadataFromDir(sharedDir, cleanId)
         _metadataVersion.value++
-        return true
+        true
     }
 
     fun readCustomSchemaName(): String? {
@@ -230,14 +242,15 @@ class RimeDataManager(
      * Extracts built-in `iDvel/rime-ice` schemas and dictionaries into [sharedDir]
      * and runs `librime` deployment (`RimeStartMaintenance` + `build/<schema>.bin` generation).
      */
-    fun deployDefaultSync(initialScheme: InputScheme = InputScheme.RIME_PINYIN): RimeDeploymentState {
+    fun deployDefaultSync(initialScheme: InputScheme = InputScheme.RIME_PINYIN): RimeDeploymentState = synchronized(deployLock) {
         val t0 = System.currentTimeMillis()
-        return try {
+        try {
             _deploymentState.value = RimeDeploymentState.Deploying(0.15f, "正在准备 Rime 共享词库目录…")
             sharedDir.mkdirs()
             userDir.mkdirs()
 
             extractBuiltInAssetsIfNeeded(forceOverwrite = false)
+            ensurePrecompiledXiaoheBinariesPresent()
 
             _deploymentState.value = RimeDeploymentState.Deploying(0.55f, "正在编译 librime 音节棱镜与词典表…")
             val hasXiaoheBundle = hasXiaoheSchemaInstalled()
@@ -534,8 +547,9 @@ class RimeDataManager(
         }
         File(sharedDir, "lua").deleteRecursively()
         File(sharedDir, "opencc").deleteRecursively()
-        extractBuiltInAssetsIfNeeded(forceOverwrite = true)
         invalidateCompiledTableFiles()
+        extractBuiltInAssetsIfNeeded(forceOverwrite = true)
+        ensurePrecompiledXiaoheBinariesPresent()
         return deployDefaultSync(scheme)
     }
 
@@ -546,14 +560,60 @@ class RimeDataManager(
     }
 
     private fun invalidateCompiledTableFiles() {
-        listOf(sharedDir, userDir).forEach { root ->
-            val buildDir = File(root, "build")
-            if (buildDir.exists()) {
-                buildDir.listFiles().orEmpty().forEach { f ->
-                    if (f.name.endsWith(".bin") || f.name.endsWith(".yaml")) {
-                        runCatching { f.delete() }
+        // Never wipe precompiled binaries stored in `sharedDir/build/` (e.g. official Xiaohe `flypy.table.bin`
+        // that has no `.dict.yaml` source). Only invalidate compiled outputs in `userDir/build/` and then
+        // re-mirror any precompiled `sharedDir/build/*.bin` back into `userDir/build/`.
+        val userBuildDir = File(userDir, "build")
+        if (userBuildDir.exists()) {
+            userBuildDir.listFiles().orEmpty().forEach { f ->
+                if (f.name.endsWith(".bin") || f.name.endsWith(".yaml")) {
+                    runCatching { f.delete() }
+                }
+            }
+        }
+        val sharedBuildDir = File(sharedDir, "build")
+        if (sharedBuildDir.exists()) {
+            sharedBuildDir.listFiles().orEmpty().forEach { f ->
+                if (f.name.endsWith(".yaml")) {
+                    runCatching { f.delete() }
+                }
+            }
+            syncPrecompiledBinariesToUserBuild(sharedBuildDir)
+        }
+    }
+
+    /**
+     * Self-healing guard for precompiled Xiaohe bundles (`flypy.table.bin` without `flypy.dict.yaml`):
+     * guarantees `shared/build/flypy.{table,prism,reverse}.bin` and `user/build/flypy.*.bin` exist
+     * even after full `rime_ice` downloads, schema imports, or interrupted upgrades.
+     */
+    private fun ensurePrecompiledXiaoheBinariesPresent() {
+        if (!File(sharedDir, "flypy.schema.yaml").exists()) return
+        if (File(sharedDir, "flypy.dict.yaml").exists()) return
+        val precompiledNames = listOf(
+            "build/flypy.table.bin",
+            "build/flypy.prism.bin",
+            "build/flypy.reverse.bin"
+        )
+        val ctx = appContext
+        if (ctx != null) {
+            for (rel in precompiledNames) {
+                val target = File(sharedDir, rel)
+                if (!target.exists() || target.length() == 0L) {
+                    target.parentFile?.mkdirs()
+                    runCatching {
+                        ctx.assets.open("rime/$rel").use { input ->
+                            FileOutputStream(target).use { output -> input.copyTo(output) }
+                        }
                     }
                 }
+            }
+        }
+        val sharedTable = File(sharedDir, "build/flypy.table.bin")
+        val userTable = File(userDir, "build/flypy.table.bin")
+        if (sharedTable.isFile && sharedTable.length() > 0L) {
+            if (!userTable.isFile || userTable.length() != sharedTable.length()) {
+                syncPrecompiledBinariesToUserBuild(File(sharedDir, "build"))
             }
         }
     }
@@ -963,7 +1023,7 @@ class RimeDataManager(
         if (!primarySchemaId.isNullOrBlank() && primarySchemaId in discoveredIds) {
             orderedIds.add(primarySchemaId)
         }
-        for (builtinId in listOf("rime_ice", "double_pinyin_flypy", "flypy")) {
+        for (builtinId in listOf("rime_ice", "t9", "double_pinyin_flypy", "flypy")) {
             if (builtinId in discoveredIds) {
                 orderedIds.add(builtinId)
             }
@@ -1144,7 +1204,7 @@ class RimeDataManager(
         const val CUSTOM_SCHEMA_META_FILENAME = ".custom_schema_name"
         const val CUSTOM_SCHEMA_ID_FILENAME = ".custom_schema_id"
         const val BUILTIN_ASSETS_VERSION_FILENAME = ".builtin_assets_version"
-        const val BUILTIN_ASSETS_VERSION = "3.7.0-r1"
+        const val BUILTIN_ASSETS_VERSION = "3.8.0-r2"
 
         val OPENCC_ASSET_FILES = listOf(
             "opencc/s2tw.json",
@@ -1173,6 +1233,7 @@ class RimeDataManager(
         val BUILTIN_ASSET_FILES = listOf(
             "default.yaml",
             "rime_ice.schema.yaml",
+            "t9.schema.yaml",
             "double_pinyin_flypy.schema.yaml",
             "rime_ice.dict.yaml",
             CHAR_DICT_RELATIVE_PATH,

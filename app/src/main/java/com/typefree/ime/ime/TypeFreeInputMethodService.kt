@@ -192,7 +192,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 val dm = TypeFreeApp.instance.rimeDataManager
                 val schemeChanged = lastScheme != currentSettings.inputScheme
                 TypeFreeApp.instance.rimeInputEngine.setInputScheme(currentSettings.inputScheme)
-                if (dm.isSchemeHandledByEnhancedEngine(currentSettings.inputScheme)) {
+                if (dm.isReady && dm.isSchemeHandledByEnhancedEngine(currentSettings.inputScheme)) {
                     val expectedSchemaId = if (currentSettings.inputScheme == InputScheme.FLYPY_TABLE) {
                         "flypy"
                     } else {
@@ -738,6 +738,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             is ImeUiAction.CommaOrPeriodKey -> typingController.handleCommaOrPeriodKey(action.isComma)
             ImeUiAction.ToggleFlypyLanguageMode -> typingController.toggleFlypyLanguageMode()
             is ImeUiAction.SelectFlypyCandidate -> typingController.selectFlypyCandidate(action.index)
+            is ImeUiAction.SelectT9Syllable -> typingController.selectT9Syllable(action.syllable)
             ImeUiAction.ClearFlypyComposing -> typingController.clearFlypyComposing()
             ImeUiAction.FlushFlypyComposing -> typingController.flushFlypyComposing()
             ImeUiAction.ToggleFlypyCandidateSheet -> typingController.toggleFlypyCandidateSheet()

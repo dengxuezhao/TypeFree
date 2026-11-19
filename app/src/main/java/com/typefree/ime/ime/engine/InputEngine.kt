@@ -11,7 +11,8 @@ data class EngineState(
     val hasMore: Boolean = false,
     val isComposing: Boolean = false,
     val isOrqDateActive: Boolean = false,
-    val orqDateOffsetDays: Int = 0
+    val orqDateOffsetDays: Int = 0,
+    val t9Syllables: List<String> = emptyList()
 )
 
 sealed interface KeyInput {

@@ -138,6 +138,7 @@ data class ImeUiState(
     val streamingPartialPreview: String = "",
     val liveWriteStatus: LiveWriteUiStatus = LiveWriteUiStatus.INACTIVE,
     val preeditDisplay: String = "",
+    val t9Syllables: List<String> = emptyList(),
     val hasMoreCandidates: Boolean = false,
     val activeInputScheme: InputScheme = InputScheme.FLYPY_TABLE,
     val codetableEnhancerActive: Boolean = false,

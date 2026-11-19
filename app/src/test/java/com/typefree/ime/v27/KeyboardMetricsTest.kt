@@ -157,10 +157,12 @@ class KeyboardMetricsTest {
         assertEquals(-2, restoredExplicitNull.keyboardHeightLevel)
 
         // Input scheme cycle in tool panel
-        assertEquals(InputScheme.RIME_DOUBLE_PINYIN_FLYPY, nextCycledInputScheme(InputScheme.RIME_PINYIN))
+        assertEquals(InputScheme.RIME_T9_PINYIN, nextCycledInputScheme(InputScheme.RIME_PINYIN))
+        assertEquals(InputScheme.RIME_DOUBLE_PINYIN_FLYPY, nextCycledInputScheme(InputScheme.RIME_T9_PINYIN))
         assertEquals(InputScheme.FLYPY_TABLE, nextCycledInputScheme(InputScheme.RIME_DOUBLE_PINYIN_FLYPY))
         assertEquals(InputScheme.RIME_PINYIN, nextCycledInputScheme(InputScheme.FLYPY_TABLE))
         assertEquals("雾凇全拼", shortInputSchemeLabel(InputScheme.RIME_PINYIN))
+        assertEquals("九键拼音", shortInputSchemeLabel(InputScheme.RIME_T9_PINYIN))
         assertEquals("小鹤双拼", shortInputSchemeLabel(InputScheme.RIME_DOUBLE_PINYIN_FLYPY))
         assertEquals("小鹤音形", shortInputSchemeLabel(InputScheme.FLYPY_TABLE))
     }

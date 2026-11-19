@@ -650,6 +650,7 @@ private fun ToolPanelTile(
 
 fun shortInputSchemeLabel(scheme: InputScheme): String = when (scheme) {
     InputScheme.RIME_PINYIN -> "雾凇全拼"
+    InputScheme.RIME_T9_PINYIN -> "九键拼音"
     InputScheme.RIME_DOUBLE_PINYIN_FLYPY -> "小鹤双拼"
     InputScheme.FLYPY_TABLE -> "小鹤音形"
     InputScheme.RIME_CUSTOM -> "自定义方案"
@@ -659,7 +660,8 @@ fun nextCycledInputScheme(
     current: InputScheme,
     hasCustomSchema: Boolean = false
 ): InputScheme = when (current) {
-    InputScheme.RIME_PINYIN -> InputScheme.RIME_DOUBLE_PINYIN_FLYPY
+    InputScheme.RIME_PINYIN -> InputScheme.RIME_T9_PINYIN
+    InputScheme.RIME_T9_PINYIN -> InputScheme.RIME_DOUBLE_PINYIN_FLYPY
     InputScheme.RIME_DOUBLE_PINYIN_FLYPY -> InputScheme.FLYPY_TABLE
     InputScheme.FLYPY_TABLE -> if (hasCustomSchema) InputScheme.RIME_CUSTOM else InputScheme.RIME_PINYIN
     InputScheme.RIME_CUSTOM -> InputScheme.RIME_PINYIN

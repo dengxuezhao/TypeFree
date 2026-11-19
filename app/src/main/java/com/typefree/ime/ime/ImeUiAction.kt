@@ -104,6 +104,7 @@ sealed interface ImeUiAction {
     data class CommaOrPeriodKey(val isComma: Boolean) : ImeUiAction
     data object ToggleFlypyLanguageMode : ImeUiAction
     data class SelectFlypyCandidate(val index: Int) : ImeUiAction
+    data class SelectT9Syllable(val syllable: String) : ImeUiAction
     data object ClearFlypyComposing : ImeUiAction
     data object FlushFlypyComposing : ImeUiAction
     data object ToggleFlypyCandidateSheet : ImeUiAction

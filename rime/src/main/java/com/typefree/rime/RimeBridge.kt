@@ -114,9 +114,15 @@ class RimeBridge : RimeSessionClient {
     @Synchronized
     override fun selectSchema(schemaId: String): Boolean {
         if (schemaId.isBlank()) return false
-        activeSchemaId = schemaId
-        if (!nativeLibraryLoaded) return false
-        return runCatching { nativeSelectSchema(schemaId) }.getOrDefault(false)
+        if (!nativeLibraryLoaded) {
+            activeSchemaId = schemaId
+            return false
+        }
+        val ok = runCatching { nativeSelectSchema(schemaId) }.getOrDefault(false)
+        if (ok) {
+            activeSchemaId = schemaId
+        }
+        return ok
     }
 
     @Synchronized

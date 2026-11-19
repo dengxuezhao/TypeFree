@@ -1,10 +1,11 @@
 # Rime default settings for TypeFree v2.7
 # encoding: utf-8
 
-config_version: "2026-11-18"
+config_version: "2026-11-19"
 
 schema_list:
   - schema: rime_ice
+  - schema: t9
   - schema: double_pinyin_flypy
   - schema: flypy
 

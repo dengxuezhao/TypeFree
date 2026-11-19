@@ -249,6 +249,7 @@ class TypingController(
             prev.copy(
                 flypyComposingCode = code,
                 preeditDisplay = preedit,
+                t9Syllables = engineState.t9Syllables,
                 flypyCandidates = cands,
                 hasMoreCandidates = engineState.hasMore,
                 isOrqDateActive = engineState.isOrqDateActive,
@@ -655,6 +656,7 @@ class TypingController(
                 isFlypyChineseMode = nextChinese,
                 flypyComposingCode = "",
                 preeditDisplay = "",
+                t9Syllables = emptyList(),
                 flypyCandidates = emptyList(),
                 hasMoreCandidates = false,
                 isOrqDateActive = false,
@@ -739,6 +741,16 @@ class TypingController(
         predictionCoordinator.onUserKeyPressed()
         host.performKeyFeedback(strong = false)
         val result = activeEngine.select(index)
+        handleEngineResult(result)
+    }
+
+    fun selectT9Syllable(syllable: String) {
+        if (syllable.isBlank()) return
+        val rime = rimeInputEngine as? com.typefree.ime.ime.engine.RimeInputEngine ?: return
+        if (activeEngine !== rime) return
+        predictionCoordinator.onUserKeyPressed()
+        host.performKeyFeedback(strong = false)
+        val result = rime.lockT9Syllable(syllable)
         handleEngineResult(result)
     }
 

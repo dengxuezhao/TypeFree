@@ -1,0 +1,100 @@
+# Rime schema - 雾凇九宫格拼音 (TypeFree T9, based on iDvel/rime-ice)
+# encoding: utf-8
+
+schema:
+  schema_id: t9
+  name: 九键拼音
+  version: "1.0.0"
+  author:
+    - Dvel (rime-ice)
+    - TypeFree
+  description: |
+    雾凇拼音九宫格方案 (T9)，复用 rime_ice 词库并同时支持未锁定数字 (2-9) 与左侧点选锁定拼音音节 (a-z) 混合整句输入。
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中, Ａ ]
+  - name: ascii_punct
+    reset: 0
+    states: [ ¥, $ ]
+  - name: traditionalization
+    reset: 0
+    states: [ 简, 繁 ]
+
+engine:
+  processors:
+    - predictor
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - predict_translator
+    - punct_translator
+    - script_translator
+  filters:
+    - uniquifier
+
+predictor:
+  db: predict.db
+  max_candidates: 8
+  max_iterations: 1
+
+translator:
+  dictionary: rime_ice
+  prism: t9
+  enable_user_dict: true
+  enable_word_completion: true
+  enable_completion: true
+  enable_sentence: true
+  max_sentences: 1
+  initial_quality: 1.2
+  spelling_hints: 8
+  preedit_format:
+    - xform/([jqxy])v/$1u/
+    - xform/([nl])v/$1v/
+    - xform/([nl])ue/$1ve/
+  comment_format:
+    - xform/([jqxy])v/$1u/
+    - xform/([nl])ue/$1ve/
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcba23456789'
+  initials: zyxwvutsrqponmlkjihgfedcba23456789
+  delimiter: " '"
+  algebra:
+    - erase/^hm$/
+    - erase/^m$/
+    - erase/^n$/
+    - erase/^ng$/
+    - derive/^([nl])ve$/$1ue/
+    - derive/^([jqxy])u/$1v/
+    - derive/^([nl])ue/$1ve/
+    - derive/^([jqxy])v/$1u/
+    - abbrev/^([a-z]).+$/$1/
+    - abbrev/^([zcs]h).+$/$1/
+    # Preserve lowercase pinyin syllables alongside T9 2-9 digits so locked left-rail syllables
+    # (e.g. "ni'426") compose seamlessly with unlocked trailing digits in a single librime prism.
+    - derive/^([a-z]+)$/\U$1/
+    - xlit/abcdefghijklmnopqrstuvwxyz/22233344455566677778889999/
+    - xlit/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/
+
+punctuator:
+  import_preset: default
+
+key_binder:
+  import_preset: default
+
+recognizer:
+  import_preset: default

@@ -96,6 +96,7 @@ fun resolveSchemeIsolationKind(
             }
         }
         InputScheme.RIME_PINYIN,
+        InputScheme.RIME_T9_PINYIN,
         InputScheme.RIME_DOUBLE_PINYIN_FLYPY -> SchemeIsolationKind.PINYIN_OR_DOUBLE_PINYIN
     }
 }
@@ -133,9 +134,10 @@ fun KeyboardStudioScreen(
         when (settings.inputScheme) {
             InputScheme.FLYPY_TABLE -> SchemaArchetype.FIXED_YINXING
             InputScheme.RIME_PINYIN,
+            InputScheme.RIME_T9_PINYIN,
             InputScheme.RIME_DOUBLE_PINYIN_FLYPY -> SchemaArchetype.SENTENCE_PINYIN
             InputScheme.RIME_CUSTOM -> {
-                if (activeProfile.schemaId != "rime_ice" && activeProfile.schemaId != "double_pinyin_flypy") {
+                if (activeProfile.schemaId != "rime_ice" && activeProfile.schemaId != "t9" && activeProfile.schemaId != "double_pinyin_flypy") {
                     activeProfile.archetype
                 } else if (hasCustomImported) {
                     SchemaArchetype.FIXED_SHAPECODE
@@ -397,6 +399,7 @@ private fun KeyboardSchemeAndLayoutPane(
                 ) {
                     val builtinItems = listOf(
                         InputScheme.RIME_PINYIN to "全拼",
+                        InputScheme.RIME_T9_PINYIN to "九键拼音",
                         InputScheme.RIME_DOUBLE_PINYIN_FLYPY to "小鹤双拼",
                         InputScheme.FLYPY_TABLE to "小鹤音形"
                     )

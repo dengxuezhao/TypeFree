@@ -465,7 +465,9 @@ fun KeyboardScreen(
                                 }
 
                                 uiState.tabMode == KeyboardTabMode.QWERTY -> {
-                                    BuiltInQwertyKeyboard(
+                                    if (uiState.activeInputScheme == InputScheme.RIME_T9_PINYIN && uiState.isFlypyChineseMode) {
+                                        BuiltInT9KeyboardHost(uiState, settings.qwertyKeyPopupPreview, onAction)
+                                    } else BuiltInQwertyKeyboard(
                                         enterActionInfo = uiState.enterActionInfo,
                                         isFlypyChineseMode = uiState.isFlypyChineseMode,
                                         flypyComposingCode = uiState.flypyComposingCode,

@@ -973,13 +973,15 @@ private fun AppearanceAndPreferencesPane(
                     val schemeOptions = remember {
                         listOf(
                             InputScheme.RIME_PINYIN to "全拼",
+                            InputScheme.RIME_T9_PINYIN to "九键拼音",
                             InputScheme.RIME_DOUBLE_PINYIN_FLYPY to "小鹤双拼",
                             InputScheme.FLYPY_TABLE to "小鹤音形"
                         )
                     }
-                    Row(
+                    FlowRow(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         schemeOptions.forEach { (scheme, shortTitle) ->
                             val selected = settings.inputScheme == scheme
