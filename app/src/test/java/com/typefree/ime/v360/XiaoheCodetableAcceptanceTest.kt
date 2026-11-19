@@ -616,10 +616,12 @@ class XiaoheCodetableAcceptanceTest {
         try {
             val sharedDir = File(tempRoot, "shared")
             val userDir = File(tempRoot, "user")
+            val hasPlainDict = File(xiaoheDir, "flypy.dict.yaml").exists()
             val zipBytes = ByteArrayOutputStream().use { baos ->
                 ZipOutputStream(baos, StandardCharsets.UTF_8).use { zos ->
-                    xiaoheDir.listFiles().orEmpty().filter { it.isFile }.forEach { f ->
-                        zos.putNextEntry(ZipEntry(f.name))
+                    xiaoheDir.walkTopDown().filter { it.isFile }.forEach { f ->
+                        val rel = f.relativeTo(xiaoheDir).invariantSeparatorsPath
+                        zos.putNextEntry(ZipEntry(rel))
                         zos.write(f.readBytes())
                         zos.closeEntry()
                     }
@@ -632,9 +634,14 @@ class XiaoheCodetableAcceptanceTest {
             val result = dm.importEnhancedSchemaPackageSync(ByteArrayInputStream(zipBytes))
 
             assertEquals("flypy", result.schemaId)
-            assertEquals(ImportMode.PLAIN_DICT_COMPILE, result.importMode)
+            assertEquals(
+                if (hasPlainDict) ImportMode.PLAIN_DICT_COMPILE else ImportMode.PRECOMPILED_BIN,
+                result.importMode
+            )
             assertEquals(SchemaArchetype.FIXED_YINXING, result.profile.archetype)
-            assertTrue(result.briefIndex.populatedBrief2Slots > 500)
+            if (hasPlainDict) {
+                assertTrue(result.briefIndex.populatedBrief2Slots > 500)
+            }
             assertTrue(dm.activeReverseLookupMap.size > 5_000)
 
             var asyncDeployCount = 0

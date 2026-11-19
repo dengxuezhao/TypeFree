@@ -607,13 +607,38 @@ class RimeDataManager(
                     }
                 },
                 codeProberFactory = { dir, sid ->
+                    val openccSrc = File(sharedDir, "opencc")
+                    val stagedOpencc = File(dir, "opencc")
+                    val copiedOpencc = if (openccSrc.exists() && openccSrc.isDirectory && !stagedOpencc.exists()) {
+                        openccSrc.copyRecursively(stagedOpencc, overwrite = true)
+                        true
+                    } else {
+                        false
+                    }
+                    val sharedDefault = File(sharedDir, "default.yaml")
+                    val stagedDefault = File(dir, "default.yaml")
+                    if (sharedDefault.exists() && !stagedDefault.exists()) {
+                        sharedDefault.copyTo(stagedDefault, overwrite = true)
+                    }
+                    syncPrecompiledBinariesToUserBuild(File(dir, "build"))
                     ensureDefaultCustomYaml(dir, primarySchemaId = sid)
                     rimeBridge.initialize(dir.absolutePath, userDir.absolutePath)
-                    rimeBridge.selectSchema(sid)
+                    if (rimeBridge.isNativeLoaded) {
+                        // Reuse existing build/<sid>.table.bin and auto-upgrade legacy prism v3 -> v5
+                        rimeBridge.deploy(sid)
+                    } else {
+                        rimeBridge.selectSchema(sid)
+                    }
+                    if (copiedOpencc) runCatching { stagedOpencc.deleteRecursively() }
                     batchProber
                 }
             )
             val result = importer.importZip(zipInputStream)
+            if (result.importMode == ImportMode.PRECOMPILED_BIN) {
+                // Remove stale plain-text dict & brief snapshot from earlier installs so librime reuses the imported official table.bin
+                runCatching { File(sharedDir, "${result.schemaId}.dict.yaml").delete() }
+                runCatching { File(sharedDir, "${result.schemaId}.brief.idx").delete() }
+            }
             // Sync imported schema files into active sharedDir without invalidating staging or precompiled build/*.bin
             result.installedDir.walkTopDown().filter { it.isFile }.forEach { src ->
                 val rel = src.relativeTo(result.installedDir).invariantSeparatorsPath
@@ -622,17 +647,18 @@ class RimeDataManager(
                 src.copyTo(dst, overwrite = true)
             }
             ensureDefaultCustomYaml(sharedDir, primarySchemaId = result.schemaId)
-            if (result.importMode == ImportMode.PLAIN_DICT_COMPILE) {
+            if (result.importMode == ImportMode.PRECOMPILED_BIN) {
+                syncPrecompiledBinariesToUserBuild(File(result.installedDir, "build"))
+                rimeBridge.initialize(sharedDir.absolutePath, userDir.absolutePath)
+                if (rimeBridge.isNativeLoaded) {
+                    // Preserves official primary table.bin (`reuse existing table`) while upgrading prism v3 -> v5 & compiling schema YAML
+                    rimeBridge.deploy(result.schemaId)
+                } else {
+                    rimeBridge.selectSchema(result.schemaId)
+                }
+            } else {
                 rimeBridge.initialize(sharedDir.absolutePath, userDir.absolutePath)
                 rimeBridge.deploy(result.schemaId)
-            } else {
-                val sanitizedRootSchema = File(sharedDir, "${result.schemaId}.schema.yaml")
-                val prebuiltSchema = File(sharedDir, "build/${result.schemaId}.schema.yaml")
-                if (sanitizedRootSchema.exists() && prebuiltSchema.exists()) {
-                    sanitizedRootSchema.copyTo(prebuiltSchema, overwrite = true)
-                }
-                rimeBridge.initialize(sharedDir.absolutePath, userDir.absolutePath)
-                rimeBridge.selectSchema(result.schemaId)
             }
             activeSchemaProfile = result.profile.copy(
                 directCommandsEnabled = result.profile.schemaId == "flypy" && result.profile.directCommandsEnabled
@@ -838,16 +864,32 @@ class RimeDataManager(
                         runCatching { built.writeSnapshot(briefSnap) }
                         built
                     }
-                    else -> BriefPrefixIndex.buildFrom702SlotProbing(
-                        prober = object : RimeCodeProber {
-                            override fun probeCandidates(code: String, maxCount: Int): List<String> =
-                                rimeBridge.probeCandidatesForCode(code, maxCount)
+                    else -> {
+                        val okLines = File(dir, "${schemaId}_ok.txt")
+                            .takeIf { it.exists() }
+                            ?.readLines(Charsets.UTF_8)
+                            .orEmpty()
+                            .asSequence()
+                        val probed = BriefPrefixIndex.buildFrom702SlotProbing(
+                            prober = object : RimeCodeProber {
+                                override fun probeCandidates(code: String, maxCount: Int): List<String> =
+                                    rimeBridge.probeCandidatesForCode(code, maxCount)
 
-                            override fun probeBatch(codes: List<String>, maxCount: Int): List<List<String>> =
-                                rimeBridge.probeBatchCandidatesForCodes(codes, maxCount)
-                        },
-                        affixGuardPrefixes = activeSchemaProfile.gt4GuardPrefixes
-                    )
+                                override fun probeBatch(codes: List<String>, maxCount: Int): List<List<String>> =
+                                    rimeBridge.probeBatchCandidatesForCodes(codes, maxCount)
+                            },
+                            topDictLines = topFile.takeIf { it.exists() }
+                                ?.readLines(Charsets.UTF_8).orEmpty().asSequence(),
+                            userDictLines = userFile.takeIf { it.exists() }
+                                ?.readLines(Charsets.UTF_8).orEmpty().asSequence(),
+                            affixGuardPrefixes = activeSchemaProfile.gt4GuardPrefixes,
+                            extraContinuationLines = okLines
+                        )
+                        if (probed.totalBrief1Entries > 0 || probed.totalBrief2Entries > 0) {
+                            runCatching { probed.writeSnapshot(briefSnap) }
+                        }
+                        probed
+                    }
                 }
             }.getOrDefault(BriefPrefixIndex.empty())
         } else {
@@ -976,18 +1018,33 @@ class RimeDataManager(
                 invalidateCompiledTableFiles()
             }
             val allAssets = BUILTIN_ASSET_FILES + XIAOHE_FLAVOR_OPTIONAL_ASSETS
+            var extractedFlypyDictYaml = false
+            var extractedPrecompiledFlypyTable = false
             for (assetName in allAssets) {
                 val target = File(sharedDir, assetName)
                 target.parentFile?.mkdirs()
-                if (effectiveForce || !target.exists() || target.length() == 0L) {
-                    runCatching {
-                        ctx.assets.open("rime/$assetName").use { input ->
+                val shouldCopy = effectiveForce || !target.exists() || target.length() == 0L
+                val existsInApk = runCatching {
+                    ctx.assets.open("rime/$assetName").use { input ->
+                        if (shouldCopy) {
                             FileOutputStream(target).use { output ->
                                 input.copyTo(output)
                             }
                         }
                     }
+                    true
+                }.getOrDefault(false)
+                if (existsInApk) {
+                    if (assetName == "flypy.dict.yaml") extractedFlypyDictYaml = true
+                    if (assetName == "build/flypy.table.bin") extractedPrecompiledFlypyTable = true
                 }
+            }
+            if (extractedPrecompiledFlypyTable && !extractedFlypyDictYaml) {
+                // Switching from a plain-text Xiaohe bundle to an official precompiled table.bin bundle:
+                // delete stale flypy.dict.yaml & brief.idx and mirror build/flypy.*.bin into user/build/ so librime reuses the official table.
+                runCatching { File(sharedDir, "flypy.dict.yaml").delete() }
+                runCatching { File(sharedDir, "flypy.brief.idx").delete() }
+                syncPrecompiledBinariesToUserBuild(File(sharedDir, "build"))
             }
             File(sharedDir, BUILTIN_ASSETS_VERSION_FILENAME).writeText(BUILTIN_ASSETS_VERSION, Charsets.UTF_8)
             return
@@ -1026,9 +1083,23 @@ class RimeDataManager(
                         src.copyTo(dst, overwrite = true)
                     }
                 }
+                if (File(xiaoheDir, "build/flypy.table.bin").exists() && !File(xiaoheDir, "flypy.dict.yaml").exists()) {
+                    runCatching { File(sharedDir, "flypy.dict.yaml").delete() }
+                    syncPrecompiledBinariesToUserBuild(File(sharedDir, "build"))
+                }
             }
         }
         File(sharedDir, BUILTIN_ASSETS_VERSION_FILENAME).writeText(BUILTIN_ASSETS_VERSION, Charsets.UTF_8)
+    }
+
+    private fun syncPrecompiledBinariesToUserBuild(sourceBuildDir: File) {
+        if (!sourceBuildDir.isDirectory) return
+        val userBuildDir = File(userDir, "build").apply { mkdirs() }
+        sourceBuildDir.listFiles().orEmpty()
+            .filter { it.isFile && it.name.endsWith(".bin") }
+            .forEach { src ->
+                runCatching { src.copyTo(File(userBuildDir, src.name), overwrite = true) }
+            }
     }
 
     private fun countDictEntriesInFile(file: File): Int {
@@ -1073,7 +1144,7 @@ class RimeDataManager(
         const val CUSTOM_SCHEMA_META_FILENAME = ".custom_schema_name"
         const val CUSTOM_SCHEMA_ID_FILENAME = ".custom_schema_id"
         const val BUILTIN_ASSETS_VERSION_FILENAME = ".builtin_assets_version"
-        const val BUILTIN_ASSETS_VERSION = "3.6.0-r2"
+        const val BUILTIN_ASSETS_VERSION = "3.7.0-r1"
 
         val OPENCC_ASSET_FILES = listOf(
             "opencc/s2tw.json",
@@ -1119,7 +1190,10 @@ class RimeDataManager(
             "flypydz.schema.yaml",
             "flypydz.dict.yaml",
             "quick_symbols.yaml",
-            "typefree.toml"
+            "typefree.toml",
+            "build/flypy.table.bin",
+            "build/flypy.prism.bin",
+            "build/flypy.reverse.bin"
         )
 
         /**

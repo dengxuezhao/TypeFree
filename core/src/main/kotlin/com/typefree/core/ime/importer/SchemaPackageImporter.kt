@@ -160,11 +160,22 @@ class SchemaPackageImporter(
             for (userDictName in updatedMeta.customPhraseUserDicts) {
                 val txtFile = File(realRoot, "$userDictName.txt")
                 if (!txtFile.exists()) {
-                    txtFile.writeText(
-                        "# Rime table\n# coding: utf-8\n#@/db_name\t$userDictName\n#@/db_type\tstabledb\n",
-                        StandardCharsets.UTF_8
-                    )
-                    generatedPlaceholders.add(txtFile.name)
+                    // Official Xiaohe packages ship `flypy_full全码字.txt` while schema references `user_dict: flypy_full`
+                    val suffixedMatch = realRoot.listFiles().orEmpty().firstOrNull { candidate ->
+                        candidate.isFile &&
+                            candidate.name.startsWith(userDictName) &&
+                            candidate.name.endsWith(".txt") &&
+                            candidate.name != txtFile.name
+                    }
+                    if (suffixedMatch != null) {
+                        suffixedMatch.copyTo(txtFile, overwrite = true)
+                    } else {
+                        txtFile.writeText(
+                            "# Rime table\n# coding: utf-8\n#@/db_name\t$userDictName\n#@/db_type\tstabledb\n",
+                            StandardCharsets.UTF_8
+                        )
+                        generatedPlaceholders.add(txtFile.name)
+                    }
                 }
             }
 
@@ -283,6 +294,12 @@ class SchemaPackageImporter(
                     .orEmpty()
                     .asSequence()
 
+                val okLines = File(targetDir, "${schemaId}_ok.txt")
+                    .takeIf { it.exists() }
+                    ?.readLines(StandardCharsets.UTF_8)
+                    .orEmpty()
+                    .asSequence()
+
                 val t0 = System.nanoTime()
                 briefIndex = if (prober != null) {
                     BriefPrefixIndex.buildFrom702SlotProbing(
@@ -291,7 +308,8 @@ class SchemaPackageImporter(
                         userDictLines = userLines,
                         affixGuardPrefixes = updatedMeta.affixPrefixes.ifEmpty {
                             if (schemaId == "flypy") setOf("ok", "os") else emptySet()
-                        }
+                        },
+                        extraContinuationLines = okLines
                     )
                 } else {
                     BriefPrefixIndex.empty()

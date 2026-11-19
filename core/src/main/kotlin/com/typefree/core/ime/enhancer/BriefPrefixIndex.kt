@@ -380,7 +380,8 @@ class BriefPrefixIndex(
             topDictLines: Sequence<String> = emptySequence(),
             userDictLines: Sequence<String> = emptySequence(),
             affixGuardPrefixes: Set<String> = setOf("ok", "os"),
-            threeCodeDeadEnds: Set<String>? = null
+            threeCodeDeadEnds: Set<String>? = null,
+            extraContinuationLines: Sequence<String> = emptySequence()
         ): BriefPrefixIndex {
             val b1 = Array(26) { ArrayList<String>(3) }
             val b2 = Array(676) { ArrayList<String>(3) }
@@ -448,12 +449,54 @@ class BriefPrefixIndex(
                 .filter { it.length == 2 && it[0] in 'a'..'z' && it[1] in 'a'..'z' }
                 .toSet()
 
+            val gt4Raw = HashSet<Int>(256)
+            val naturalMap = HashMap<String, MutableList<NaturalContinuation>>(4096)
+            var inYamlHeader = false
+            for (rawLine in extraContinuationLines) {
+                val trimmed = rawLine.trim()
+                if (trimmed == "---") {
+                    inYamlHeader = true
+                    continue
+                }
+                if (inYamlHeader) {
+                    if (trimmed == "...") inYamlHeader = false
+                    continue
+                }
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) continue
+                val tab1 = rawLine.indexOf('\t')
+                if (tab1 <= 0 || tab1 >= rawLine.length - 1) continue
+                val word = rawLine.substring(0, tab1).trim()
+                val rest = rawLine.substring(tab1 + 1)
+                val tab2 = rest.indexOf('\t')
+                val code = (if (tab2 >= 0) rest.substring(0, tab2) else rest).trim()
+                if (code.length < 3 || word.isEmpty() || word.contains('$') || word.contains('{')) continue
+                if (!code.all { it in 'a'..'z' }) continue
+                if (code.length >= 5) {
+                    gt4Raw.add(pack4(code[0], code[1], code[2], code[3]))
+                }
+                val maxPrefixLen = minOf(7, code.length - 1)
+                for (len in 2..maxPrefixLen) {
+                    val prefix = code.substring(0, len)
+                    val list = naturalMap.getOrPut(prefix) { ArrayList(MAX_NATURAL_CONTINUATIONS) }
+                    if (list.size < MAX_NATURAL_CONTINUATIONS && list.none { it.word == word }) {
+                        list.add(
+                            NaturalContinuation(
+                                word = word,
+                                suffixCode = code.substring(len),
+                                fullCode = code
+                            )
+                        )
+                    }
+                }
+            }
+
             return BriefPrefixIndex(
                 brief1 = Array(26) { b1[it].toList() },
                 brief2 = Array(676) { b2[it].toList() },
                 has4CodeFor3Prefix = has4Bits,
-                gt4PackedTable = IntArray(16) { EMPTY_SLOT },
-                gt4GuardTwoPrefixes = cleanGuards
+                gt4PackedTable = buildOpenHashSet(gt4Raw),
+                gt4GuardTwoPrefixes = cleanGuards,
+                naturalContinuations = naturalMap.mapValues { it.value.toList() }
             )
         }
 

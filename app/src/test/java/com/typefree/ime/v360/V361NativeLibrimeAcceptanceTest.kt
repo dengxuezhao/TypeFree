@@ -133,9 +133,13 @@ class V361NativeLibrimeAcceptanceTest {
             engine.clear()
 
             val pythRes = typeChars(engine, "pyth")
-            val pythMatched = pythRes == EngineResult.Commit("跑一趟", remainComposing = false) ||
-                engine.state.value.candidates.any { it.text == "跑一趟" }
-            assertTrue("Expected exact 4-code 跑一趟 for pyth, got res=$pythRes cands=${engine.state.value.candidates}", pythMatched)
+            val pythCands = engine.state.value.candidates.map { it.text }
+            assertFalse("Chinese mode must not hijack pyth with python", "python" in pythCands)
+            if (File(xiaoheDir, "flypy.dict.yaml").exists()) {
+                val pythMatched = pythRes == EngineResult.Commit("跑一趟", remainComposing = false) ||
+                    "跑一趟" in pythCands
+                assertTrue("Expected exact 4-code 跑一趟 for pyth, got res=$pythRes cands=${engine.state.value.candidates}", pythMatched)
+            }
             engine.clear()
 
             // 6) v3.6.2 `orq` includes weekday and supports ±1 day stepping (`adjustOrqDateOffset`)
