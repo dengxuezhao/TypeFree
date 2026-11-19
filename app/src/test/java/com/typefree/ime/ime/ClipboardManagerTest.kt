@@ -76,7 +76,7 @@ class ClipboardManagerTest {
     }
 
     @Test
-    fun `upsertClipboardList deduplicates preserves pin state and caps unpinned at 40`() {
+    fun `upsertClipboardList deduplicates preserves pin state and caps unpinned at 200`() {
         var list = emptyList<ClipboardEntry>()
 
         // Seed 2 pinned items
@@ -92,8 +92,8 @@ class ClipboardManagerTest {
         assertTrue(pinnedA.isPinned)
         assertEquals(300L, pinnedA.timestamp)
 
-        // Add 45 unpinned items -> unpinned should cap at 40, while all 2 pinned items remain at the top!
-        for (i in 1..45) {
+        // Add 205 unpinned items -> unpinned should cap at 200, while all 2 pinned items remain at the top!
+        for (i in 1..205) {
             list = AppRepository.upsertClipboardList(
                 existing = list,
                 rawText = "临时复制条目 #$i",
@@ -102,10 +102,10 @@ class ClipboardManagerTest {
             ).first
         }
 
-        assertEquals(42, list.size)
+        assertEquals(202, list.size)
         assertEquals(2, list.count { it.isPinned })
-        assertEquals(40, list.count { !it.isPinned })
+        assertEquals(200, list.count { !it.isPinned })
         assertTrue(list[0].isPinned && list[1].isPinned)
-        assertEquals("临时复制条目 #45", list[2].text)
+        assertEquals("临时复制条目 #205", list[2].text)
     }
 }

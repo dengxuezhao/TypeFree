@@ -115,6 +115,12 @@ fun KeyboardStudioScreen(
     val hasCustomImported = remember(rimeDeployState, metadataVersion) {
         rimeDataManager.hasCustomSchemaImported()
     }
+    val installedCustomSchemas = remember(rimeDeployState, metadataVersion) {
+        rimeDataManager.listInstalledCustomSchemas()
+    }
+    val activeCustomSchemaId = remember(rimeDeployState, metadataVersion) {
+        rimeDataManager.resolveCustomSchemaId()
+    }
     val customSchemaName = remember(rimeDeployState, metadataVersion) {
         rimeDataManager.readCustomSchemaName()
     }
@@ -253,6 +259,8 @@ fun KeyboardStudioScreen(
                         isolationKind = isolationKind,
                         hasCustomImported = hasCustomImported,
                         customSchemaName = customSchemaName,
+                        installedCustomSchemas = installedCustomSchemas,
+                        activeCustomSchemaId = activeCustomSchemaId,
                         activeProfile = activeProfile,
                         onSwitchScheme = { nextScheme ->
                             repository.updateSettings { it.copy(inputScheme = nextScheme) }
@@ -264,6 +272,15 @@ fun KeyboardStudioScreen(
                                     TypeFreeApp.instance.rimeInputEngine.setInputScheme(nextScheme)
                                 }
                             }
+                        },
+                        onSelectCustomSchema = { targetSchemaId ->
+                            scope.launch(Dispatchers.IO) {
+                                runCatching {
+                                    rimeDataManager.selectCustomSchemaSync(targetSchemaId)
+                                    TypeFreeApp.instance.rimeInputEngine.setInputScheme(InputScheme.RIME_CUSTOM)
+                                }
+                            }
+                            repository.updateSettings { it.copy(inputScheme = InputScheme.RIME_CUSTOM) }
                         },
                         onGoToDictTab = { selectSubTab(AppDestinations.SUBTAB_KB_DICT) }
                     )
@@ -299,8 +316,11 @@ private fun KeyboardSchemeAndLayoutPane(
     isolationKind: SchemeIsolationKind,
     hasCustomImported: Boolean,
     customSchemaName: String?,
+    installedCustomSchemas: List<com.typefree.ime.ime.engine.RimeDataManager.InstalledCustomSchema>,
+    activeCustomSchemaId: String,
     activeProfile: SchemaProfile,
     onSwitchScheme: (InputScheme) -> Unit,
+    onSelectCustomSchema: (String) -> Unit,
     onGoToDictTab: () -> Unit
 ) {
     var showCheatSheetDialog by remember { mutableStateOf(false) }
@@ -368,19 +388,18 @@ private fun KeyboardSchemeAndLayoutPane(
                     }
                 }
 
-                // 顶部方案选择器（4 方案）
+                // 顶部方案选择器（内置方案 + 所有已安装的自定义/预设方案）
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    val schemeItems = listOf(
+                    val builtinItems = listOf(
                         InputScheme.RIME_PINYIN to "全拼",
                         InputScheme.RIME_DOUBLE_PINYIN_FLYPY to "小鹤双拼",
-                        InputScheme.FLYPY_TABLE to "小鹤音形",
-                        InputScheme.RIME_CUSTOM to customChipTitle
+                        InputScheme.FLYPY_TABLE to "小鹤音形"
                     )
-                    schemeItems.forEach { (scheme, label) ->
+                    builtinItems.forEach { (scheme, label) ->
                         val selected = settings.inputScheme == scheme
                         FilterChip(
                             selected = selected,
@@ -388,6 +407,44 @@ private fun KeyboardSchemeAndLayoutPane(
                             label = {
                                 Text(
                                     text = label,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                            )
+                        )
+                    }
+                    if (installedCustomSchemas.isNotEmpty()) {
+                        installedCustomSchemas.forEach { customItem ->
+                            val selected = settings.inputScheme == InputScheme.RIME_CUSTOM &&
+                                activeCustomSchemaId == customItem.schemaId
+                            FilterChip(
+                                selected = selected,
+                                onClick = { onSelectCustomSchema(customItem.schemaId) },
+                                label = {
+                                    Text(
+                                        text = customItem.displayName,
+                                        fontSize = 12.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                )
+                            )
+                        }
+                    } else {
+                        val selected = settings.inputScheme == InputScheme.RIME_CUSTOM
+                        FilterChip(
+                            selected = selected,
+                            onClick = { onSwitchScheme(InputScheme.RIME_CUSTOM) },
+                            label = {
+                                Text(
+                                    text = customChipTitle,
                                     fontSize = 12.sp,
                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
                                 )
@@ -850,11 +907,6 @@ private fun KeyboardGestureAndSnippetsPane(
         SlashSnippetsManagementSection(
             repository = repository,
             snippets = settings.snippets
-        )
-
-        // 区块 3：`;` 多码快符表 (quick_symbols.yaml)
-        QuickSymbolsEditorCard(
-            schemaId = activeSchemaId
         )
 
         Spacer(modifier = Modifier.height(10.dp))

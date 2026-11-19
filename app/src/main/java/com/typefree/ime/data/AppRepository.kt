@@ -751,7 +751,7 @@ class AppRepository(
         internal const val KEY_MIGRATED_V340_COMPACT_4ROW_AND_LIFT = "mig_v340_compact_4row_and_lift"
         internal const val KEY_MIGRATED_V360_XIAOHE_SCHEME = "mig_v360_xiaohe_scheme"
         private const val MAX_HISTORY_ITEMS = 200
-        private const val MAX_CLIPBOARD_UNPINNED = 40
+        private const val MAX_CLIPBOARD_UNPINNED = 200
         private const val MAX_CLIP_CHARS = 4000
         private val PUNCT_OR_SPACE_ONLY = Regex("^[\\s\\p{Punct}，。？！、：；“”‘’（）【】《》…—\\-]+$")
 

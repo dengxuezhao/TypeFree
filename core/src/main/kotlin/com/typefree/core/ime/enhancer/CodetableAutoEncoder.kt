@@ -163,8 +163,10 @@ class PhraseSuggestionTracker(
         val maxLen = minOf(4, window.size)
         for (len in maxLen downTo 2) {
             val slice = window.subList(window.size - len, window.size)
+            val phraseChars = slice.map { it.charText }
+            if (isReduplicatedPhrase(phraseChars)) continue
             val phraseCode = encodeSlots(slice) ?: continue
-            val phraseWord = slice.joinToString(separator = "") { it.charText }
+            val phraseWord = phraseChars.joinToString(separator = "")
 
             if (phraseWord in dismissedWords) continue
             if (existsInDict(phraseWord)) continue
@@ -208,6 +210,25 @@ class PhraseSuggestionTracker(
 
     @Synchronized
     fun trackedCount(): Int = trackedCounts.size
+
+    private fun isReduplicatedPhrase(chars: List<String>): Boolean {
+        if (chars.size < 2) return false
+        // Skip all-identical single-char repeats (e.g. `好好`, `哈哈哈`, `哈哈哈哈`)
+        if (chars.all { it == chars[0] }) return true
+        // Skip ABAB repeated halves (e.g. `你好你好`, `谢谢谢谢`)
+        if (chars.size % 2 == 0) {
+            val half = chars.size / 2
+            var mirrored = true
+            for (i in 0 until half) {
+                if (chars[i] != chars[i + half]) {
+                    mirrored = false
+                    break
+                }
+            }
+            if (mirrored) return true
+        }
+        return false
+    }
 
     private fun encodeSlots(slots: List<CharSlot>): String? {
         return when (slots.size) {

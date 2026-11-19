@@ -374,12 +374,27 @@ object SafeMathEvaluator {
         val tail = if (surroundingText.length > 96) surroundingText.takeLast(96) else surroundingText
         if (tail.last().isWhitespace()) return null
 
-        val endsWithEquals = tail.endsWith('=')
+        val endsWithEquals = tail.endsWith('=') || tail.endsWith('＝')
         val exprEnd = if (endsWithEquals) tail.length - 1 else tail.length
         if (exprEnd <= 0) return null
 
         var i = exprEnd - 1
+        var rightNonSpace: Char? = null
         while (i >= 0 && isMathExpressionChar(tail[i])) {
+            val ch = tail[i]
+            if (ch == ' ') {
+                var leftIdx = i - 1
+                while (leftIdx >= 0 && tail[leftIdx] == ' ') leftIdx--
+                val leftNonSpace = if (leftIdx >= 0) tail[leftIdx] else null
+                if (leftNonSpace != null && rightNonSpace != null &&
+                    isOperandEndChar(leftNonSpace) && isOperandStartChar(rightNonSpace)
+                ) {
+                    // Break boundary between two whitespace-separated operands (e.g. `1000 1*1` -> `1*1`)
+                    break
+                }
+            } else {
+                rightNonSpace = ch
+            }
             i--
         }
         val rawSlice = tail.substring(i + 1, exprEnd).trim()
@@ -392,6 +407,14 @@ object SafeMathEvaluator {
             formattedResult = formatted,
             endsWithEquals = endsWithEquals
         )
+    }
+
+    private fun isOperandEndChar(ch: Char): Boolean {
+        return ch in '0'..'9' || ch == '.' || ch == ')' || ch == '）'
+    }
+
+    private fun isOperandStartChar(ch: Char): Boolean {
+        return ch in '0'..'9' || ch == '.' || ch == '(' || ch == '（'
     }
 
     private fun isMathExpressionChar(ch: Char): Boolean {

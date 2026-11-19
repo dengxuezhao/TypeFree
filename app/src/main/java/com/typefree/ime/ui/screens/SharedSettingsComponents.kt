@@ -170,6 +170,27 @@ fun SlashSnippetsManagementSection(
     val context = LocalContext.current
     var showSnippetDialog by remember { mutableStateOf(false) }
     var editingSnippet by remember { mutableStateOf<SnippetEntry?>(null) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var expandedAll by rememberSaveable { mutableStateOf(false) }
+
+    val filteredSnippets = remember(snippets, searchQuery) {
+        val q = searchQuery.trim()
+        if (q.isEmpty()) {
+            snippets
+        } else {
+            snippets.filter { s ->
+                s.title.contains(q, ignoreCase = true) ||
+                    s.flypyCode.contains(q, ignoreCase = true) ||
+                    s.content.contains(q, ignoreCase = true) ||
+                    s.voiceTriggers.contains(q, ignoreCase = true)
+            }
+        }
+    }
+    val visibleSnippets = if (expandedAll || searchQuery.isNotBlank() || filteredSnippets.size <= 6) {
+        filteredSnippets
+    } else {
+        filteredSnippets.take(6)
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Card(
@@ -184,52 +205,74 @@ fun SlashSnippetsManagementSection(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    color = TypeFreeEmerald.copy(alpha = 0.10f),
-                    border = BorderStroke(0.8.dp, TypeFreeEmerald.copy(alpha = 0.40f))
-                ) {
-                    Text(
-                        text = "空闲态上滑句号（.）出 `/` 触发编码短语（如 `/sd`、`/yx`）；若需点击卡片直接粘贴，请使用键盘剪贴板置顶常用语",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = TypeFreeEmerald,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp)
-                    )
-                }
-                Text(
-                    text = "`/` 编码短语与语音口令（0ms 瞬时展开）",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "• 键盘 `/` 触发：空闲态上滑句号（`.`）出 `/` 进入短语模式，续输短码（如 `/sd`、`/yx`、`/dz`；旧版 `;xx` 已自动兼容迁移）即时过滤展开。\n• 语音口令触发：按住麦克风说出设定口令（如「发我的邮箱」），识别命中后直接上屏完整文本。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    lineHeight = 18.sp
-                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Button(
+                    Text(
+                        text = "/ 编码短语 (${snippets.count { it.enabled }}/${snippets.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    FilledTonalButton(
                         onClick = {
                             editingSnippet = null
                             showSnippetDialog = true
                         },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp)
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(10.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Add,
                             contentDescription = null,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(16.dp)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("新建 `/` 编码短语", fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("新建", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
-                    if (snippets.isEmpty()) {
+                }
+                Text(
+                    text = "空闲态上滑句号（.）出 / 触发短码（如 /sd、/yx），亦可语音口令展开；点击下方卡片可编辑或删除",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 17.sp
+                )
+
+                if (snippets.size > 4) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        singleLine = true,
+                        placeholder = { Text("搜索短码、标题或内容…", fontSize = 12.sp) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        trailingIcon = if (searchQuery.isNotEmpty()) {
+                            {
+                                IconButton(onClick = { searchQuery = "" }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "清除",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        } else null,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                if (snippets.isEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
                         OutlinedButton(
                             onClick = {
                                 repository.updateSettings {
@@ -237,66 +280,70 @@ fun SlashSnippetsManagementSection(
                                 }
                                 Toast.makeText(context, "已载入示例短语模板", Toast.LENGTH_SHORT).show()
                             },
-                            shape = RoundedCornerShape(12.dp)
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("载入模板")
+                            Text("载入示例短语模板")
                         }
                     }
-                }
-            }
-        }
-
-        if (snippets.isEmpty()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+                } else if (visibleSnippets.isEmpty()) {
                     Text(
-                        text = "尚无编码短语",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "点击上方「新建 `/` 编码短语」添加邮箱、地址、发票抬头或高频客服回复。",
+                        text = "未找到匹配「$searchQuery」的编码短语",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
+                        modifier = Modifier.padding(vertical = 6.dp)
                     )
-                }
-            }
-        } else {
-            snippets.forEach { snip ->
-                SharedSnippetEntryCard(
-                    snippet = snip,
-                    onToggleEnabled = { enabled ->
-                        repository.updateSettings { curr ->
-                            curr.copy(
-                                snippets = curr.snippets.map {
-                                    if (it.id == snip.id) it.copy(enabled = enabled) else it
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        visibleSnippets.chunked(2).forEach { pair ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                pair.forEach { snip ->
+                                    CompactSnippetGridTile(
+                                        snippet = snip,
+                                        onToggleEnabled = { enabled ->
+                                            repository.updateSettings { curr ->
+                                                curr.copy(
+                                                    snippets = curr.snippets.map {
+                                                        if (it.id == snip.id) it.copy(enabled = enabled) else it
+                                                    }
+                                                )
+                                            }
+                                        },
+                                        onEdit = {
+                                            editingSnippet = snip
+                                            showSnippetDialog = true
+                                        },
+                                        onDelete = {
+                                            repository.updateSettings { curr ->
+                                                curr.copy(snippets = curr.snippets.filterNot { it.id == snip.id })
+                                            }
+                                            Toast.makeText(context, "已删除短语「${snip.title}」", Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    )
                                 }
-                            )
+                                if (pair.size == 1) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
+                            }
                         }
-                    },
-                    onEdit = {
-                        editingSnippet = snip
-                        showSnippetDialog = true
-                    },
-                    onDelete = {
-                        repository.updateSettings { curr ->
-                            curr.copy(snippets = curr.snippets.filterNot { it.id == snip.id })
+
+                        if (searchQuery.isBlank() && filteredSnippets.size > 6) {
+                            TextButton(
+                                onClick = { expandedAll = !expandedAll },
+                                modifier = Modifier.align(Alignment.CenterHorizontally)
+                            ) {
+                                Text(
+                                    text = if (expandedAll) "收起列表" else "展开全部 ${filteredSnippets.size} 条短语",
+                                    fontSize = 12.sp
+                                )
+                            }
                         }
-                        Toast.makeText(context, "已删除短语「${snip.title}」", Toast.LENGTH_SHORT).show()
                     }
-                )
+                }
             }
         }
     }
@@ -323,6 +370,109 @@ fun SlashSnippetsManagementSection(
                 ).show()
             }
         )
+    }
+}
+
+@Composable
+private fun CompactSnippetGridTile(
+    snippet: SnippetEntry,
+    onToggleEnabled: (Boolean) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val normCode = remember(snippet.flypyCode) {
+        SnippetMatcher.normalizeFlypyCode(snippet.flypyCode)
+    }
+    Surface(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onEdit),
+        shape = RoundedCornerShape(12.dp),
+        color = if (snippet.enabled) {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+        },
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (snippet.enabled) {
+                TypeFreeEmerald.copy(alpha = 0.45f)
+            } else {
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.30f)
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 9.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (snippet.enabled) {
+                        TypeFreeEmerald.copy(alpha = 0.16f)
+                    } else {
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
+                    }
+                ) {
+                    Text(
+                        text = normCode.ifEmpty { "语音" },
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (snippet.enabled) TypeFreeEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "删除短语",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                        modifier = Modifier
+                            .size(16.dp)
+                            .clickable(onClick = onDelete)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Checkbox(
+                        checked = snippet.enabled,
+                        onCheckedChange = onToggleEnabled,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            Text(
+                text = snippet.title.ifBlank { normCode.ifEmpty { "未命名短语" } },
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = if (snippet.enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+            Text(
+                text = snippet.content.replace('\n', ' '),
+                style = MaterialTheme.typography.bodySmall,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

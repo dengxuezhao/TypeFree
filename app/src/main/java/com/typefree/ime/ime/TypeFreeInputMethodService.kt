@@ -1457,6 +1457,13 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             val schemaId = dm.activeSchemaProfile.schemaId.ifBlank { "flypy" }
             val result = runCatching {
                 dm.getUserPhraseEditor(schemaId).addPhrase(cleanWord, cleanCode, isTopPinned = false)
+                val sharedUserFile = File(dm.sharedDir, "${schemaId}_user.txt")
+                if (sharedUserFile.isFile) {
+                    runCatching {
+                        dm.userDir.mkdirs()
+                        sharedUserFile.copyTo(File(dm.userDir, "${schemaId}_user.txt"), overwrite = true)
+                    }
+                }
                 dm.reloadActiveEnhancedSchemaSync(schemaId)
             }
             withContext(Dispatchers.Main) {

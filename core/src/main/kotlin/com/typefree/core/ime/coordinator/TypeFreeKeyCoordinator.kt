@@ -111,6 +111,7 @@ class TypeFreeKeyCoordinator(
     private var isSlashSnippetMode: Boolean = false
     private var slashBuffer: String = ""
     private var slashSnippetEntries: List<SlashSnippetEntry> = emptyList()
+    private var extraUserWordsByCode: Map<String, List<String>> = emptyMap()
     private var shadowRuleState: ShadowDictManager.ShadowRuleState =
         shadowDictManager?.loadRules() ?: ShadowDictManager.ShadowRuleState()
 
@@ -135,6 +136,10 @@ class TypeFreeKeyCoordinator(
 
     fun setNaturalContinuationEnabled(enabled: Boolean) {
         naturalContinuationEnabled = enabled
+    }
+
+    fun updateExtraUserWordsByCode(wordsByCode: Map<String, List<String>>) {
+        extraUserWordsByCode = wordsByCode
     }
 
     fun updateSlashSnippets(entries: List<SlashSnippetEntry>) {
@@ -350,10 +355,24 @@ class TypeFreeKeyCoordinator(
         val intendedNext = prevRawBuffer + ch
         val hasKotlinLayeredWords = shadowRuleState.pinnedByCode[intendedNext].orEmpty().any {
             it !in shadowRuleState.blockedWords && (!singleCharMode || Utf8Safety.isSingleCharacter(it))
-        }
+        } || lookupValidExtraUserWords(intendedNext).isNotEmpty()
 
         val frame = rimePort.sendChar(ch)
         val rimeCommittedWholeCode = frame.rawInput.isEmpty() && !frame.autoCommittedText.isNullOrEmpty()
+
+        val shouldPreserve4CharReverseSplit = frame.autoCommittedText.isNullOrEmpty() &&
+            frame.rawInput != intendedNext &&
+            prevRawBuffer.length == 3 &&
+            intendedNext.length == 4 &&
+            profile.reverseSplitEnabled &&
+            !isExtendedGuardBuffer(intendedNext) &&
+            reverseSplitEngine?.tryReverseSplit(
+                code = intendedNext,
+                rimeHasCandidates = false,
+                profile = profile,
+                singleCharMode = singleCharMode,
+                directCmdMatched = false
+            ) != null
 
         val workingFrame = if (hasKotlinLayeredWords && frame.rawInput != intendedNext) {
             rimePort.clearComposition()
@@ -368,6 +387,15 @@ class TypeFreeKeyCoordinator(
                 rawInput = intendedNext,
                 preedit = intendedNext,
                 candidates = syntheticCands
+            )
+        } else if (shouldPreserve4CharReverseSplit) {
+            rimePort.clearComposition()
+            rimeClearedByCoordinator = true
+            syntheticRimeCandidatesOverride = emptyList()
+            RimeDecodeFrame(
+                rawInput = intendedNext,
+                preedit = intendedNext,
+                candidates = emptyList()
             )
         } else if (!frame.autoCommittedText.isNullOrEmpty()) {
             val committed = frame.autoCommittedText
@@ -448,7 +476,8 @@ class TypeFreeKeyCoordinator(
         val validNats = findValidNaturalContinuations(rawBuffer, hasExactRimeMatch)
 
         // Stage 6: Empty-code 2+(1~2) ReverseSplitEngine fallback (with 6 strict gates & >4-code ok*/os* guard)
-        activeSplit = if (validNats.isNotEmpty()) {
+        val extraUserWords = lookupValidExtraUserWords(rawBuffer)
+        activeSplit = if (validNats.isNotEmpty() || extraUserWords.isNotEmpty()) {
             null
         } else {
             reverseSplitEngine?.tryReverseSplit(
@@ -482,7 +511,8 @@ class TypeFreeKeyCoordinator(
                 }
             } else if (validNats.isEmpty()) {
                 val slots = buildRegularCandidateSlots(workingFrame)
-                val hasExactOrUserSource = hasExactRimeMatch || currentPinnedWordsForBuffer().isNotEmpty()
+                val hasExactOrUserSource =
+                    hasExactRimeMatch || extraUserWords.isNotEmpty() || currentPinnedWordsForBuffer().isNotEmpty()
                 if (slots.size == 1 && hasExactOrUserSource) {
                     val uniqueText = slots[0].candidate.commitText
                     reset()
@@ -994,7 +1024,30 @@ class TypeFreeKeyCoordinator(
             )
         }
 
+        for (userWord in lookupValidExtraUserWords(rawBuffer)) {
+            if (!seenWords.add(userWord)) continue
+            slots.add(
+                CandidateSlot(
+                    candidate = EnhancedCandidate(
+                        displayText = userWord,
+                        commitText = userWord,
+                        codeHint = "",
+                        action = CommitAction.PlainText(userWord, fromRimeNative = false)
+                    ),
+                    rimeIndex = null
+                )
+            )
+        }
+
         return applyShadowPinning(slots)
+    }
+
+    private fun lookupValidExtraUserWords(code: String): List<String> {
+        if (code.isEmpty()) return emptyList()
+        val blocked = shadowRuleState.blockedWords
+        return extraUserWordsByCode[code].orEmpty().filter { w ->
+            w !in blocked && (!singleCharMode || Utf8Safety.isSingleCharacter(w))
+        }
     }
 
     private fun applyShadowPinning(base: List<CandidateSlot>): List<CandidateSlot> {

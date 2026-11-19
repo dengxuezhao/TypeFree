@@ -579,6 +579,7 @@ class TypingController(
                     recordedPhraseCode = null
                 )
             }
+            codetableEnhancedEngine?.addRuntimeUserPhrase(word, code)
             codetableEnhancedEngine?.markPhraseSuggestionAccepted(word)
             onSaveUserPhrase?.invoke(word, code)
             return
@@ -591,6 +592,7 @@ class TypingController(
         host.stateFlow.update {
             it.copy(l2PhraseSuggestionWord = null, l2PhraseSuggestionCode = null)
         }
+        codetableEnhancedEngine?.addRuntimeUserPhrase(l2Word, l2Code)
         codetableEnhancedEngine?.markPhraseSuggestionAccepted(l2Word)
         onSaveUserPhrase?.invoke(l2Word, l2Code)
     }
@@ -769,13 +771,23 @@ class TypingController(
     fun dismissPredictions() {
         host.performKeyFeedback(strong = false)
         predictionCoordinator.dismissPredictions(resetChain = false)
+        val curr = host.stateFlow.value
+        val l2Word = curr.l2PhraseSuggestionWord?.trim().orEmpty()
+        if (l2Word.isNotEmpty()) {
+            codetableEnhancedEngine?.markPhraseSuggestionDismissed(l2Word)
+        }
         host.stateFlow.update {
             it.copy(
                 passiveMathResult = null,
                 passiveMathExpression = null,
                 passiveMathEndsWithEquals = false,
                 englishSuggestions = emptyList(),
-                englishSuggestionReplaceLength = 0
+                englishSuggestionReplaceLength = 0,
+                l2PhraseSuggestionWord = null,
+                l2PhraseSuggestionCode = null,
+                isPhraseRecording = false,
+                recordedPhraseBuffer = "",
+                recordedPhraseCode = null
             )
         }
     }

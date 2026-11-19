@@ -597,4 +597,58 @@ class CodetableV362EnhancementsTest {
             tempRoot.deleteRecursively()
         }
     }
+
+    @Test
+    fun `10_v363_device_qa_fixes_appl_4char_split_math_space_boundary_and_reduplication_filter`() {
+        // 1) TC-09: `appl` 4th key must NOT be wiped by Rime speller returning `rawInput="l"`
+        val briefIndex = BriefPrefixIndex.buildFromDictLines(
+            mainDictLines = sequenceOf(
+                "---",
+                "name: flypy",
+                "...",
+                "安排\tap",
+                "平\tp",
+                "皮肤\tp",
+                "漂亮\tpl",
+                "了\tl"
+            ),
+            gt4GuardTwoPrefixes = setOf("ok", "os")
+        )
+        val spellerClearingPort = ScriptedRimePort { raw ->
+            when (raw) {
+                "a" -> RimeDecodeFrame("a", "a", listOf("啊" to ""))
+                "ap" -> RimeDecodeFrame("ap", "ap", listOf("安排" to ""))
+                "app" -> RimeDecodeFrame("app", "app", emptyList())
+                "appl" -> RimeDecodeFrame("l", "l", listOf("了" to ""))
+                else -> RimeDecodeFrame(raw, raw, emptyList())
+            }
+        }
+        val coord = TypeFreeKeyCoordinator(
+            profile = SchemaProfile.defaultXiaoheFlypy(),
+            rimePort = spellerClearingPort,
+            reverseSplitEngine = ReverseSplitEngine(briefIndex)
+        )
+        coord.onCharKey('a')
+        coord.onCharKey('p')
+        val third = coord.onCharKey('p') as CoordinatorKeyOutcome.Consumed
+        assertTrue(third.ui.isReverseSplitActive)
+        // 4th char `l`: unique 2+2 reverse split `ap'pl -> 安排漂亮` auto-commits!
+        val fourth = coord.onCharKey('l') as CoordinatorKeyOutcome.Commit
+        assertEquals("安排漂亮", (fourth.action as CommitAction.PlainText).text)
+
+        // 2) TC-24: `123*8=1000 1*1` MUST NOT glue `1000` and `1` into `10001*1`
+        val mathHit = SafeMathEvaluator.detectTrailingExpression("123*8=1000 1*1")
+        assertNotNull(mathHit)
+        assertEquals("1*1", mathHit!!.expression)
+        assertEquals("1", mathHit.formattedResult)
+
+        // 3) TC-31: Repeated `你好` + `你好` MUST NOT trigger reduplicated `你好你好`
+        val tracker = PhraseSuggestionTracker(minRepeatCount = 3)
+        repeat(6) {
+            val s1 = tracker.recordCommittedUnit("你", "ni", { false }, { false })
+            val s2 = tracker.recordCommittedUnit("好", "hc", { it == "你好" }, { false })
+            assertTrue(s1?.word != "你好你好")
+            assertTrue(s2?.word != "你好你好")
+        }
+    }
 }

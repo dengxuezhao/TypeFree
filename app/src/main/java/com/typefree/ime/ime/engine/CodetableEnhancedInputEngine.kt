@@ -129,6 +129,7 @@ class CodetableEnhancedInputEngine(
         private set
     private var currentSlashSnippets: List<SlashSnippetEntry> = emptyList()
     private val knownUserWords: MutableSet<String> = HashSet()
+    private val runtimeUserWordsByCode: MutableMap<String, MutableList<String>> = LinkedHashMap()
     private var uniqueSingleChar4Codes: Set<String> = buildUniqueSingleChar4Codes(reverseLookupMap)
 
     val phraseSuggestionTracker: PhraseSuggestionTracker = PhraseSuggestionTracker()
@@ -223,13 +224,25 @@ class CodetableEnhancedInputEngine(
         if (currentSlashSnippets.isNotEmpty()) {
             created.updateSlashSnippets(currentSlashSnippets)
         }
+        if (runtimeUserWordsByCode.isNotEmpty()) {
+            created.updateExtraUserWordsByCode(snapshotRuntimeUserWords())
+        }
         return created
+    }
+
+    private fun snapshotRuntimeUserWords(): Map<String, List<String>> {
+        val copy = LinkedHashMap<String, List<String>>(runtimeUserWordsByCode.size)
+        for ((k, v) in runtimeUserWordsByCode) {
+            if (v.isNotEmpty()) copy[k] = v.toList()
+        }
+        return copy
     }
 
     private fun applyPreferenceOverrides() {
         coordinator.profile = resolveEffectiveProfile(baseProfile)
         coordinator.setNaturalContinuationEnabled(naturalContinuationEnabled)
         coordinator.updateSlashSnippets(currentSlashSnippets)
+        coordinator.updateExtraUserWordsByCode(snapshotRuntimeUserWords())
     }
 
     fun refreshFromMetadata(
@@ -283,6 +296,7 @@ class CodetableEnhancedInputEngine(
 
     fun reloadUserDictWordsCache(schemaId: String = activeProfile.schemaId) {
         knownUserWords.clear()
+        runtimeUserWordsByCode.clear()
         val dir = schemaDir ?: return
         for (suffix in listOf("_user.txt", "_top.txt")) {
             val file = File(dir, "$schemaId$suffix")
@@ -291,13 +305,32 @@ class CodetableEnhancedInputEngine(
                 file.forEachLine(StandardCharsets.UTF_8) { raw ->
                     val trimmed = raw.trim()
                     if (trimmed.isEmpty() || trimmed.startsWith("#")) return@forEachLine
-                    val word = raw.substringBefore('\t').trim()
+                    val parts = raw.split('\t')
+                    val word = parts.getOrNull(0)?.trim().orEmpty()
+                    val code = parts.getOrNull(1)?.trim()?.lowercase().orEmpty()
                     if (word.isNotEmpty()) {
                         knownUserWords.add(word)
+                        if (code.isNotEmpty()) {
+                            val list = runtimeUserWordsByCode.getOrPut(code) { ArrayList(2) }
+                            if (word !in list) list.add(word)
+                        }
                     }
                 }
             }
         }
+        coordinator.updateExtraUserWordsByCode(snapshotRuntimeUserWords())
+    }
+
+    fun addRuntimeUserPhrase(word: String, code: String) {
+        val cleanWord = word.trim()
+        val cleanCode = code.trim().lowercase()
+        if (cleanWord.isEmpty() || cleanCode.isEmpty()) return
+        knownUserWords.add(cleanWord)
+        val list = runtimeUserWordsByCode.getOrPut(cleanCode) { ArrayList(2) }
+        if (cleanWord !in list) {
+            list.add(cleanWord)
+        }
+        coordinator.updateExtraUserWordsByCode(snapshotRuntimeUserWords())
     }
 
     fun setXiaoheDirectCommandsEnabled(enabled: Boolean) {

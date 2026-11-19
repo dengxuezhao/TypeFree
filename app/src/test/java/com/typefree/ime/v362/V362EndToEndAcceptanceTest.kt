@@ -386,6 +386,31 @@ class V362EndToEndAcceptanceTest {
             controller.acceptPhraseSuggestion()
             assertNull(host.stateFlow.value.l2PhraseSuggestionWord)
             assertEquals(listOf("你好" to "nihc", "正并" to "vgbk"), savedPhrases)
+
+            // 7) v3.6.3: Accepted phrase `正并 (vgbk)` is IMMEDIATELY typable in-memory (0ms, no keyboard restart!)
+            controller.commitQwertyChar("v")
+            controller.commitQwertyChar("g")
+            controller.commitQwertyChar("b")
+            controller.commitQwertyChar("k")
+            assertTrue(
+                "Newly added phrase 正并 must be immediately available without closing keyboard",
+                host.editorText.toString().endsWith("正并") ||
+                    host.stateFlow.value.flypyCandidates.any { it.text == "正并" }
+            )
+            controller.clearComposing()
+
+            // 8) v3.6.3: Dismissing prediction bar (`×`) clears L2 suggestion & marks it dismissed!
+            controller.onL2PhraseSuggestion(com.typefree.core.ime.enhancer.PhraseSuggestion("测试词", "cscc"))
+            assertEquals("测试词", host.stateFlow.value.l2PhraseSuggestionWord)
+            controller.dismissPredictions()
+            assertNull(host.stateFlow.value.l2PhraseSuggestionWord)
+            assertNull(host.stateFlow.value.activePhraseSuggestionLabel)
+
+            // 9) v3.6.3: Passive math `123*8=1000 1*1` evaluates to `1` (not `10001`)
+            host.editorText.clear()
+            host.editorText.append("123*8=1000 1*1")
+            controller.refreshPassiveMathSuggestion()
+            assertEquals("1", host.stateFlow.value.passiveMathResult)
         } finally {
             scope.cancel()
             tempDir.deleteRecursively()

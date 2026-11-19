@@ -1141,7 +1141,7 @@ private fun AppearanceAndPreferencesPane(
 
                 PreferenceSwitchRow(
                     title = "自动记录剪贴板历史",
-                    subtitle = "自动收纳最近 40 条复制文本，自动过滤密码管理器敏感内容",
+                    subtitle = "自动收纳最近 200 条复制文本，自动过滤密码管理器敏感内容",
                     checked = settings.clipboardEnabled,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(clipboardEnabled = enabled) }

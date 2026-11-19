@@ -169,6 +169,57 @@ class RimeDataManager(
         return true
     }
 
+    data class InstalledCustomSchema(
+        val schemaId: String,
+        val displayName: String
+    )
+
+    fun listInstalledCustomSchemas(): List<InstalledCustomSchema> {
+        if (!sharedDir.isDirectory) return emptyList()
+        val builtinSchemas = setOf(
+            "rime_ice.schema.yaml",
+            "double_pinyin_flypy.schema.yaml",
+            "flypy.schema.yaml"
+        )
+        val out = ArrayList<InstalledCustomSchema>()
+        val seen = HashSet<String>()
+        sharedDir.listFiles().orEmpty()
+            .filter {
+                it.isFile &&
+                    it.name.endsWith(".schema.yaml") &&
+                    it.name !in builtinSchemas &&
+                    !it.name.endsWith("dz.schema.yaml")
+            }
+            .sortedBy { it.name }
+            .forEach { file ->
+                val (parsedId, parsedName) = parseSchemaMetadata(file)
+                val id = parsedId?.takeIf { it.isNotBlank() } ?: file.name.removeSuffix(".schema.yaml")
+                if (id.isNotBlank() && seen.add(id)) {
+                    val presetName = PresetSchemaCatalog.BUILT_IN_PRESETS.firstOrNull { it.id == id }?.displayName
+                    val name = parsedName?.takeIf { it.isNotBlank() } ?: presetName ?: id
+                    out.add(InstalledCustomSchema(schemaId = id, displayName = name))
+                }
+            }
+        return out
+    }
+
+    fun selectCustomSchemaSync(schemaId: String): Boolean {
+        val cleanId = schemaId.trim()
+        if (cleanId.isEmpty()) return false
+        val schemaFile = File(sharedDir, "$cleanId.schema.yaml")
+        if (!schemaFile.isFile) return false
+        val (_, parsedName) = parseSchemaMetadata(schemaFile)
+        val presetName = PresetSchemaCatalog.BUILT_IN_PRESETS.firstOrNull { it.id == cleanId }?.displayName
+        val displayName = parsedName?.takeIf { it.isNotBlank() } ?: presetName ?: cleanId
+        File(sharedDir, CUSTOM_SCHEMA_ID_FILENAME).writeText(cleanId, Charsets.UTF_8)
+        File(sharedDir, CUSTOM_SCHEMA_META_FILENAME).writeText(displayName, Charsets.UTF_8)
+        ensureDefaultCustomYaml(sharedDir, primarySchemaId = cleanId)
+        refreshEnhancedMetadataFromDir(sharedDir, cleanId)
+        rimeBridge.selectSchema(cleanId)
+        _metadataVersion.value++
+        return true
+    }
+
     fun readCustomSchemaName(): String? {
         val meta = File(sharedDir, CUSTOM_SCHEMA_META_FILENAME)
         if (!meta.exists()) return null

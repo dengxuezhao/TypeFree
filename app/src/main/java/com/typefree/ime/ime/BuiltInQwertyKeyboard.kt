@@ -240,10 +240,10 @@ private val ALPHA_ROW_2 = listOf("a", "s", "d", "f", "g", "h", "j", "k", "l")
 private val ALPHA_ROW_3 = listOf("z", "x", "c", "v", "b", "n", "m")
 
 private val NUM_ROW_1 = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
-private val NUM_ROW_2 = listOf("@", "#", "$", "%", "&", "-", "+", "(", ")", "/")
+private val NUM_ROW_2 = listOf("@", "#", "$", "%", "*", "-", "+", "(", ")", "/")
 private val NUM_ROW_3 = listOf(";", "=", "？", "！", ":", "\"", "'")
 
-private val SYM_ROW_1 = listOf("[", "]", "{", "}", "<", ">", "^", "*", "=", "~")
+private val SYM_ROW_1 = listOf("[", "]", "{", "}", "<", ">", "^", "&", "=", "~")
 private val SYM_ROW_2 = listOf("_", "\\", "|", "、", "；", "“", "”", "‘", "’", "…")
 private val SYM_ROW_3 = listOf("¥", "€", "£", "°", "•", "`", "?")
 

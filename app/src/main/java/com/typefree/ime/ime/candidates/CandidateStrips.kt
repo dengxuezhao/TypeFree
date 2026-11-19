@@ -157,15 +157,16 @@ fun PredictionCandidateBar(
                     if (onDismissPhraseSuggestion != null) {
                         Box(
                             modifier = Modifier
-                                .size(20.dp)
+                                .size(26.dp)
                                 .clip(RoundedCornerShape(6.dp))
+                                .background(palette.keyCapSecondaryBg.copy(alpha = 0.72f))
                                 .clickable(onClick = onDismissPhraseSuggestion),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = "×",
-                                color = palette.keyTextMuted,
-                                fontSize = 12.sp,
+                                color = palette.keyTextPrimary,
+                                fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
