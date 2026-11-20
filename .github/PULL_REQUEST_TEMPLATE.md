@@ -23,4 +23,6 @@
 
 ## 合规与隐私自检
 
-- [ ] 确认未提交 `app/src/xiaohe/assets/rime/`、`local_private/`、`*.table.bin`、`keystore.properties`、`*.jks` 或任何 API Key
+- [ ] 确认未提交 `app/src/xiaohe/assets/rime/`、`exports/`、`local_private/`、`*.table.bin`、`keystore.properties`、`*.jks` 或任何 API Key
+- [ ] 确认未在 `core/`、`rime/`、`app/` 源码中引入未经书面同意的第三方 Copyleft（GPL/LGPL/AGPL/CC BY-SA）或 CC BY-NC/ND 代码与数据
+- [ ] 我已阅读并签署 [CLA.md](../CLA.md)（`I have read the TypeFree CLA (CLA.md) and hereby sign the CLA.`）
