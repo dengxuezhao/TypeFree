@@ -12,29 +12,43 @@ import androidx.compose.ui.unit.dp
 object TypeFreeIcons {
 
     /**
-     * Iconic TypeFree crescent wave/wing brand mark from `ps_02.png` & `keyboard_swipe_frames.png`.
+     * TypeFree T-Wing brand mark (Concept B): architectural T-stem + sweeping acoustic wing + key dot.
      */
     val LogoMark: ImageVector by lazy {
         ImageVector.Builder("LogoMark", 24.dp, 24.dp, 24f, 24f).apply {
-            path(
-                stroke = SolidColor(Color.White),
-                strokeLineWidth = 2.6f,
-                strokeLineCap = StrokeCap.Round
-            ) {
-                moveTo(6.5f, 5.5f)
-                curveTo(14.5f, 5.5f, 18.5f, 9.5f, 18.5f, 17.5f)
-            }
+            // Sweeping acoustic wing top bar
             path(
                 stroke = SolidColor(Color.White),
                 strokeLineWidth = 2.4f,
                 strokeLineCap = StrokeCap.Round
             ) {
-                moveTo(5.5f, 11.5f)
-                curveTo(10.5f, 11.5f, 13f, 14f, 13f, 19f)
+                moveTo(4.2f, 8.2f)
+                curveTo(7.4f, 8.2f, 10.6f, 8.2f, 13.4f, 7.6f)
+                curveTo(16.6f, 6.9f, 18.6f, 5.7f, 20.2f, 4.1f)
             }
+            // Secondary echo arc
+            path(
+                stroke = SolidColor(Color.White),
+                strokeAlpha = 0.78f,
+                strokeLineWidth = 1.55f,
+                strokeLineCap = StrokeCap.Round
+            ) {
+                moveTo(15.2f, 10.6f)
+                curveTo(17.4f, 10.1f, 19.0f, 9.0f, 20.2f, 7.6f)
+            }
+            // Architectural T-stem
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2.7f,
+                strokeLineCap = StrokeCap.Round
+            ) {
+                moveTo(11.6f, 10.6f)
+                lineTo(11.6f, 19.4f)
+            }
+            // Tactile key dot
             path(fill = SolidColor(Color.White)) {
-                moveTo(7.5f, 17.5f)
-                arcTo(1.7f, 1.7f, 0f, true, true, 7.49f, 17.5f)
+                moveTo(6.2f, 11.4f)
+                arcTo(1.35f, 1.35f, 0f, true, true, 6.19f, 11.4f)
                 close()
             }
         }.build()

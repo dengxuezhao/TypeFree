@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dengxuezhao/TypeFree/releases/latest"><img src="https://img.shields.io/badge/Release-v3.8.0-10B981?style=flat-square&logo=github" alt="Release v3.8.0" /></a>
+  <a href="https://github.com/dengxuezhao/TypeFree/releases/latest"><img src="https://img.shields.io/badge/Release-v3.8.1-10B981?style=flat-square&logo=github" alt="Release v3.8.1" /></a>
   <img src="https://img.shields.io/badge/Engine-librime_1.17.0_+_Lua-0EA5E9?style=flat-square" alt="librime 1.17.0" />
   <img src="https://img.shields.io/badge/Language-Kotlin_2.0-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" />
   <img src="https://img.shields.io/badge/UI-Jetpack_Compose-4285F4?style=flat-square&logo=android&logoColor=white" alt="Jetpack Compose" />
@@ -41,9 +41,14 @@
 
 ---
 
-## 🆕 v3.8.0 核心升级亮点
+## 🆕 v3.8.1 核心升级亮点
 
-- **🔢 原生九键拼音（T9 九宫格）正式上线**
+- **🐯 内置虎码一键预设与码表体验打磨**
+  - 词库页新增一键安装开源 **虎码（单字版 `tiger` / 秃版 `tigress`）** 预设方案，并同步优化五笔 86 预设。
+  - 修复码表补全过滤边界、L2 本地造词去重问题，支持自定义空码延续条数与词频重排。
+- **🎨 全新 T-Wing 品牌图标与自适应顶栏**
+  - 启用全新设计的 **T-Wing** 应用自适应图标与键盘品牌标识，修复键盘中英文语言状态记忆，顶栏工具按钮随屏幕宽度自适应排布。
+- **🔢 原生九键拼音（T9 九宫格，v3.8.0 起）**
   - 新增基于 `librime` + 雾凇开源词库的九键拼音方案（`t9.schema.yaml`），不额外增加词库体积，支持整句输入、顶部悬浮胶囊实时显示可读拼音切分（如 `ni hao`、`今天 tian qi`）。
   - 左侧竖列空闲为高频标点、编码时自动切换为**合法拼音音节筛选栏**（支持点击锁定、部分选词后自动推进下一段、退格三态自然回退），并内置独立 **3×4 大键数字九宫格** 与中/英双页符号层；切英文或进入密码框自动落至 26 键英文。
 - **⌨️ 26 键三向手势与可定制键帽角标**

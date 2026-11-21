@@ -1,23 +1,50 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Modern Wave Mark for TypeFree -->
-    <path
-        android:fillColor="#00000000"
-        android:pathData="M38,37 C61,37 73,49 73,72"
-        android:strokeWidth="6.8"
-        android:strokeColor="#FFFFFF"
-        android:strokeLineCap="round" />
-    <path
-        android:fillColor="#00000000"
-        android:pathData="M36,53 C51,53 59,61 59,76"
-        android:strokeWidth="6.2"
-        android:strokeColor="#FFFFFF"
-        android:strokeLineCap="round" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M42,71m-4.8,0a4.8,4.8 0,1 1,9.6 0a4.8,4.8 0,1 1,-9.6 0" />
+    <!-- Concept B: T-Wing (Scaled cleanly inside Android 66dp adaptive icon safe zone) -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.82"
+        android:scaleY="0.82">
+        <!-- Architectural T-Stem -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M53,42 A5.5,5.5 0 0,1 58.5,47.5 V76.5 A5.5,5.5 0 0,1 53,82 A5.5,5.5 0 0,1 47.5,76.5 V47.5 A5.5,5.5 0 0,1 53,42 Z" />
+        <!-- Sweeping Acoustic Wing Top Bar -->
+        <path
+            android:fillColor="#00000000"
+            android:pathData="M26,37 C36,37 46,37 56,35 C68,32.5 76,28 83,22"
+            android:strokeLineCap="round"
+            android:strokeWidth="9.5">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:startX="26"
+                    android:startY="37"
+                    android:endX="83"
+                    android:endY="22"
+                    android:type="linear">
+                    <item android:color="#10B981" android:offset="0.0" />
+                    <item android:color="#38BDF8" android:offset="1.0" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <!-- Secondary Echo Arc -->
+        <path
+            android:fillColor="#00000000"
+            android:pathData="M64,46 C72,44 78,40 83,35"
+            android:strokeAlpha="0.85"
+            android:strokeColor="#38BDF8"
+            android:strokeLineCap="round"
+            android:strokeWidth="5.2" />
+        <!-- Tactile Key Dot -->
+        <path
+            android:fillAlpha="0.9"
+            android:fillColor="#FFFFFF"
+            android:pathData="M31,49 A5,5 0 1,1 31,59 A5,5 0 1,1 31,49 Z" />
+    </group>
 </vector>
