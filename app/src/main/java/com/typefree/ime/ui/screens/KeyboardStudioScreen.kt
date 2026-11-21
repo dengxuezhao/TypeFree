@@ -1291,6 +1291,12 @@ private fun KeyboardDictionaryPane(
                     }
                 }
             }
+
+            BuiltInPresetSchemasCard(
+                repository = repository,
+                rimeDeployState = rimeDeployState,
+                defaultExpanded = true
+            )
         }
 
         Spacer(modifier = Modifier.height(10.dp))

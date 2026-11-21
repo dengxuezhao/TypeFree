@@ -112,7 +112,7 @@ fun CodetableAdvancedManagementCard(
     var cardExpanded by rememberSaveable(defaultExpanded) { mutableStateOf(defaultExpanded) }
     var feedbackMessage by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
 
-    var presetsExpanded by rememberSaveable { mutableStateOf(false) }
+    var presetsExpanded by rememberSaveable { mutableStateOf(true) }
     var phrasesExpanded by rememberSaveable { mutableStateOf(true) }
     var subDictsExpanded by rememberSaveable { mutableStateOf(false) }
     var shadowExpanded by rememberSaveable { mutableStateOf(false) }
@@ -368,6 +368,149 @@ private fun ExpandableCodetableSubsection(
     }
 }
 
+/**
+ * Standalone collapsible card for one-click installation of built-in open-source codetable presets.
+ * Visible even when the user is currently on Pinyin / Double Pinyin schemes so new users can
+ * immediately discover and install Tiger Code, Wubi 86, and Xingkong Jiandao 6.
+ */
+@Composable
+fun BuiltInPresetSchemasCard(
+    repository: AppRepository,
+    rimeDeployState: RimeDeploymentState,
+    defaultExpanded: Boolean = true,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val rimeDataManager = remember { TypeFreeApp.instance.rimeDataManager }
+    val isDeploying = rimeDeployState is RimeDeploymentState.Deploying
+
+    var cardExpanded by rememberSaveable(defaultExpanded) { mutableStateOf(defaultExpanded) }
+    var feedbackMessage by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.52f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { cardExpanded = !cardExpanded }
+                    .padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = TypeFreeIcons.KeyboardGrid,
+                        contentDescription = null,
+                        tint = TypeFreeEmerald,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "内置开源码表方案一键安装",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            CodetableBadgePill(
+                                text = "${PresetSchemaCatalog.BUILT_IN_PRESETS.size} 套",
+                                highlight = true
+                            )
+                        }
+                        Text(
+                            text = "虎码 / 五笔 86 / 星空键道 6，安装后自动切换启用",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = if (cardExpanded) {
+                        Icons.Default.KeyboardArrowUp
+                    } else {
+                        Icons.Default.KeyboardArrowDown
+                    },
+                    contentDescription = if (cardExpanded) "收起" else "展开",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            feedbackMessage?.let { (isSuccess, text) ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isSuccess) {
+                        TypeFreeEmerald.copy(alpha = 0.12f)
+                    } else {
+                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
+                    },
+                    border = BorderStroke(
+                        0.8.dp,
+                        if (isSuccess) TypeFreeEmerald.copy(alpha = 0.45f)
+                        else MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = text,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (isSuccess) TypeFreeEmerald else MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = { feedbackMessage = null },
+                            modifier = Modifier.size(22.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "关闭提示",
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            AnimatedVisibility(visible = cardExpanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                    PresetSchemaInstallSection(
+                        context = context,
+                        rimeDataManager = rimeDataManager,
+                        repository = repository,
+                        isBusy = isDeploying,
+                        onFeedback = { ok, msg -> feedbackMessage = ok to msg }
+                    )
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PresetSchemaInstallSection(
@@ -378,11 +521,16 @@ private fun PresetSchemaInstallSection(
     onFeedback: (Boolean, String) -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val metadataVersion by rimeDataManager.metadataVersion.collectAsState()
+    val installedIds = remember(metadataVersion) {
+        rimeDataManager.listInstalledCustomSchemas().map { it.schemaId }.toSet()
+    }
     var installingId by remember { mutableStateOf<String?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         PresetSchemaCatalog.BUILT_IN_PRESETS.forEach { preset ->
             val isInstallingThis = installingId == preset.id
+            val isInstalled = preset.id in installedIds
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
@@ -406,11 +554,19 @@ private fun PresetSchemaInstallSection(
                                 .padding(end = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Text(
-                                text = preset.displayName,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = preset.displayName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                if (isInstalled) {
+                                    CodetableBadgePill(text = "已安装", highlight = true)
+                                }
+                            }
                             FlowRow(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -454,7 +610,11 @@ private fun PresetSchemaInstallSection(
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text("安装中", style = MaterialTheme.typography.labelMedium)
                             } else {
-                                Text("一键安装", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = if (isInstalled) "重新安装" else "一键安装",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
                     }
