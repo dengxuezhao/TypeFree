@@ -115,12 +115,45 @@ android {
     }
 
     val privateDictDir = rootProject.file("local_private")
+    val stagedStandardAssetsDir = layout.buildDirectory.dir("generated/standardCleanAssets")
+    val stagedXiaoheAssetsDir = layout.buildDirectory.dir("generated/xiaoheDictAssets")
     val stagedPrivateAssetsDir = layout.buildDirectory.dir("generated/privateDictAssets")
+
+    // Public `standard` builds MUST NEVER bundle Xiaohe YinXing codetables (flypy_dict.tsv / flypy_dz.tsv / flypy.*).
+    // Only the local testing `xiaohe` flavor (or explicit -PusePrivateDict=true) receives Xiaohe YinXing tables.
+    val stageStandardCleanAssets = tasks.register<Sync>("stageStandardCleanAssets") {
+        from("src/main/assets") {
+            exclude(
+                "flypy_dict.tsv",
+                "flypy_dz.tsv",
+                "flypy_*",
+                "**/flypy.schema.yaml",
+                "**/flypy.table.bin",
+                "**/flypy.prism.bin",
+                "**/flypy.reverse.bin",
+                "**/flypydz.*"
+            )
+        }
+        into(stagedStandardAssetsDir)
+    }
+
+    val stageXiaoheDictAssets = tasks.register<Sync>("stageXiaoheDictAssets") {
+        duplicatesStrategy = DuplicatesStrategy.INCLUDE
+        from("src/main/assets") {
+            include("flypy_dict.tsv", "flypy_dz.tsv")
+        }
+        if (privateDictDir.exists()) {
+            from(privateDictDir) {
+                include("flypy_dict.tsv", "flypy_dz.tsv")
+            }
+        }
+        into(stagedXiaoheAssetsDir)
+    }
 
     if (usePrivateDict && privateDictDir.exists()) {
         val stagePrivateFlypyAssets = tasks.register<Sync>("stagePrivateFlypyAssets") {
             from("src/main/assets") {
-                include("rime/**")
+                include("rime/**", "preset_schemas/**")
             }
             from(privateDictDir) {
                 include("flypy_dict.tsv", "flypy_dz.tsv")
@@ -130,13 +163,22 @@ android {
         tasks.named("preBuild") {
             dependsOn(stagePrivateFlypyAssets)
         }
+    } else {
+        tasks.named("preBuild") {
+            dependsOn(stageStandardCleanAssets, stageXiaoheDictAssets)
+        }
     }
 
     sourceSets {
         getByName("main") {
             if (usePrivateDict && privateDictDir.exists()) {
                 assets.setSrcDirs(listOf(stagedPrivateAssetsDir))
+            } else {
+                assets.setSrcDirs(listOf(stagedStandardAssetsDir))
             }
+        }
+        getByName("xiaohe") {
+            assets.srcDir(stagedXiaoheAssetsDir)
         }
     }
 }

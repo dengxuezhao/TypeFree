@@ -395,16 +395,20 @@ class FlypyDictionary internal constructor(
 
         fun loadFromAssets(context: Context): FlypyDictionary {
             val assets = context.assets
-            return openAssetWithFallback(
-                assets,
-                listOf(ASSET_MAIN_DICT, "flypy_dict", "flypy_dict.gz")
-            ).use { dictIn ->
+            return runCatching {
                 openAssetWithFallback(
                     assets,
-                    listOf(ASSET_REVERSE_DZ, "flypy_dz", "flypy_dz.gz")
-                ).use { dzIn ->
-                    loadFromStreams(dictIn, dzIn)
+                    listOf(ASSET_MAIN_DICT, "flypy_dict", "flypy_dict.gz")
+                ).use { dictIn ->
+                    openAssetWithFallback(
+                        assets,
+                        listOf(ASSET_REVERSE_DZ, "flypy_dz", "flypy_dz.gz")
+                    ).use { dzIn ->
+                        loadFromStreams(dictIn, dzIn)
+                    }
                 }
+            }.getOrElse {
+                empty()
             }
         }
 
