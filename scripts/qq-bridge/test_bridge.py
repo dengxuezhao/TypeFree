@@ -237,6 +237,36 @@ class BridgeTests(unittest.TestCase):
             with urllib.request.urlopen(req_ev) as resp:
                 self.assertEqual(resp.status, 200)
             self.assertIn("v3.7.1", ob.sent[-1]["text"])
+
+            # Chunked Transfer-Encoding (as used by Node/NapCat HTTP clients)
+            import http.client
+            chunked_payload = json.dumps({
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": 99999,
+                "group_id": 801143863,
+                "user_id": 889,
+                "message": [
+                    {"type": "at", "data": {"qq": "99999"}},
+                    {"type": "text", "data": {"text": " /帮助"}},
+                ],
+            }).encode("utf-8")
+            chunk_sig = "sha1=" + hmac.new(b"event-secret", chunked_payload, hashlib.sha1).hexdigest()
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.putrequest("POST", "/onebot/event")
+            conn.putheader("Content-Type", "application/json")
+            conn.putheader("Transfer-Encoding", "chunked")
+            conn.putheader("X-Signature", chunk_sig)
+            conn.endheaders()
+            mid = len(chunked_payload) // 2
+            for part in (chunked_payload[:mid], chunked_payload[mid:]):
+                conn.send(f"{len(part):x}\r\n".encode("ascii") + part + b"\r\n")
+            conn.send(b"0\r\n\r\n")
+            c_resp = conn.getresponse()
+            self.assertEqual(c_resp.status, 200)
+            c_resp.read()
+            conn.close()
+            self.assertIn("TypeFree 群助手指令", ob.sent[-1]["text"])
         finally:
             server.shutdown()
             server.server_close()

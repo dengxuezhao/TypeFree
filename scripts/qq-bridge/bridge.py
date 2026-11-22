@@ -594,12 +594,65 @@ def create_http_handler(service: BridgeService) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(raw)
 
+        def _read_chunked_body(self) -> bytes | None:
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                size_line = self.rfile.readline(64)
+                if not size_line:
+                    self.close_connection = True
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "incomplete chunked body"})
+                    return None
+                size_str = size_line.split(b";", 1)[0].strip()
+                if not size_str:
+                    continue
+                try:
+                    chunk_len = int(size_str, 16)
+                except ValueError:
+                    self.close_connection = True
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid chunk size"})
+                    return None
+                if chunk_len < 0:
+                    self.close_connection = True
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid chunk size"})
+                    return None
+                if chunk_len == 0:
+                    while True:
+                        trailer = self.rfile.readline(1024)
+                        if not trailer or trailer in (b"\r\n", b"\n"):
+                            break
+                    break
+                total += chunk_len
+                if total > MAX_BODY_BYTES:
+                    self.close_connection = True
+                    self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "payload too large"})
+                    return None
+                data = self.rfile.read(chunk_len)
+                if len(data) != chunk_len:
+                    self.close_connection = True
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "truncated chunk"})
+                    return None
+                chunks.append(data)
+                crlf = self.rfile.readline(4)
+                if crlf not in (b"\r\n", b"\n"):
+                    self.close_connection = True
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "malformed chunk delimiter"})
+                    return None
+            return b"".join(chunks)
+
         def _read_json_body(self) -> tuple[bytes, dict[str, Any]] | None:
-            length = int(self.headers.get("Content-Length") or "0")
-            if length <= 0 or length > MAX_BODY_BYTES:
-                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid content-length"})
-                return None
-            raw = self.rfile.read(length)
+            te = (self.headers.get("Transfer-Encoding") or "").lower()
+            if "chunked" in te:
+                raw = self._read_chunked_body()
+                if raw is None:
+                    return None
+            else:
+                length = int(self.headers.get("Content-Length") or "0")
+                if length <= 0 or length > MAX_BODY_BYTES:
+                    self.close_connection = True
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid content-length"})
+                    return None
+                raw = self.rfile.read(length)
             try:
                 parsed = json.loads(raw.decode("utf-8"))
             except Exception:
