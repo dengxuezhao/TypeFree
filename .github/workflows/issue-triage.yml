@@ -190,3 +190,70 @@ jobs:
           except Exception as exc:
               print(f"::warning::Feishu webhook notification failed: {exc}")
           PYEOF
+
+      - name: Notify QQ feedback group on new web Issue (optional)
+        env:
+          QQ_BRIDGE_URL: ${{ secrets.QQ_BRIDGE_URL }}
+          QQ_BRIDGE_SECRET: ${{ secrets.QQ_BRIDGE_SECRET }}
+          QQ_FEEDBACK_GROUP_ID: ${{ secrets.QQ_FEEDBACK_GROUP_ID }}
+          QQ_NOTIFY_NEW_ISSUES: ${{ vars.QQ_NOTIFY_NEW_ISSUES }}
+          ISSUE_ACTION: ${{ github.event.action }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          APPLIED_LABELS: ${{ steps.triage.outputs.applied_labels }}
+        run: |
+          if [ "${QQ_NOTIFY_NEW_ISSUES:-false}" != "true" ]; then
+            echo "QQ_NOTIFY_NEW_ISSUES variable is not 'true'; skipping QQ group issue broadcast."
+            exit 0
+          fi
+          if [ "${ISSUE_ACTION:-}" != "opened" ]; then
+            echo "Not initial open event; skipping QQ group issue broadcast."
+            exit 0
+          fi
+          if [ -z "${QQ_BRIDGE_URL:-}" ] || [ -z "${QQ_BRIDGE_SECRET:-}" ]; then
+            echo "QQ_BRIDGE_URL / QQ_BRIDGE_SECRET not configured; skipping QQ group notification."
+            exit 0
+          fi
+
+          python3 - << 'PYEOF'
+          import json
+          import os
+          import urllib.request
+
+          title = os.environ.get("ISSUE_TITLE", "")
+          if title.startswith("[QQ反馈]"):
+              print("Issue originated from QQ group; skipping duplicate QQ broadcast.")
+              raise SystemExit(0)
+
+          url = os.environ["QQ_BRIDGE_URL"].strip()
+          secret = os.environ["QQ_BRIDGE_SECRET"].strip()
+          group_id = os.environ.get("QQ_FEEDBACK_GROUP_ID", "").strip()
+
+          payload = {
+              "event": "issue",
+              "number": int(os.environ["ISSUE_NUMBER"]),
+              "title": title,
+              "author": os.environ["ISSUE_AUTHOR"],
+              "labels": os.environ.get("APPLIED_LABELS", ""),
+              "url": os.environ["ISSUE_URL"],
+          }
+          if group_id.isdigit():
+              payload["group_id"] = int(group_id)
+
+          req = urllib.request.Request(
+              url,
+              data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+              headers={
+                  "Content-Type": "application/json; charset=utf-8",
+                  "Authorization": f"Bearer {secret}",
+              },
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                  print(f"QQ bridge issue notify status: {resp.status}")
+          except Exception as exc:
+              print(f"::warning::QQ bridge issue notification failed: {exc}")
+          PYEOF

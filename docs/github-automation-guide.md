@@ -33,7 +33,14 @@
    - `FEISHU_WEBHOOK_URL`：飞书群自定义机器人 Webhook 地址（`https://open.feishu.cn/open-apis/bot/v2/hook/...`）
    - 若你的飞书机器人开启了「签名校验」，建议后续改用独立中继或关闭仅内网测试，当前默认按无加签 Webhook JSON 卡片格式发送。
 
-3. **小鹤专享版私有词库注入（用于 `build-xiaohe-apk.yml`）**
+3. **QQ 反馈群双向联动（NapCat + OneBot 11，用于 `release.yml` 与 `issue-triage.yml`）**
+   - 部署指南见 [scripts/qq-bridge/README.md](../scripts/qq-bridge/README.md)。
+   - `QQ_BRIDGE_URL`：服务器对外反代的 Bridge 接口（如 `https://typefree.xuezhao.space/qq-bridge/notify`）
+   - `QQ_BRIDGE_SECRET`：与服务器 `.env` 中 `BRIDGE_SECRET` 一致的 Bearer 鉴权密钥
+   - `QQ_FEEDBACK_GROUP_ID`：目标 QQ 群号（如 `801143863`）
+   - （可选 Variable）`QQ_NOTIFY_NEW_ISSUES=true`：开启后将 GitHub 网页端新增的非 QQ 来源 Issue 也同步播报到群内。
+
+4. **小鹤专享版私有词库注入（用于 `build-xiaohe-apk.yml`）**
    - `XIAOHE_READY_ZIP_URL` 或 `XIAOHE_READY_ZIP_B64` 或 (`GDRIVE_ACCESS_TOKEN` + `XIAOHE_GDRIVE_FILE_ID`)
 
 ---

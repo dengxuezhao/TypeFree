@@ -221,7 +221,9 @@ jobs:
           fi
 
           RELEASE_URL=$(gh release view "$TAG" --json url -q .url)
+          APK_URL=$(gh release view "$TAG" --json assets -q ".assets[] | select(.name == \"$APK_FILE\") | .url" | head -n 1 || true)
           echo "release_url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
+          echo "apk_url=$APK_URL" >> "$GITHUB_OUTPUT"
 
       - name: Upload release artifacts backup
         uses: actions/upload-artifact@v4
@@ -402,4 +404,58 @@ jobs:
                   print(f"Feishu webhook status: {resp.status}")
           except Exception as exc:
               print(f"::warning::Feishu webhook notification failed: {exc}")
+          PYEOF
+
+      - name: Notify QQ feedback group via Bridge (optional)
+        env:
+          QQ_BRIDGE_URL: ${{ secrets.QQ_BRIDGE_URL }}
+          QQ_BRIDGE_SECRET: ${{ secrets.QQ_BRIDGE_SECRET }}
+          QQ_FEEDBACK_GROUP_ID: ${{ secrets.QQ_FEEDBACK_GROUP_ID }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_URL: ${{ steps.publish.outputs.release_url }}
+          APK_URL: ${{ steps.publish.outputs.apk_url }}
+          APK_FILE: ${{ steps.build.outputs.apk_file }}
+          IS_SIGNED: ${{ steps.meta.outputs.is_signed }}
+          NOTIFIED_ISSUES: ${{ steps.notify_issues.outputs.notified_issues }}
+        run: |
+          if [ -z "${QQ_BRIDGE_URL:-}" ] || [ -z "${QQ_BRIDGE_SECRET:-}" ]; then
+            echo "QQ_BRIDGE_URL / QQ_BRIDGE_SECRET not configured; skipping QQ group notification."
+            exit 0
+          fi
+
+          python3 - << 'PYEOF'
+          import json
+          import os
+          import urllib.request
+
+          url = os.environ["QQ_BRIDGE_URL"].strip()
+          secret = os.environ["QQ_BRIDGE_SECRET"].strip()
+          group_id = os.environ.get("QQ_FEEDBACK_GROUP_ID", "").strip()
+
+          payload = {
+              "event": "release",
+              "tag": os.environ["RELEASE_TAG"],
+              "release_url": os.environ["RELEASE_URL"],
+              "apk_url": os.environ.get("APK_URL", ""),
+              "apk_file": os.environ["APK_FILE"],
+              "is_signed": os.environ.get("IS_SIGNED", "false"),
+              "notified_issues": os.environ.get("NOTIFIED_ISSUES", ""),
+          }
+          if group_id.isdigit():
+              payload["group_id"] = int(group_id)
+
+          req = urllib.request.Request(
+              url,
+              data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+              headers={
+                  "Content-Type": "application/json; charset=utf-8",
+                  "Authorization": f"Bearer {secret}",
+              },
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                  print(f"QQ bridge release notify status: {resp.status}")
+          except Exception as exc:
+              print(f"::warning::QQ bridge release notification failed: {exc}")
           PYEOF

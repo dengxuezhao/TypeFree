@@ -64,5 +64,13 @@ app/src/xiaohe/assets/rime/
 *.brief.idx
 xiaohe_flypy_*.zip
 
+# Website built static output
+website/dist/
+
 # Log files
 *.log
+
+# QQ Bridge runtime secrets & OneBot session data
+scripts/qq-bridge/.env
+scripts/qq-bridge/appsettings.json
+scripts/qq-bridge/data/

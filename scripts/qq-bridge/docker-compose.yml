@@ -1,0 +1,52 @@
+services:
+  napcat:
+    image: lmq8267/napcat:v4.18.38
+    container_name: typefree-napcat
+    restart: unless-stopped
+    init: true
+    tty: true
+    stdin_open: true
+    shm_size: "512m"
+    environment:
+      - TZ=Asia/Shanghai
+      - NAPCAT_QUICK_LOGIN_QQ=${NAPCAT_QUICK_LOGIN_QQ:-}
+    command:
+      - /bin/bash
+      - -c
+      - rm -f /tmp/.X*-lock /run/dbus/pid /root/.config/QQ/Singleton* && mkdir -p /run/dbus && (dbus-daemon --system --fork || true) && sleep 1 && cd /app && exec xvfb-run -a -e /dev/stderr env LD_PRELOAD=./libnapcat_launcher.so /opt/QQ/qq --no-sandbox ${NAPCAT_QUICK_LOGIN_QQ:+-q $NAPCAT_QUICK_LOGIN_QQ}
+    ports:
+      # 仅绑定本机回环地址，通过 SSH 端口转发访问 NapCat WebUI（6099）
+      - "127.0.0.1:6099:6099"
+    volumes:
+      - ./data/napcat/config:/app/napcat/config
+      - ./data/napcat/cache:/app/napcat/cache
+      - ./data/napcat/qq:/root/.config/QQ
+    networks:
+      - qq_bridge_net
+
+  typefree-qq-bridge:
+    image: python:3.12-slim
+    container_name: typefree-qq-bridge
+    restart: unless-stopped
+    depends_on:
+      - napcat
+    working_dir: /app
+    command: ["python3", "bridge.py"]
+    env_file:
+      - .env
+    ports:
+      # 仅绑定宿主机 127.0.0.1:8090，由宿主机 Nginx 反代 HTTPS 对外提供 /qq-bridge/notify
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - ./bridge.py:/app/bridge.py:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - qq_bridge_net
+
+networks:
+  qq_bridge_net:
+    driver: bridge
