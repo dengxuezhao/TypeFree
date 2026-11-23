@@ -189,25 +189,106 @@ jobs:
           IS_SIGNED: ${{ steps.meta.outputs.is_signed }}
           APK_FILE: ${{ steps.build.outputs.apk_file }}
           SHA_FILE: ${{ steps.build.outputs.sha_file }}
+          GITHUB_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
           echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
 
-          SIGN_NOTE="本安装包使用正式发布密钥签名，支持直接覆盖升级。"
-          if [ "$IS_SIGNED" != "true" ]; then
-            SIGN_NOTE="⚠️ 仓库尚未配置正式签名 Secrets，本包回退为 Debug 签名（若与之前签名不同需卸载重装）。"
-          fi
+          NOTES_FILE="/tmp/release_notes_full.md"
+          python3 - "$TAG" "$PREV_TAG" "$IS_SIGNED" "$IS_PRERELEASE" "$APK_FILE" "$SHA_FILE" "$GITHUB_REPO" "$NOTES_FILE" << 'PYEOF'
+          import os
+          import re
+          import subprocess
+          import sys
 
-          NOTES_FILE="/tmp/release_notes_header.md"
-          cat > "$NOTES_FILE" << EOF
-          ### 安装包说明
-          - **公开版安装包**：\`${APK_FILE}\`（校验文件：\`${SHA_FILE}\`）
-          - **签名状态**：${SIGN_NOTE}
-          - **内置词库与第三方方案**：内置开源雾凇全拼、小鹤双拼及一键预设星空键道 6 / 五笔 86；如需小鹤音形等第三方方案，请在应用内「键盘 → 词库管理」导入官方 Rime 挂接包（\`.zip\`）。
+          tag, prev_tag, is_signed, is_prerelease, apk_file, sha_file, repo, out_path = sys.argv[1:9]
 
-          ---
-          EOF
+          def run_git(*args: str) -> str:
+              return subprocess.check_output(["git", *args], text=True, stderr=subprocess.DEVNULL).strip()
+
+          def load_highlights() -> str:
+              # Priority 1: Dedicated curated release notes file docs/releases/<tag>.md
+              notes_doc = os.path.join("docs", "releases", f"{tag}.md")
+              if os.path.isfile(notes_doc):
+                  text = open(notes_doc, encoding="utf-8").read().strip()
+                  if text:
+                      return text if text.lstrip().startswith("#") else f"### 更新亮点\n\n{text}"
+
+              # Priority 2: Annotated tag message body (beyond first subject line)
+              try:
+                  tag_body = run_git("for-each-ref", "--format=%(contents:body)", f"refs/tags/{tag}")
+                  if tag_body:
+                      return tag_body if tag_body.lstrip().startswith("#") else f"### 更新亮点\n\n{tag_body}"
+              except Exception:
+                  pass
+
+              # Priority 3: Auto-extract structured bullets from git log since previous tag
+              rev_range = f"{prev_tag}..{tag}" if prev_tag else tag
+              try:
+                  raw_log = run_git("log", rev_range, "--no-merges", "--format=%s%x1f%b%x1e")
+              except Exception:
+                  raw_log = ""
+
+              bullets: list[str] = []
+              seen: set[str] = set()
+              skip_re = re.compile(r"^(?:bump\s+version|release\s+v?\d|chore\(release\)|merge\s+)", re.IGNORECASE)
+
+              for record in raw_log.split("\x1e"):
+                  record = record.strip()
+                  if not record:
+                      continue
+                  parts = record.split("\x1f", 1)
+                  subject = parts[0].strip()
+                  body = parts[1].strip() if len(parts) > 1 else ""
+
+                  body_bullets: list[str] = []
+                  for line in body.splitlines():
+                      s = line.strip()
+                      if re.match(r"^[-*•]\s+", s):
+                          item = re.sub(r"^[-*•]\s+", "", s).strip()
+                          if item and not skip_re.match(item):
+                              body_bullets.append(item)
+
+                  candidates = body_bullets if body_bullets else ([subject] if subject and not skip_re.match(subject) else [])
+                  for item in candidates:
+                      key = item.lower()
+                      if key not in seen:
+                          seen.add(key)
+                          bullets.append(f"- {item}")
+
+              if not bullets:
+                  bullets.append(f"- 发布 TypeFree {tag} 正式版本，包含最新功能与稳定性优化。")
+              return "### 更新亮点\n\n" + "\n".join(bullets[:20])
+
+          highlights = load_highlights()
+
+          if is_signed == "true":
+              sign_note = "本安装包使用正式发布密钥签名，支持直接覆盖升级。"
+          else:
+              sign_note = "⚠️ 仓库尚未配置正式签名 Secrets，本包回退为 Debug 签名（若与之前签名不同需卸载重装）。"
+
+          install_lines = [
+              "### 安装包说明",
+              "",
+              f"- **公开版安装包**：`{apk_file}`（校验文件：`{sha_file}`）",
+          ]
+          if is_prerelease != "true" and re.match(r"^v\d+\.\d+\.\d+$", tag):
+              install_lines.append(
+                  f"- **官网直链下载（国内推荐）**：https://typefree.xuezhao.space/downloads/TypeFree-{tag}-release.apk （官网首页：https://typefree.xuezhao.space ）"
+              )
+          install_lines.extend([
+              f"- **签名状态**：{sign_note}",
+              "- **内置词库与第三方方案**：内置开源雾凇全拼、九键拼音、小鹤双拼及一键预设星空键道 6 / 五笔 86 / 虎码；如需小鹤音形等第三方方案，请在应用内「键盘 → 词库管理」直接导入官方 Rime 挂接包（`.zip`）。",
+          ])
+
+          sections = [highlights, "---", "\n".join(install_lines)]
+          if prev_tag:
+              sections.append(f"**Full Changelog**: https://github.com/{repo}/compare/{prev_tag}...{tag}")
+
+          with open(out_path, "w", encoding="utf-8") as fh:
+              fh.write("\n\n".join(sections) + "\n")
+          PYEOF
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             if [ "$IS_SIGNED" = "true" ]; then
@@ -220,14 +301,10 @@ jobs:
             if [ "$IS_PRERELEASE" = "true" ]; then
               EXTRA_FLAGS+=(--prerelease)
             fi
-            if [ -n "$PREV_TAG" ]; then
-              EXTRA_FLAGS+=(--notes-start-tag "$PREV_TAG")
-            fi
             gh release create "$TAG" "$APK_FILE" "$SHA_FILE" \
               --verify-tag \
               --title "TypeFree ${TAG}" \
-              --generate-notes \
-              --notes "$(cat "$NOTES_FILE")" \
+              --notes-file "$NOTES_FILE" \
               "${EXTRA_FLAGS[@]}"
           fi
 
@@ -423,6 +500,7 @@ jobs:
           QQ_BRIDGE_SECRET: ${{ secrets.QQ_BRIDGE_SECRET }}
           QQ_FEEDBACK_GROUP_ID: ${{ secrets.QQ_FEEDBACK_GROUP_ID }}
           RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          IS_PRERELEASE: ${{ steps.meta.outputs.is_prerelease }}
           RELEASE_URL: ${{ steps.publish.outputs.release_url }}
           APK_URL: ${{ steps.publish.outputs.apk_url }}
           APK_FILE: ${{ steps.build.outputs.apk_file }}
@@ -437,17 +515,28 @@ jobs:
           python3 - << 'PYEOF'
           import json
           import os
+          import re
           import urllib.request
 
           url = os.environ["QQ_BRIDGE_URL"].strip()
           secret = os.environ["QQ_BRIDGE_SECRET"].strip()
           group_id = os.environ.get("QQ_FEEDBACK_GROUP_ID", "").strip()
+          tag = os.environ["RELEASE_TAG"].strip()
+          is_prerelease = os.environ.get("IS_PRERELEASE", "false").lower() == "true"
+          official_site_url = "https://typefree.xuezhao.space"
+          official_apk_url = (
+              f"{official_site_url}/downloads/TypeFree-{tag}-release.apk"
+              if (not is_prerelease and re.match(r"^v\d+\.\d+\.\d+$", tag))
+              else ""
+          )
 
           payload = {
               "event": "release",
-              "tag": os.environ["RELEASE_TAG"],
+              "tag": tag,
               "release_url": os.environ["RELEASE_URL"],
               "apk_url": os.environ.get("APK_URL", ""),
+              "official_site_url": official_site_url,
+              "official_apk_url": official_apk_url,
               "apk_file": os.environ["APK_FILE"],
               "is_signed": os.environ.get("IS_SIGNED", "false"),
               "notified_issues": os.environ.get("NOTIFIED_ISSUES", ""),

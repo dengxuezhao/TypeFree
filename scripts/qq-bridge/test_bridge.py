@@ -216,6 +216,7 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(resp.status, 200)
             self.assertEqual(len(ob.sent), 1)
             self.assertIn("v3.7.2", ob.sent[0]["text"])
+            self.assertIn("https://typefree.xuezhao.space/downloads/TypeFree-v3.7.2-release.apk", ob.sent[0]["text"])
             self.assertIn("#1, #2", ob.sent[0]["text"])
 
             # HMAC verified OneBot event
@@ -237,6 +238,7 @@ class BridgeTests(unittest.TestCase):
             with urllib.request.urlopen(req_ev) as resp:
                 self.assertEqual(resp.status, 200)
             self.assertIn("v3.7.1", ob.sent[-1]["text"])
+            self.assertIn("https://typefree.xuezhao.space/downloads/TypeFree-v3.7.1-release.apk", ob.sent[-1]["text"])
 
             # Chunked Transfer-Encoding (as used by Node/NapCat HTTP clients)
             import http.client

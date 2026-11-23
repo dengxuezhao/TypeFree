@@ -131,6 +131,7 @@ class BridgeConfig:
     max_issues_per_user_per_day: int = 5
     release_cache_ttl_seconds: float = 60.0
     include_qq_id_in_issue: bool = False
+    official_site_origin: str = "https://typefree.xuezhao.space"
 
     @classmethod
     def from_env(cls) -> BridgeConfig:
@@ -159,6 +160,7 @@ class BridgeConfig:
             max_issues_per_user_per_day=int(os.environ.get("MAX_ISSUES_PER_USER_PER_DAY", "5")),
             release_cache_ttl_seconds=float(os.environ.get("RELEASE_CACHE_TTL_SECONDS", "60")),
             include_qq_id_in_issue=os.environ.get("INCLUDE_QQ_ID_IN_ISSUE", "false").lower() == "true",
+            official_site_origin=os.environ.get("OFFICIAL_SITE_ORIGIN", "https://typefree.xuezhao.space").strip().rstrip("/"),
         )
 
 
@@ -167,20 +169,20 @@ FAQ_ENTRIES: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"(小鹤|音形|码表.*导入|词库.*导入|怎么导入|hang|flypy)", re.IGNORECASE),
         "📘 小鹤音形 / 第三方码表导入说明：\n"
         "1. 公开开源安装包遵循协议，不内置小鹤官方私有码表；\n"
-        "2. 请自行准备合法的 Rime 挂接包（.zip）或预编译包；\n"
-        "3. 在 App 内进入「键盘 → 词库管理 → 导入 Rime 方案包 (.zip)」选择压缩包，导入后即可启用四码顶功与 o* 指令。",
+        "2. 请自行准备合法的官方 Rime 挂接包（.zip，无需手动解压或改写）；\n"
+        "3. 在 App 内进入「键盘 → 词库管理 → 导入 Rime 方案包 (.zip)」直接选择压缩包，导入后即可启用四码顶功、; 快捷符号与 o* 指令。",
     ),
     (
         re.compile(r"(清空|全选|删.*全部|一键删|删除键)", re.IGNORECASE),
         "⌨️ 快速清空已上屏内容技巧：\n"
-        "• 删除键上滑当前对应「撤回最近一次上屏/自动生成内容」；\n"
-        "• 如需清空输入框中已确认的多段文字：可长按「A」键触发「全选」，再点一次删除键（或长按「X」键直接剪切）。",
+        "• 可在「键盘 → 方案与布局 → 通用键盘设置」开启「上滑回退键清空输入框」（默认关闭），开启后上滑删除键即可一键清空并自动入撤回栈；\n"
+        "• 未开启时，删除键上滑对应「撤回最近一次上屏」，也可长按「A」全选后点删除键（或长按「X」剪切）。",
     ),
     (
-        re.compile(r"(api|key|语音|deepseek|gemini|百炼|豆包|ollama)", re.IGNORECASE),
-        "🎙️ 语音与 AI 配置说明（BYOK）：\n"
-        "• 纯打字、码表与剪贴板无需任何 Key，完全离线可用；\n"
-        "• 如需语音或 Jev 军师，可在「语音与 AI → 模型与 API」填入自己的 DeepSeek / 豆包 / 百炼 / Gemini / 本地 Ollama 地址与 Key；\n"
+        re.compile(r"(api|key|语音|deepseek|gemini|百炼|豆包|ollama|离线)", re.IGNORECASE),
+        "🎙️ 语音与 AI 配置说明（支持纯端侧离线 + BYOK）：\n"
+        "• 零 Key 离线可用：在「语音与 AI → 离线模型」按需下载本地语音与端侧文本模型，断网也能听写、净写与基础改写；\n"
+        "• 如需云端大模型或 Jev 军师，可在「语音与 AI → 模型与 API」填入自己的 DeepSeek / 豆包 / 百炼 / Gemini / 本地 Ollama 地址与 Key；\n"
         "• 详细教程见仓库文档：https://github.com/dengxuezhao/TypeFree/blob/main/docs/domestic-api-setup-guide.md",
     ),
 ]
@@ -468,6 +470,12 @@ class BridgeService:
             logger.exception("Failed to create GitHub issue from QQ")
             return f"⚠️ 自动提交 Issue 暂时失败（{type(exc).__name__}），可先在 GitHub 手动提交：https://github.com/{self.config.github_repo}/issues/new/choose"
 
+    def _derive_official_apk_url(self, tag: str) -> str:
+        origin = (self.config.official_site_origin or "").strip().rstrip("/")
+        if not origin or not re.match(r"^v\d+\.\d+\.\d+$", tag.strip()):
+            return ""
+        return f"{origin}/downloads/TypeFree-{tag.strip()}-release.apk"
+
     def _handle_latest_release(self) -> str:
         try:
             release = self.github.get_latest_release()
@@ -479,9 +487,14 @@ class BridgeService:
         html_url = release.get("html_url") or f"https://github.com/{self.config.github_repo}/releases"
         assets = release.get("assets") or []
         apk_asset = next((a for a in assets if str(a.get("name", "")).endswith(".apk")), None)
+        official_apk_url = self._derive_official_apk_url(str(tag))
         lines = [f"📦 TypeFree 最新公开版本：{tag}"]
+        if official_apk_url:
+            lines.append(f"🌐 官网下载直链：{official_apk_url}")
+        elif self.config.official_site_origin:
+            lines.append(f"🌐 官网下载页：{self.config.official_site_origin}")
         if apk_asset:
-            lines.append(f"⬇️ APK 直链：{apk_asset.get('browser_download_url')}")
+            lines.append(f"⬇️ GitHub 直链：{apk_asset.get('browser_download_url')}")
         lines.append(f"📝 更新日志：{html_url}")
         return "\n".join(lines)
 
@@ -522,6 +535,8 @@ class BridgeService:
             tag = str(payload.get("tag") or "").strip()
             release_url = str(payload.get("release_url") or "").strip()
             apk_url = str(payload.get("apk_url") or "").strip()
+            official_apk_url = str(payload.get("official_apk_url") or "").strip() or self._derive_official_apk_url(tag)
+            official_site_url = str(payload.get("official_site_url") or "").strip() or self.config.official_site_origin
             apk_name = str(payload.get("apk_file") or "").strip()
             notified_issues = str(payload.get("notified_issues") or "").strip()
             is_signed = str(payload.get("is_signed") or "").lower() == "true"
@@ -530,8 +545,12 @@ class BridgeService:
             if apk_name:
                 sign_hint = "正式签名" if is_signed else "Debug 签名"
                 lines.append(f"📦 安装包：{apk_name}（{sign_hint}）")
+            if official_apk_url:
+                lines.append(f"🌐 官网下载直链：{official_apk_url}")
+            elif official_site_url:
+                lines.append(f"🌐 官网下载页：{official_site_url}")
             if apk_url:
-                lines.append(f"⬇️ 下载直链：{apk_url}")
+                lines.append(f"⬇️ GitHub 直链：{apk_url}")
             if notified_issues and notified_issues.lower() != "none":
                 lines.append(f"🔧 本版已修复关联 Issue：{notified_issues}")
             if release_url:
