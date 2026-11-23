@@ -435,6 +435,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         val hasCachedWav = hasRetryWavFile()
         val settingsSnapshot = repository.settings.value
         val isPasswordField = ImeLogic.isPasswordEditorInputType(inputType)
+        val isAsciiPreferredField = ImeLogic.isAsciiPreferredEditor(inputType, imeOptions)
         val isIncognito = ImeLogic.isIncognitoImeOptions(
             imeOptions = imeOptions,
             inputType = inputType,
@@ -448,7 +449,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 previousTabMode = prev.tabMode,
                 previousFlypyChineseMode = prev.isFlypyChineseMode,
                 settings = settingsSnapshot,
-                isPasswordField = isPasswordField,
+                isPasswordField = isAsciiPreferredField,
                 restarting = restarting
             )
             if (sessionMode.tabMode == KeyboardTabMode.QWERTY && !typingController.isDictionaryLoaded) {

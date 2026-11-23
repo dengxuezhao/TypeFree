@@ -384,6 +384,23 @@ object ImeLogic {
         }
     }
 
+    /**
+     * Checks whether an input field explicitly requests raw ASCII / Latin characters
+     * (such as password fields, activation/redeem codes with [EditorInfo.IME_FLAG_FORCE_ASCII],
+     * URLs, or email addresses) so QWERTY starts in `EN` instead of Chinese composition.
+     */
+    fun isAsciiPreferredEditor(inputType: Int, imeOptions: Int = 0): Boolean {
+        if (isPasswordEditorInputType(inputType)) return true
+        if ((imeOptions and EditorInfo.IME_FLAG_FORCE_ASCII) != 0) return true
+        val cls = inputType and InputType.TYPE_MASK_CLASS
+        val variation = inputType and InputType.TYPE_MASK_VARIATION
+        return cls == InputType.TYPE_CLASS_TEXT && (
+            variation == InputType.TYPE_TEXT_VARIATION_URI ||
+                variation == InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS ||
+                variation == InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS
+            )
+    }
+
     fun isIncognitoImeOptions(
         imeOptions: Int,
         inputType: Int = 0,
