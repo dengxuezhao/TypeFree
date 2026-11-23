@@ -206,7 +206,7 @@ class BridgeTests(unittest.TestCase):
                     "release_url": "https://github.com/dengxuezhao/TypeFree/releases/tag/v3.7.2",
                     "is_signed": "true",
                     "notified_issues": "#1, #2",
-                    "release_notes": "### 更新亮点\n\n- **端侧离线模型**：断网可用\n- **26 键优化**：大写键帽与上滑清空\n\n---\n\n### 安装包说明\n- 不应出现",
+                    "release_notes": "### 更新亮点\n\n- **端侧离线模型**：新增独立 :local_ai 进程与 llama.cpp 推理\n- **26 键优化**：大写键帽与上滑清空\n\n---\n\n### 安装包说明\n- 不应出现",
                 }).encode("utf-8"),
                 headers={
                     "Content-Type": "application/json",
@@ -218,7 +218,8 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(resp.status, 200)
             self.assertEqual(len(ob.sent), 1)
             self.assertIn("v3.7.2", ob.sent[0]["text"])
-            self.assertIn("端侧离线模型", ob.sent[0]["text"])
+            self.assertIn("• 端侧离线模型", ob.sent[0]["text"])
+            self.assertNotIn(":local_ai", ob.sent[0]["text"])
             self.assertNotIn("不应出现", ob.sent[0]["text"])
             self.assertIn("https://typefree.xuezhao.space/downloads/TypeFree-v3.7.2-release.apk", ob.sent[0]["text"])
             self.assertIn("#1, #2", ob.sent[0]["text"])

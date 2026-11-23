@@ -480,7 +480,7 @@ class BridgeService:
     def _extract_release_highlights(
         raw_highlights: Any,
         max_items: int = 5,
-        max_item_len: int = 72,
+        max_item_len: int = 34,
     ) -> list[str]:
         if isinstance(raw_highlights, list):
             raw_lines = [str(item) for item in raw_highlights]
@@ -494,6 +494,9 @@ class BridgeService:
         stop_heading_re = re.compile(r"^#{1,6}\s*(?:安装包说明|下载说明|校验|checksum|assets)\b", re.IGNORECASE)
         skip_heading_re = re.compile(r"^#{1,6}\s*")
         skip_meta_re = re.compile(r"^(?:full changelog|https?://|sha-?256)", re.IGNORECASE)
+        bold_lead_re = re.compile(r"^\*\*([^*]{2,32})\*\*\s*[：:]\s*(.+)$")
+        conv_prefix_re = re.compile(r"^(?:feat|fix|perf|refactor|docs|chore|ci|build)(?:\([^)]*\))?:\s*", re.IGNORECASE)
+        paren_re = re.compile(r"（[^（）]{4,}）|\([^()]{4,}\)")
 
         for raw in raw_lines:
             line = raw.strip()
@@ -513,14 +516,27 @@ class BridgeService:
             if skip_meta_re.match(line):
                 continue
 
-            cleaned = re.sub(r"^(?:[-*•]+|\d+[.)、])\s*", "", line)
-            cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
-            cleaned = cleaned.replace("**", "").replace("__", "").replace("`", "")
-            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            body = re.sub(r"^(?:[-*•]+|\d+[.)、])\s*", "", line)
+            bold_match = bold_lead_re.match(body)
+            if bold_match:
+                cleaned = bold_match.group(1).strip()
+            else:
+                cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", body)
+                cleaned = cleaned.replace("**", "").replace("__", "").replace("`", "")
+                cleaned = conv_prefix_re.sub("", cleaned)
+                cleaned = paren_re.sub("", cleaned)
+                cleaned = re.sub(r"\s+", " ", cleaned).strip()
+                # If a plain line has "短标题：长技术细节", keep the concise title for QQ chat readability
+                if "：" in cleaned:
+                    head, tail = cleaned.split("：", 1)
+                    if 3 <= len(head.strip()) <= 26 and len(tail.strip()) > 16:
+                        cleaned = head.strip()
+
+            cleaned = re.sub(r"\s+", " ", cleaned).strip(" ；;，,。")
             if len(cleaned) < 3:
                 continue
             if len(cleaned) > max_item_len:
-                cleaned = cleaned[: max_item_len - 1].rstrip(" ，,、：:·") + "…"
+                cleaned = cleaned[: max_item_len - 1].rstrip(" ，,、：:·/-") + "…"
             items.append(cleaned)
             if len(items) >= max_items:
                 break
@@ -538,19 +554,17 @@ class BridgeService:
         assets = release.get("assets") or []
         apk_asset = next((a for a in assets if str(a.get("name", "")).endswith(".apk")), None)
         official_apk_url = self._derive_official_apk_url(str(tag))
-        highlights = self._extract_release_highlights(release.get("body") or "", max_items=4, max_item_len=64)
-        lines = [f"📦 TypeFree 最新公开版本：{tag}"]
+        highlights = self._extract_release_highlights(release.get("body") or "", max_items=4, max_item_len=32)
+        lines = [f"📦 TypeFree 最新公开版：{tag}"]
         if highlights:
-            lines.append("✨ 更新亮点：")
-            for item in highlights:
-                lines.append(f"• {item}")
+            lines.extend(f"• {item}" for item in highlights)
         if official_apk_url:
-            lines.append(f"🌐 官网下载直链：{official_apk_url}")
+            lines.append(f"🌐 官网直链：{official_apk_url}")
+        elif apk_asset:
+            lines.append(f"⬇️ APK 直链：{apk_asset.get('browser_download_url')}")
         elif self.config.official_site_origin:
-            lines.append(f"🌐 官网下载页：{self.config.official_site_origin}")
-        if apk_asset:
-            lines.append(f"⬇️ GitHub 直链：{apk_asset.get('browser_download_url')}")
-        lines.append(f"📝 更新日志：{html_url}")
+            lines.append(f"🌐 官网下载：{self.config.official_site_origin}")
+        lines.append(f"📝 详细更新：{html_url}")
         return "\n".join(lines)
 
     @staticmethod
@@ -592,34 +606,29 @@ class BridgeService:
             apk_url = str(payload.get("apk_url") or "").strip()
             official_apk_url = str(payload.get("official_apk_url") or "").strip() or self._derive_official_apk_url(tag)
             official_site_url = str(payload.get("official_site_url") or "").strip() or self.config.official_site_origin
-            apk_name = str(payload.get("apk_file") or "").strip()
             notified_issues = str(payload.get("notified_issues") or "").strip()
             is_signed = str(payload.get("is_signed") or "").lower() == "true"
             highlights = self._extract_release_highlights(
                 payload.get("highlights") if payload.get("highlights") is not None else payload.get("release_notes"),
-                max_items=6,
-                max_item_len=72,
+                max_items=5,
+                max_item_len=34,
             )
 
-            lines = [f"🚀 TypeFree {tag} 已正式发布！"]
+            sign_hint = "正式签名，可覆盖升级" if is_signed else "Debug 签名"
+            lines = [f"🚀 TypeFree {tag} 已发布（{sign_hint}）"]
             if highlights:
-                lines.append("✨ 本版更新亮点：")
-                for item in highlights:
-                    lines.append(f"• {item}")
-            if apk_name:
-                sign_hint = "正式签名" if is_signed else "Debug 签名"
-                lines.append(f"📦 安装包：{apk_name}（{sign_hint}）")
-            if official_apk_url:
-                lines.append(f"🌐 官网下载直链：{official_apk_url}")
-            elif official_site_url:
-                lines.append(f"🌐 官网下载页：{official_site_url}")
-            if apk_url:
-                lines.append(f"⬇️ GitHub 直链：{apk_url}")
+                lines.extend(f"• {item}" for item in highlights)
             if notified_issues and notified_issues.lower() != "none":
-                lines.append(f"🔧 本版已修复关联 Issue：{notified_issues}")
+                lines.append(f"🔧 修复 Issue：{notified_issues}")
+            if official_apk_url:
+                lines.append(f"🌐 官网下载：{official_apk_url}")
+            elif apk_url:
+                lines.append(f"⬇️ 下载直链：{apk_url}")
+            elif official_site_url:
+                lines.append(f"🌐 官网下载：{official_site_url}")
             if release_url:
-                lines.append(f"📝 完整更新日志：{release_url}")
-            lines.append("💡 小鹤音形专享版用户请注意勿直接用公开版覆盖安装。")
+                lines.append(f"📝 详情与 GitHub 下载：{release_url}")
+            lines.append("💡 小鹤专享版请勿用公开版覆盖")
             message = "\n".join(lines)
         elif event_type == "issue":
             number = payload.get("number")
