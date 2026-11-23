@@ -1,6 +1,10 @@
 package com.typefree.ime.ime
 
 import android.view.inputmethod.ExtractedTextRequest
+import com.typefree.core.offline.AiTask
+import com.typefree.core.offline.AsrRoute
+import com.typefree.core.offline.OfflineMode
+import com.typefree.core.offline.TextRoute
 import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.bubble.CapturedChatContext
 import com.typefree.ime.bubble.ChatScreenContextExtractor
@@ -127,6 +131,16 @@ class VoiceController(
 
     fun warmVoiceConnectionsInBackground() {
         val snap = host.repository.settings.value
+        if (snap.offlineConfig.mode != OfflineMode.OFF) {
+            host.aiEngine.preBindLocalAiIfNeeded(
+                settings = snap,
+                prewarmAsr = true,
+                prewarmSlm = false
+            )
+        }
+        if (!host.aiEngine.isEgressAllowed(snap)) {
+            return
+        }
         host.scope.launch {
             runCatching {
                 host.aiEngine.prewarmLiveStreamingIfNeeded(snap)
@@ -1437,14 +1451,38 @@ class VoiceController(
         }
         preSessionSurroundingContext = host.readSurroundingBeforeCursor(80)
 
-        val streamSession = host.aiEngine.openLiveStreamingSession(settingsSnap)
+        val startTask = when (resolvedStartIntent) {
+            VoiceIntentMode.DICTATE -> AiTask.DICTATE
+            VoiceIntentMode.SPEAK_TO_EDIT -> AiTask.SPEAK_TO_EDIT
+            VoiceIntentMode.HELP_ME_WRITE -> AiTask.HELP_ME_WRITE
+            VoiceIntentMode.TRANSLATE -> AiTask.TRANSLATE
+            VoiceIntentMode.JEV_COPILOT -> AiTask.JEV_COPILOT
+        }
+        val startRoutePlan = host.aiEngine.resolveRoutePlan(
+            task = startTask,
+            settings = settingsSnap,
+            isSecureField = ImeLogic.isPasswordEditorInputType(prevState.currentInputType)
+        )
+        if (settingsSnap.offlineConfig.mode != OfflineMode.OFF) {
+            host.aiEngine.preBindLocalAiIfNeeded(
+                settings = settingsSnap,
+                prewarmAsr = startRoutePlan.asr is AsrRoute.Local,
+                prewarmSlm = startRoutePlan.text is TextRoute.Local
+            )
+        }
+
+        val streamSession = host.aiEngine.openLiveStreamingSession(
+            settings = settingsSnap,
+            routePlan = startRoutePlan
+        )
         val enableLiveWrite = StreamingComposer.shouldEnableLiveWrite(
             settings = settingsSnap,
             intentMode = resolvedStartIntent,
             effectiveSelectedText = effectiveSelected,
             hasStreamingSession = streamSession != null,
             targetPackage = prevState.targetPackage,
-            isFloatingBubbleChannel = false
+            isFloatingBubbleChannel = false,
+            routePlan = startRoutePlan
         )
 
         val startRes = audioRecorder.startRecording(
@@ -1479,7 +1517,11 @@ class VoiceController(
                     )
                     composer.startSession(
                         anchorCursor = anchor,
-                        smartDirectMode = StreamingComposer.isSmartDirectDictation(settingsSnap, resolvedStartIntent)
+                        smartDirectMode = StreamingComposer.isSmartDirectDictation(
+                            settings = settingsSnap,
+                            intentMode = resolvedStartIntent,
+                            routePlan = startRoutePlan
+                        )
                     )
                     activeComposer = composer
                 } else {
@@ -1506,9 +1548,11 @@ class VoiceController(
                         }
                     }
                 }
-                // Warm up LLM / HTTP STT TCP+TLS sockets during the first ~250ms of speaking
-                host.scope.launch {
-                    host.aiEngine.prewarmEndpoints(settingsSnap)
+                // Warm up LLM / HTTP STT TCP+TLS sockets during the first ~250ms of speaking (skipped in OFFLINE_ONLY)
+                if (startRoutePlan.egressAllowed) {
+                    host.scope.launch {
+                        host.aiEngine.prewarmEndpoints(settingsSnap)
+                    }
                 }
                 host.stateFlow.update {
                     it.copy(
@@ -1912,12 +1956,25 @@ class VoiceController(
             host.readSurroundingBeforeCursor(80)
         }
 
+        val finishTask = when (resolvedIntent) {
+            VoiceIntentMode.DICTATE -> AiTask.DICTATE
+            VoiceIntentMode.SPEAK_TO_EDIT -> AiTask.SPEAK_TO_EDIT
+            VoiceIntentMode.HELP_ME_WRITE -> AiTask.HELP_ME_WRITE
+            VoiceIntentMode.TRANSLATE -> AiTask.TRANSLATE
+            VoiceIntentMode.JEV_COPILOT -> AiTask.JEV_COPILOT
+        }
+        val finishRoutePlan = host.aiEngine.resolveRoutePlan(task = finishTask, settings = settings)
+
         if (composer != null && composer.isActive) {
             if (resolvedIntent != VoiceIntentMode.DICTATE) {
                 composer.cancelSession(rollbackWrittenText = true)
                 activeComposer = null
             } else {
-                val needsPolish = !StreamingComposer.isSmartDirectDictation(settings, resolvedIntent)
+                val needsPolish = !StreamingComposer.isSmartDirectDictation(
+                    settings = settings,
+                    intentMode = resolvedIntent,
+                    routePlan = finishRoutePlan
+                )
                 composer.onRecordingFinished(
                     finalRawTranscript = preTranscribedText.orEmpty(),
                     needsPolishing = needsPolish
@@ -1926,6 +1983,8 @@ class VoiceController(
         }
 
         val initialStage = when {
+            finishRoutePlan.asr is AsrRoute.Local && !preTranscribedText.isNullOrBlank() -> PipelineStage.POLISHING_LLM
+            finishRoutePlan.asr is AsrRoute.Local -> PipelineStage.TRANSCRIBING_STT
             settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT -> PipelineStage.MULTIMODAL_PROCESSING
             !preTranscribedText.isNullOrBlank() -> PipelineStage.POLISHING_LLM
             else -> PipelineStage.TRANSCRIBING_STT
@@ -2062,7 +2121,8 @@ class VoiceController(
                             durationMs = durationMs,
                             latencyMs = exec.latencyMs,
                             modeLabel = exec.modeSummary,
-                            audioFilePath = historyAudioFile.absolutePath
+                            audioFilePath = historyAudioFile.absolutePath,
+                            executionSource = exec.executionSource.name
                         )
                     )
                 }
@@ -2145,7 +2205,8 @@ class VoiceController(
                                 durationMs = 0L,
                                 latencyMs = exec.latencyMs,
                                 modeLabel = exec.modeSummary,
-                                audioFilePath = ""
+                                audioFilePath = "",
+                                executionSource = exec.executionSource.name
                             )
                         )
                     }
@@ -2226,7 +2287,8 @@ class VoiceController(
                                 durationMs = 0L,
                                 latencyMs = exec.latencyMs,
                                 modeLabel = exec.modeSummary,
-                                audioFilePath = ""
+                                audioFilePath = "",
+                                executionSource = exec.executionSource.name
                             )
                         )
                     }
@@ -2755,7 +2817,8 @@ class VoiceController(
                                 durationMs = 0L,
                                 latencyMs = exec.latencyMs,
                                 modeLabel = exec.modeSummary,
-                                audioFilePath = ""
+                                audioFilePath = "",
+                                executionSource = exec.executionSource.name
                             )
                         )
                     }

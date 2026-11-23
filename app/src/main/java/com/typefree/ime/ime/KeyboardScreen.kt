@@ -467,7 +467,7 @@ fun KeyboardScreen(
 
                                 uiState.tabMode == KeyboardTabMode.QWERTY -> {
                                     if (uiState.activeInputScheme == InputScheme.RIME_T9_PINYIN && uiState.isFlypyChineseMode) {
-                                        BuiltInT9KeyboardHost(uiState, settings.qwertyKeyPopupPreview, onAction)
+                                        BuiltInT9KeyboardHost(uiState, settings.qwertyKeyPopupPreview, onAction, settings.backspaceSwipeUpClearEnabled)
                                     } else BuiltInQwertyKeyboard(
                                         enterActionInfo = uiState.enterActionInfo,
                                         isFlypyChineseMode = uiState.isFlypyChineseMode,
@@ -485,6 +485,8 @@ fun KeyboardScreen(
                                         onFlushComposingBeforeLayerSwitch = onFlushFlypyComposing,
                                         onBackspace = onBackspace,
                                         onSwipeUpBackspaceUndo = onPerformUndo,
+                                        backspaceSwipeUpClearEnabled = settings.backspaceSwipeUpClearEnabled,
+                                        onSwipeUpBackspaceClear = { onAction(ImeUiAction.ClearInputBox) },
                                         onEditorShortcutAction = onEditorShortcutAction,
                                         onEnterOrNewline = onEnterOrNewline,
                                         onSwitchToVoice = { onSelectTabMode(KeyboardTabMode.VOICE) },

@@ -8,6 +8,11 @@ import com.typefree.ime.ime.engine.RimeDataManager
 import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.ime.engine.RimeInputEngine
 import com.typefree.ime.ime.flypy.FlypyDictionary
+import com.typefree.ime.localai.LocalAiProcessInit
+import com.typefree.ime.localai.LocalAiServiceClient
+import com.typefree.ime.localai.LocalInferenceEngineBootstrap
+import com.typefree.ime.localai.LocalModelRegistry
+import com.typefree.ime.localai.ProcessUtil
 import com.typefree.ime.network.AiPipelineEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +37,12 @@ class TypeFreeApp : Application() {
     lateinit var rimeInputEngine: RimeInputEngine
         private set
 
+    lateinit var localAiClient: LocalAiServiceClient
+        private set
+
+    lateinit var localModelRegistry: LocalModelRegistry
+        private set
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val flypyLoading = AtomicBoolean(false)
     private val rimeDeploying = AtomicBoolean(false)
@@ -41,8 +52,21 @@ class TypeFreeApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        if (ProcessUtil.isLocalAiProcess(this)) {
+            LocalAiProcessInit.init(this)
+            return
+        }
+        LocalInferenceEngineBootstrap.initialize(this)
         repository = AppRepository(this)
-        aiEngine = AiPipelineEngine()
+        localAiClient = LocalAiServiceClient(this)
+        localModelRegistry = LocalModelRegistry(
+            context = this,
+            localAiClient = localAiClient
+        )
+        aiEngine = AiPipelineEngine(
+            localAiClient = localAiClient,
+            localModelRegistry = localModelRegistry
+        )
         rimeDataManager = RimeDataManager(this)
         rimeInputEngine = RimeInputEngine(
             rimeBridge = rimeDataManager.rimeBridge,

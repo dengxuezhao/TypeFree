@@ -99,11 +99,15 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.typefree.core.offline.LocalModelRegistrySnapshot
+import com.typefree.core.offline.OfflineMode
+import com.typefree.core.offline.ReadinessState
 import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.bubble.TypeFreeBubbleController
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.HistoryRecord
+import com.typefree.ime.data.OfflineRouteBridge
 import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.SttProtocol
 import com.typefree.ime.data.UsageStatsSummary
@@ -114,6 +118,7 @@ import com.typefree.ime.network.PipelineStage
 import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.components.TypeFreeIcons
+import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
 import com.typefree.ime.ui.screens.home.PlaygroundBottomSheet
 import com.typefree.ime.ui.screens.home.PlaygroundEntryCard
 import com.typefree.ime.ui.screens.home.SandboxPreviewDiff
@@ -199,42 +204,44 @@ object SetupStatsHelper {
     }
 
     /**
-     * Checks whether the active PipelineMode has valid endpoint & API key (or LAN local URL).
+     * Unified readiness check delegating to [OfflineRouteBridge.resolveReadiness] so cloud BYOK,
+     * hybrid offline ASR + cloud polish, pure offline, and raw-only degraded states stay consistent.
      */
-    fun isApiConfigured(settings: AppSettings): Boolean {
-        return when (settings.pipelineMode) {
-            PipelineMode.DUAL_STAGE -> {
-                val stt = settings.sttConfig
-                val sttOk = when (stt.protocol) {
-                    SttProtocol.OPENAI_HTTP -> stt.baseUrl.isNotBlank() &&
-                        (stt.model.isNotBlank() || EndpointResolver.isDeepSeekAsrEndpoint(stt.baseUrl)) &&
-                        (stt.apiKey.isNotBlank() || AiPipelineEngine.isLocalEndpoint(stt.baseUrl))
-                    SttProtocol.ALIYUN_DASHSCOPE_WS,
-                    SttProtocol.VOLCENGINE_SAUC_WS,
-                    SttProtocol.GEMINI_LIVE_WS -> stt.apiKey.isNotBlank()
-                }
-
-                val llm = settings.llmConfig
-                val llmOk = if (!llm.enabled) {
-                    true
-                } else {
-                    llm.baseUrl.isNotBlank() &&
-                        llm.model.isNotBlank() &&
-                        (llm.apiKey.isNotBlank() || AiPipelineEngine.isLocalEndpoint(llm.baseUrl))
-                }
-                sttOk && llmOk
-            }
-
-            PipelineMode.MULTIMODAL_DIRECT -> {
-                val mm = settings.multimodalConfig
-                mm.baseUrl.isNotBlank() &&
-                    mm.model.isNotBlank() &&
-                    (mm.apiKey.isNotBlank() || AiPipelineEngine.isLocalEndpoint(mm.baseUrl))
-            }
-        }
+    fun resolveReadiness(
+        settings: AppSettings,
+        registrySnapshot: LocalModelRegistrySnapshot = LocalModelRegistrySnapshot(),
+        isNetworkAvailable: Boolean = true
+    ): ReadinessState {
+        return OfflineRouteBridge.resolveReadiness(
+            settings = settings,
+            registrySnapshot = registrySnapshot,
+            isNetworkAvailable = isNetworkAvailable
+        )
     }
 
-    fun formatActivePipelineBadge(settings: AppSettings): String {
+    /**
+     * Backward-compatible boolean readiness helper delegating to [resolveReadiness].
+     */
+    fun isApiConfigured(
+        settings: AppSettings,
+        registrySnapshot: LocalModelRegistrySnapshot = LocalModelRegistrySnapshot()
+    ): Boolean {
+        return resolveReadiness(settings, registrySnapshot) !is ReadinessState.NotReady
+    }
+
+    fun formatActivePipelineBadge(
+        settings: AppSettings,
+        registrySnapshot: LocalModelRegistrySnapshot = LocalModelRegistrySnapshot()
+    ): String {
+        val routeBadge = OfflineRouteBridge.formatBadgeForDictate(
+            settings = settings,
+            registrySnapshot = registrySnapshot
+        )
+        if (settings.offlineConfig.mode != OfflineMode.OFF &&
+            (routeBadge.isPureOffline || routeBadge.isHybrid || resolveReadiness(settings, registrySnapshot) is ReadinessState.NotReady)
+        ) {
+            return routeBadge.shortLabel
+        }
         return when (settings.pipelineMode) {
             PipelineMode.DUAL_STAGE -> {
                 val sttShort = when (settings.sttConfig.protocol) {
@@ -298,7 +305,8 @@ fun HomeSetupScreen(
     aiEngine: AiPipelineEngine,
     onNavigateToTab: (Int) -> Unit,
     onNavigateToSettingsSubTab: (Int) -> Unit = { onNavigateToTab(AppDestinations.TAB_VOICE_AI) },
-    onNavigateToVoiceAiSubTab: (Int) -> Unit = onNavigateToSettingsSubTab
+    onNavigateToVoiceAiSubTab: (Int) -> Unit = onNavigateToSettingsSubTab,
+    onOpenOfflineModels: () -> Unit = { onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_API) }
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -380,7 +388,11 @@ fun HomeSetupScreen(
         return
     }
 
-    val isApiReady = remember(settings) { SetupStatsHelper.isApiConfigured(settings) }
+    val registrySnapshot = rememberLocalModelRegistrySnapshot()
+    val readiness = remember(settings, registrySnapshot) {
+        SetupStatsHelper.resolveReadiness(settings, registrySnapshot)
+    }
+    val isApiReady = readiness !is ReadinessState.NotReady
     val isA11yReady = isAccessibilityEnabled || a11yLiveConnected
 
     fun refreshSystemReadiness() {
@@ -496,7 +508,8 @@ fun HomeSetupScreen(
         // 1. Minimalist Brand Bar (LogoMark + Bold TypeFree + API Readiness Capsule)
         TopBrandBar(
             settings = settings,
-            isApiReady = isApiReady,
+            registrySnapshot = registrySnapshot,
+            readiness = readiness,
             onClickApiCapsule = {
                 onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_API)
             }
@@ -522,7 +535,8 @@ fun HomeSetupScreen(
             permissionDeniedOnce = permissionDeniedOnce,
             isImeEnabled = isImeEnabled,
             isImeSelected = isImeSelected,
-            isApiReady = isApiReady,
+            readiness = readiness,
+            hasPendingOfflineRestore = settings.pendingOfflineRestore != null,
             isAccessibilityReady = isA11yReady,
             jevCopilotEnabled = settings.jevCopilotEnabled,
             onRequestMic = {
@@ -545,6 +559,7 @@ fun HomeSetupScreen(
             onOpenApiConfig = {
                 onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_API)
             },
+            onOpenOfflineModels = onOpenOfflineModels,
             onOpenAccessibility = {
                 TypeFreeBubbleController.openAccessibilitySettings(context)
             }
@@ -727,8 +742,8 @@ fun HomeSetupScreen(
                     sandboxError = "请先授予麦克风录音权限后再试"
                     return@PlaygroundBottomSheet
                 }
-                if (!SetupStatsHelper.isApiConfigured(settings)) {
-                    sandboxError = "尚未填写自定义 API Key，请点击右上角前往「自定义 API」完成配置"
+                if (!SetupStatsHelper.isApiConfigured(settings, registrySnapshot)) {
+                    sandboxError = "尚未配置云端 API 或启用本机离线模型，请前往「模型与 API」完成配置"
                     return@PlaygroundBottomSheet
                 }
                 sandboxStreamSession?.cancel()
@@ -877,7 +892,8 @@ fun HomeSetupScreen(
                                 durationMs = recorded.durationMs,
                                 latencyMs = exec.latencyMs,
                                 modeLabel = exec.modeSummary,
-                                audioFilePath = recorded.wavFile.absolutePath
+                                audioFilePath = recorded.wavFile.absolutePath,
+                                executionSource = exec.executionSource.name
                             )
                         )
                     }.onFailure { err ->
@@ -893,9 +909,17 @@ fun HomeSetupScreen(
 @Composable
 private fun TopBrandBar(
     settings: AppSettings,
-    isApiReady: Boolean,
+    registrySnapshot: LocalModelRegistrySnapshot,
+    readiness: ReadinessState,
     onClickApiCapsule: () -> Unit
 ) {
+    val isFullReady = readiness is ReadinessState.Ready
+    val capsuleAccent = if (isFullReady) TypeFreeEmerald else TypeFreeAmber
+    val capsuleLabel = when (readiness) {
+        is ReadinessState.Ready -> SetupStatsHelper.formatActivePipelineBadge(settings, registrySnapshot)
+        is ReadinessState.DegradedRawOnly -> readiness.badge.shortLabel
+        is ReadinessState.NotReady -> "配置模型 / API"
+    }
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -929,18 +953,14 @@ private fun TopBrandBar(
             )
         }
 
-        // Right Custom API Engine Status Capsule
+        // Right Custom API / Offline Engine Status Capsule
         Surface(
             onClick = onClickApiCapsule,
             shape = RoundedCornerShape(50),
             color = MaterialTheme.colorScheme.surface,
             border = BorderStroke(
                 1.dp,
-                if (isApiReady) {
-                    TypeFreeEmerald.copy(alpha = 0.45f)
-                } else {
-                    TypeFreeAmber.copy(alpha = 0.6f)
-                }
+                capsuleAccent.copy(alpha = if (isFullReady) 0.45f else 0.6f)
             )
         ) {
             Row(
@@ -952,14 +972,10 @@ private fun TopBrandBar(
                     modifier = Modifier
                         .size(7.dp)
                         .clip(CircleShape)
-                        .background(if (isApiReady) TypeFreeEmerald else TypeFreeAmber)
+                        .background(capsuleAccent)
                 )
                 Text(
-                    text = if (isApiReady) {
-                        SetupStatsHelper.formatActivePipelineBadge(settings)
-                    } else {
-                        "配置自定义 API"
-                    },
+                    text = capsuleLabel,
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
@@ -1521,7 +1537,8 @@ private fun KeyboardSetupWizardCard(
     permissionDeniedOnce: Boolean,
     isImeEnabled: Boolean,
     isImeSelected: Boolean,
-    isApiReady: Boolean = true,
+    readiness: ReadinessState,
+    hasPendingOfflineRestore: Boolean = false,
     isAccessibilityReady: Boolean = false,
     jevCopilotEnabled: Boolean = true,
     onRequestMic: () -> Unit,
@@ -1529,24 +1546,28 @@ private fun KeyboardSetupWizardCard(
     onOpenImeSettings: () -> Unit,
     onShowImePicker: () -> Unit,
     onOpenApiConfig: () -> Unit = {},
+    onOpenOfflineModels: () -> Unit = onOpenApiConfig,
     onOpenAccessibility: () -> Unit = {}
 ) {
+    val isApiReady = readiness !is ReadinessState.NotReady
+    val isDegradedRawOnly = readiness is ReadinessState.DegradedRawOnly
     val completedCount = listOf(isImeEnabled, isImeSelected, isApiReady).count { it }
     val allReady = isImeEnabled && isImeSelected && isApiReady && hasMicPermission
     var manualExpanded by rememberSaveable { mutableStateOf(false) }
     var a11ySoftTipDismissed by rememberSaveable { mutableStateOf(false) }
 
     if (allReady && !manualExpanded) {
+        val readyAccent = if (isDegradedRawOnly) TypeFreeAmber else TypeFreeEmerald
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            // Sleek 1-Line Emerald Ready Banner (R5.1)
+            // Sleek 1-Line Ready Banner (Emerald for full ready, Amber for raw-only degraded offline ASR)
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
                     .clickable { manualExpanded = true },
                 shape = RoundedCornerShape(16.dp),
-                color = TypeFreeEmerald.copy(alpha = 0.10f),
-                border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.45f))
+                color = readyAccent.copy(alpha = 0.10f),
+                border = BorderStroke(1.dp, readyAccent.copy(alpha = 0.45f))
             ) {
                 Row(
                     modifier = Modifier
@@ -1564,7 +1585,7 @@ private fun KeyboardSetupWizardCard(
                             modifier = Modifier
                                 .size(22.dp)
                                 .clip(CircleShape)
-                                .background(TypeFreeEmerald),
+                                .background(readyAccent),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
@@ -1575,7 +1596,11 @@ private fun KeyboardSetupWizardCard(
                             )
                         }
                         Text(
-                            text = "灵言 TypeFree 语音键盘已就绪 (3/3) · 点击展开",
+                            text = if (isDegradedRawOnly) {
+                                "灵言语音键盘已就绪（仅转写）· 点击展开"
+                            } else {
+                                "灵言 TypeFree 语音键盘已就绪 (3/3) · 点击展开"
+                            },
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
@@ -1759,13 +1784,61 @@ private fun KeyboardSetupWizardCard(
 
             WizardStepItem(
                 stepNumber = 3,
-                title = "配置语音识别与润色 API",
-                subtitle = if (isApiReady) "API 密钥与模型端点已就绪" else "配置云端或本地 API 密钥",
+                title = "配置语音识别与润色引擎",
+                subtitle = when (readiness) {
+                    is ReadinessState.Ready -> "语音识别与润色引擎已就绪"
+                    is ReadinessState.DegradedRawOnly -> readiness.message
+                    is ReadinessState.NotReady -> "配置云端 API 密钥，或免 Key 下载开源离线语音"
+                },
                 isDone = isApiReady,
                 buttonLabel = if (isApiReady) "修改配置" else "去配置",
                 keepClickableWhenDone = true,
                 onClick = onOpenApiConfig
             )
+
+            if (readiness is ReadinessState.NotReady) {
+                OutlinedButton(
+                    onClick = onOpenOfflineModels,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(11.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "📱 免 Key 体验：下载开源离线语音",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            } else if (hasPendingOfflineRestore) {
+                Surface(
+                    onClick = onOpenOfflineModels,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = TypeFreeAmber.copy(alpha = 0.10f),
+                    border = BorderStroke(1.dp, TypeFreeAmber.copy(alpha = 0.40f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "检测到导入配置启用了离线模型，点击前往下载恢复",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = "去恢复 ›",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = TypeFreeAmber
+                        )
+                    }
+                }
+            }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 

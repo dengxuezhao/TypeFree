@@ -29,6 +29,12 @@ data class UpdateCheckInfo(
 ) {
     val preferredDownloadUrl: String
         get() = apkDownloadUrl ?: htmlUrl
+
+    val keyHighlightSummary: String
+        get() = AppUpdateChecker.extractKeyHighlightSummary(
+            releaseNotes = releaseNotes,
+            releaseName = releaseName
+        )
 }
 
 private data class GitHubReleaseDto(
@@ -62,8 +68,23 @@ object AppUpdateChecker {
         "暂无详细更新说明，可前往 GitHub Releases 页面查看完整变更记录。"
 
     private const val MAX_FETCH_ATTEMPTS = 3
+    private const val DEFAULT_CACHE_TTL_MS = 15L * 60L * 1000L
     private val RETRY_BACKOFF_MS = longArrayOf(250L, 600L)
     private val TRANSIENT_HTTP_CODES = setOf(502, 503, 504)
+
+    private val MARKDOWN_LINK_REGEX = Regex("""\[([^]]+)]\([^)]+\)""")
+    private val LEADING_LIST_PREFIX_REGEX = Regex("""^(?:[-*•●▪▫✅🚀✨🔥🎉📌🔧🛠️⚡]+\s*|\d+[.)、]\s*)+""")
+    private val NON_HIGHLIGHT_HEADINGS = setOf(
+        "更新内容", "主要更新", "核心更新", "更新日志", "变更日志", "本次更新", "版本亮点", "新特性",
+        "what's new", "whats new", "changelog", "highlights", "release notes", "changes",
+        "下载", "下载说明", "安装说明", "校验", "sha256", "sha-256", "checksum", "checksums", "assets"
+    )
+
+    private val cacheLock = Any()
+    @Volatile
+    private var cachedInfo: UpdateCheckInfo? = null
+    @Volatile
+    private var lastCheckedAtMs: Long = 0L
 
     private val gson = Gson()
 
@@ -221,6 +242,7 @@ object AppUpdateChecker {
                         currentVersion = currentVersion,
                         isPrivateDictBuild = isPrivateDictBuild
                     )
+                    cacheUpdateResult(info)
                     Result.success(info)
                 }
             } catch (e: CancellationException) {
@@ -242,6 +264,123 @@ object AppUpdateChecker {
         Result.failure(
             lastError ?: IllegalStateException("网络请求失败：请检查网络后重试")
         )
+    }
+
+    /**
+     * Extracts a clean single-line highlight summary from GitHub Release Markdown notes
+     * for inline Settings update banners.
+     */
+    fun extractKeyHighlightSummary(
+        releaseNotes: String,
+        releaseName: String = "",
+        maxChars: Int = 56
+    ): String {
+        val highlights = mutableListOf<String>()
+        var inCodeFence = false
+        for (rawLine in releaseNotes.lineSequence()) {
+            val trimmed = rawLine.trim()
+            if (trimmed.startsWith("```")) {
+                inCodeFence = !inCodeFence
+                continue
+            }
+            if (inCodeFence || trimmed.isEmpty()) continue
+            if (trimmed.all { it == '-' || it == '=' || it == '_' || it == '*' }) continue
+            if (trimmed.startsWith("http://", ignoreCase = true) ||
+                trimmed.startsWith("https://", ignoreCase = true) ||
+                trimmed.startsWith("**Full Changelog**", ignoreCase = true) ||
+                trimmed.startsWith("Full Changelog", ignoreCase = true) ||
+                trimmed.startsWith("SHA-256", ignoreCase = true) ||
+                trimmed.startsWith("SHA256", ignoreCase = true)
+            ) {
+                continue
+            }
+            val cleaned = cleanMarkdownLine(trimmed)
+            if (cleaned.length < 3) continue
+            val normalizedHeading = cleaned.trimEnd(':', '：').lowercase()
+            if (normalizedHeading in NON_HIGHLIGHT_HEADINGS) continue
+            if (cleaned == DEFAULT_EMPTY_RELEASE_NOTES) continue
+            highlights.add(cleaned)
+            if (highlights.size >= 2 || cleaned.length >= maxChars - 8) break
+        }
+
+        val combined = when {
+            highlights.isNotEmpty() -> highlights.joinToString(" · ")
+            releaseName.isNotBlank() -> cleanMarkdownLine(releaseName)
+            else -> "点击查看新版本更新说明"
+        }
+        return if (combined.length > maxChars) {
+            combined.take((maxChars - 1).coerceAtLeast(1)).trimEnd(' ', '·', '，', ',', '：', ':') + "…"
+        } else {
+            combined
+        }
+    }
+
+    private fun cleanMarkdownLine(line: String): String {
+        var s = line.trim()
+        s = s.trimStart('#').trim()
+        s = LEADING_LIST_PREFIX_REGEX.replace(s, "")
+        s = MARKDOWN_LINK_REGEX.replace(s, "$1")
+        s = s.replace("**", "").replace("__", "").replace("`", "")
+        s = s.replace(Regex("""\s+"""), " ").trim()
+        return s
+    }
+
+    fun peekCachedUpdate(
+        currentVersion: String,
+        nowMs: Long = System.currentTimeMillis(),
+        cacheTtlMs: Long = DEFAULT_CACHE_TTL_MS
+    ): UpdateCheckInfo? {
+        val normalizedCurrent = normalizeVersionTag(currentVersion)
+        val snap = synchronized(cacheLock) {
+            val info = cachedInfo ?: return@synchronized null
+            if (nowMs - lastCheckedAtMs > cacheTtlMs) return@synchronized null
+            info
+        } ?: return null
+        return if (snap.currentVersion == normalizedCurrent && snap.hasUpdate) snap else null
+    }
+
+    suspend fun fetchLatestUpdateSilentlyIfNeeded(
+        currentVersion: String,
+        isPrivateDictBuild: Boolean,
+        client: OkHttpClient = defaultClient,
+        apiUrl: String = GITHUB_LATEST_RELEASE_API,
+        cacheTtlMs: Long = DEFAULT_CACHE_TTL_MS,
+        nowProvider: () -> Long = System::currentTimeMillis
+    ): UpdateCheckInfo? {
+        val now = nowProvider()
+        val normalizedCurrent = normalizeVersionTag(currentVersion)
+        synchronized(cacheLock) {
+            val existing = cachedInfo
+            if (existing != null &&
+                existing.currentVersion == normalizedCurrent &&
+                (now - lastCheckedAtMs) <= cacheTtlMs
+            ) {
+                return existing.takeIf { it.hasUpdate }
+            }
+        }
+        val result = fetchLatestUpdate(
+            currentVersion = currentVersion,
+            isPrivateDictBuild = isPrivateDictBuild,
+            client = client,
+            apiUrl = apiUrl
+        )
+        return result.getOrNull()?.also { info ->
+            cacheUpdateResult(info, nowProvider())
+        }?.takeIf { it.hasUpdate }
+    }
+
+    fun resetCacheForTest() {
+        synchronized(cacheLock) {
+            cachedInfo = null
+            lastCheckedAtMs = 0L
+        }
+    }
+
+    private fun cacheUpdateResult(info: UpdateCheckInfo, checkedAtMs: Long = System.currentTimeMillis()) {
+        synchronized(cacheLock) {
+            cachedInfo = info
+            lastCheckedAtMs = checkedAtMs
+        }
     }
 
     private fun mapIoException(e: IOException): IllegalStateException = when (e) {

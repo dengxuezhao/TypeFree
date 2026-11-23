@@ -37,6 +37,10 @@ class PredictionCoordinator(
         internal set
 
     @Volatile
+    var secondLastCommittedWord: String? = null
+        internal set
+
+    @Volatile
     var isIncognitoMode: Boolean = false
         private set
 
@@ -70,6 +74,7 @@ class PredictionCoordinator(
                     ) {
                         onPanelSwitched()
                     } else {
+                        secondLastCommittedWord = null
                         lastCommittedWord = null
                     }
                 }
@@ -88,6 +93,7 @@ class PredictionCoordinator(
         isIncognitoMode = incognito
         predictionStore.isIncognitoMode = incognito
         if (incognito) {
+            secondLastCommittedWord = null
             lastCommittedWord = null
             aiSentenceCompleter.cancel()
             stateFlow.update {
@@ -104,15 +110,23 @@ class PredictionCoordinator(
     }
 
     /**
-     * Merges L2 personal bigrams ([PredictionStore]) before L1 static predictions ([StaticPredictor]),
+     * Merges L2 personal trigrams & bigrams ([PredictionStore]) before L1 static predictions ([StaticPredictor]),
      * deduplicating and excluding self-repetition of [prevWord].
      */
-    fun mergePredictions(prevWord: String, limit: Int = maxCandidates): List<FlypyCandidate> {
+    fun mergePredictions(
+        prevWord: String,
+        limit: Int = maxCandidates,
+        prevPrevWord: String? = secondLastCommittedWord
+    ): List<FlypyCandidate> {
         if (limit <= 0) return emptyList()
         val cleanPrev = prevWord.trim()
         if (!PredictionStore.isValidWord(cleanPrev)) return emptyList()
 
-        val l2Words = predictionStore.queryNextWords(cleanPrev, limit = limit)
+        val l2Words = predictionStore.queryNextWordsWithContext(
+            prevPrevWord = prevPrevWord,
+            prevWord = cleanPrev,
+            limit = limit
+        )
         val l1Words = staticPredictor.predictWords(cleanPrev, limit = limit)
 
         val merged = ArrayList<FlypyCandidate>(limit)
@@ -151,18 +165,22 @@ class PredictionCoordinator(
             return
         }
 
-        // 1. Pure punctuation / symbol input -> break bigram chain and exit prediction bar immediately
+        // 1. Pure punctuation / symbol input -> break bigram/trigram chain and exit prediction bar immediately
         if (PredictionStore.isPunctuationOrSymbolOnly(trimmed)) {
             onPunctuationCommitted()
             return
         }
 
-        // 2. Word + trailing punctuation (e.g. "你好，" from comma/period top-up) -> record word bigram then break chain
+        // 2. Word + trailing punctuation (e.g. "你好，" from comma/period top-up) -> record n-gram then break chain
         val leadingWord = trimmed.dropLastWhile { PredictionStore.isPunctuationChar(it) }.trim()
         if (leadingWord.length < trimmed.length) {
             val prev = lastCommittedWord
+            val prevPrev = secondLastCommittedWord
             if (!effectiveIncognito() && prev != null && PredictionStore.isValidWord(leadingWord)) {
                 predictionStore.recordBigram(prev, leadingWord, isIncognito = false)
+                if (prevPrev != null) {
+                    predictionStore.recordTrigram(prevPrev, prev, leadingWord, isIncognito = false)
+                }
             }
             onPunctuationCommitted()
             return
@@ -172,11 +190,17 @@ class PredictionCoordinator(
         val isValid = PredictionStore.isValidWord(trimmed)
         if (isValid) {
             val prev = lastCommittedWord
+            val prevPrev = secondLastCommittedWord
             if (!effectiveIncognito() && prev != null) {
                 predictionStore.recordBigram(prev, trimmed, isIncognito = false)
+                if (prevPrev != null) {
+                    predictionStore.recordTrigram(prevPrev, prev, trimmed, isIncognito = false)
+                }
             }
+            secondLastCommittedWord = prev
             lastCommittedWord = trimmed
         } else {
+            secondLastCommittedWord = null
             lastCommittedWord = null
         }
 
@@ -192,7 +216,11 @@ class PredictionCoordinator(
 
         val settings = settingsProvider()
         val nextPredictions = if (settings.predictionEnabled && isValid) {
-            mergePredictions(trimmed, maxCandidates)
+            mergePredictions(
+                prevWord = trimmed,
+                limit = maxCandidates,
+                prevPrevWord = secondLastCommittedWord
+            )
         } else {
             emptyList()
         }
@@ -280,6 +308,7 @@ class PredictionCoordinator(
         aiSentenceCompleter.cancel()
         cancelIdleTimer()
         if (resetChain) {
+            secondLastCommittedWord = null
             lastCommittedWord = null
         }
         stateFlow.update {

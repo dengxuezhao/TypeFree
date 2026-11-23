@@ -42,6 +42,8 @@ import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.ui.components.TypeFreeIcons
+import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
+import com.typefree.ime.ui.components.resolveCompletionBackendCompactLabel
 import com.typefree.ime.ui.theme.LocalTypeFreeKeyboardPalette
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 
@@ -426,10 +428,11 @@ fun KeyboardToolPanel(
                 .weight(1f),
             horizontalArrangement = Arrangement.spacedBy(7.dp)
         ) {
+            val localRegistrySnapshot = rememberLocalModelRegistrySnapshot()
             ToolPanelTile(
                 icon = TypeFreeIcons.VoicePen,
                 title = "AI 补全",
-                subtitle = if (settings.aiCompletionEnabled) "已开启" else "已关闭",
+                subtitle = resolveCompletionBackendCompactLabel(settings, localRegistrySnapshot),
                 isToggleEnabled = settings.aiCompletionEnabled,
                 onClick = onToggleAiCompletion,
                 modifier = Modifier

@@ -87,6 +87,7 @@ sealed interface ImeUiAction {
 
     // Typing & Editor actions
     data object TriggerUndo : ImeUiAction
+    data object ClearInputBox : ImeUiAction
     data class PinCandidate(val word: String) : ImeUiAction
     data class UnpinCandidate(val word: String) : ImeUiAction
     data class BlockCandidate(val word: String) : ImeUiAction

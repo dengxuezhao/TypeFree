@@ -140,6 +140,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 }
             }
         }
+        serviceScope.launch(Dispatchers.IO) {
+            runCatching {
+                typingController.staticPredictor.loadFromContextIfAvailable(applicationContext)
+            }
+        }
         serviceScope.launch {
             TypeFreeApp.instance.rimeDataManager.deploymentState.collect { deployState ->
                 val ready = deployState is RimeDeploymentState.Ready
@@ -156,6 +161,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     }
                     typingController.setFixedCandidateOrder(repository.settings.value.fixedCandidateOrder)
                     typingController.setIncognitoMode(_imeState.value.isIncognitoMode)
+                    serviceScope.launch(Dispatchers.IO) {
+                        runCatching {
+                            typingController.staticPredictor.reloadFromRimeSharedDir(dm.sharedDir)
+                        }
+                    }
                 }
                 _imeState.update { prev ->
                     prev.copy(
@@ -175,6 +185,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             TypeFreeApp.instance.rimeDataManager.metadataVersion.collect { version ->
                 if (version != lastVersion) {
                     lastVersion = version
+                    val dm = TypeFreeApp.instance.rimeDataManager
                     bindCodetableEnhancedEngineIfAvailable()
                     typingController.codetableEnhancedEngine?.let { eng ->
                         eng.reloadUserDictWordsCache()
@@ -182,6 +193,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                         applyCodetableV362Settings(eng, repository.settings.value)
                     }
                     syncCodetableUiFlags()
+                    serviceScope.launch(Dispatchers.IO) {
+                        runCatching {
+                            typingController.staticPredictor.reloadFromRimeSharedDir(dm.sharedDir)
+                        }
+                    }
                 }
             }
         }
@@ -721,6 +737,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             is ImeUiAction.SelectKeyboardLiftLevel -> selectKeyboardLiftLevel(action.liftLevel)
 
             ImeUiAction.TriggerUndo -> performUndo()
+            ImeUiAction.ClearInputBox -> clearCurrentInputBox()
             is ImeUiAction.PinCandidate -> pinCandidateFromBar(action.word)
             is ImeUiAction.UnpinCandidate -> unpinCandidateFromBar(action.word)
             is ImeUiAction.BlockCandidate -> blockCandidateFromBar(action.word)
@@ -1035,6 +1052,56 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         } else {
             showQuickActionToast("↶ 已撤回上屏")
         }
+    }
+
+    fun clearCurrentInputBox() {
+        if (_imeState.value.isFlypyComposing) {
+            typingController.clearComposing()
+        }
+        val ic = currentInputConnection ?: return
+        val extracted = runCatching {
+            ic.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0)
+        }.getOrNull()
+        val extractedText = extracted?.text?.toString()
+        val beforeText = if (extractedText == null) {
+            runCatching { ic.getTextBeforeCursor(8000, 0)?.toString().orEmpty() }.getOrDefault("")
+        } else {
+            ""
+        }
+        val afterText = if (extractedText == null) {
+            runCatching { ic.getTextAfterCursor(8000, 0)?.toString().orEmpty() }.getOrDefault("")
+        } else {
+            ""
+        }
+        val fullText = extractedText ?: (beforeText + afterText)
+        if (fullText.isEmpty()) {
+            performKeyFeedback(strong = false)
+            showQuickActionToast("输入框已为空")
+            return
+        }
+
+        performKeyFeedback(strong = true)
+        clearAutoLearnBaseline()
+        val snapshot = UndoSnapshot(
+            insertedTextLength = 0,
+            replacedOriginalText = fullText
+        )
+        undoStack.addFirst(snapshot)
+        while (undoStack.size > 10) {
+            undoStack.removeLast()
+        }
+
+        ic.beginBatchEdit()
+        if (extractedText != null) {
+            ic.setSelection(0, extractedText.length)
+            ic.commitText("", 1)
+        } else {
+            ic.deleteSurroundingText(beforeText.length, afterText.length)
+        }
+        ic.endBatchEdit()
+
+        _imeState.update { it.copy(undoSnapshot = undoStack.firstOrNull()) }
+        showQuickActionToast("已清空输入框（可撤回）")
     }
 
     private fun toggleStylePicker() {

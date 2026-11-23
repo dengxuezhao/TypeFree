@@ -1,5 +1,9 @@
 package com.typefree.ime.ime.predict
 
+import com.typefree.core.offline.AiTask
+import com.typefree.core.offline.OfflineMode
+import com.typefree.core.offline.RoutePlan
+import com.typefree.core.offline.TextRoute
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.network.AiPipelineEngine
@@ -21,17 +25,20 @@ fun interface SentenceCompletionExecutor {
 
 data class CompletionCacheKey(
     val contextTail: String,
-    val styleId: String
+    val styleId: String,
+    val backendId: String = AiSentenceCompleter.DEFAULT_BACKEND_ID
 )
 
 /**
- * L3 AI Sentence Completer for TypeFree v2.7:
+ * L3 AI Sentence Completer for TypeFree v2.7+:
  * - Only triggers when [AppSettings.aiCompletionEnabled] is `true` and not in incognito mode.
- * - Waits [DEBOUNCE_MS] (`350ms`) of typing idle time before issuing a network request.
- * - Immediately cancels any pending debounce or in-flight network request when the user presses
- *   a new key, backspace, punctuation, or switches panels.
- * - Maintains an in-memory LRU cache (`capacity = 32`) keyed by `(contextBeforeCursor.takeLast(200), activeStyle.id)`
- *   to return cached completions immediately without redundant token consumption.
+ * - Waits [DEBOUNCE_MS] (`350ms`) of typing idle time before issuing a request.
+ * - Immediately cancels any pending debounce or in-flight request (including remote `:local_ai`
+ *   native cancellation via [onCancelRemote]) when the user presses a new key, backspace,
+ *   punctuation, or switches panels.
+ * - Maintains an in-memory LRU cache (`capacity = 32`) keyed by
+ *   `(contextBeforeCursor.takeLast(200), activeStyle.id, backendId)` so switching between cloud
+ *   and on-device models never serves stale cross-backend cache entries.
  */
 class AiSentenceCompleter(
     private val scope: CoroutineScope,
@@ -39,7 +46,9 @@ class AiSentenceCompleter(
     private val cacheCapacity: Int = DEFAULT_CACHE_CAPACITY,
     private val executor: SentenceCompletionExecutor = SentenceCompletionExecutor { _, _, _, _ ->
         Result.success("")
-    }
+    },
+    private val backendIdResolver: ((AppSettings) -> String)? = null,
+    private val onCancelRemote: (() -> Unit)? = null
 ) {
 
     constructor(
@@ -58,7 +67,13 @@ class AiSentenceCompleter(
                 contextBeforeCursor = contextBeforeCursor,
                 targetAppName = targetAppName
             )
-        }
+        },
+        backendIdResolver = { settings ->
+            resolveBackendIdFromRoutePlan(
+                aiEngine.resolveRoutePlan(AiTask.SENTENCE_COMPLETION, settings)
+            )
+        },
+        onCancelRemote = { aiEngine.cancelActiveLocalCompletion() }
     )
 
     private val cacheLock = Any()
@@ -79,27 +94,47 @@ class AiSentenceCompleter(
         get() = activeJob?.isActive == true
 
     /**
-     * Cancels any active 350ms debounce timer or in-flight network completion request immediately.
+     * Cancels any active 350ms debounce timer or in-flight completion request immediately,
+     * invoking [onCancelRemote] so native on-device inference can abort promptly.
      */
     fun cancel() {
         activeJob?.cancel()
         activeJob = null
+        runCatching { onCancelRemote?.invoke() }
     }
 
-    fun getCached(contextBeforeCursor: String, styleId: String): String? {
+    private fun cancelIfActive() {
+        val prev = activeJob
+        activeJob = null
+        if (prev != null) {
+            prev.cancel()
+            runCatching { onCancelRemote?.invoke() }
+        }
+    }
+
+    fun getCached(
+        contextBeforeCursor: String,
+        styleId: String,
+        backendId: String = DEFAULT_BACKEND_ID
+    ): String? {
         val tail = normalizeContextWindow(contextBeforeCursor)
         if (tail.isEmpty()) return null
-        val key = CompletionCacheKey(contextTail = tail, styleId = styleId)
+        val key = CompletionCacheKey(contextTail = tail, styleId = styleId, backendId = backendId)
         return synchronized(cacheLock) {
             lruCache[key]
         }
     }
 
-    fun putCached(contextBeforeCursor: String, styleId: String, suggestion: String) {
+    fun putCached(
+        contextBeforeCursor: String,
+        styleId: String,
+        suggestion: String,
+        backendId: String = DEFAULT_BACKEND_ID
+    ) {
         val tail = normalizeContextWindow(contextBeforeCursor)
         val clean = cleanCompletionOutput(suggestion, tail)
         if (tail.isEmpty() || clean.isEmpty()) return
-        val key = CompletionCacheKey(contextTail = tail, styleId = styleId)
+        val key = CompletionCacheKey(contextTail = tail, styleId = styleId, backendId = backendId)
         synchronized(cacheLock) {
             lruCache[key] = clean
         }
@@ -117,8 +152,8 @@ class AiSentenceCompleter(
      * Schedules an AI sentence completion request:
      * - Returns `null` without scheduling if `settings.aiCompletionEnabled == false`,
      *   `isIncognitoMode == true`, or `contextBeforeCursor` is blank.
-     * - If `(contextBeforeCursor.takeLast(200), activeStyle.id)` hits the LRU cache,
-     *   delivers the cached suggestion directly without making a network request.
+     * - If `(contextBeforeCursor.takeLast(200), activeStyle.id, backendId)` hits the LRU cache,
+     *   delivers the cached suggestion directly without making a request.
      * - Otherwise debounces for [debounceMs] (`350ms`) before invoking [executor].
      */
     fun scheduleCompletion(
@@ -127,9 +162,10 @@ class AiSentenceCompleter(
         activeStyle: ToneStyle,
         targetAppName: String = "",
         isIncognitoMode: Boolean = false,
+        routePlan: RoutePlan? = null,
         onResult: (String) -> Unit
     ): Job? {
-        cancel()
+        cancelIfActive()
         if (!settings.aiCompletionEnabled || isIncognitoMode) {
             return null
         }
@@ -138,7 +174,16 @@ class AiSentenceCompleter(
             return null
         }
 
-        val key = CompletionCacheKey(contextTail = contextTail, styleId = activeStyle.id)
+        val backendId = when {
+            routePlan != null -> resolveBackendIdFromRoutePlan(routePlan)
+            backendIdResolver != null -> backendIdResolver.invoke(settings)
+            else -> resolveDefaultBackendId(settings)
+        }
+        val key = CompletionCacheKey(
+            contextTail = contextTail,
+            styleId = activeStyle.id,
+            backendId = backendId
+        )
         val cachedHit = synchronized(cacheLock) { lruCache[key] }
         if (cachedHit != null) {
             onResult(cachedHit)
@@ -179,7 +224,7 @@ class AiSentenceCompleter(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Throwable) {
-                // Network errors in background sentence completion fail silently without disrupting typing
+                // Errors in background sentence completion fail silently without disrupting typing
             }
         }
         activeJob = job
@@ -192,6 +237,25 @@ class AiSentenceCompleter(
         const val MAX_COMPLETION_CHARS: Int = 20
         const val MAX_CHIP_DISPLAY_CHARS: Int = 12
         const val DEFAULT_CACHE_CAPACITY: Int = 32
+        const val DEFAULT_BACKEND_ID: String = "cloud"
+
+        fun resolveBackendIdFromRoutePlan(plan: RoutePlan): String {
+            return when (val text = plan.text) {
+                is TextRoute.Local -> "local:${text.modelId}"
+                else -> DEFAULT_BACKEND_ID
+            }
+        }
+
+        internal fun resolveDefaultBackendId(settings: AppSettings): String {
+            val offline = settings.offlineConfig
+            if (offline.mode != OfflineMode.OFF &&
+                offline.slmSlotOn &&
+                !offline.selectedSlmModelId.isNullOrBlank()
+            ) {
+                return "local:${offline.selectedSlmModelId}"
+            }
+            return DEFAULT_BACKEND_ID
+        }
 
         private val WRAPPING_PAIRS: List<Pair<Char, Char>> = listOf(
             '"' to '"',

@@ -284,6 +284,8 @@ fun BuiltInQwertyKeyboard(
     onFlushComposingBeforeLayerSwitch: () -> Unit,
     onBackspace: () -> Unit,
     onSwipeUpBackspaceUndo: () -> Unit,
+    backspaceSwipeUpClearEnabled: Boolean = false,
+    onSwipeUpBackspaceClear: () -> Unit = {},
     onEditorShortcutAction: (EditorShortcutAction) -> Unit,
     onEnterOrNewline: () -> Unit,
     onSwitchToVoice: () -> Unit,
@@ -322,11 +324,12 @@ fun BuiltInQwertyKeyboard(
     }
 
     val isUpperCase = shiftState != ShiftKeyState.OFF
+    val showUppercaseKeycap = isFlypyChineseMode || isUpperCase
     val hasActiveFlypyComposing = isFlypyChineseMode && flypyComposingCode.isNotEmpty()
     val hasFiveRows = !isSymbolLayer && showNumberRow
     val rowVPad = if (hasFiveRows) KEY_CELL_VPAD_5ROW else KEY_CELL_VPAD_4ROW
-    val letterFontSize = if (isUpperCase) 18.5.sp else 20.5.sp
-    val letterFontWeight = if (isUpperCase) FontWeight.Medium else FontWeight.Normal
+    val letterFontSize = if (showUppercaseKeycap) 18.5.sp else 20.5.sp
+    val letterFontWeight = if (showUppercaseKeycap) FontWeight.Medium else FontWeight.Normal
 
     val effectiveGestureProfile = keyGestureProfile ?: remember(isFlypyChineseMode, showNumberRow) {
         KeyGestureConfig.defaultProfile(
@@ -428,7 +431,10 @@ fun BuiltInQwertyKeyboard(
                         visualWidthFraction: Float = 1f,
                         visualAlignment: Alignment = Alignment.Center
                     ) {
-                        val display = if (isUpperCase) ch.uppercase() else ch
+                        // Chinese mode shows uppercase keycaps (standard desktop/mobile IME convention) while
+                        // still committing lowercase code unless Shift is active; English mode follows Shift state.
+                        val keycapDisplay = if (showUppercaseKeycap) ch.uppercase() else ch
+                        val commitText = if (isUpperCase) ch.uppercase() else ch
                         val keyChar = ch.first()
                         val swipeBinding = effectiveGestureProfile.resolveSwipeUp(keyChar)
                         val longBinding = effectiveGestureProfile.resolveLongPress(keyChar)
@@ -438,7 +444,7 @@ fun BuiltInQwertyKeyboard(
                             KeycapBadgeMode.NONE -> null
                         }
                         QwertyCharKey(
-                            label = display,
+                            label = keycapDisplay,
                             swipeUpBadge = visibleCapBadge,
                             swipeUpPreviewBadge = swipeBinding?.compactKeycapBadge()?.ifEmpty { null },
                             longPressBadge = longBinding?.compactKeycapBadge()?.ifEmpty { null },
@@ -452,7 +458,7 @@ fun BuiltInQwertyKeyboard(
                             onPressPreviewEnd = ::clearPreviewToken,
                             modifier = modifier,
                             onClick = {
-                                onCommitChar(display)
+                                onCommitChar(commitText)
                                 shiftState = ImeLogic.consumeShiftAfterCharCommit(shiftState)
                             },
                             onSwipeUp = if (swipeBinding != null) {
@@ -563,7 +569,8 @@ fun BuiltInQwertyKeyboard(
 
                         QwertyRepeatingBackspaceKey(
                             onBackspace = onBackspace,
-                            onSwipeUpUndo = onSwipeUpBackspaceUndo,
+                            onSwipeUpAction = if (backspaceSwipeUpClearEnabled) onSwipeUpBackspaceClear else onSwipeUpBackspaceUndo,
+                            swipeUpBadge = if (backspaceSwipeUpClearEnabled) "清" else "撤",
                             verticalCellPad = rowVPad,
                             modifier = Modifier
                                 .weight(1.5f)
@@ -657,7 +664,8 @@ fun BuiltInQwertyKeyboard(
 
                         QwertyRepeatingBackspaceKey(
                             onBackspace = onBackspace,
-                            onSwipeUpUndo = onSwipeUpBackspaceUndo,
+                            onSwipeUpAction = if (backspaceSwipeUpClearEnabled) onSwipeUpBackspaceClear else onSwipeUpBackspaceUndo,
+                            swipeUpBadge = if (backspaceSwipeUpClearEnabled) "清" else "撤",
                             verticalCellPad = rowVPad,
                             modifier = Modifier
                                 .weight(1.5f)
@@ -1493,7 +1501,8 @@ private fun QwertyShiftKey(
 @Composable
 private fun QwertyRepeatingBackspaceKey(
     onBackspace: () -> Unit,
-    onSwipeUpUndo: () -> Unit,
+    onSwipeUpAction: () -> Unit,
+    swipeUpBadge: String = "撤",
     verticalCellPad: Dp = KEY_CELL_VPAD_5ROW,
     modifier: Modifier = Modifier
 ) {
@@ -1502,7 +1511,7 @@ private fun QwertyRepeatingBackspaceKey(
     val swipeUpThresholdPx = with(density) { 24.dp.toPx() }
 
     val currentOnBackspace by rememberUpdatedState(onBackspace)
-    val currentOnSwipeUpUndo by rememberUpdatedState(onSwipeUpUndo)
+    val currentOnSwipeUpAction by rememberUpdatedState(onSwipeUpAction)
     var isHolding by remember { mutableStateOf(false) }
 
     Box(
@@ -1537,7 +1546,7 @@ private fun QwertyRepeatingBackspaceKey(
                                     swipedUp = true
                                     repeatJob.cancel()
                                     change.consume()
-                                    currentOnSwipeUpUndo()
+                                    currentOnSwipeUpAction()
                                 }
                                 if (!change.pressed) {
                                     change.consume()
@@ -1565,7 +1574,7 @@ private fun QwertyRepeatingBackspaceKey(
             shadowColor = palette.keyShadow
         ) {
             Text(
-                text = "撤",
+                text = swipeUpBadge,
                 color = palette.keyTextMuted.copy(alpha = 0.56f),
                 fontSize = 8.sp,
                 fontWeight = FontWeight.Medium,
@@ -1575,7 +1584,7 @@ private fun QwertyRepeatingBackspaceKey(
             )
             Icon(
                 imageVector = TypeFreeIcons.Backspace,
-                contentDescription = "退格删除（上划撤回上屏）",
+                contentDescription = if (swipeUpBadge == "清") "退格删除（上划清空输入框）" else "退格删除（上划撤回上屏）",
                 tint = palette.keyTextPrimary,
                 modifier = Modifier
                     .align(Alignment.Center)

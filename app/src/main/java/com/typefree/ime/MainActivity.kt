@@ -26,6 +26,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -58,6 +59,7 @@ class MainActivity : ComponentActivity() {
     private val selectedTabState = mutableIntStateOf(AppDestinations.TAB_HOME)
     private val keyboardSubTabState = mutableIntStateOf(AppDestinations.SUBTAB_KB_SCHEME)
     private val voiceAiSubTabState = mutableIntStateOf(AppDestinations.SUBTAB_VOICE_MAIN)
+    private val openOfflineModelsState = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -96,6 +98,7 @@ class MainActivity : ComponentActivity() {
                     val currentTab by selectedTabState
                     val currentKeyboardSubTab by keyboardSubTabState
                     val currentVoiceAiSubTab by voiceAiSubTabState
+                    val shouldOpenOfflineModels by openOfflineModelsState
 
                     TypeFreeMainScaffold(
                         repository = repository,
@@ -103,6 +106,7 @@ class MainActivity : ComponentActivity() {
                         selectedTab = currentTab,
                         keyboardSubTab = currentKeyboardSubTab,
                         voiceAiSubTab = currentVoiceAiSubTab,
+                        openOfflineModels = shouldOpenOfflineModels,
                         onSelectTab = { newTab ->
                             selectedTabState.intValue = newTab.coerceIn(
                                 AppDestinations.TAB_HOME,
@@ -115,6 +119,14 @@ class MainActivity : ComponentActivity() {
                                 AppDestinations.SUBTAB_VOICE_API
                             )
                             selectedTabState.intValue = AppDestinations.TAB_VOICE_AI
+                        },
+                        onOpenOfflineModels = {
+                            openOfflineModelsState.value = true
+                            voiceAiSubTabState.intValue = AppDestinations.SUBTAB_VOICE_API
+                            selectedTabState.intValue = AppDestinations.TAB_VOICE_AI
+                        },
+                        onConsumeOpenOfflineModels = {
+                            openOfflineModelsState.value = false
                         },
                         onKeyboardSubTabChanged = { subTab ->
                             keyboardSubTabState.intValue = subTab.coerceIn(
@@ -203,8 +215,11 @@ private fun TypeFreeMainScaffold(
     selectedTab: Int,
     keyboardSubTab: Int,
     voiceAiSubTab: Int,
+    openOfflineModels: Boolean,
     onSelectTab: (Int) -> Unit,
     onNavigateToVoiceAiSubTab: (Int) -> Unit,
+    onOpenOfflineModels: () -> Unit,
+    onConsumeOpenOfflineModels: () -> Unit,
     onKeyboardSubTabChanged: (Int) -> Unit,
     onVoiceAiSubTabChanged: (Int) -> Unit
 ) {
@@ -287,7 +302,8 @@ private fun TypeFreeMainScaffold(
                     aiEngine = aiEngine,
                     onNavigateToTab = onSelectTab,
                     onNavigateToSettingsSubTab = onNavigateToVoiceAiSubTab,
-                    onNavigateToVoiceAiSubTab = onNavigateToVoiceAiSubTab
+                    onNavigateToVoiceAiSubTab = onNavigateToVoiceAiSubTab,
+                    onOpenOfflineModels = onOpenOfflineModels
                 )
                 AppDestinations.TAB_KEYBOARD -> KeyboardStudioScreen(
                     repository = repository,
@@ -298,6 +314,8 @@ private fun TypeFreeMainScaffold(
                     repository = repository,
                     aiEngine = aiEngine,
                     initialSubTab = voiceAiSubTab,
+                    openOfflineModels = openOfflineModels,
+                    onConsumeOpenOfflineModels = onConsumeOpenOfflineModels,
                     onSubTabChanged = onVoiceAiSubTabChanged
                 )
                 AppDestinations.TAB_GENERAL -> GeneralSettingsScreen(
@@ -308,7 +326,8 @@ private fun TypeFreeMainScaffold(
                     aiEngine = aiEngine,
                     onNavigateToTab = onSelectTab,
                     onNavigateToSettingsSubTab = onNavigateToVoiceAiSubTab,
-                    onNavigateToVoiceAiSubTab = onNavigateToVoiceAiSubTab
+                    onNavigateToVoiceAiSubTab = onNavigateToVoiceAiSubTab,
+                    onOpenOfflineModels = onOpenOfflineModels
                 )
             }
         }

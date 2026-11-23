@@ -1,0 +1,5 @@
+-keep class com.typefree.pro.localai.LlamaNativeBridge { *; }
+-keep interface com.typefree.pro.localai.TokenCallback { *; }
+-keep class com.typefree.pro.localai.GenerateStats { *; }
+-keep class com.typefree.pro.localai.ProLocalAiRegistrar { *; }
+-keep class com.typefree.pro.localai.LlamaCppLocalSlmEngine { *; }

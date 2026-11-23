@@ -1,6 +1,7 @@
 package com.typefree.ime.ui.screens
 
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -40,11 +41,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,10 +59,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.typefree.core.offline.OfflineMode
 import com.typefree.ime.BuildConfig
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.ThemePreference
 import com.typefree.ime.network.AppUpdateChecker
+import com.typefree.ime.network.UpdateCheckInfo
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import kotlinx.coroutines.launch
@@ -75,6 +80,24 @@ fun GeneralSettingsScreen(
 
     var isCheckingUpdate by remember { mutableStateOf(false) }
     var updateDialogState by remember { mutableStateOf<SharedUpdateDialogState?>(null) }
+    var availableUpdate by remember {
+        mutableStateOf<UpdateCheckInfo?>(
+            AppUpdateChecker.peekCachedUpdate(BuildConfig.VERSION_NAME)
+        )
+    }
+    var dismissedUpdateTag by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // Silently check for updates when opening Settings (strictly skipped under OFFLINE_ONLY egress lock).
+    LaunchedEffect(settings.offlineConfig.mode) {
+        if (settings.offlineConfig.mode == OfflineMode.OFFLINE_ONLY) return@LaunchedEffect
+        val latest = AppUpdateChecker.fetchLatestUpdateSilentlyIfNeeded(
+            currentVersion = BuildConfig.VERSION_NAME,
+            isPrivateDictBuild = BuildConfig.USE_PRIVATE_DICT
+        )
+        if (latest != null && latest.hasUpdate) {
+            availableUpdate = latest
+        }
+    }
 
     fun triggerUpdateCheck() {
         if (isCheckingUpdate) return
@@ -86,6 +109,7 @@ fun GeneralSettingsScreen(
             )
             isCheckingUpdate = false
             result.onSuccess { info ->
+                availableUpdate = info.takeIf { it.hasUpdate }
                 updateDialogState = if (info.hasUpdate) {
                     SharedUpdateDialogState.UpdateAvailable(info)
                 } else {
@@ -98,6 +122,8 @@ fun GeneralSettingsScreen(
             }
         }
     }
+
+    val bannerUpdate = availableUpdate?.takeIf { it.hasUpdate && it.latestTag != dismissedUpdateTag }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Pinned Header
@@ -118,11 +144,25 @@ fun GeneralSettingsScreen(
                     fontWeight = FontWeight.ExtraBold
                 )
                 Surface(
-                    onClick = { triggerUpdateCheck() },
+                    onClick = {
+                        val cached = availableUpdate
+                        if (cached != null && cached.hasUpdate) {
+                            updateDialogState = SharedUpdateDialogState.UpdateAvailable(cached)
+                        } else {
+                            triggerUpdateCheck()
+                        }
+                    },
                     enabled = !isCheckingUpdate,
                     shape = RoundedCornerShape(50),
                     color = MaterialTheme.colorScheme.surfaceVariant,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                    border = BorderStroke(
+                        1.dp,
+                        if (availableUpdate?.hasUpdate == true) {
+                            TypeFreeEmerald.copy(alpha = 0.60f)
+                        } else {
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                        }
+                    )
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
@@ -135,11 +175,26 @@ fun GeneralSettingsScreen(
                                 strokeWidth = 1.6.dp,
                                 color = MaterialTheme.colorScheme.primary
                             )
+                        } else if (availableUpdate?.hasUpdate == true) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(TypeFreeEmerald)
+                            )
                         }
                         Text(
-                            text = if (isCheckingUpdate) "检查更新中…" else "v${BuildConfig.VERSION_NAME} · BYOK",
+                            text = when {
+                                isCheckingUpdate -> "检查更新中…"
+                                availableUpdate?.hasUpdate == true -> "有更新 v${availableUpdate!!.latestVersion}"
+                                else -> "v${BuildConfig.VERSION_NAME} · BYOK"
+                            },
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (availableUpdate?.hasUpdate == true) {
+                                TypeFreeEmerald
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
                         )
                     }
                 }
@@ -154,6 +209,20 @@ fun GeneralSettingsScreen(
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            AnimatedVisibility(visible = bannerUpdate != null) {
+                bannerUpdate?.let { info ->
+                    SettingsUpdatePromptBanner(
+                        info = info,
+                        onUpdateClick = {
+                            updateDialogState = SharedUpdateDialogState.UpdateAvailable(info)
+                        },
+                        onDismiss = {
+                            dismissedUpdateTag = info.latestTag
+                        }
+                    )
+                }
+            }
+
             // 1. 外观主题
             Card(
                 modifier = Modifier.fillMaxWidth(),

@@ -79,6 +79,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.typefree.core.offline.OfflineMode
 import com.typefree.ime.BuildConfig
 import com.typefree.ime.bubble.TypeFreeBubbleController
 import com.typefree.ime.data.AppRepository
@@ -92,7 +93,9 @@ import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.AppUpdateChecker
 import com.typefree.ime.network.UpdateCheckInfo
 import com.typefree.ime.ui.AppDestinations
+import com.typefree.ime.ui.components.CompletionBackendHint
 import com.typefree.ime.ui.components.TypeFreeIcons
+import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import kotlinx.coroutines.launch
@@ -124,8 +127,26 @@ fun AccountSettingsScreen(
 
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val settings by repository.settings.collectAsState()
     var isCheckingUpdate by remember { mutableStateOf(false) }
     var updateDialogState by remember { mutableStateOf<UpdateDialogState?>(null) }
+    var availableUpdate by remember {
+        mutableStateOf<UpdateCheckInfo?>(
+            AppUpdateChecker.peekCachedUpdate(BuildConfig.VERSION_NAME)
+        )
+    }
+    var dismissedUpdateTag by rememberSaveable { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(settings.offlineConfig.mode) {
+        if (settings.offlineConfig.mode == OfflineMode.OFFLINE_ONLY) return@LaunchedEffect
+        val latest = AppUpdateChecker.fetchLatestUpdateSilentlyIfNeeded(
+            currentVersion = BuildConfig.VERSION_NAME,
+            isPrivateDictBuild = BuildConfig.USE_PRIVATE_DICT
+        )
+        if (latest != null && latest.hasUpdate) {
+            availableUpdate = latest
+        }
+    }
 
     fun triggerUpdateCheck() {
         if (isCheckingUpdate) return
@@ -137,6 +158,7 @@ fun AccountSettingsScreen(
             )
             isCheckingUpdate = false
             result.onSuccess { info ->
+                availableUpdate = info.takeIf { it.hasUpdate }
                 updateDialogState = if (info.hasUpdate) {
                     UpdateDialogState.UpdateAvailable(info)
                 } else {
@@ -204,6 +226,20 @@ fun AccountSettingsScreen(
             }
 
             // Three-Segment Capsule Bar
+            val bannerUpdate = availableUpdate?.takeIf { it.hasUpdate && it.latestTag != dismissedUpdateTag }
+            AnimatedVisibility(visible = bannerUpdate != null) {
+                bannerUpdate?.let { info ->
+                    SettingsUpdatePromptBanner(
+                        info = info,
+                        onUpdateClick = {
+                            updateDialogState = UpdateDialogState.UpdateAvailable(info)
+                        },
+                        onDismiss = {
+                            dismissedUpdateTag = info.latestTag
+                        }
+                    )
+                }
+            }
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(13.dp),
@@ -1016,6 +1052,10 @@ private fun AppearanceAndPreferencesPane(
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(aiCompletionEnabled = enabled) }
                     }
+                )
+                CompletionBackendHint(
+                    settings = settings,
+                    registrySnapshot = rememberLocalModelRegistrySnapshot()
                 )
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))

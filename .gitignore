@@ -52,6 +52,11 @@ Thumbs.db
 
 # Release distribution folder (kept out of git tree)
 release/
+exports/
+
+# External offline AI dependencies fetched via scripts/fetch_offline_deps.sh
+app/libs/*.aar
+localai-native/src/main/cpp/llama.cpp/
 
 # Local private dictionaries & Rime backups (contains personal local tables)
 local_private/

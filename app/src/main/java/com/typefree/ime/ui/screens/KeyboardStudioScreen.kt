@@ -33,6 +33,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -63,10 +64,13 @@ import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.KeycapBadgeMode
 import com.typefree.ime.ime.KeyboardMetrics
+import com.typefree.ime.ime.engine.RimeDataManager
 import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.ime.flypy.FlypyDictionary
 import com.typefree.ime.ui.AppDestinations
+import com.typefree.ime.ui.components.CompletionBackendHint
 import com.typefree.ime.ui.components.TypeFreeIcons
+import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import kotlinx.coroutines.Dispatchers
@@ -793,6 +797,17 @@ private fun KeyboardSchemeAndLayoutPane(
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
+                PreferenceSwitchRow(
+                    title = "上滑回退键清空输入框",
+                    subtitle = "默认关闭（上滑回退键为撤回上屏）；开启后在 26 键与九键回退键上滑直接清空当前输入框，清空后仍可撤回",
+                    checked = settings.backspaceSwipeUpClearEnabled,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(backspaceSwipeUpClearEnabled = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+
                 val currentLiftLevel = settings.keyboardLiftLevel.coerceIn(
                     KeyboardMetrics.MIN_LIFT_LEVEL,
                     KeyboardMetrics.MAX_LIFT_LEVEL
@@ -937,6 +952,10 @@ private fun KeyboardSchemeAndLayoutPane(
                         repository.updateSettings { it.copy(aiCompletionEnabled = enabled) }
                     }
                 )
+                CompletionBackendHint(
+                    settings = settings,
+                    registrySnapshot = rememberLocalModelRegistrySnapshot()
+                )
             }
         }
 
@@ -1038,7 +1057,11 @@ private fun KeyboardDictionaryPane(
     val flypyDict by TypeFreeApp.instance.flypyDictionary.collectAsState()
     val isCustomActive = remember(flypyDict) { FlypyDictionary.isCustomDictionaryActive(context) }
     val isDeployingRime = rimeDeployState is RimeDeploymentState.Deploying
-    val hasFullIce = (rimeDeployState as? RimeDeploymentState.Ready)?.hasFullRimeIce == true
+    val readyRimeState = rimeDeployState as? RimeDeploymentState.Ready
+    val hasFullIce = readyRimeState?.hasFullRimeIce ?: rimeDataManager.hasFullRimeIceDictionary()
+    val hasExtIce = readyRimeState?.hasExtRimeIce ?: rimeDataManager.hasExtRimeIceDictionary()
+    val hasTencentIce = readyRimeState?.hasTencentRimeIce ?: rimeDataManager.hasTencentRimeIceDictionary()
+    val activeGrammarId = readyRimeState?.activeGrammarModelId ?: rimeDataManager.installedGrammarModelId()
 
     var showRimeImportDialog by remember { mutableStateOf(false) }
     var showRestoreConfirmDialog by remember { mutableStateOf(false) }
@@ -1167,7 +1190,7 @@ private fun KeyboardDictionaryPane(
                 defaultExpanded = true
             )
         } else {
-            // 全拼 / 小鹤双拼：雾凇拼音词库管理
+            // 全拼 / 小鹤双拼 / 九键拼音：雾凇拼音词库管理 + 八元组语法模型
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
@@ -1195,7 +1218,7 @@ private fun KeyboardDictionaryPane(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "适用于全拼与小鹤双拼整句方案，支持一键下载完整雾凇词库",
+                                text = "已内置中英混输与 8,200+ 本地高频联想；按需下载完整雾凇扩展词库与腾讯词向量",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1211,31 +1234,57 @@ private fun KeyboardDictionaryPane(
                             is RimeDeploymentState.Idle -> "Rime 引擎：待部署"
                             is RimeDeploymentState.Deploying -> st.message
                             is RimeDeploymentState.Ready -> {
-                                val tier = if (st.hasFullRimeIce) "完整雾凇词库" else "内置精简词库"
-                                "Rime 就绪：$tier (${st.wordCount} 词条)"
+                                val parts = buildList {
+                                    add(
+                                        when {
+                                            st.hasFullRimeIce && st.hasExtRimeIce -> "完整雾凇 (base+ext+others)"
+                                            st.hasFullRimeIce -> "雾凇基础完整版"
+                                            else -> "内置精简词库"
+                                        }
+                                    )
+                                    if (st.hasTencentRimeIce) add("腾讯词库")
+                                    if (!st.activeGrammarModelId.isNullOrBlank()) {
+                                        val gName = RimeDataManager.GRAMMAR_MODEL_PRESETS
+                                            .firstOrNull { it.id == st.activeGrammarModelId }
+                                            ?.displayName ?: st.activeGrammarModelId
+                                        add("语法:$gName")
+                                    }
+                                }
+                                "Rime 就绪：${parts.joinToString(" · ")} (${st.wordCount} 词条)"
                             }
                             is RimeDeploymentState.Error -> "Rime 状态：${st.message}"
                         }
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            if (isDeployingRime) {
-                                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                            }
-                            Text(
-                                text = statusText,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (rimeDeployState is RimeDeploymentState.Error) {
-                                    MaterialTheme.colorScheme.error
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (isDeployingRime) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
                                 }
-                            )
+                                Text(
+                                    text = statusText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (rimeDeployState is RimeDeploymentState.Error) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    }
+                                )
+                            }
+                            if (rimeDeployState is RimeDeploymentState.Deploying) {
+                                LinearProgressIndicator(
+                                    progress = { rimeDeployState.progress.coerceIn(0.02f, 1f) },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
                         }
                     }
 
@@ -1245,7 +1294,7 @@ private fun KeyboardDictionaryPane(
                                 try {
                                     val ready = rimeDataManager.downloadFullRimeIceDictionary()
                                     val count = (ready as? RimeDeploymentState.Ready)?.wordCount ?: 0
-                                    Toast.makeText(context, "✓ 完整雾凇拼音词库已部署 ($count 词条)", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(context, "✓ 完整雾凇扩展词库已部署 ($count 词条)", Toast.LENGTH_LONG).show()
                                 } catch (e: Exception) {
                                     Toast.makeText(context, "雾凇词库下载失败: ${e.message ?: "请检查网络"}", Toast.LENGTH_LONG).show()
                                 }
@@ -1256,8 +1305,45 @@ private fun KeyboardDictionaryPane(
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Text(
-                            text = if (hasFullIce) "更新雾凇完整词库" else "按需下载雾凇完整词库",
-                            fontWeight = FontWeight.Bold
+                            text = if (hasFullIce && hasExtIce) {
+                                "更新完整雾凇扩展词库 (base + ext + others · ~16 MB)"
+                            } else {
+                                "下载完整雾凇扩展词库 (base + ext + others · ~16 MB)"
+                            },
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                try {
+                                    if (hasTencentIce) {
+                                        rimeDataManager.removeTencentRimeIceDictionary()
+                                        Toast.makeText(context, "已卸载腾讯词向量扩展库", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        val ready = rimeDataManager.downloadTencentRimeIceDictionary()
+                                        val count = (ready as? RimeDeploymentState.Ready)?.wordCount ?: 0
+                                        Toast.makeText(context, "✓ 腾讯词向量扩展库已部署 ($count 词条)", Toast.LENGTH_LONG).show()
+                                    }
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "腾讯词库操作失败: ${e.message ?: "请检查网络"}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        },
+                        enabled = !isDeployingRime,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(
+                            text = if (hasTencentIce) {
+                                "已安装腾讯词向量扩展库 · 点击卸载"
+                            } else {
+                                "可选追加：腾讯词向量扩展库 (tencent · ~17 MB，含海量口语词)"
+                            },
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
                         )
                     }
 
@@ -1287,6 +1373,157 @@ private fun KeyboardDictionaryPane(
                             shape = RoundedCornerShape(10.dp)
                         ) {
                             Text("恢复默认", fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+
+            // 八元组语法模型卡片 (librime-octagram)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.52f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "八元组语法模型 (librime-octagram)",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "离线大幅提升全拼 / 双拼 / 九键长句连打选词准确率（的/地/得、在/再、同音歧义）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (!activeGrammarId.isNullOrBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = TypeFreeEmerald.copy(alpha = 0.14f)
+                            ) {
+                                Text(
+                                    text = "已启用",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TypeFreeEmerald,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    RimeDataManager.GRAMMAR_MODEL_PRESETS.forEach { preset ->
+                        val isInstalled = activeGrammarId == preset.id
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isInstalled) {
+                                TypeFreeEmerald.copy(alpha = 0.08f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)
+                            },
+                            border = BorderStroke(
+                                1.dp,
+                                if (isInstalled) TypeFreeEmerald.copy(alpha = 0.45f)
+                                else MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = preset.displayName,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = preset.sizeLabel,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                    Text(
+                                        text = preset.subtitle,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                                if (isInstalled) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            scope.launch {
+                                                runCatching { rimeDataManager.removeGrammarModel() }
+                                                    .onSuccess {
+                                                        Toast.makeText(context, "已停用并删除语法模型", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                    .onFailure {
+                                                        Toast.makeText(context, "停用失败: ${it.message}", Toast.LENGTH_SHORT).show()
+                                                    }
+                                            }
+                                        },
+                                        enabled = !isDeployingRime,
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Text("卸载", fontSize = 12.sp)
+                                    }
+                                } else {
+                                    FilledTonalButton(
+                                        onClick = {
+                                            scope.launch {
+                                                try {
+                                                    rimeDataManager.downloadGrammarModel(preset)
+                                                    Toast.makeText(
+                                                        context,
+                                                        "✓ 已启用「${preset.displayName}」",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                } catch (e: Exception) {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "语法模型下载失败: ${e.message ?: "请检查网络"}",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                }
+                                            }
+                                        },
+                                        enabled = !isDeployingRime,
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Text("安装", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
                         }
                     }
                 }

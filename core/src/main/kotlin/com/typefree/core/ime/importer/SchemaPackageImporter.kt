@@ -115,6 +115,13 @@ class SchemaPackageImporter(
                 if (rimeLua.exists() && rimeLua.delete()) {
                     strippedDesktopFiles.add(rimeLua.name)
                 }
+                val luaDir = File(realRoot, "lua")
+                if (luaDir.isDirectory) {
+                    luaDir.walkTopDown().filter { it.isFile }.forEach { f ->
+                        strippedDesktopFiles.add("lua/${f.name}")
+                    }
+                    luaDir.deleteRecursively()
+                }
             }
 
             val mainDictFile = findFileRecursive(realRoot, "$mainDictName.dict.yaml")
@@ -177,6 +184,10 @@ class SchemaPackageImporter(
                         generatedPlaceholders.add(txtFile.name)
                     }
                 }
+                // Official precompiled Xiaohe packages define `;q`/`;w` quick symbols inside `flypy_sys.txt`
+                if (isXiaohe && txtFile.isFile) {
+                    collectSemicolonEntriesFromCustomPhraseTxt(txtFile, extractedQuickEntries)
+                }
             }
 
             // Build or load quick_symbols.yaml (persisting any `;` entries extracted from `.dict.yaml`)
@@ -217,6 +228,11 @@ class SchemaPackageImporter(
                 tomlFile.writeText(TypeFreeTomlParser.serialize(profile), StandardCharsets.UTF_8)
 
                 // Stage 5.1.4: Offline staging compilation
+                // Strip any stale desktop-compiled `build/` outputs when compiling from plain `.dict.yaml`
+                val staleBuildDir = File(realRoot, "build")
+                if (staleBuildDir.exists()) {
+                    staleBuildDir.deleteRecursively()
+                }
                 val tempDefaultYaml = File(realRoot, "default.yaml")
                 val wroteTempDefault = if (!tempDefaultYaml.exists()) {
                     tempDefaultYaml.writeText(
@@ -366,16 +382,73 @@ class SchemaPackageImporter(
         destRoot: File,
         strippedDesktopFiles: MutableList<String>
     ) {
+        val tempZipFile = File(stagingParentDir, "schema_upload_${UUID.randomUUID()}.zip")
+        tempZipFile.parentFile?.mkdirs()
+        try {
+            val copyBuf = ByteArray(16 * 1024)
+            var compressedBytes = 0L
+            FileOutputStream(tempZipFile).use { fos ->
+                var n = zipInputStream.read(copyBuf)
+                while (n > 0) {
+                    compressedBytes += n
+                    if (compressedBytes > MAX_UNZIPPED_BYTES) {
+                        throw SecurityException("方案包压缩体积超过 150MB 安全上限")
+                    }
+                    fos.write(copyBuf, 0, n)
+                    n = zipInputStream.read(copyBuf)
+                }
+            }
+
+            val utf8Ok = try {
+                extractZipWithCharset(tempZipFile, destRoot, StandardCharsets.UTF_8, strippedDesktopFiles)
+            } catch (e: java.util.zip.ZipException) {
+                if (e.message?.contains("encrypted", ignoreCase = true) == true) {
+                    throw IllegalArgumentException("该压缩包已设置解压密码，请先解压并去除密码后重新打包为 .zip 再导入", e)
+                }
+                throw e
+            } catch (_: IllegalArgumentException) {
+                false
+            } catch (_: CharacterCodingException) {
+                false
+            }
+
+            if (!utf8Ok) {
+                destRoot.listFiles().orEmpty().forEach { it.deleteRecursively() }
+                strippedDesktopFiles.clear()
+                try {
+                    extractZipWithCharset(tempZipFile, destRoot, Charset.forName("GB18030"), strippedDesktopFiles)
+                } catch (e: java.util.zip.ZipException) {
+                    if (e.message?.contains("encrypted", ignoreCase = true) == true) {
+                        throw IllegalArgumentException("该压缩包已设置解压密码，请先解压并去除密码后重新打包为 .zip 再导入", e)
+                    }
+                    throw e
+                }
+            }
+        } finally {
+            tempZipFile.delete()
+        }
+    }
+
+    private fun extractZipWithCharset(
+        zipFile: File,
+        destRoot: File,
+        charset: Charset,
+        strippedDesktopFiles: MutableList<String>
+    ): Boolean {
         val canonicalRoot = destRoot.canonicalPath + File.separator
         var totalExtractedBytes = 0L
         val buffer = ByteArray(16 * 1024)
 
-        ZipInputStream(zipInputStream).use { zis ->
+        ZipInputStream(FileInputStream(zipFile), charset).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
-                val rawName = entry.name.replace('\\', '/').trimStart('/')
+                val entryName = entry.name
+                if (charset == StandardCharsets.UTF_8 && entryName.contains('\uFFFD')) {
+                    return false
+                }
+                val rawName = entryName.replace('\\', '/').trimStart('/')
                 if (rawName.contains("..") || rawName.startsWith("/")) {
-                    throw SecurityException("拒绝路径穿越压缩包条目: ${entry.name}")
+                    throw SecurityException("拒绝路径穿越压缩包条目: $entryName")
                 }
                 if (!entry.isDirectory && rawName.isNotEmpty()) {
                     val baseName = rawName.substringAfterLast('/')
@@ -386,11 +459,11 @@ class SchemaPackageImporter(
                             val outFile = File(destRoot, rawName)
                             val canonicalOut = outFile.canonicalPath
                             if (!canonicalOut.startsWith(canonicalRoot)) {
-                                throw SecurityException("拒绝越界解压路径: ${entry.name}")
+                                throw SecurityException("拒绝越界解压路径: $entryName")
                             }
                             outFile.parentFile?.mkdirs()
                             if (Files.isSymbolicLink(outFile.toPath())) {
-                                throw SecurityException("拒绝符号链接条目: ${entry.name}")
+                                throw SecurityException("拒绝符号链接条目: $entryName")
                             }
                             FileOutputStream(outFile).use { fos ->
                                 var n = zis.read(buffer)
@@ -410,6 +483,7 @@ class SchemaPackageImporter(
                 entry = zis.nextEntry
             }
         }
+        return true
     }
 
     private fun locateSchemaRoot(stagingDir: File): File? {
@@ -510,6 +584,34 @@ class SchemaPackageImporter(
             throw IllegalArgumentException(
                 "预编译码表魔数头校验失败 (${binFile.name}): expected 'Rime::Table*', got '$magicPrefix'"
             )
+        }
+    }
+
+    private fun collectSemicolonEntriesFromCustomPhraseTxt(
+        txtFile: File,
+        extractedOut: MutableList<OverlaySymbolEntry>
+    ) {
+        val seenKeys = extractedOut.map { it.key }.toHashSet()
+        txtFile.forEachLine(StandardCharsets.UTF_8) { rawLine ->
+            val line = rawLine.trimEnd()
+            if (line.isBlank() || line.startsWith("#")) return@forEachLine
+            val tab1 = line.indexOf('\t')
+            if (tab1 <= 0) return@forEachLine
+            val word = line.substring(0, tab1)
+            val code = line.substring(tab1 + 1).substringBefore('\t').trim()
+            if (code.startsWith(";") && code.length in 2..3) {
+                val key = code.removePrefix(";")
+                if (key.isNotEmpty() && key !in seenKeys) {
+                    seenKeys.add(key)
+                    extractedOut.add(
+                        OverlaySymbolEntry(
+                            key = key,
+                            displayText = word,
+                            action = com.typefree.core.ime.coordinator.CommitAction.PlainText(word)
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -651,6 +753,8 @@ class SchemaPackageImporter(
         val DESKTOP_FRONTEND_FILES = setOf(
             "default.yaml",
             "default.custom.yaml",
+            "installation.yaml",
+            "user.yaml",
             "squirrel.yaml",
             "squirrel.custom.yaml",
             "weasel.yaml",

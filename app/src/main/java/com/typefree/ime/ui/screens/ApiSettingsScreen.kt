@@ -85,6 +85,20 @@ import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.typefree.core.offline.AiTask
+import com.typefree.core.offline.AsrRoute
+import com.typefree.core.offline.ExecutionSource
+import com.typefree.core.offline.LocalModelInstallStatus
+import com.typefree.core.offline.LocalModelRegistrySnapshot
+import com.typefree.core.offline.LocalModelSlot
+import com.typefree.core.offline.OfflineMode
+import com.typefree.core.offline.OfflineModelCatalog
+import com.typefree.core.offline.ReadinessState
+import com.typefree.core.offline.RoutePlan
+import com.typefree.core.offline.TextRoute
+import com.typefree.ime.TypeFreeApp
+import com.typefree.ime.localai.LocalInferenceEngineRegistry
+import com.typefree.ime.localai.ModelDownloadWorker
 import com.typefree.ime.data.ApiPreset
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
@@ -102,6 +116,7 @@ import com.typefree.ime.data.ModelCapabilitySlot
 import com.typefree.ime.data.ModelProbeResult
 import com.typefree.ime.data.MultimodalConfig
 import com.typefree.ime.data.MultimodalProtocol
+import com.typefree.ime.data.OfflineRouteBridge
 import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.ProviderCredential
 import com.typefree.ime.data.SnippetEntry
@@ -117,6 +132,7 @@ import com.typefree.ime.network.EndpointResolver
 import com.typefree.ime.network.PipelineExecutionResult
 import com.typefree.ime.network.asr.VolcengineSaucAsrClient
 import com.typefree.ime.ui.components.TypeFreeIcons
+import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import com.typefree.ime.ui.theme.TypeFreeRose
@@ -132,11 +148,30 @@ private const val DEFAULT_LIVE_TEST_INPUT =
 fun ApiSettingsScreen(
     repository: AppRepository,
     aiEngine: AiPipelineEngine,
-    showScreenHeader: Boolean = true
+    showScreenHeader: Boolean = true,
+    initialOpenOfflineModels: Boolean = false,
+    onConsumeOpenOfflineModels: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val settings by repository.settings.collectAsState()
+    val registrySnapshot = rememberLocalModelRegistrySnapshot()
+
+    var showOfflineModelsScreen by rememberSaveable { mutableStateOf(initialOpenOfflineModels) }
+    LaunchedEffect(initialOpenOfflineModels) {
+        if (initialOpenOfflineModels) {
+            showOfflineModelsScreen = true
+            onConsumeOpenOfflineModels()
+        }
+    }
+
+    if (showOfflineModelsScreen) {
+        OfflineModelsScreen(
+            repository = repository,
+            onBack = { showOfflineModelsScreen = false }
+        )
+        return
+    }
 
     val hydratedVault = remember(settings) {
         UnifiedProviderCatalog.hydrateVaultFromSettings(settings)
@@ -151,7 +186,13 @@ fun ApiSettingsScreen(
     }
 
     var selectedVaultProviderId by rememberSaveable {
-        mutableStateOf(activePrimaryProviderId)
+        mutableStateOf(
+            if (settings.offlineConfig.mode != OfflineMode.OFF) {
+                ID_LOCAL_OFFLINE_PROVIDER
+            } else {
+                activePrimaryProviderId
+            }
+        )
     }
 
     // Collapsible Advanced Drawers (collapsed by default for a clean, zero-clutter studio)
@@ -234,7 +275,17 @@ fun ApiSettingsScreen(
         }
     }
 
-    val isApiReady = remember(settings) { SetupStatsHelper.isApiConfigured(settings) }
+    val readiness = remember(settings, registrySnapshot) {
+        SetupStatsHelper.resolveReadiness(settings, registrySnapshot)
+    }
+    val dictatePlan = remember(settings, registrySnapshot) {
+        OfflineRouteBridge.resolvePlan(
+            task = AiTask.DICTATE,
+            settings = settings,
+            registrySnapshot = registrySnapshot
+        )
+    }
+    val isFullReady = readiness is ReadinessState.Ready
 
     pickerDialogSlot?.let { activeSlot ->
         val activeBaseUrl: String
@@ -337,14 +388,14 @@ fun ApiSettingsScreen(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
-            color = if (isApiReady) {
+            color = if (isFullReady) {
                 TypeFreeEmerald.copy(alpha = 0.08f)
             } else {
                 TypeFreeAmber.copy(alpha = 0.10f)
             },
             border = BorderStroke(
                 1.dp,
-                if (isApiReady) TypeFreeEmerald.copy(alpha = 0.35f) else TypeFreeAmber.copy(alpha = 0.45f)
+                if (isFullReady) TypeFreeEmerald.copy(alpha = 0.35f) else TypeFreeAmber.copy(alpha = 0.45f)
             )
         ) {
             Row(
@@ -363,13 +414,16 @@ fun ApiSettingsScreen(
                         modifier = Modifier
                             .size(8.dp)
                             .clip(CircleShape)
-                            .background(if (isApiReady) TypeFreeEmerald else TypeFreeAmber)
+                            .background(if (isFullReady) TypeFreeEmerald else TypeFreeAmber)
                     )
                     Text(
-                        text = if (isApiReady) {
-                            "引擎就绪 · ${SetupStatsHelper.formatActivePipelineBadge(settings)}"
-                        } else {
-                            "待填密钥 · ${SetupStatsHelper.formatActivePipelineBadge(settings)}"
+                        text = when (readiness) {
+                            is ReadinessState.Ready ->
+                                "引擎就绪 · ${SetupStatsHelper.formatActivePipelineBadge(settings, registrySnapshot)}"
+                            is ReadinessState.DegradedRawOnly ->
+                                "仅转写 · ${readiness.badge.shortLabel}"
+                            is ReadinessState.NotReady ->
+                                "待配置 · ${readiness.reason}"
                         },
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold,
@@ -379,15 +433,21 @@ fun ApiSettingsScreen(
                     )
                 }
                 Text(
-                    text = "本地加密直连",
+                    text = when {
+                        dictatePlan.badge.isPureOffline -> "纯离线零出网"
+                        dictatePlan.badge.isHybrid -> "端云混合路由"
+                        else -> "本地加密直连"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
 
-        // Layer 1: Unified Provider Vault Card (1 Key per Provider + 1-Tap Activate)
+        // Layer 1: Unified Provider & Local Offline Vault Card (Local Offline as 1st Provider + 1-Tap Pure Offline)
         UnifiedProviderVaultCard(
+            settings = settings,
+            registrySnapshot = registrySnapshot,
             vault = hydratedVault,
             selectedProviderId = selectedVaultProviderId,
             activePrimaryProviderId = activePrimaryProviderId,
@@ -403,12 +463,34 @@ fun ApiSettingsScreen(
                 }
             },
             onApplyQuickSetup = { providerId, keepExistingThirdPartyStt ->
+                val wasOffline = settings.offlineConfig.mode != OfflineMode.OFF
                 repository.updateSettings { curr ->
-                    UnifiedProviderCatalog.applyQuickProviderSetup(
+                    val next = UnifiedProviderCatalog.applyQuickProviderSetup(
                         settings = curr,
                         providerId = providerId,
                         keepExistingThirdPartyStt = keepExistingThirdPartyStt
                     )
+                    if (providerId == UnifiedProviderCatalog.ID_DEEPSEEK && keepExistingThirdPartyStt && curr.offlineConfig.asrSlotOn) {
+                        next.copy(
+                            offlineConfig = curr.offlineConfig.copy(
+                                mode = OfflineMode.HYBRID,
+                                slmSlotOn = false
+                            )
+                        )
+                    } else {
+                        next.copy(
+                            offlineConfig = curr.offlineConfig.copy(
+                                mode = OfflineMode.OFF,
+                                asrSlotOn = false,
+                                slmSlotOn = false
+                            )
+                        )
+                    }
+                }
+                if (wasOffline && !(providerId == UnifiedProviderCatalog.ID_DEEPSEEK && keepExistingThirdPartyStt && settings.offlineConfig.asrSlotOn)) {
+                    coroutineScope.launch {
+                        runCatching { TypeFreeApp.instance.localAiClient.unloadAll() }
+                    }
                 }
                 testSuccessResult = null
                 testErrorMessage = null
@@ -417,7 +499,7 @@ fun ApiSettingsScreen(
                     context,
                     when {
                         providerId == UnifiedProviderCatalog.ID_DEEPSEEK && keepExistingThirdPartyStt ->
-                            "✓ 已将 DeepSeek 设为文本大脑（保留当前第三方听音引擎）"
+                            "✓ 已将 DeepSeek 设为文本大脑（保留当前听音引擎）"
                         providerId == UnifiedProviderCatalog.ID_DEEPSEEK ->
                             "✓ 已启用 DeepSeek 单 Key 方案（语音识别 + 润色与军师）"
                         else ->
@@ -426,12 +508,65 @@ fun ApiSettingsScreen(
                     Toast.LENGTH_SHORT
                 ).show()
             },
+            onActivatePureOffline = {
+                val installedAsr = OfflineModelCatalog.asrModels.firstOrNull { registrySnapshot.isInstalled(it.id) }
+                val installedSlm = OfflineModelCatalog.slmModels.firstOrNull { registrySnapshot.isInstalled(it.id) }
+                if (installedAsr == null) {
+                    Toast.makeText(context, "请先下载至少一个本机听音模型（推荐 SenseVoiceSmall）", Toast.LENGTH_SHORT).show()
+                    showOfflineModelsScreen = true
+                } else {
+                    repository.updateSettings { curr ->
+                        val nextAsrId = curr.offlineConfig.selectedAsrModelId
+                            ?.takeIf { registrySnapshot.isInstalled(it) }
+                            ?: installedAsr.id
+                        val nextSlmId = curr.offlineConfig.selectedSlmModelId
+                            ?.takeIf { registrySnapshot.isInstalled(it) }
+                            ?: installedSlm?.id
+                        val enableSlm = nextSlmId != null && registrySnapshot.slmEngineAvailable
+                        curr.copy(
+                            pipelineMode = PipelineMode.DUAL_STAGE,
+                            llmConfig = curr.llmConfig.copy(enabled = enableSlm),
+                            offlineConfig = curr.offlineConfig.copy(
+                                mode = OfflineMode.OFFLINE_ONLY,
+                                asrSlotOn = true,
+                                slmSlotOn = enableSlm,
+                                selectedAsrModelId = nextAsrId,
+                                selectedSlmModelId = nextSlmId
+                            )
+                        )
+                    }
+                    testSuccessResult = null
+                    testErrorMessage = null
+                    Toast.makeText(
+                        context,
+                        if (installedSlm != null && registrySnapshot.slmEngineAvailable) {
+                            "🔒 已切换纯离线零出网（本机听音 + 本机净写）"
+                        } else {
+                            "🔒 已切换纯离线零出网（本机听音直出）"
+                        },
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            },
+            onUnlockPureOffline = {
+                repository.updateOfflineConfig { curr ->
+                    if (curr.asrSlotOn || curr.slmSlotOn) {
+                        curr.copy(mode = OfflineMode.HYBRID)
+                    } else {
+                        curr.copy(mode = OfflineMode.OFF)
+                    }
+                }
+                Toast.makeText(context, "已解除纯离线零出网锁（保留当前本机模型）", Toast.LENGTH_SHORT).show()
+            },
+            onOpenOfflineModels = { showOfflineModelsScreen = true },
             onPasteClipboard = { readFromClipboard(context) }
         )
 
-        // Layer 2: Clean Workflow & Role Model Routing Card
+        // Layer 2: Clean Workflow & Role Model Routing Card (Mix-and-Match Cloud + Local Offline)
         UnifiedWorkflowRoutingCard(
             settings = settings,
+            dictatePlan = dictatePlan,
+            registrySnapshot = registrySnapshot,
             vault = hydratedVault,
             fetchingSlot = fetchingSlot,
             modelFetchErrors = modelFetchErrors,
@@ -440,13 +575,129 @@ fun ApiSettingsScreen(
                 testSuccessResult = null
                 testErrorMessage = null
             },
+            onSelectLocalAsr = {
+                selectedVaultProviderId = ID_LOCAL_OFFLINE_PROVIDER
+                val installedAsr = OfflineModelCatalog.asrModels.firstOrNull { registrySnapshot.isInstalled(it.id) }
+                repository.updateOfflineConfig { curr ->
+                    val nextAsrId = curr.selectedAsrModelId?.takeIf { registrySnapshot.isInstalled(it) }
+                        ?: installedAsr?.id
+                        ?: curr.selectedAsrModelId
+                    curr.copy(
+                        mode = if (curr.mode == OfflineMode.OFF) OfflineMode.HYBRID else curr.mode,
+                        asrSlotOn = true,
+                        selectedAsrModelId = nextAsrId
+                    )
+                }
+            },
+            onSelectLocalAsrModel = { modelId ->
+                repository.updateOfflineConfig { curr ->
+                    curr.copy(
+                        mode = if (curr.mode == OfflineMode.OFF) OfflineMode.HYBRID else curr.mode,
+                        asrSlotOn = true,
+                        selectedAsrModelId = modelId
+                    )
+                }
+            },
+            onSelectLocalSlm = {
+                selectedVaultProviderId = ID_LOCAL_OFFLINE_PROVIDER
+                val installedSlm = OfflineModelCatalog.slmModels.firstOrNull { registrySnapshot.isInstalled(it.id) }
+                repository.updateSettings { curr ->
+                    val nextSlmId = curr.offlineConfig.selectedSlmModelId?.takeIf { registrySnapshot.isInstalled(it) }
+                        ?: installedSlm?.id
+                        ?: curr.offlineConfig.selectedSlmModelId
+                    curr.copy(
+                        llmConfig = curr.llmConfig.copy(enabled = true),
+                        offlineConfig = curr.offlineConfig.copy(
+                            mode = if (curr.offlineConfig.mode == OfflineMode.OFF) OfflineMode.HYBRID else curr.offlineConfig.mode,
+                            slmSlotOn = true,
+                            selectedSlmModelId = nextSlmId
+                        )
+                    )
+                }
+            },
+            onSelectLocalSlmModel = { modelId ->
+                repository.updateSettings { curr ->
+                    curr.copy(
+                        llmConfig = curr.llmConfig.copy(enabled = true),
+                        offlineConfig = curr.offlineConfig.copy(
+                            mode = if (curr.offlineConfig.mode == OfflineMode.OFF) OfflineMode.HYBRID else curr.offlineConfig.mode,
+                            slmSlotOn = true,
+                            selectedSlmModelId = modelId
+                        )
+                    )
+                }
+            },
+            onQuickDownloadLocalModel = { modelId ->
+                val workId = runCatching {
+                    ModelDownloadWorker.enqueueDownload(context, modelId, allowDeleteExistingFirst = false)
+                }.getOrNull()
+                if (workId != null) {
+                    Toast.makeText(context, "已开始后台下载，正在打开模型管理查看进度…", Toast.LENGTH_SHORT).show()
+                }
+                showOfflineModelsScreen = true
+            },
+            onOpenOfflineModels = { showOfflineModelsScreen = true },
             onSelectSttProvider = { pid ->
                 selectedVaultProviderId = pid
-                repository.updateSettings { UnifiedProviderCatalog.selectSttProvider(it, pid) }
+                val wasLocked = settings.offlineConfig.mode == OfflineMode.OFFLINE_ONLY
+                val willDisableAllOffline = !settings.offlineConfig.slmSlotOn
+                repository.updateSettings { curr ->
+                    val updated = UnifiedProviderCatalog.selectSttProvider(curr, pid)
+                    val nextMode = when {
+                        !curr.offlineConfig.slmSlotOn -> OfflineMode.OFF
+                        curr.offlineConfig.mode == OfflineMode.OFFLINE_ONLY -> OfflineMode.HYBRID
+                        else -> curr.offlineConfig.mode
+                    }
+                    updated.copy(
+                        offlineConfig = curr.offlineConfig.copy(
+                            mode = nextMode,
+                            asrSlotOn = false
+                        )
+                    )
+                }
+                if (willDisableAllOffline) {
+                    coroutineScope.launch {
+                        runCatching { TypeFreeApp.instance.localAiClient.unloadAll() }
+                    }
+                } else {
+                    coroutineScope.launch {
+                        runCatching { TypeFreeApp.instance.localAiClient.unloadSlot(LocalModelSlot.ASR) }
+                    }
+                }
+                if (wasLocked) {
+                    Toast.makeText(context, "已自动解除纯离线锁，切为端云混合/云端听音", Toast.LENGTH_SHORT).show()
+                }
             },
             onSelectLlmProvider = { pid ->
                 selectedVaultProviderId = pid
-                repository.updateSettings { UnifiedProviderCatalog.selectLlmProvider(it, pid) }
+                val wasLocked = settings.offlineConfig.mode == OfflineMode.OFFLINE_ONLY
+                val willDisableAllOffline = !settings.offlineConfig.asrSlotOn
+                repository.updateSettings { curr ->
+                    val updated = UnifiedProviderCatalog.selectLlmProvider(curr, pid)
+                    val nextMode = when {
+                        !curr.offlineConfig.asrSlotOn -> OfflineMode.OFF
+                        curr.offlineConfig.mode == OfflineMode.OFFLINE_ONLY -> OfflineMode.HYBRID
+                        else -> curr.offlineConfig.mode
+                    }
+                    updated.copy(
+                        offlineConfig = curr.offlineConfig.copy(
+                            mode = nextMode,
+                            slmSlotOn = false
+                        )
+                    )
+                }
+                if (willDisableAllOffline) {
+                    coroutineScope.launch {
+                        runCatching { TypeFreeApp.instance.localAiClient.unloadAll() }
+                    }
+                } else {
+                    coroutineScope.launch {
+                        runCatching { TypeFreeApp.instance.localAiClient.unloadSlot(LocalModelSlot.SLM) }
+                    }
+                }
+                if (wasLocked) {
+                    Toast.makeText(context, "已自动解除纯离线锁，切为端云混合润色", Toast.LENGTH_SHORT).show()
+                }
             },
             onSelectMultimodalProvider = { pid ->
                 selectedVaultProviderId = pid
@@ -667,9 +918,25 @@ fun ApiSettingsScreen(
 // Layer 1: Unified Provider Vault Card
 // =============================================================================
 
+private const val ID_LOCAL_OFFLINE_PROVIDER = "local_offline"
+
+private val LOCAL_OFFLINE_VAULT_SPEC = UnifiedProviderSpec(
+    id = ID_LOCAL_OFFLINE_PROVIDER,
+    name = "📱 本机离线",
+    badge = "免Key/零费用",
+    summary = "语音听音与端侧净写均在本机运行，不消耗 API 额度、断网可用。",
+    defaultBaseUrl = "",
+    supportsStt = true,
+    supportsLlm = true,
+    supportsMultimodal = false,
+    hasSeparateSpeechToken = false
+)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun UnifiedProviderVaultCard(
+    settings: AppSettings,
+    registrySnapshot: LocalModelRegistrySnapshot,
     vault: Map<String, ProviderCredential>,
     selectedProviderId: String,
     activePrimaryProviderId: String,
@@ -681,13 +948,32 @@ private fun UnifiedProviderVaultCard(
     onSelectProvider: (String) -> Unit,
     onUpdateCredential: (ProviderCredential) -> Unit,
     onApplyQuickSetup: (String, Boolean) -> Unit,
+    onActivatePureOffline: () -> Unit,
+    onUnlockPureOffline: () -> Unit,
+    onOpenOfflineModels: () -> Unit,
     onPasteClipboard: () -> String
 ) {
+    val isLocalSelected = selectedProviderId == ID_LOCAL_OFFLINE_PROVIDER
     val selectedSpec = remember(selectedProviderId) {
-        UnifiedProviderCatalog.specFor(selectedProviderId)
+        if (selectedProviderId == ID_LOCAL_OFFLINE_PROVIDER) {
+            LOCAL_OFFLINE_VAULT_SPEC
+        } else {
+            UnifiedProviderCatalog.specFor(selectedProviderId)
+        }
     }
     val selectedCred = vault[selectedSpec.id] ?: ProviderCredential(providerId = selectedSpec.id)
     val isSelectedReady = UnifiedProviderCatalog.isCredentialReady(selectedSpec.id, selectedCred)
+
+    val installedAsrModels = remember(registrySnapshot) {
+        OfflineModelCatalog.asrModels.filter { registrySnapshot.isInstalled(it.id) }
+    }
+    val installedSlmModels = remember(registrySnapshot) {
+        OfflineModelCatalog.slmModels.filter { registrySnapshot.isInstalled(it.id) }
+    }
+    val isLocalAnyInstalled = installedAsrModels.isNotEmpty() || installedSlmModels.isNotEmpty()
+    val offlineCfg = settings.offlineConfig
+    val isLocalActive = offlineCfg.mode != OfflineMode.OFF && (offlineCfg.asrSlotOn || offlineCfg.slmSlotOn)
+    val isPureOfflineLocked = offlineCfg.mode == OfflineMode.OFFLINE_ONLY
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -708,19 +994,19 @@ private fun UnifiedProviderVaultCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "1. 服务商统一密钥库",
+                        text = "1. 服务商与本机离线库",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
                     val readyCount = UnifiedProviderCatalog.providers.count { spec ->
                         UnifiedProviderCatalog.isCredentialReady(spec.id, vault[spec.id])
-                    }
+                    } + if (isLocalAnyInstalled) 1 else 0
                     Surface(
                         shape = RoundedCornerShape(50),
                         color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Text(
-                            text = "已填 $readyCount / ${UnifiedProviderCatalog.providers.size}",
+                            text = "已就绪 $readyCount / ${UnifiedProviderCatalog.providers.size + 1}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
@@ -728,25 +1014,40 @@ private fun UnifiedProviderVaultCard(
                     }
                 }
                 Text(
-                    text = "每个平台只需填一次 API Key，听音、润色、帮我写与快译自动共享复用",
+                    text = "本机离线免 Key 零费用；云端每个平台只需填一次 API Key，听音与润色自动共享",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            // 6 Unified Provider Tiles (2 per row via FlowRow / Row chunks)
-            UnifiedProviderCatalog.providers.chunked(2).forEach { rowSpecs ->
+            // Local Offline (1st tile) + Cloud Providers in clean 2-column grid
+            val allVaultSpecs = remember(isPureOfflineLocked) {
+                listOf(
+                    LOCAL_OFFLINE_VAULT_SPEC.copy(
+                        badge = if (isPureOfflineLocked) "纯离线零出网" else "免Key/零费用"
+                    )
+                ) + UnifiedProviderCatalog.providers
+            }
+            allVaultSpecs.chunked(2).forEach { rowSpecs ->
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     rowSpecs.forEach { spec ->
-                        val cred = vault[spec.id]
-                        val ready = UnifiedProviderCatalog.isCredentialReady(spec.id, cred)
+                        val isLocalTile = spec.id == ID_LOCAL_OFFLINE_PROVIDER
+                        val ready = if (isLocalTile) {
+                            isLocalAnyInstalled
+                        } else {
+                            UnifiedProviderCatalog.isCredentialReady(spec.id, vault[spec.id])
+                        }
                         val isSelected = spec.id == selectedSpec.id
-                        val isActiveRole = spec.id == activePrimaryProviderId ||
-                            (isLlmEnabled && spec.id == activeLlmProviderId) ||
-                            (isJevDedicatedEnabled && spec.id == activeJevProviderId)
+                        val isActiveRole = if (isLocalTile) {
+                            isLocalActive
+                        } else {
+                            (!isLocalActive || !offlineCfg.asrSlotOn) && spec.id == activePrimaryProviderId ||
+                                (isLlmEnabled && (!isLocalActive || !offlineCfg.slmSlotOn) && spec.id == activeLlmProviderId) ||
+                                (isJevDedicatedEnabled && !isPureOfflineLocked && spec.id == activeJevProviderId)
+                        }
 
                         ProviderVaultTile(
                             spec = spec,
@@ -757,16 +1058,187 @@ private fun UnifiedProviderVaultCard(
                             modifier = Modifier.weight(1f)
                         )
                     }
+                    if (rowSpecs.size == 1) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
                 }
             }
 
-            // Selected Provider Single-Form Credential Drawer
+            // Selected Provider Detail Drawer (Local Offline OR Cloud Credential Form)
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (isLocalSelected && isPureOfflineLocked) {
+                        TypeFreeEmerald.copy(alpha = 0.55f)
+                    } else {
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                    }
+                )
             ) {
+                if (isLocalSelected) {
+                    val activeAsrName = OfflineModelCatalog.findById(offlineCfg.selectedAsrModelId)
+                        ?.takeIf { registrySnapshot.isInstalled(it.id) }?.displayName
+                        ?: installedAsrModels.firstOrNull()?.displayName
+                        ?: "未安装"
+                    val activeSlmName = OfflineModelCatalog.findById(offlineCfg.selectedSlmModelId)
+                        ?.takeIf { registrySnapshot.isInstalled(it.id) }?.displayName
+                        ?: installedSlmModels.firstOrNull()?.displayName
+                        ?: if (registrySnapshot.slmEngineAvailable) "未安装" else "仅听音版"
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "📱 本机离线引擎",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (isLocalAnyInstalled) {
+                                    TypeFreeEmerald.copy(alpha = 0.14f)
+                                } else {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                }
+                            ) {
+                                Text(
+                                    text = when {
+                                        isPureOfflineLocked -> "🔒 纯离线零出网"
+                                        isLocalAnyInstalled -> "已装 ${installedAsrModels.size} 听音 / ${installedSlmModels.size} 净写"
+                                        else -> "尚未下载模型"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isLocalAnyInstalled) {
+                                        TypeFreeEmerald
+                                    } else {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    },
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Surface(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surface,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(
+                                        text = "本机听音",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = activeAsrName,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            Surface(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surface,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(
+                                        text = "端侧净写",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = activeSlmName,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (isPureOfflineLocked) {
+                                OutlinedButton(
+                                    onClick = onUnlockPureOffline,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.2.dp, TypeFreeEmerald.copy(alpha = 0.65f))
+                                ) {
+                                    Text(
+                                        text = "✓ 纯离线锁定（点击解锁）",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = TypeFreeEmerald,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            } else {
+                                Button(
+                                    onClick = onActivatePureOffline,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text(
+                                        text = "🔒 一键切换纯离线",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                            OutlinedButton(
+                                onClick = onOpenOfflineModels,
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = "管理 / 下载 →",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = "开启「纯离线」后全部任务严禁联网；若在下方混搭区改选任意云端服务商，将自动解锁并切回端云混合。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 16.sp
+                        )
+                    }
+                } else {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -934,6 +1406,7 @@ private fun UnifiedProviderVaultCard(
                         }
                     }
                 }
+                }
             }
         }
     }
@@ -1020,10 +1493,18 @@ private fun ProviderVaultTile(
 @Composable
 private fun UnifiedWorkflowRoutingCard(
     settings: AppSettings,
+    dictatePlan: RoutePlan,
+    registrySnapshot: LocalModelRegistrySnapshot,
     vault: Map<String, ProviderCredential>,
     fetchingSlot: ModelCapabilitySlot?,
     modelFetchErrors: Map<ModelCapabilitySlot, String>,
     onSelectMode: (PipelineMode) -> Unit,
+    onSelectLocalAsr: () -> Unit,
+    onSelectLocalAsrModel: (String) -> Unit,
+    onSelectLocalSlm: () -> Unit,
+    onSelectLocalSlmModel: (String) -> Unit,
+    onQuickDownloadLocalModel: (String) -> Unit,
+    onOpenOfflineModels: () -> Unit,
     onSelectSttProvider: (String) -> Unit,
     onSelectLlmProvider: (String) -> Unit,
     onSelectMultimodalProvider: (String) -> Unit,
@@ -1047,6 +1528,17 @@ private fun UnifiedWorkflowRoutingCard(
     val activeJevPid = remember(settings.jevLlmConfig) {
         UnifiedProviderCatalog.inferLlmProviderId(settings.jevLlmConfig)
     }
+    val installedAsrModels = remember(registrySnapshot) {
+        OfflineModelCatalog.asrModels.filter { registrySnapshot.isInstalled(it.id) }
+    }
+    val installedSlmModels = remember(registrySnapshot) {
+        OfflineModelCatalog.slmModels.filter { registrySnapshot.isInstalled(it.id) }
+    }
+    val isLocalAsrSelected = settings.offlineConfig.mode != OfflineMode.OFF && settings.offlineConfig.asrSlotOn
+    val isLocalSlmSelected = settings.llmConfig.enabled &&
+        settings.offlineConfig.mode != OfflineMode.OFF &&
+        settings.offlineConfig.slmSlotOn &&
+        (registrySnapshot.slmEngineAvailable || installedSlmModels.isNotEmpty())
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1126,11 +1618,28 @@ private fun UnifiedWorkflowRoutingCard(
                             }
                             RoleProviderChipsRow(
                                 specs = sttProviders,
-                                selectedId = activeSttPid,
+                                selectedId = if (isLocalAsrSelected) ID_LOCAL_OFFLINE_PROVIDER else activeSttPid,
                                 vault = vault,
+                                includeLocalOfflineChip = true,
+                                isLocalOfflineReady = installedAsrModels.isNotEmpty(),
+                                onSelectLocalOffline = onSelectLocalAsr,
                                 onSelect = onSelectSttProvider
                             )
 
+                            if (isLocalAsrSelected) {
+                                LocalRoleModelSelectorPanel(
+                                    title = "已下载的本机听音模型",
+                                    installedModels = installedAsrModels,
+                                    selectedModelId = settings.offlineConfig.selectedAsrModelId,
+                                    emptyTitle = "尚未下载本机听音模型",
+                                    emptySubtitle = "推荐 SenseVoiceSmall（226MB，0.24s 极速中英混说）",
+                                    quickDownloadModelId = OfflineModelCatalog.ID_ASR_SENSEVOICE_SMALL,
+                                    quickDownloadLabel = "一键下载",
+                                    onSelectModel = onSelectLocalAsrModel,
+                                    onQuickDownload = onQuickDownloadLocalModel,
+                                    onOpenManager = onOpenOfflineModels
+                                )
+                            } else {
                             if (settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS) {
                                 Surface(
                                     modifier = Modifier.fillMaxWidth(),
@@ -1195,6 +1704,7 @@ private fun UnifiedWorkflowRoutingCard(
                                     onSelectModel = { m -> onUpdateStt(settings.sttConfig.copy(model = m)) }
                                 )
                             }
+                            }
                         }
                     }
 
@@ -1252,11 +1762,31 @@ private fun UnifiedWorkflowRoutingCard(
                             }
                             RoleProviderChipsRow(
                                 specs = llmProviders,
-                                selectedId = activeLlmPid,
+                                selectedId = if (isLocalSlmSelected) ID_LOCAL_OFFLINE_PROVIDER else activeLlmPid,
                                 vault = vault,
+                                includeLocalOfflineChip = registrySnapshot.slmEngineAvailable || installedSlmModels.isNotEmpty(),
+                                isLocalOfflineReady = installedSlmModels.isNotEmpty(),
+                                onSelectLocalOffline = onSelectLocalSlm,
                                 onSelect = onSelectLlmProvider
                             )
 
+                            if (isLocalSlmSelected) {
+                                val canQuickDownload08b = LocalInferenceEngineRegistry.hasDownloadableSlmSource(
+                                    OfflineModelCatalog.ID_SLM_CORE_0_8B
+                                )
+                                LocalRoleModelSelectorPanel(
+                                    title = "已就绪的端侧净写模型",
+                                    installedModels = installedSlmModels,
+                                    selectedModelId = settings.offlineConfig.selectedSlmModelId,
+                                    emptyTitle = "尚未下载本机净写模型",
+                                    emptySubtitle = "推荐轻巧净写版（0.8B，官方底座 + 12MB 精调权重）",
+                                    quickDownloadModelId = if (canQuickDownload08b) OfflineModelCatalog.ID_SLM_CORE_0_8B else null,
+                                    quickDownloadLabel = "一键下载 0.8B",
+                                    onSelectModel = onSelectLocalSlmModel,
+                                    onQuickDownload = onQuickDownloadLocalModel,
+                                    onOpenManager = onOpenOfflineModels
+                                )
+                            } else {
                             val llmSuggestions = UnifiedProviderCatalog.llmSuggestedModelsByProvider[activeLlmPid]
                                 ?: ApiConfigBackupHelper.llmModelSuggestions(settings.llmConfig.presetId)
 
@@ -1270,6 +1800,7 @@ private fun UnifiedWorkflowRoutingCard(
                                 fetchError = modelFetchErrors[ModelCapabilitySlot.LLM],
                                 onFetchModels = { onFetchModels(ModelCapabilitySlot.LLM) }
                             )
+                            }
                         }
                     }
                 }
@@ -1292,6 +1823,32 @@ private fun UnifiedWorkflowRoutingCard(
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
+                            if (dictatePlan.asr is AsrRoute.Local || dictatePlan.text is TextRoute.Local) {
+                                val asrNote = (dictatePlan.asr as? AsrRoute.Local)?.let {
+                                    OfflineModelCatalog.findById(it.modelId)?.displayName ?: it.modelId
+                                }
+                                val slmNote = (dictatePlan.text as? TextRoute.Local)?.let {
+                                    OfflineModelCatalog.findById(it.modelId)?.displayName ?: it.modelId
+                                }
+                                val takeoverDesc = listOfNotNull(
+                                    asrNote?.let { "听音（$it）" },
+                                    slmNote?.let { "润色（$it）" }
+                                ).joinToString(" 与 ")
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = TypeFreeEmerald.copy(alpha = 0.10f),
+                                    border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.42f))
+                                ) {
+                                    Text(
+                                        text = "📱 本机离线接管中：当前由本机接管 $takeoverDesc；关闭离线开关即自动恢复下方多模态云端配置（绝不清空密钥）。",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        lineHeight = 16.sp,
+                                        modifier = Modifier.padding(10.dp)
+                                    )
+                                }
+                            }
                             Text(
                                 text = "录音结束后单次请求直接完成听音理解、语气适配与翻译（如需边说边出字，可在上方切换「实时流式」）。",
                                 style = MaterialTheme.typography.labelSmall,
@@ -1433,12 +1990,32 @@ private fun RoleProviderChipsRow(
     specs: List<UnifiedProviderSpec>,
     selectedId: String,
     vault: Map<String, ProviderCredential>,
+    includeLocalOfflineChip: Boolean = false,
+    isLocalOfflineReady: Boolean = false,
+    onSelectLocalOffline: (() -> Unit)? = null,
     onSelect: (String) -> Unit
 ) {
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
+        if (includeLocalOfflineChip && onSelectLocalOffline != null) {
+            val localSelected = selectedId == ID_LOCAL_OFFLINE_PROVIDER
+            FilterChip(
+                selected = localSelected,
+                onClick = onSelectLocalOffline,
+                label = {
+                    Text(
+                        text = if (isLocalOfflineReady) "● 📱 本机离线" else "📱 本机离线",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = TypeFreeEmerald.copy(alpha = 0.18f),
+                    selectedLabelColor = TypeFreeEmerald
+                )
+            )
+        }
         specs.forEach { spec ->
             val selected = spec.id == selectedId
             val ready = UnifiedProviderCatalog.isCredentialReady(spec.id, vault[spec.id])
@@ -1456,6 +2033,131 @@ private fun RoleProviderChipsRow(
                     selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun LocalRoleModelSelectorPanel(
+    title: String,
+    installedModels: List<com.typefree.core.offline.LocalModelDescriptor>,
+    selectedModelId: String?,
+    emptyTitle: String,
+    emptySubtitle: String,
+    quickDownloadModelId: String?,
+    quickDownloadLabel: String,
+    onSelectModel: (String) -> Unit,
+    onQuickDownload: (String) -> Unit,
+    onOpenManager: () -> Unit
+) {
+    if (installedModels.isNotEmpty()) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                TextButton(
+                    onClick = onOpenManager,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                ) {
+                    Text(
+                        text = "管理更多 →",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                installedModels.forEach { model ->
+                    val selected = model.id == selectedModelId ||
+                        (selectedModelId.isNullOrBlank() && model == installedModels.first())
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onSelectModel(model.id) },
+                        label = {
+                            Text(
+                                text = if (selected) "✓ ${model.displayName}" else model.displayName,
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = TypeFreeEmerald.copy(alpha = 0.16f),
+                            selectedLabelColor = TypeFreeEmerald
+                        )
+                    )
+                }
+            }
+        }
+    } else {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            color = TypeFreeAmber.copy(alpha = 0.10f),
+            border = BorderStroke(1.dp, TypeFreeAmber.copy(alpha = 0.45f))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = emptyTitle,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = emptySubtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (!quickDownloadModelId.isNullOrBlank()) {
+                    Button(
+                        onClick = { onQuickDownload(quickDownloadModelId) },
+                        shape = RoundedCornerShape(9.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = quickDownloadLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onOpenManager,
+                        shape = RoundedCornerShape(9.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "打开模型库",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -1868,10 +2570,21 @@ private fun LiveApiTesterContent(
 
     AnimatedVisibility(visible = successResult != null) {
         successResult?.let { res ->
+            val sourceLabel = when (res.executionSource) {
+                ExecutionSource.LOCAL -> "📱 本机离线推理"
+                ExecutionSource.HYBRID_LOCAL_ASR_CLOUD_LLM -> "⚡ 混合（本机听音 + 云端润色）"
+                ExecutionSource.LOCAL_RAW_PASSTHROUGH -> "📱 本机直出（未润色）"
+                ExecutionSource.CLOUD -> "☁️ 云端接口"
+                ExecutionSource.BLOCKED -> "🔒 已拦截"
+            }
             val fullDiagnosticClipboard = buildString {
                 appendLine("TypeFree API 连通性诊断日志")
                 appendLine("总耗时: ${res.latencyMs} ms")
+                appendLine("执行路径: $sourceLabel (${res.executionSource.name})")
                 appendLine("响应模型: ${res.modeSummary}")
+                if (res.localMetricsSummary.isNotBlank()) {
+                    appendLine("本机性能指标: ${res.localMetricsSummary}")
+                }
                 if (res.diagnosticLog.isNotBlank()) {
                     appendLine(res.diagnosticLog)
                 }
@@ -1931,10 +2644,26 @@ private fun LiveApiTesterContent(
                         }
                     }
                     Text(
-                        text = "响应模型：${res.modeSummary}",
+                        text = "执行路径：$sourceLabel · 响应模型：${res.modeSummary}",
                         style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (res.localMetricsSummary.isNotBlank()) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                            color = TypeFreeEmerald.copy(alpha = 0.12f),
+                            border = BorderStroke(0.5.dp, TypeFreeEmerald.copy(alpha = 0.45f))
+                        ) {
+                            Text(
+                                text = "📊 本机指标：${res.localMetricsSummary}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
                     Text(
                         text = res.finalOutput,
                         style = MaterialTheme.typography.bodyMedium,

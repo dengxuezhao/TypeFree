@@ -45,12 +45,20 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.typefree.core.offline.AiTask
+import com.typefree.core.offline.LocalModelRegistrySnapshot
+import com.typefree.core.offline.OfflineMode
+import com.typefree.core.offline.OfflineModelCatalog
+import com.typefree.core.offline.ReadinessState
+import com.typefree.core.offline.TextRoute
 import com.typefree.ime.bubble.TypeFreeBubbleController
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
+import com.typefree.ime.data.OfflineRouteBridge
 import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.ui.AppDestinations
+import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 
@@ -59,10 +67,16 @@ fun VoiceAiStudioScreen(
     repository: AppRepository,
     aiEngine: AiPipelineEngine,
     initialSubTab: Int = AppDestinations.SUBTAB_VOICE_MAIN,
+    openOfflineModels: Boolean = false,
+    onConsumeOpenOfflineModels: () -> Unit = {},
     onSubTabChanged: ((Int) -> Unit)? = null
 ) {
     val settings by repository.settings.collectAsState()
-    val isApiReady = remember(settings) { SetupStatsHelper.isApiConfigured(settings) }
+    val registrySnapshot = rememberLocalModelRegistrySnapshot()
+    val readiness = remember(settings, registrySnapshot) {
+        SetupStatsHelper.resolveReadiness(settings, registrySnapshot)
+    }
+    val isFullReady = readiness is ReadinessState.Ready
 
     var activeSubTab by rememberSaveable {
         mutableIntStateOf(
@@ -74,6 +88,13 @@ fun VoiceAiStudioScreen(
         val coerced = initialSubTab.coerceIn(AppDestinations.SUBTAB_VOICE_MAIN, AppDestinations.SUBTAB_VOICE_API)
         if (activeSubTab != coerced) {
             activeSubTab = coerced
+        }
+    }
+
+    LaunchedEffect(openOfflineModels) {
+        if (openOfflineModels && activeSubTab != AppDestinations.SUBTAB_VOICE_API) {
+            activeSubTab = AppDestinations.SUBTAB_VOICE_API
+            onSubTabChanged?.invoke(AppDestinations.SUBTAB_VOICE_API)
         }
     }
 
@@ -108,7 +129,7 @@ fun VoiceAiStudioScreen(
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     border = BorderStroke(
                         1.dp,
-                        if (isApiReady) TypeFreeEmerald.copy(alpha = 0.45f) else TypeFreeAmber.copy(alpha = 0.55f)
+                        if (isFullReady) TypeFreeEmerald.copy(alpha = 0.45f) else TypeFreeAmber.copy(alpha = 0.55f)
                     )
                 ) {
                     Row(
@@ -120,10 +141,17 @@ fun VoiceAiStudioScreen(
                             modifier = Modifier
                                 .size(7.dp)
                                 .clip(CircleShape)
-                                .background(if (isApiReady) TypeFreeEmerald else TypeFreeAmber)
+                                .background(if (isFullReady) TypeFreeEmerald else TypeFreeAmber)
                         )
                         Text(
-                            text = if (isApiReady) SetupStatsHelper.formatActivePipelineBadge(settings) else "未配置 API",
+                            text = when (readiness) {
+                                is ReadinessState.Ready ->
+                                    SetupStatsHelper.formatActivePipelineBadge(settings, registrySnapshot)
+                                is ReadinessState.DegradedRawOnly ->
+                                    readiness.badge.shortLabel
+                                is ReadinessState.NotReady ->
+                                    "未配置引擎"
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -189,6 +217,7 @@ fun VoiceAiStudioScreen(
                                 AiCopilotAndPrivacyCard(
                                     repository = repository,
                                     settings = settings,
+                                    registrySnapshot = registrySnapshot,
                                     onJumpToApiSubTab = { selectSubTab(AppDestinations.SUBTAB_VOICE_API) }
                                 )
                                 SharedTranslationTargetsCard(repository = repository)
@@ -201,7 +230,9 @@ fun VoiceAiStudioScreen(
                     ApiSettingsScreen(
                         repository = repository,
                         aiEngine = aiEngine,
-                        showScreenHeader = false
+                        showScreenHeader = false,
+                        initialOpenOfflineModels = openOfflineModels,
+                        onConsumeOpenOfflineModels = onConsumeOpenOfflineModels
                     )
                 }
             }
@@ -338,10 +369,18 @@ private fun VoiceAndHotwordsPane(
 private fun AiCopilotAndPrivacyCard(
     repository: AppRepository,
     settings: AppSettings,
+    registrySnapshot: LocalModelRegistrySnapshot,
     onJumpToApiSubTab: () -> Unit
 ) {
     var showChatContextDisclosureDialog by remember { mutableStateOf(false) }
     var showJevMemoryDialog by remember { mutableStateOf(false) }
+    val jevRoutePlan = remember(settings, registrySnapshot) {
+        OfflineRouteBridge.resolvePlan(
+            task = AiTask.JEV_COPILOT,
+            settings = settings,
+            registrySnapshot = registrySnapshot
+        )
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -452,6 +491,31 @@ private fun AiCopilotAndPrivacyCard(
                     repository.updateSettings { it.copy(chatContextSendScreenshot = enabled) }
                 }
             )
+
+            val isLocalJevActive = jevRoutePlan.text is TextRoute.Local
+            val isOffline4bFallbackConfigured = settings.offlineConfig.mode != OfflineMode.OFF &&
+                settings.offlineConfig.slmSlotOn &&
+                settings.offlineConfig.selectedSlmModelId == OfflineModelCatalog.ID_SLM_PRO_4B &&
+                registrySnapshot.isInstalled(OfflineModelCatalog.ID_SLM_PRO_4B)
+            if (isLocalJevActive || isOffline4bFallbackConfigured || settings.offlineConfig.mode == OfflineMode.OFFLINE_ONLY) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = TypeFreeAmber.copy(alpha = 0.10f),
+                    border = BorderStroke(1.dp, TypeFreeAmber.copy(alpha = 0.36f))
+                ) {
+                    Text(
+                        text = if (isLocalJevActive || settings.offlineConfig.mode == OfflineMode.OFFLINE_ONLY) {
+                            "ℹ️ 离线军师仅使用端侧 OCR 文本，不支持截图/表情包视觉理解"
+                        } else {
+                            "ℹ️ 断网回退至本机离线 4B 军师时，仅使用端侧 OCR 文本，不支持截图/表情包视觉理解"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                    )
+                }
+            }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
 

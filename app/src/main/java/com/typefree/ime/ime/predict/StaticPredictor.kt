@@ -11,16 +11,27 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * L1 Static Predictor for TypeFree v2.7:
- * - Provides `~0ms` local Chinese next-word / phrase predictions via built-in high-frequency
- *   Chinese bigram collocations and compound-word prefix continuations.
- * - Supports loading extended predictions from `filesDir/rime/shared/predict.db` or TSV files.
+ * L1 Static Predictor for TypeFree:
+ * - Provides `~0ms` local Chinese next-word / phrase predictions via:
+ *   1. User / custom TSV overrides (`filesDir/rime/shared/predict.tsv`)
+ *   2. Built-in high-frequency Chinese bigram collocations (`BUILTIN_BIGRAMS`)
+ *   3. Bundled large compact Chinese bigram table (`assets/predict/zh_bigrams_compact.tsv`)
+ *   4. Dynamic prefix-continuation index ([LexiconPrefixIndex]) built offline from installed Rime dicts
+ *   5. Compound-word prefix continuations and tail-character fallbacks
  */
 class StaticPredictor(
-    initialCustomBigrams: Map<String, List<String>> = emptyMap()
+    initialCustomBigrams: Map<String, List<String>> = emptyMap(),
+    val lexiconPrefixIndex: LexiconPrefixIndex = LexiconPrefixIndex()
 ) {
 
     private val customBigrams = ConcurrentHashMap<String, List<String>>()
+    private val bundledBigrams = ConcurrentHashMap<String, List<String>>()
+
+    @Volatile
+    private var bundledLoaded = false
+
+    val bundledBigramCount: Int
+        get() = bundledBigrams.size
 
     init {
         for ((k, v) in initialCustomBigrams) {
@@ -33,19 +44,61 @@ class StaticPredictor(
     }
 
     /**
-     * Loads extended bigram predictions from `filesDir/rime/shared/predict.db` or `predict.tsv` if present.
+     * Loads the bundled compact bigram asset (`assets/predict/zh_bigrams_compact.tsv`),
+     * any custom TSV overrides under `filesDir/rime/shared/`, and rebuilds the
+     * [lexiconPrefixIndex] from installed Rime dictionary files.
      */
     fun loadFromContextIfAvailable(context: Context): Int {
+        var loaded = loadBundledAssetsIfAvailable(context)
         val sharedDir = File(context.filesDir, "rime/shared")
-        return loadFromRimeSharedDir(sharedDir)
+        loaded += loadFromRimeSharedDir(sharedDir)
+        lexiconPrefixIndex.rebuildFromRimeSharedDir(sharedDir)
+        return loaded
+    }
+
+    /**
+     * Loads the compact Chinese bigram TSV packaged in APK assets once per process.
+     */
+    fun loadBundledAssetsIfAvailable(context: Context): Int {
+        if (bundledLoaded && bundledBigrams.isNotEmpty()) return bundledBigrams.size
+        val loaded = runCatching {
+            context.assets.open(BUNDLED_BIGRAMS_ASSET_PATH).use { stream ->
+                loadIntoMapFromTsvStream(stream, bundledBigrams)
+            }
+        }.getOrDefault(0)
+        if (loaded > 0) {
+            bundledLoaded = true
+        }
+        return loaded
+    }
+
+    /**
+     * Loads bundled bigrams from an explicit [InputStream] (useful for JVM tests).
+     */
+    fun loadBundledFromTsvStream(inputStream: InputStream): Int {
+        val loaded = loadIntoMapFromTsvStream(inputStream, bundledBigrams)
+        if (loaded > 0) bundledLoaded = true
+        return loaded
+    }
+
+    /**
+     * Refreshes the dynamic [lexiconPrefixIndex] and custom TSV overrides from [sharedDir]
+     * (called after Rime deploys or downloads full/extended dictionaries).
+     */
+    fun reloadFromRimeSharedDir(sharedDir: File): Pair<Int, Int> {
+        val customCount = loadFromRimeSharedDir(sharedDir)
+        val indexedEntries = lexiconPrefixIndex.rebuildFromRimeSharedDir(sharedDir)
+        return customCount to indexedEntries
     }
 
     fun loadFromRimeSharedDir(sharedDir: File): Int {
         if (!sharedDir.exists() || !sharedDir.isDirectory) return 0
         var loadedCount = 0
+        // Only read plain-text TSV/TXT prediction tables; never parse binary librime predict.db as UTF-8 text.
         val candidates = listOf(
             File(sharedDir, "predict.tsv"),
-            File(sharedDir, "predict.db")
+            File(sharedDir, "predict_custom.tsv"),
+            File(sharedDir, "predict.txt")
         )
         for (file in candidates) {
             if (file.exists() && file.isFile && file.length() > 0L) {
@@ -58,11 +111,18 @@ class StaticPredictor(
     }
 
     /**
-     * Parses tab-separated or space-separated bigram lines:
+     * Parses tab-separated bigram lines into user/custom overrides:
      * Format A: `prevWord\tnextWord1\tnextWord2...`
      * Format B: `prevWord\tnextWord` (multiple lines with same `prevWord`)
      */
     fun loadFromTsvStream(inputStream: InputStream): Int {
+        return loadIntoMapFromTsvStream(inputStream, customBigrams)
+    }
+
+    private fun loadIntoMapFromTsvStream(
+        inputStream: InputStream,
+        targetMap: ConcurrentHashMap<String, List<String>>
+    ): Int {
         val grouped = LinkedHashMap<String, MutableList<String>>()
         BufferedReader(InputStreamReader(inputStream, StandardCharsets.UTF_8)).use { reader ->
             var line = reader.readLine()
@@ -90,8 +150,8 @@ class StaticPredictor(
         }
         for ((prev, nextList) in grouped) {
             if (nextList.isNotEmpty()) {
-                val existing = customBigrams[prev].orEmpty()
-                customBigrams[prev] = (nextList + existing).distinct()
+                val existing = targetMap[prev].orEmpty()
+                targetMap[prev] = (nextList + existing).distinct()
             }
         }
         return grouped.size
@@ -117,13 +177,22 @@ class StaticPredictor(
             return false
         }
 
-        // 1. Custom extended bigrams (from predict.db / predict.tsv or constructor)
+        // 1. Custom extended bigrams (from predict.tsv or constructor)
         customBigrams[cleanPrev]?.let { if (appendCandidates(it)) return result }
 
-        // 2. Built-in exact bigram table
+        // 2. Built-in core exact bigram table (highest conversational precision)
         BUILTIN_BIGRAMS[cleanPrev]?.let { if (appendCandidates(it)) return result }
 
-        // 3. Compound phrase prefix completion (e.g. "人工" -> "智能", "小鹤" -> "音形")
+        // 3. Bundled large compact bigram table (assets/predict/zh_bigrams_compact.tsv)
+        bundledBigrams[cleanPrev]?.let { if (appendCandidates(it)) return result }
+
+        // 4. Dynamic installed-lexicon prefix completion (e.g. "人工" -> "智能", "不好" -> "意思", "注意" -> "事项")
+        if (cleanPrev.length in 1..LexiconPrefixIndex.MAX_PREFIX_LEN) {
+            val dynamicSuffixes = lexiconPrefixIndex.querySuffixes(cleanPrev, limit = limit)
+            if (dynamicSuffixes.isNotEmpty() && appendCandidates(dynamicSuffixes)) return result
+        }
+
+        // 5. Built-in compound phrase prefix completion fallback
         if (cleanPrev.length in 1..3) {
             for (phrase in BUILTIN_COMPOUND_PHRASES) {
                 if (phrase.length > cleanPrev.length && phrase.startsWith(cleanPrev)) {
@@ -136,14 +205,17 @@ class StaticPredictor(
             }
         }
 
-        // 4. Tail character association if prevWord is multi-char
+        // 6. Tail character association if prevWord is multi-char
         if (cleanPrev.length >= 2) {
             val tailCharStr = cleanPrev.last().toString()
             customBigrams[tailCharStr]?.let { if (appendCandidates(it)) return result }
             BUILTIN_BIGRAMS[tailCharStr]?.let { if (appendCandidates(it)) return result }
+            bundledBigrams[tailCharStr]?.let { if (appendCandidates(it)) return result }
+            val tailSuffixes = lexiconPrefixIndex.querySuffixes(tailCharStr, limit = limit)
+            if (tailSuffixes.isNotEmpty() && appendCandidates(tailSuffixes)) return result
         }
 
-        // 5. Fallback high-frequency Chinese continuations when input contains CJK characters
+        // 7. Fallback high-frequency Chinese continuations when input contains CJK characters
         if (containsCjk(cleanPrev)) {
             appendCandidates(DEFAULT_CJK_FOLLOWUPS)
         }
@@ -157,6 +229,7 @@ class StaticPredictor(
 
     companion object {
         const val DEFAULT_LIMIT = 8
+        const val BUNDLED_BIGRAMS_ASSET_PATH = "predict/zh_bigrams_compact.tsv"
 
         private fun containsCjk(text: String): Boolean {
             return text.any { ch -> ch.code in 0x4E00..0x9FFF }

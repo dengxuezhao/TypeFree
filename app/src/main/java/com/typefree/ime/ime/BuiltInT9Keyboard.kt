@@ -1198,6 +1198,7 @@ fun BuiltInT9KeyboardHost(
     uiState: ImeUiState,
     showKeyPopupPreview: Boolean,
     onAction: (ImeUiAction) -> Unit,
+    backspaceSwipeUpClearEnabled: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     BuiltInT9Keyboard(
@@ -1215,7 +1216,9 @@ fun BuiltInT9KeyboardHost(
         onClearComposing = { onAction(ImeUiAction.ClearFlypyComposing) },
         onFlushComposingBeforeLayerSwitch = { onAction(ImeUiAction.FlushFlypyComposing) },
         onBackspace = { onAction(ImeUiAction.Backspace) },
-        onSwipeUpBackspaceUndo = { onAction(ImeUiAction.TriggerUndo) },
+        onSwipeUpBackspaceUndo = {
+            onAction(if (backspaceSwipeUpClearEnabled) ImeUiAction.ClearInputBox else ImeUiAction.TriggerUndo)
+        },
         onEnterOrNewline = { onAction(ImeUiAction.EnterOrNewline) },
         onSwitchToVoice = { onAction(ImeUiAction.SelectTab(KeyboardTabMode.VOICE)) },
         inputSessionToken = uiState.inputSessionToken,

@@ -1,6 +1,8 @@
 package com.typefree.ime.ime
 
 import android.view.inputmethod.InputConnection
+import com.typefree.core.offline.AsrRoute
+import com.typefree.core.offline.RoutePlan
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.SttProtocol
@@ -804,16 +806,38 @@ class StreamingComposer(
             hasStreamingSession: Boolean,
             targetPackage: String,
             isFloatingBubbleChannel: Boolean = false
+        ): Boolean = shouldEnableLiveWrite(
+            settings = settings,
+            intentMode = intentMode,
+            effectiveSelectedText = effectiveSelectedText,
+            hasStreamingSession = hasStreamingSession,
+            targetPackage = targetPackage,
+            isFloatingBubbleChannel = isFloatingBubbleChannel,
+            routePlan = null
+        )
+
+        fun shouldEnableLiveWrite(
+            settings: AppSettings,
+            intentMode: VoiceIntentMode,
+            effectiveSelectedText: String,
+            hasStreamingSession: Boolean,
+            targetPackage: String,
+            isFloatingBubbleChannel: Boolean = false,
+            routePlan: RoutePlan?
         ): Boolean {
             if (!settings.liveWriteToEditor) return false
             if (isFloatingBubbleChannel) return false
             if (intentMode != VoiceIntentMode.DICTATE) return false
             if (effectiveSelectedText.isNotBlank()) return false
-            if (settings.pipelineMode != PipelineMode.DUAL_STAGE) return false
             if (!hasStreamingSession) return false
-            if (settings.sttConfig.protocol == SttProtocol.OPENAI_HTTP) return false
             val cleanPkg = targetPackage.trim()
             if (cleanPkg.isNotEmpty() && cleanPkg in LIVE_WRITE_BLACKLIST_PACKAGES) return false
+
+            if (routePlan != null) {
+                return routePlan.liveWriteCapable
+            }
+            if (settings.pipelineMode != PipelineMode.DUAL_STAGE) return false
+            if (settings.sttConfig.protocol == SttProtocol.OPENAI_HTTP) return false
             return true
         }
 
@@ -823,8 +847,12 @@ class StreamingComposer(
          */
         fun isSmartDirectDictation(
             settings: AppSettings,
-            intentMode: VoiceIntentMode
+            intentMode: VoiceIntentMode,
+            routePlan: RoutePlan? = null
         ): Boolean {
+            if (routePlan != null && routePlan.asr !is AsrRoute.Cloud) {
+                return false
+            }
             return settings.pipelineMode == PipelineMode.DUAL_STAGE &&
                 settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS &&
                 !settings.llmConfig.enabled &&

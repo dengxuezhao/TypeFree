@@ -112,6 +112,17 @@ jobs:
       - name: Fetch upstream librime 1.17.0 dependencies
         run: bash rime/src/main/cpp/fetch_librime_deps.sh
 
+      - name: Cache offline AI dependencies (sherpa-onnx AAR & llama.cpp)
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar
+            localai-native/src/main/cpp/llama.cpp
+          key: offline-ai-deps-${{ hashFiles('scripts/fetch_offline_deps.sh') }}
+
+      - name: Fetch offline AI dependencies (sherpa-onnx AAR & llama.cpp)
+        run: bash scripts/fetch_offline_deps.sh
+
       - name: Run QA unit tests before release
         run: |
           TASKS=""

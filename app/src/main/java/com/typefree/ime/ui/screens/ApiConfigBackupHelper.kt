@@ -4,6 +4,8 @@ import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.typefree.core.offline.OfflineMode
+import com.typefree.core.offline.PendingOfflineRestore
 import com.typefree.ime.data.ApiPreset
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.AppToneRule
@@ -17,6 +19,7 @@ import com.typefree.ime.data.KeycapBadgeMode
 import com.typefree.ime.data.LlmConfig
 import com.typefree.ime.data.MultimodalConfig
 import com.typefree.ime.data.MultimodalProtocol
+import com.typefree.ime.data.OfflineModelConfig
 import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.ProviderCredential
 import com.typefree.ime.data.SnippetEntry
@@ -44,12 +47,14 @@ object ApiConfigBackupHelper {
         "sttConfig",
         "llmConfig",
         "multimodalConfig",
+        "offlineConfig",
         "providerVault",
         "snippets",
         "pauseMediaWhileRecording",
         "whisperModeEnabled",
         "equalEqualAskAiEnabled",
         "qwertyShowNumberRow",
+        "backspaceSwipeUpClearEnabled",
         "keyboardHeightLevel",
         "keyboardHeightMode",
         "keyboardLiftLevel",
@@ -710,11 +715,56 @@ object ApiConfigBackupHelper {
                 existingSettings.fixedCandidateOrder
             }
 
+            val offlineObj = rootObj.optObject("offlineConfig")
+            val (mergedOfflineConfig, mergedPendingOfflineRestore) = if (offlineObj != null) {
+                val importedMode = offlineObj.optString("mode")?.let { rawMode ->
+                    OfflineMode.entries.firstOrNull { it.name.equals(rawMode, ignoreCase = true) }
+                } ?: OfflineMode.OFF
+                val importedAsrSlotOn = offlineObj.optBoolean("asrSlotOn")
+                    ?: existingSettings.offlineConfig.asrSlotOn
+                val importedSlmSlotOn = offlineObj.optBoolean("slmSlotOn")
+                    ?: existingSettings.offlineConfig.slmSlotOn
+                val importedAsrId = offlineObj.optString("selectedAsrModelId")
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                val importedSlmId = offlineObj.optString("selectedSlmModelId")
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                val importedSchemaVersion = offlineObj.optLong("schemaVersion")
+                    ?.toInt()
+                    ?.coerceAtLeast(1)
+                    ?: existingSettings.offlineConfig.schemaVersion
+                // Parse layer has no local model directory context: keep active mode OFF to avoid
+                // new-device deadlock and record pendingOfflineRestore for guided re-download.
+                val safeConfig = OfflineModelConfig(
+                    mode = OfflineMode.OFF,
+                    asrSlotOn = importedAsrSlotOn,
+                    slmSlotOn = importedSlmSlotOn,
+                    selectedAsrModelId = importedAsrId,
+                    selectedSlmModelId = importedSlmId,
+                    schemaVersion = importedSchemaVersion
+                )
+                val pending = if (importedMode != OfflineMode.OFF) {
+                    PendingOfflineRestore(
+                        mode = importedMode,
+                        selectedAsrModelId = importedAsrId,
+                        selectedSlmModelId = importedSlmId
+                    )
+                } else {
+                    null
+                }
+                safeConfig to pending
+            } else {
+                existingSettings.offlineConfig to existingSettings.pendingOfflineRestore
+            }
+
             val candidate = existingSettings.copy(
                 pipelineMode = mode,
                 sttConfig = mergedStt,
                 llmConfig = mergedLlm,
                 multimodalConfig = mergedMm,
+                offlineConfig = mergedOfflineConfig,
+                pendingOfflineRestore = mergedPendingOfflineRestore,
                 providerVault = mergedVault,
                 snippets = mergedSnippets,
                 pauseMediaWhileRecording = rootObj.optBoolean("pauseMediaWhileRecording")
@@ -725,6 +775,8 @@ object ApiConfigBackupHelper {
                     ?: existingSettings.equalEqualAskAiEnabled,
                 qwertyShowNumberRow = rootObj.optBoolean("qwertyShowNumberRow")
                     ?: existingSettings.qwertyShowNumberRow,
+                backspaceSwipeUpClearEnabled = rootObj.optBoolean("backspaceSwipeUpClearEnabled")
+                    ?: existingSettings.backspaceSwipeUpClearEnabled,
                 keyboardHeightLevel = mergedHeightLevel,
                 keyboardHeightMode = mergedHeightMode,
                 keyboardLiftLevel = mergedLiftLevel,

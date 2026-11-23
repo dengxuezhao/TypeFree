@@ -451,4 +451,91 @@ class AppUpdateCheckerTest {
             assertEquals(1, cancelAttempts.get())
         }
     }
+
+    @Test
+    fun extractKeyHighlightSummarySkipsHeadingsAndFormatsOneLine() {
+        val markdownNotes = """
+            ## 更新内容
+            ---
+            - **端侧离线模型统一入口**：支持一键下载 0.8B / 2B 净写权重
+            - **Hybrid 前缀状态缓存**：骁龙 865 TTFT 提速 2 倍
+            - SHA-256: abcdef123456
+            **Full Changelog**: https://github.com/dengxuezhao/TypeFree/compare/v3.8.2...v3.9.0
+        """.trimIndent()
+
+        val summary = AppUpdateChecker.extractKeyHighlightSummary(
+            releaseNotes = markdownNotes,
+            releaseName = "TypeFree v3.9.0"
+        )
+        assertTrue("Expected first bullet highlight in summary: $summary", summary.contains("端侧离线模型统一入口"))
+        assertTrue("Summary must be concise single line (<=56 chars): $summary", summary.length <= 56)
+        assertTrue("Must not keep markdown bold markers: $summary", !summary.contains("**"))
+        assertTrue("Must skip SHA-256 line: $summary", !summary.contains("SHA-256"))
+
+        val fallback = AppUpdateChecker.extractKeyHighlightSummary(
+            releaseNotes = "",
+            releaseName = "TypeFree v3.9.0 正式版"
+        )
+        assertEquals("TypeFree v3.9.0 正式版", fallback)
+    }
+
+    @Test
+    fun silentCachedUpdateCheckReusesCacheWithinTtl() = runBlocking {
+        AppUpdateChecker.resetCacheForTest()
+        val calls = AtomicInteger(0)
+        val payload = """
+            {
+              "tag_name": "v3.9.0",
+              "name": "TypeFree v3.9.0",
+              "body": "### What's New\n- 新增设置页自动更新提示横幅与单行更新摘要",
+              "html_url": "https://github.com/dengxuezhao/TypeFree/releases/tag/v3.9.0",
+              "published_at": "2026-11-22T12:00:00Z",
+              "assets": [
+                {
+                  "name": "TypeFree-v3.9.0-release.apk",
+                  "browser_download_url": "https://github.com/dengxuezhao/TypeFree/releases/download/v3.9.0/TypeFree-v3.9.0-release.apk"
+                }
+              ]
+            }
+        """.trimIndent()
+        val client = OkHttpClient.Builder()
+            .addInterceptor(
+                Interceptor { chain ->
+                    calls.incrementAndGet()
+                    okhttp3.Response.Builder()
+                        .request(chain.request())
+                        .protocol(okhttp3.Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(payload.toResponseBody("application/json".toMediaType()))
+                        .build()
+                }
+            )
+            .build()
+
+        var now = 1_000_000L
+        val first = AppUpdateChecker.fetchLatestUpdateSilentlyIfNeeded(
+            currentVersion = "3.8.4",
+            isPrivateDictBuild = false,
+            client = client,
+            cacheTtlMs = 60_000L,
+            nowProvider = { now }
+        )
+        assertEquals("3.9.0", first?.latestVersion)
+        assertEquals("新增设置页自动更新提示横幅与单行更新摘要", first?.keyHighlightSummary)
+        assertEquals(1, calls.get())
+
+        // Second call within TTL must hit cache without making a network request
+        now += 10_000L
+        val second = AppUpdateChecker.fetchLatestUpdateSilentlyIfNeeded(
+            currentVersion = "3.8.4",
+            isPrivateDictBuild = false,
+            client = client,
+            cacheTtlMs = 60_000L,
+            nowProvider = { now }
+        )
+        assertEquals("3.9.0", second?.latestVersion)
+        assertEquals(1, calls.get())
+        AppUpdateChecker.resetCacheForTest()
+    }
 }

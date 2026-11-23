@@ -17,4 +17,5 @@ dependencyResolutionManagement {
 rootProject.name = "TypeFree"
 include(":core")
 include(":rime")
+include(":localai-native")
 include(":app")

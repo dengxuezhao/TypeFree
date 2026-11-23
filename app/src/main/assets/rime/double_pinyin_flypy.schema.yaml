@@ -43,6 +43,8 @@ engine:
     - predict_translator
     - punct_translator
     - script_translator
+    - table_translator@melt_eng
+    - table_translator@cn_en
   filters:
     - uniquifier
 
@@ -97,6 +99,24 @@ translator:
     - xform/([jqxy])v/$1u/
     - xform/([nl])v/$1ü/
     - xform/ü/v/
+
+melt_eng:
+  dictionary: melt_eng
+  enable_sentence: false
+  enable_user_dict: false
+  initial_quality: 0.8
+  comment_format:
+    - xform/.*//
+
+cn_en:
+  dictionary: ""
+  user_dict: en_dicts/cn_en_flypy
+  db_class: stabledb
+  enable_completion: true
+  enable_sentence: false
+  initial_quality: 0.6
+  comment_format:
+    - xform/^.+$//
 
 speller:
   alphabet: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA`

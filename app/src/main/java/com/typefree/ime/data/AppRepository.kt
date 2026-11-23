@@ -6,6 +6,8 @@ import android.text.InputType
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.reflect.TypeToken
+import com.typefree.core.offline.OfflineMode
+import com.typefree.core.offline.PendingOfflineRestore
 import com.typefree.ime.ime.jev.memory.AnchorSaltProvider
 import com.typefree.ime.ime.jev.memory.AndroidKeystoreSaltProvider
 import com.typefree.ime.ime.jev.memory.ConversationAnchorExtractor
@@ -127,6 +129,11 @@ class AppRepository(
                 resolvedFlypyEnabled
             }
             val migratedV340CompactLift = publicStore.getBoolean(KEY_MIGRATED_V340_COMPACT_4ROW_AND_LIFT, false)
+            val resolvedBackspaceSwipeUpClear = if (raw.contains("\"backspaceSwipeUpClearEnabled\"")) {
+                parsed.backspaceSwipeUpClearEnabled
+            } else {
+                false
+            }
             val rawQwertyShowNumberRow = if (raw.contains("\"qwertyShowNumberRow\"")) {
                 parsed.qwertyShowNumberRow
             } else {
@@ -422,10 +429,43 @@ class AppRepository(
                 },
                 thinkingMode = rawJevLlm.thinkingMode ?: defaultJevLlm.thinkingMode
             )
+            val rawOffline = parsed.offlineConfig
+            val safeOfflineConfig = if (rawOffline == null) {
+                OfflineModelConfig()
+            } else {
+                val hasOfflineObj = raw.contains("\"offlineConfig\"")
+                rawOffline.copy(
+                    mode = rawOffline.mode ?: OfflineMode.OFF,
+                    asrSlotOn = if (hasOfflineObj && raw.contains("\"asrSlotOn\"")) rawOffline.asrSlotOn else true,
+                    slmSlotOn = if (hasOfflineObj && raw.contains("\"slmSlotOn\"")) rawOffline.slmSlotOn else true,
+                    selectedAsrModelId = rawOffline.selectedAsrModelId?.trim()?.takeIf { it.isNotEmpty() },
+                    selectedSlmModelId = rawOffline.selectedSlmModelId?.trim()?.takeIf { it.isNotEmpty() },
+                    schemaVersion = rawOffline.schemaVersion.coerceAtLeast(1)
+                )
+            }
+            val rawPendingRestore = parsed.pendingOfflineRestore
+            val safePendingOfflineRestore = if (rawPendingRestore == null) {
+                null
+            } else {
+                val safeMode = rawPendingRestore.mode ?: OfflineMode.OFF
+                val safeAsr = rawPendingRestore.selectedAsrModelId?.trim()?.takeIf { it.isNotEmpty() }
+                val safeSlm = rawPendingRestore.selectedSlmModelId?.trim()?.takeIf { it.isNotEmpty() }
+                if (safeMode == OfflineMode.OFF && safeAsr == null && safeSlm == null) {
+                    null
+                } else {
+                    PendingOfflineRestore(
+                        mode = safeMode,
+                        selectedAsrModelId = safeAsr,
+                        selectedSlmModelId = safeSlm
+                    )
+                }
+            }
             val preliminary = parsed.copy(
                 sttConfig = safeStt,
                 llmConfig = safeLlm,
                 multimodalConfig = safeMm,
+                offlineConfig = safeOfflineConfig,
+                pendingOfflineRestore = safePendingOfflineRestore,
                 jevUseDedicatedModel = resolvedJevUseDedicatedModel,
                 jevLlmConfig = safeJevLlm,
                 themePreference = parsed.themePreference ?: ThemePreference.LIGHT,
@@ -436,6 +476,7 @@ class AppRepository(
                 lastQwertyIsChinese = resolvedLastQwertyIsChinese,
                 qwertyShowNumberRow = resolvedQwertyShowNumberRow,
                 qwertyKeyPopupPreview = resolvedQwertyKeyPopupPreview,
+                backspaceSwipeUpClearEnabled = resolvedBackspaceSwipeUpClear,
                 clipboardEnabled = resolvedClipboardEnabled,
                 clipboardQuickPasteSuggestion = resolvedClipboardQuickSuggestion,
                 pauseMediaWhileRecording = resolvedPauseMedia,
@@ -513,7 +554,8 @@ class AppRepository(
                 item.copy(
                     intentMode = resolvedIntent,
                     translateTargetLanguage = item.translateTargetLanguage ?: "",
-                    audioFilePath = item.audioFilePath ?: ""
+                    audioFilePath = item.audioFilePath ?: "",
+                    executionSource = item.executionSource ?: ""
                 )
             }
         } catch (_: Exception) {
@@ -607,6 +649,19 @@ class AppRepository(
                 _history.value = pruned
                 publicStore.putString(KEY_HISTORY, gson.toJson(pruned))
             }
+        }
+    }
+
+    fun updateOfflineConfig(transform: (OfflineModelConfig) -> OfflineModelConfig) {
+        updateSettings { curr ->
+            curr.copy(offlineConfig = transform(curr.offlineConfig))
+        }
+    }
+
+    fun clearPendingOfflineRestore() {
+        if (_settings.value.pendingOfflineRestore == null) return
+        updateSettings { curr ->
+            curr.copy(pendingOfflineRestore = null)
         }
     }
 

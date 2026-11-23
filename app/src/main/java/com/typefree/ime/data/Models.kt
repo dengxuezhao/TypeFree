@@ -1,5 +1,8 @@
 package com.typefree.ime.data
 
+import com.typefree.core.offline.OfflineMode
+import com.typefree.core.offline.OfflineModelConfigData
+import com.typefree.core.offline.PendingOfflineRestore
 import java.util.UUID
 
 enum class PipelineMode {
@@ -413,7 +416,8 @@ data class HistoryRecord(
     val durationMs: Long = 0L,
     val latencyMs: Long = 0L,
     val modeLabel: String = "",
-    val audioFilePath: String = ""
+    val audioFilePath: String = "",
+    val executionSource: String = ""
 )
 
 data class ClipboardEntry(
@@ -436,11 +440,31 @@ const val DEFAULT_NATURAL_CONTINUATION_LIMIT = 3
 const val MAX_NATURAL_CONTINUATION_LIMIT = 8
 val NATURAL_CONTINUATION_LIMIT_OPTIONS = listOf(1, 2, 3, 5, 8)
 
+data class OfflineModelConfig(
+    val mode: OfflineMode = OfflineMode.OFF,
+    val asrSlotOn: Boolean = true,
+    val slmSlotOn: Boolean = true,
+    val selectedAsrModelId: String? = null,
+    val selectedSlmModelId: String? = null,
+    val schemaVersion: Int = 1
+) {
+    fun toCoreData(): OfflineModelConfigData = OfflineModelConfigData(
+        mode = mode,
+        asrSlotOn = asrSlotOn,
+        slmSlotOn = slmSlotOn,
+        selectedAsrModelId = selectedAsrModelId,
+        selectedSlmModelId = selectedSlmModelId,
+        schemaVersion = schemaVersion
+    )
+}
+
 data class AppSettings(
     val pipelineMode: PipelineMode = PipelineMode.DUAL_STAGE,
     val sttConfig: SttConfig = SttConfig(),
     val llmConfig: LlmConfig = LlmConfig(),
     val multimodalConfig: MultimodalConfig = MultimodalConfig(),
+    val offlineConfig: OfflineModelConfig = OfflineModelConfig(),
+    val pendingOfflineRestore: PendingOfflineRestore? = null,
     val themePreference: ThemePreference = ThemePreference.LIGHT,
     val appAwareToneEnabled: Boolean = true,
     val selectedManualStyleId: String = "auto", // "auto" 表示开启应用感知自动匹配，否则固定某风格
@@ -455,6 +479,7 @@ data class AppSettings(
     val lastQwertyIsChinese: Boolean = true,
     val qwertyShowNumberRow: Boolean = false,
     val qwertyKeyPopupPreview: Boolean = true,
+    val backspaceSwipeUpClearEnabled: Boolean = false,
     val clipboardEnabled: Boolean = true,
     val clipboardQuickPasteSuggestion: Boolean = true,
     val pauseMediaWhileRecording: Boolean = true,

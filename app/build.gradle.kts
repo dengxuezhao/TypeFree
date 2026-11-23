@@ -9,20 +9,28 @@ plugins {
 android {
     namespace = "com.typefree.ime"
     compileSdk = 35
-    ndkVersion = "26.1.10909125"
+    ndkVersion = "28.0.13004108"
 
     val usePrivateDict = project.findProperty("usePrivateDict") == "true"
     val appVersionCode = (project.findProperty("TYPEFREE_VERSION_CODE") as? String)?.trim()?.toIntOrNull() ?: 38
     val appVersionName = (project.findProperty("TYPEFREE_VERSION_NAME") as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: "3.7.1"
+    val appIdSuffix = (project.findProperty("TYPEFREE_APP_ID_SUFFIX") as? String)?.trim().orEmpty()
+    val appLabelSuffix = (project.findProperty("TYPEFREE_APP_LABEL_SUFFIX") as? String)?.trim().orEmpty()
 
     defaultConfig {
         applicationId = "com.typefree.ime"
+        if (appIdSuffix.isNotEmpty()) {
+            applicationIdSuffix = appIdSuffix
+        }
         minSdk = 26
         targetSdk = 35
         versionCode = appVersionCode
         versionName = appVersionName
         buildConfigField("boolean", "USE_PRIVATE_DICT", usePrivateDict.toString())
         buildConfigField("boolean", "IS_XIAOHE_FLAVOR", "false")
+        manifestPlaceholders["appLabel"] = if (appLabelSuffix.isNotEmpty()) "TypeFree $appLabelSuffix" else "@string/app_name"
+        manifestPlaceholders["imeLabel"] = if (appLabelSuffix.isNotEmpty()) "TypeFree $appLabelSuffix (AI Voice Keyboard)" else "@string/ime_name"
+        manifestPlaceholders["accessibilityLabel"] = if (appLabelSuffix.isNotEmpty()) "TypeFree $appLabelSuffix 悬浮语音胶囊" else "@string/accessibility_service_label"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -106,6 +114,7 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        aidl = true
     }
 
     packaging {
@@ -186,6 +195,7 @@ android {
 dependencies {
     implementation(project(":core"))
     implementation(project(":rime"))
+    implementation(project(":localai-native"))
 
     val composeBom = platform("androidx.compose:compose-bom:2025.04.01")
     implementation(composeBom)
@@ -207,6 +217,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+    implementation(files("libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar"))
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("org.apache.commons:commons-compress:1.27.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation(project(":core"))

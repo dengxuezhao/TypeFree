@@ -3,15 +3,29 @@ package com.typefree.ime.network
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.typefree.core.offline.AiTask
+import com.typefree.core.offline.AsrRoute
+import com.typefree.core.offline.ExecutionSource
+import com.typefree.core.offline.LocalModelRegistrySnapshot
+import com.typefree.core.offline.LocalModelSlot
+import com.typefree.core.offline.LocalPromptPair
+import com.typefree.core.offline.LocalPromptTemplates
+import com.typefree.core.offline.OfflineMode
+import com.typefree.core.offline.OfflineModelCatalog
+import com.typefree.core.offline.RouteBlockReason
+import com.typefree.core.offline.RoutePlan
+import com.typefree.core.offline.TextRoute
 import com.typefree.ime.audio.AacAudioCompressor
 import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.DiscoveredModelItem
 import com.typefree.ime.data.LlmConfig
+import com.typefree.ime.data.LocalDictionaryPostProcessor
 import com.typefree.ime.data.ModelCapabilitySlot
 import com.typefree.ime.data.ModelProbeResult
 import com.typefree.ime.data.MultimodalConfig
 import com.typefree.ime.data.MultimodalProtocol
+import com.typefree.ime.data.OfflineRouteBridge
 import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.SnippetMatcher
 import com.typefree.ime.data.SttConfig
@@ -25,6 +39,13 @@ import com.typefree.ime.ime.jev.JevCopilotResult
 import com.typefree.ime.ime.jev.JevDomainProfile
 import com.typefree.ime.ime.jev.JevResponseParser
 import com.typefree.ime.ime.jev.memory.JevMemoryPromptPayload
+import com.typefree.ime.localai.GenRequest
+import com.typefree.ime.localai.LocalAiServiceClient
+import com.typefree.ime.localai.LocalModelRegistry
+import com.typefree.ime.localai.LocalSlmRuntimeResult
+import com.typefree.ime.localai.PRIORITY_COMPLETION
+import com.typefree.ime.localai.PRIORITY_EDIT_WRITE
+import com.typefree.ime.localai.PRIORITY_VOICE
 import com.typefree.ime.privacy.RedactionSession
 import com.typefree.ime.network.asr.AsrSessionLimits
 import com.typefree.ime.network.asr.DashScopeStreamingAsrClient
@@ -33,7 +54,9 @@ import com.typefree.ime.network.asr.RotatingStreamingAsrSession
 import com.typefree.ime.network.asr.StreamingAsrClient
 import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.network.asr.VolcengineSaucAsrClient
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -51,8 +74,10 @@ import java.io.File
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.util.Collections
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 enum class PipelineStage {
     TRANSCRIBING_STT,
@@ -68,7 +93,9 @@ data class PipelineExecutionResult(
     val sttLatencyMs: Long = 0L,
     val llmLatencyMs: Long = 0L,
     val usedStreamingAsr: Boolean = false,
-    val diagnosticLog: String = ""
+    val diagnosticLog: String = "",
+    val executionSource: ExecutionSource = ExecutionSource.CLOUD,
+    val localMetricsSummary: String = ""
 )
 
 internal data class ChatCallOutcome(
@@ -80,27 +107,123 @@ class AiPipelineEngine(
     private val httpClient: OkHttpClient = defaultHttpClient(),
     private val dashScopeAsrClient: StreamingAsrClient = DashScopeStreamingAsrClient(httpClient),
     private val volcengineAsrClient: StreamingAsrClient = VolcengineSaucAsrClient(httpClient),
-    private val geminiLiveAsrClient: StreamingAsrClient = GeminiLiveTranscribeClient(httpClient)
+    private val geminiLiveAsrClient: StreamingAsrClient = GeminiLiveTranscribeClient(httpClient),
+    private val localAiClient: LocalAiServiceClient? = null,
+    private val localModelRegistry: LocalModelRegistry? = null
 ) {
 
     private val lastPrewarmedByOrigin = ConcurrentHashMap<String, Long>()
+    private val activeLocalCompletionJob = AtomicReference<Job?>(null)
+
+    private fun currentRegistrySnapshot(): LocalModelRegistrySnapshot {
+        return localModelRegistry?.snapshot?.value ?: LocalModelRegistrySnapshot()
+    }
+
+    fun resolveRoutePlan(
+        task: AiTask,
+        settings: AppSettings,
+        isNetworkAvailable: Boolean = true,
+        isSecureField: Boolean = false
+    ): RoutePlan {
+        return OfflineRouteBridge.resolvePlan(
+            task = task,
+            settings = settings,
+            registrySnapshot = currentRegistrySnapshot(),
+            isNetworkAvailable = isNetworkAvailable,
+            isSecureField = isSecureField,
+            isIncognito = settings.manualIncognitoMode
+        )
+    }
+
+    private suspend fun resolveRoutePlanEnsuringLocalService(
+        task: AiTask,
+        settings: AppSettings,
+        isNetworkAvailable: Boolean = true,
+        isSecureField: Boolean = false
+    ): RoutePlan {
+        val client = localAiClient
+        if (settings.offlineConfig.mode != OfflineMode.OFF && client != null && !client.isServiceAlive.value) {
+            val revived = client.ensureAlive(timeoutMs = 2_000L)
+            if (revived) {
+                localModelRegistry?.updateLocalServiceAlive(true)
+            }
+        }
+        return resolveRoutePlan(
+            task = task,
+            settings = settings,
+            isNetworkAvailable = isNetworkAvailable,
+            isSecureField = isSecureField
+        )
+    }
+
+    fun isEgressAllowed(
+        settings: AppSettings,
+        task: AiTask = AiTask.DICTATE
+    ): Boolean {
+        return resolveRoutePlan(task = task, settings = settings).egressAllowed
+    }
+
+    fun preBindLocalAiIfNeeded(
+        settings: AppSettings,
+        prewarmAsr: Boolean = false,
+        prewarmSlm: Boolean = false
+    ) {
+        val offline = settings.offlineConfig
+        if (offline.mode == OfflineMode.OFF) return
+        val client = localAiClient ?: return
+        client.preBind()
+        val registry = localModelRegistry ?: return
+        if (prewarmAsr && offline.asrSlotOn) {
+            val asrId = offline.selectedAsrModelId
+            val asrDir = registry.getInstalledModelDir(asrId)
+            if (!asrId.isNullOrBlank() && !asrDir.isNullOrBlank()) {
+                client.prewarmSlot(LocalModelSlot.ASR, asrId, asrDir)
+            }
+        }
+        if (prewarmSlm && offline.slmSlotOn && registry.isSlmEngineAvailable) {
+            val slmId = offline.selectedSlmModelId
+            val slmDir = registry.getInstalledModelDir(slmId)
+            if (!slmId.isNullOrBlank() && !slmDir.isNullOrBlank()) {
+                client.prewarmSlot(LocalModelSlot.SLM, slmId, slmDir)
+            }
+        }
+    }
+
+    fun cancelActiveLocalCompletion() {
+        activeLocalCompletionJob.getAndSet(null)?.cancel()
+    }
 
     /**
      * Asynchronously warms up DNS + TCP + TLS 1.3 sockets into [httpClient]'s [ConnectionPool]
      * right when the user presses down on the microphone button, hiding 150-350ms of cold
      * connection setup inside the first ~300ms of speaking time.
+     *
+     * Respects [RoutePlan.egressAllowed]: in [OfflineMode.OFFLINE_ONLY], exits immediately
+     * without issuing any network requests (including LAN/Ollama endpoints).
      */
     suspend fun prewarmEndpoints(settings: AppSettings) = withContext(Dispatchers.IO) {
+        val plan = resolveRoutePlan(AiTask.DICTATE, settings)
+        if (settings.offlineConfig.mode != OfflineMode.OFF) {
+            preBindLocalAiIfNeeded(
+                settings = settings,
+                prewarmAsr = plan.asr is AsrRoute.Local,
+                prewarmSlm = plan.text is TextRoute.Local
+            )
+        }
+        if (!plan.egressAllowed) return@withContext
+
         val candidateUrls = buildList {
             when (settings.pipelineMode) {
                 PipelineMode.DUAL_STAGE -> {
-                    val effectiveStt = resolveEffectiveSttConfig(settings)
-                    if ((effectiveStt.protocol == SttProtocol.OPENAI_HTTP ||
-                            effectiveStt.protocol == SttProtocol.GEMINI_LIVE_WS) &&
-                        effectiveStt.baseUrl.isNotBlank() &&
-                        !isLocalEndpoint(effectiveStt.baseUrl)
-                    ) {
-                        add(effectiveStt.baseUrl)
+                    if (plan.asr !is AsrRoute.Local) {
+                        val effectiveStt = resolveEffectiveSttConfig(settings)
+                        if ((effectiveStt.protocol == SttProtocol.OPENAI_HTTP ||
+                                effectiveStt.protocol == SttProtocol.GEMINI_LIVE_WS) &&
+                            effectiveStt.baseUrl.isNotBlank() &&
+                            !isLocalEndpoint(effectiveStt.baseUrl)
+                        ) {
+                            add(effectiveStt.baseUrl)
+                        }
                     }
                     val effectiveLlm = resolveEffectiveLlmConfig(settings)
                     if (effectiveLlm.baseUrl.isNotBlank() &&
@@ -181,8 +304,17 @@ class AiPipelineEngine(
     /**
      * Pre-establishes an idle, ready-to-stream `BidiGenerateContent` WebSocket session when
      * `GEMINI_LIVE_WS` is active so short 1-2s utterances skip ~800-1100ms of cold setup wait.
+     *
+     * Respects [RoutePlan.egressAllowed] and prefers local `:local_ai` prebind/prewarm when
+     * offline ASR is active.
      */
     fun prewarmLiveStreamingIfNeeded(settings: AppSettings) {
+        val plan = resolveRoutePlan(AiTask.DICTATE, settings)
+        if (plan.asr is AsrRoute.Local) {
+            preBindLocalAiIfNeeded(settings, prewarmAsr = true, prewarmSlm = false)
+            return
+        }
+        if (!plan.egressAllowed) return
         if (settings.pipelineMode != PipelineMode.DUAL_STAGE) return
         val sttCfg = settings.sttConfig
         if (sttCfg.protocol != SttProtocol.GEMINI_LIVE_WS || sttCfg.apiKey.isBlank()) return
@@ -195,29 +327,54 @@ class AiPipelineEngine(
     }
 
     /**
-     * Opens a live WebSocket streaming ASR session when Dual-Stage mode is configured with
-     * Aliyun DashScope, Volcengine Doubao, or Google Gemini Live streaming protocol;
-     * returns `null` for HTTP batch mode.
+     * Opens a live streaming ASR session guided by [RoutePlan]:
+     * - When [AsrRoute.Local] is active, opens an on-device PFD-pipe session via [localAiClient]
+     *   regardless of cloud `pipelineMode` or `sttConfig.protocol`.
+     * - When [AsrRoute.Cloud] is active and egress is allowed, opens the configured cloud WS session.
+     * - Returns `null` for HTTP batch mode or when no streaming ASR route is available.
      */
-    fun openLiveStreamingSession(settings: AppSettings): StreamingAsrSession? {
-        if (settings.pipelineMode != PipelineMode.DUAL_STAGE) return null
-        val sttCfg = settings.sttConfig
-        val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
-        val limit = AsrSessionLimits.forProtocol(sttCfg.protocol)
-        return when (sttCfg.protocol) {
-            SttProtocol.OPENAI_HTTP -> null
-            SttProtocol.ALIYUN_DASHSCOPE_WS -> RotatingStreamingAsrSession(
-                sessionFactory = { dashScopeAsrClient.openSession(sttCfg, hotwords) },
-                limit = limit
-            )
-            SttProtocol.VOLCENGINE_SAUC_WS -> RotatingStreamingAsrSession(
-                sessionFactory = { volcengineAsrClient.openSession(sttCfg, hotwords) },
-                limit = limit
-            )
-            SttProtocol.GEMINI_LIVE_WS -> RotatingStreamingAsrSession(
-                sessionFactory = { geminiLiveAsrClient.openSession(sttCfg, hotwords) },
-                limit = limit
-            )
+    fun openLiveStreamingSession(
+        settings: AppSettings,
+        routePlan: RoutePlan? = null
+    ): StreamingAsrSession? {
+        val plan = routePlan ?: resolveRoutePlan(AiTask.DICTATE, settings)
+        return when (val asr = plan.asr) {
+            is AsrRoute.Local -> {
+                val client = localAiClient ?: return null
+                val modelDir = localModelRegistry?.getInstalledModelDir(asr.modelId) ?: return null
+                val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
+                client.openStreamingAsrSession(
+                    modelId = asr.modelId,
+                    modelDirPath = modelDir,
+                    hotwords = hotwords,
+                    languageHint = settings.sttConfig.language.ifBlank { "zh" },
+                    incognito = plan.clearLocalStateAfterRun,
+                    expectedGeneration = 0L
+                )
+            }
+            is AsrRoute.Cloud -> {
+                if (!plan.egressAllowed) return null
+                if (settings.pipelineMode != PipelineMode.DUAL_STAGE) return null
+                val sttCfg = settings.sttConfig
+                val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
+                val limit = AsrSessionLimits.forProtocol(sttCfg.protocol)
+                when (sttCfg.protocol) {
+                    SttProtocol.OPENAI_HTTP -> null
+                    SttProtocol.ALIYUN_DASHSCOPE_WS -> RotatingStreamingAsrSession(
+                        sessionFactory = { dashScopeAsrClient.openSession(sttCfg, hotwords) },
+                        limit = limit
+                    )
+                    SttProtocol.VOLCENGINE_SAUC_WS -> RotatingStreamingAsrSession(
+                        sessionFactory = { volcengineAsrClient.openSession(sttCfg, hotwords) },
+                        limit = limit
+                    )
+                    SttProtocol.GEMINI_LIVE_WS -> RotatingStreamingAsrSession(
+                        sessionFactory = { geminiLiveAsrClient.openSession(sttCfg, hotwords) },
+                        limit = limit
+                    )
+                }
+            }
+            is AsrRoute.None -> null
         }
     }
 
@@ -250,8 +407,67 @@ class AiPipelineEngine(
         }
         val requiresGenerativeLlm = effectiveIntent != VoiceIntentMode.DICTATE
         val safeContext = if (settings.useSurroundingContext) surroundingBeforeCursor else ""
+        val task = effectiveIntent.toAiTask()
+        val plan = resolveRoutePlanEnsuringLocalService(task = task, settings = settings)
+        val planAsr = plan.asr
+        val planText = plan.text
 
         try {
+            // Strict egress lock or offline-mode block before any cloud code runs
+            if (!plan.egressAllowed) {
+                if (planAsr is AsrRoute.None) {
+                    val reason = (planText as? TextRoute.Blocked)?.reason ?: RouteBlockReason.OFFLINE_ONLY_NO_MODEL
+                    return@withContext Result.failure(
+                        IllegalStateException(routeBlockMessage(reason, "请先在「离线模型」中下载并启用本机语音模型"))
+                    )
+                }
+                if (planText is TextRoute.Blocked) {
+                    return@withContext Result.failure(
+                        IllegalStateException(routeBlockMessage(planText.reason, "纯离线锁已开启，当前任务不支持离线执行"))
+                    )
+                }
+            } else if (settings.offlineConfig.mode != OfflineMode.OFF &&
+                planAsr is AsrRoute.None &&
+                planText is TextRoute.Blocked
+            ) {
+                return@withContext Result.failure(
+                    IllegalStateException(routeBlockMessage(planText.reason, "尚未配置云端 API 或启用本机离线模型"))
+                )
+            }
+
+            // Local ASR or Local SLM hybrid/offline path
+            if (planAsr is AsrRoute.Local ||
+                planText is TextRoute.Local ||
+                planText is TextRoute.CloudMultimodalTextFallback
+            ) {
+                return@withContext executeRoutedVoicePipeline(
+                    plan = plan,
+                    wavFile = wavFile,
+                    settings = settings,
+                    activeStyle = activeStyle,
+                    targetAppName = targetAppName,
+                    selectedText = selectedText,
+                    safeContext = safeContext,
+                    effectiveIntent = effectiveIntent,
+                    translateTargetLanguage = translateTargetLanguage,
+                    preTranscribedText = preTranscribedText,
+                    sttTailWaitMs = sttTailWaitMs,
+                    chatContextMessages = chatContextMessages,
+                    chatContextScreenshotBase64 = chatContextScreenshotBase64,
+                    attitudeInstruction = attitudeInstruction,
+                    editorDraft = editorDraft,
+                    startMs = startMs,
+                    onStageChanged = onStageChanged
+                )
+            }
+
+            // Cloud-only path (requires egressAllowed == true)
+            if (!plan.egressAllowed) {
+                return@withContext Result.failure(
+                    IllegalStateException(routeBlockMessage(RouteBlockReason.OFFLINE_ONLY_NO_MODEL, "纯离线锁已开启"))
+                )
+            }
+
             when (settings.pipelineMode) {
                 PipelineMode.DUAL_STAGE -> {
                     val sttCfg = resolveEffectiveSttConfig(settings)
@@ -580,6 +796,804 @@ class AiPipelineEngine(
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    private suspend fun executeRoutedVoicePipeline(
+        plan: RoutePlan,
+        wavFile: File,
+        settings: AppSettings,
+        activeStyle: ToneStyle,
+        targetAppName: String,
+        selectedText: String,
+        safeContext: String,
+        effectiveIntent: VoiceIntentMode,
+        translateTargetLanguage: String,
+        preTranscribedText: String?,
+        sttTailWaitMs: Long,
+        chatContextMessages: List<String>,
+        chatContextScreenshotBase64: String,
+        attitudeInstruction: String,
+        editorDraft: String,
+        startMs: Long,
+        onStageChanged: (PipelineStage) -> Unit
+    ): Result<PipelineExecutionResult> {
+        var asrUsedLocal = plan.asr is AsrRoute.Local
+        var usedLiveStream = false
+        var sttElapsedMs = 0L
+        var asrLabel: String
+
+        val rawTranscript: String = when (val asr = plan.asr) {
+            is AsrRoute.Local -> {
+                asrLabel = "本机 ${shortLocalModelLabel(asr.modelId)}"
+                if (!preTranscribedText.isNullOrBlank()) {
+                    usedLiveStream = true
+                    sttElapsedMs = sttTailWaitMs.coerceAtLeast(0L)
+                    postProcessLocalAsrText(preTranscribedText, settings)
+                } else {
+                    onStageChanged(PipelineStage.TRANSCRIBING_STT)
+                    val sttStart = System.currentTimeMillis()
+                    val localRes = transcribeWithLocalAsrFile(
+                        wavFile = wavFile,
+                        modelId = asr.modelId,
+                        settings = settings,
+                        incognito = plan.clearLocalStateAfterRun
+                    )
+                    sttElapsedMs = (System.currentTimeMillis() - sttStart).coerceAtLeast(0L)
+                    if (localRes.isSuccess) {
+                        localRes.getOrThrow()
+                    } else {
+                        if (!plan.egressAllowed) {
+                            return Result.failure(localRes.exceptionOrNull()!!)
+                        }
+                        // HYBRID fallback to cloud ASR if configured
+                        val cloudFallback = runCatching {
+                            transcribeWithCloudSttStage(wavFile, settings)
+                        }
+                        if (cloudFallback.isSuccess) {
+                            asrUsedLocal = false
+                            asrLabel = "云端回退 STT"
+                            cloudFallback.getOrThrow()
+                        } else {
+                            return Result.failure(localRes.exceptionOrNull()!!)
+                        }
+                    }
+                }
+            }
+            is AsrRoute.Cloud -> {
+                if (!plan.egressAllowed) {
+                    return Result.failure(
+                        IllegalStateException(routeBlockMessage(RouteBlockReason.OFFLINE_ONLY_NO_MODEL, "纯离线锁已开启"))
+                    )
+                }
+                asrLabel = "云端 STT"
+                if (!preTranscribedText.isNullOrBlank()) {
+                    usedLiveStream = true
+                    sttElapsedMs = sttTailWaitMs.coerceAtLeast(0L)
+                    cleanRawTranscript(preTranscribedText)
+                } else {
+                    onStageChanged(PipelineStage.TRANSCRIBING_STT)
+                    val sttStart = System.currentTimeMillis()
+                    val text = transcribeWithCloudSttStage(wavFile, settings)
+                    sttElapsedMs = (System.currentTimeMillis() - sttStart).coerceAtLeast(0L)
+                    text
+                }
+            }
+            is AsrRoute.None -> {
+                val reason = (plan.text as? TextRoute.Blocked)?.reason ?: RouteBlockReason.NO_CLOUD_OR_LOCAL_AVAILABLE
+                return Result.failure(
+                    IllegalStateException(routeBlockMessage(reason, "尚未配置可用语音识别引擎"))
+                )
+            }
+        }
+
+        if (rawTranscript.isBlank() || isHallucinatedSilence(rawTranscript)) {
+            return Result.failure(IllegalArgumentException("未识别到清晰语音内容，请重试"))
+        }
+
+        // Voice Snippet 0ms Instant Expansion (runs even on local raw passthrough)
+        if (effectiveIntent == VoiceIntentMode.DICTATE) {
+            SnippetMatcher.matchVoiceTranscript(rawTranscript, settings.snippets)?.let { matched ->
+                val elapsed = (System.currentTimeMillis() - startMs) + if (usedLiveStream) sttTailWaitMs else 0L
+                val metrics = if (asrUsedLocal) formatLocalMetricsSummary(includeSlmMetrics = false) else ""
+                return Result.success(
+                    PipelineExecutionResult(
+                        rawTranscript = rawTranscript,
+                        finalOutput = matched.content,
+                        latencyMs = elapsed,
+                        modeSummary = "口令展开 (${matched.title})",
+                        sttLatencyMs = sttElapsedMs,
+                        llmLatencyMs = 0L,
+                        usedStreamingAsr = usedLiveStream,
+                        executionSource = if (asrUsedLocal) ExecutionSource.LOCAL_RAW_PASSTHROUGH else ExecutionSource.CLOUD,
+                        localMetricsSummary = metrics
+                    )
+                )
+            }
+        }
+
+        return when (val textRoute = plan.text) {
+            is TextRoute.RawPassthrough -> {
+                val elapsed = (System.currentTimeMillis() - startMs) + if (usedLiveStream) sttTailWaitMs else 0L
+                val metrics = if (asrUsedLocal) formatLocalMetricsSummary(includeSlmMetrics = false) else ""
+                Result.success(
+                    PipelineExecutionResult(
+                        rawTranscript = rawTranscript,
+                        finalOutput = rawTranscript,
+                        latencyMs = elapsed,
+                        modeSummary = if (asrUsedLocal) "$asrLabel · 原始直出" else "仅 STT ($asrLabel)",
+                        sttLatencyMs = sttElapsedMs,
+                        llmLatencyMs = 0L,
+                        usedStreamingAsr = usedLiveStream,
+                        executionSource = if (asrUsedLocal) ExecutionSource.LOCAL_RAW_PASSTHROUGH else ExecutionSource.CLOUD,
+                        localMetricsSummary = metrics
+                    )
+                )
+            }
+
+            is TextRoute.Local -> {
+                onStageChanged(PipelineStage.POLISHING_LLM)
+                val llmStart = System.currentTimeMillis()
+                val localRes = runLocalSlmForVoiceIntent(
+                    modelId = textRoute.modelId,
+                    effectiveIntent = effectiveIntent,
+                    rawTranscript = rawTranscript,
+                    selectedText = selectedText,
+                    translateTargetLanguage = translateTargetLanguage,
+                    editorDraft = editorDraft,
+                    chatContextMessages = chatContextMessages,
+                    activeStyle = activeStyle,
+                    settings = settings,
+                    incognito = plan.clearLocalStateAfterRun
+                )
+                val llmElapsedMs = (System.currentTimeMillis() - llmStart).coerceAtLeast(0L)
+                if (localRes.isSuccess) {
+                    val polished = localRes.getOrThrow().ifBlank { rawTranscript }
+                    val elapsed = (System.currentTimeMillis() - startMs) + if (usedLiveStream) sttTailWaitMs else 0L
+                    val metrics = formatLocalMetricsSummary(includeSlmMetrics = true)
+                    val slmTag = shortLocalModelLabel(textRoute.modelId)
+                    Result.success(
+                        PipelineExecutionResult(
+                            rawTranscript = rawTranscript,
+                            finalOutput = polished,
+                            latencyMs = elapsed,
+                            modeSummary = "$asrLabel + 本机 $slmTag",
+                            sttLatencyMs = sttElapsedMs,
+                            llmLatencyMs = llmElapsedMs,
+                            usedStreamingAsr = usedLiveStream,
+                            diagnosticLog = "Local SLM [$slmTag]: ${llmElapsedMs} ms${if (metrics.isNotBlank()) " ($metrics)" else ""}",
+                            executionSource = ExecutionSource.LOCAL,
+                            localMetricsSummary = metrics
+                        )
+                    )
+                } else {
+                    // Local SLM failure handling:
+                    // 1. If HYBRID (egressAllowed), try cloud LLM / multimodal text fallback.
+                    // 2. If still failing (or OFFLINE_ONLY) and task is DICTATE, degrade to raw passthrough.
+                    if (plan.egressAllowed) {
+                        val cloudFallback = executeCloudTextStageForVoice(
+                            settings = settings,
+                            effectiveIntent = effectiveIntent,
+                            rawTranscript = rawTranscript,
+                            selectedText = selectedText,
+                            safeContext = safeContext,
+                            translateTargetLanguage = translateTargetLanguage,
+                            activeStyle = activeStyle,
+                            targetAppName = targetAppName,
+                            chatContextMessages = chatContextMessages,
+                            chatContextScreenshotBase64 = chatContextScreenshotBase64,
+                            attitudeInstruction = attitudeInstruction,
+                            editorDraft = editorDraft,
+                            preferMultimodalFallback = false
+                        )
+                        if (cloudFallback.isSuccess) {
+                            val (outcome, modelLabel) = cloudFallback.getOrThrow()
+                            val elapsed = (System.currentTimeMillis() - startMs) + if (usedLiveStream) sttTailWaitMs else 0L
+                            val metrics = if (asrUsedLocal) formatLocalMetricsSummary(includeSlmMetrics = false) else ""
+                            return Result.success(
+                                PipelineExecutionResult(
+                                    rawTranscript = rawTranscript,
+                                    finalOutput = outcome.text.ifBlank { rawTranscript },
+                                    latencyMs = elapsed,
+                                    modeSummary = "$asrLabel + $modelLabel (云端回退)",
+                                    sttLatencyMs = sttElapsedMs,
+                                    llmLatencyMs = (System.currentTimeMillis() - llmStart).coerceAtLeast(0L),
+                                    usedStreamingAsr = usedLiveStream,
+                                    diagnosticLog = outcome.diagnosticLog,
+                                    executionSource = if (asrUsedLocal) {
+                                        ExecutionSource.HYBRID_LOCAL_ASR_CLOUD_LLM
+                                    } else {
+                                        ExecutionSource.CLOUD
+                                    },
+                                    localMetricsSummary = metrics
+                                )
+                            )
+                        }
+                    }
+                    if (effectiveIntent == VoiceIntentMode.DICTATE) {
+                        val elapsed = (System.currentTimeMillis() - startMs) + if (usedLiveStream) sttTailWaitMs else 0L
+                        val metrics = if (asrUsedLocal) formatLocalMetricsSummary(includeSlmMetrics = false) else ""
+                        Result.success(
+                            PipelineExecutionResult(
+                                rawTranscript = rawTranscript,
+                                finalOutput = rawTranscript,
+                                latencyMs = elapsed,
+                                modeSummary = "$asrLabel · 原始直出 (大脑回退)",
+                                sttLatencyMs = sttElapsedMs,
+                                llmLatencyMs = llmElapsedMs,
+                                usedStreamingAsr = usedLiveStream,
+                                executionSource = if (asrUsedLocal) {
+                                    ExecutionSource.LOCAL_RAW_PASSTHROUGH
+                                } else {
+                                    ExecutionSource.CLOUD
+                                },
+                                localMetricsSummary = metrics
+                            )
+                        )
+                    } else {
+                        Result.failure(localRes.exceptionOrNull()!!)
+                    }
+                }
+            }
+
+            is TextRoute.Cloud,
+            is TextRoute.CloudMultimodalTextFallback -> {
+                if (!plan.egressAllowed) {
+                    return Result.failure(
+                        IllegalStateException(routeBlockMessage(RouteBlockReason.OFFLINE_ONLY_UNSUPPORTED_TASK, "纯离线锁已开启"))
+                    )
+                }
+                onStageChanged(PipelineStage.POLISHING_LLM)
+                val llmStart = System.currentTimeMillis()
+                val cloudRes = executeCloudTextStageForVoice(
+                    settings = settings,
+                    effectiveIntent = effectiveIntent,
+                    rawTranscript = rawTranscript,
+                    selectedText = selectedText,
+                    safeContext = safeContext,
+                    translateTargetLanguage = translateTargetLanguage,
+                    activeStyle = activeStyle,
+                    targetAppName = targetAppName,
+                    chatContextMessages = chatContextMessages,
+                    chatContextScreenshotBase64 = chatContextScreenshotBase64,
+                    attitudeInstruction = attitudeInstruction,
+                    editorDraft = editorDraft,
+                    preferMultimodalFallback = textRoute is TextRoute.CloudMultimodalTextFallback
+                )
+                val llmElapsedMs = (System.currentTimeMillis() - llmStart).coerceAtLeast(0L)
+                cloudRes.fold(
+                    onSuccess = { (outcome, modelLabel) ->
+                        val elapsed = (System.currentTimeMillis() - startMs) + if (usedLiveStream) sttTailWaitMs else 0L
+                        val metrics = if (asrUsedLocal) formatLocalMetricsSummary(includeSlmMetrics = false) else ""
+                        Result.success(
+                            PipelineExecutionResult(
+                                rawTranscript = rawTranscript,
+                                finalOutput = outcome.text.ifBlank { rawTranscript },
+                                latencyMs = elapsed,
+                                modeSummary = "$asrLabel + $modelLabel",
+                                sttLatencyMs = sttElapsedMs,
+                                llmLatencyMs = llmElapsedMs,
+                                usedStreamingAsr = usedLiveStream,
+                                diagnosticLog = outcome.diagnosticLog,
+                                executionSource = if (asrUsedLocal) {
+                                    ExecutionSource.HYBRID_LOCAL_ASR_CLOUD_LLM
+                                } else {
+                                    ExecutionSource.CLOUD
+                                },
+                                localMetricsSummary = metrics
+                            )
+                        )
+                    },
+                    onFailure = { err ->
+                        Result.failure(err)
+                    }
+                )
+            }
+
+            is TextRoute.Blocked -> {
+                Result.failure(
+                    IllegalStateException(routeBlockMessage(textRoute.reason, "尚未配置可用文本润色引擎"))
+                )
+            }
+        }
+    }
+
+    private suspend fun transcribeWithLocalAsrFile(
+        wavFile: File,
+        modelId: String,
+        settings: AppSettings,
+        incognito: Boolean
+    ): Result<String> {
+        val client = localAiClient
+            ?: return Result.failure(IllegalStateException("本机离线推理客户端未初始化"))
+        val modelDir = localModelRegistry?.getInstalledModelDir(modelId)
+            ?: return Result.failure(IllegalStateException("本机离线语音模型未安装或目录缺失 ($modelId)"))
+        val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
+        val startRegistryGen = currentRegistrySnapshot().modelGeneration
+        val rawRes = client.transcribeFile(
+            wavPath = wavFile.absolutePath,
+            modelId = modelId,
+            modelDirPath = modelDir,
+            hotwords = hotwords,
+            languageHint = settings.sttConfig.language.ifBlank { "zh" },
+            incognito = incognito,
+            expectedGeneration = 0L
+        )
+        if (currentRegistrySnapshot().modelGeneration != startRegistryGen) {
+            return Result.failure(IllegalStateException("本地语音模型已切换，已丢弃旧转写结果"))
+        }
+        return rawRes.map { raw -> postProcessLocalAsrText(raw, settings) }
+    }
+
+    private fun postProcessLocalAsrText(raw: String, settings: AppSettings): String {
+        val stripped = LocalDictionaryPostProcessor.cleanSenseVoiceOutput(cleanRawTranscript(raw))
+        return LocalDictionaryPostProcessor.applyWrongVariantsCorrection(stripped, settings.dictionary)
+    }
+
+    private suspend fun transcribeWithCloudSttStage(
+        wavFile: File,
+        settings: AppSettings
+    ): String {
+        val sttCfg = resolveEffectiveSttConfig(settings)
+        validateSttConfig(sttCfg, settings)?.let { errMsg ->
+            throw IllegalStateException(errMsg)
+        }
+        val sttBias = PromptBuilder.buildSttBiasPrompt(settings.dictionary)
+        val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
+        return when (sttCfg.protocol) {
+            SttProtocol.OPENAI_HTTP -> transcribeWithOpenAiStt(
+                wavFile = wavFile,
+                config = sttCfg,
+                biasPrompt = sttBias
+            )
+            SttProtocol.ALIYUN_DASHSCOPE_WS -> dashScopeAsrClient.transcribeWavFile(
+                wavFile = wavFile,
+                config = sttCfg,
+                hotwords = hotwords
+            )
+            SttProtocol.VOLCENGINE_SAUC_WS -> volcengineAsrClient.transcribeWavFile(
+                wavFile = wavFile,
+                config = sttCfg,
+                hotwords = hotwords
+            )
+            SttProtocol.GEMINI_LIVE_WS -> transcribeGeminiWavWithFastFallback(
+                wavFile = wavFile,
+                config = sttCfg,
+                hotwords = hotwords
+            )
+        }
+    }
+
+    private suspend fun runLocalSlmForVoiceIntent(
+        modelId: String,
+        effectiveIntent: VoiceIntentMode,
+        rawTranscript: String,
+        selectedText: String,
+        translateTargetLanguage: String,
+        editorDraft: String,
+        chatContextMessages: List<String>,
+        activeStyle: ToneStyle,
+        settings: AppSettings,
+        incognito: Boolean
+    ): Result<String> {
+        val effectiveTranscript = if (effectiveIntent == VoiceIntentMode.DICTATE) {
+            LocalDictionaryPostProcessor.applyWrongVariantsCorrection(rawTranscript, settings.dictionary)
+        } else {
+            rawTranscript
+        }
+        val matchContext = if (effectiveIntent == VoiceIntentMode.SPEAK_TO_EDIT) {
+            "$selectedText $effectiveTranscript"
+        } else {
+            effectiveTranscript
+        }
+        val topDict = LocalDictionaryPostProcessor.selectRelevantDictionaryLinesForLocalSlm(
+            text = matchContext,
+            dictionary = settings.dictionary
+        )
+        val toneHint = if (activeStyle.summary.isNotBlank()) {
+            "${activeStyle.name} — ${activeStyle.summary}"
+        } else {
+            activeStyle.name
+        }
+
+        if (effectiveIntent == VoiceIntentMode.DICTATE) {
+            val chunks = splitLongTextForChunkedPolish(effectiveTranscript, CHUNKED_POLISH_THRESHOLD_CHARS)
+            if (chunks.size > 1) {
+                // Local SLM MUST process chunks strictly serially (never concurrent) to avoid OOM & state contention.
+                val sb = StringBuilder()
+                for (chunk in chunks) {
+                    val chunkDict = LocalDictionaryPostProcessor.selectRelevantDictionaryLinesForLocalSlm(
+                        text = chunk,
+                        dictionary = settings.dictionary
+                    )
+                    val prompt = LocalPromptTemplates.buildDictatePrompt(
+                        rawTranscript = chunk,
+                        dictionaryTerms = chunkDict,
+                        toneHint = toneHint
+                    )
+                    val chunkRes = executeLocalSlmPrompt(
+                        modelId = modelId,
+                        taskName = AiTask.DICTATE.name,
+                        prompt = prompt,
+                        temperature = settings.llmConfig.temperature,
+                        priority = PRIORITY_VOICE,
+                        incognito = incognito
+                    )
+                    if (chunkRes.isFailure) return Result.failure(chunkRes.exceptionOrNull()!!)
+                    val cleaned = cleanModelOutput(chunkRes.getOrThrow().text)
+                    val safeChunk = if (cleaned.isBlank() ||
+                        LocalDictionaryPostProcessor.isLikelyHallucinatedDictation(chunk, cleaned)
+                    ) {
+                        chunk
+                    } else {
+                        cleaned
+                    }
+                    sb.append(safeChunk)
+                }
+                return Result.success(sb.toString())
+            }
+        }
+
+        val prompt = when (effectiveIntent) {
+            VoiceIntentMode.DICTATE -> LocalPromptTemplates.buildDictatePrompt(
+                rawTranscript = effectiveTranscript,
+                dictionaryTerms = topDict,
+                toneHint = toneHint
+            )
+            VoiceIntentMode.SPEAK_TO_EDIT -> LocalPromptTemplates.buildSpeakToEditPrompt(
+                selectedText = selectedText,
+                voiceInstruction = rawTranscript,
+                dictionaryTerms = topDict,
+                toneHint = toneHint
+            )
+            VoiceIntentMode.TRANSLATE -> LocalPromptTemplates.buildTranslatePrompt(
+                rawTranscript = rawTranscript,
+                targetLanguage = translateTargetLanguage,
+                dictionaryTerms = topDict
+            )
+            VoiceIntentMode.HELP_ME_WRITE -> LocalPromptTemplates.buildHelpMeWritePrompt(
+                writingRequest = rawTranscript,
+                editorDraft = editorDraft,
+                chatContext = chatContextMessages.joinToString("\n"),
+                dictionaryTerms = topDict,
+                toneHint = toneHint
+            )
+            VoiceIntentMode.JEV_COPILOT -> LocalPromptTemplates.buildJevCopilotPrompt(
+                chatContext = chatContextMessages.joinToString("\n"),
+                userBottomLine = rawTranscript
+            )
+        }
+        val priority = if (effectiveIntent == VoiceIntentMode.DICTATE) PRIORITY_VOICE else PRIORITY_EDIT_WRITE
+        return executeLocalSlmPrompt(
+            modelId = modelId,
+            taskName = effectiveIntent.toAiTask().name,
+            prompt = prompt,
+            temperature = settings.llmConfig.temperature,
+            priority = priority,
+            incognito = incognito
+        ).map { res ->
+            val cleaned = cleanModelOutput(res.text)
+            if (effectiveIntent == VoiceIntentMode.DICTATE &&
+                (cleaned.isBlank() || LocalDictionaryPostProcessor.isLikelyHallucinatedDictation(rawTranscript, cleaned))
+            ) {
+                rawTranscript
+            } else {
+                cleaned
+            }
+        }
+    }
+
+    private suspend fun executeLocalSlmPrompt(
+        modelId: String,
+        taskName: String,
+        prompt: LocalPromptPair,
+        temperature: Float,
+        priority: Int,
+        incognito: Boolean,
+        onTokenBatch: ((chunk: String, tokenCount: Int) -> Unit)? = null
+    ): Result<LocalSlmRuntimeResult> {
+        val client = localAiClient
+            ?: return Result.failure(IllegalStateException("本机离线推理客户端未初始化"))
+        val modelDir = localModelRegistry?.getInstalledModelDir(modelId)
+            ?: return Result.failure(IllegalStateException("本机离线文本模型未安装或目录缺失 ($modelId)"))
+        val startRegistryGen = currentRegistrySnapshot().modelGeneration
+        val request = GenRequest(
+            modelId = modelId,
+            modelDirPath = modelDir,
+            taskName = taskName,
+            systemPrompt = prompt.systemPrompt,
+            userPrompt = prompt.userPrompt,
+            maxTokens = prompt.maxTokens,
+            temperature = temperature,
+            priority = priority,
+            incognito = incognito,
+            expectedGeneration = 0L,
+            promptTemplateVersion = prompt.templateVersion
+        )
+        val genRes = client.generate(request = request, onTokenBatch = onTokenBatch)
+        if (currentRegistrySnapshot().modelGeneration != startRegistryGen) {
+            return Result.failure(IllegalStateException("本地文本模型已切换，已丢弃旧生成结果"))
+        }
+        return genRes
+    }
+
+    private suspend fun executeCloudTextStageForVoice(
+        settings: AppSettings,
+        effectiveIntent: VoiceIntentMode,
+        rawTranscript: String,
+        selectedText: String,
+        safeContext: String,
+        translateTargetLanguage: String,
+        activeStyle: ToneStyle,
+        targetAppName: String,
+        chatContextMessages: List<String>,
+        chatContextScreenshotBase64: String,
+        attitudeInstruction: String,
+        editorDraft: String,
+        preferMultimodalFallback: Boolean
+    ): Result<Pair<ChatCallOutcome, String>> {
+        return runCatching {
+            val llmCfg = resolveEffectiveLlmConfig(settings)
+            val hasCloudLlm = llmCfg.apiKey.isNotBlank() || isLocalEndpoint(llmCfg.baseUrl)
+            val useMultimodal = preferMultimodalFallback || !hasCloudLlm
+            if (useMultimodal) {
+                val mmCfg = settings.multimodalConfig
+                if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
+                    throw IllegalStateException("请先在「API 配置」中填写云端 LLM 或多模态模型 API Key")
+                }
+                val (sysPrompt, usrPrompt) = buildCloudVoicePrompts(
+                    effectiveIntent = effectiveIntent,
+                    rawTranscript = rawTranscript,
+                    selectedText = selectedText,
+                    safeContext = safeContext,
+                    translateTargetLanguage = translateTargetLanguage,
+                    activeStyle = activeStyle,
+                    targetAppName = targetAppName,
+                    settings = settings,
+                    chatContextMessages = chatContextMessages,
+                    hasChatScreenshot = false,
+                    attitudeInstruction = attitudeInstruction,
+                    editorDraft = editorDraft
+                )
+                val outcome = executeCloudMultimodalTextFallback(
+                    settings = settings,
+                    sysPrompt = sysPrompt,
+                    usrPrompt = usrPrompt
+                )
+                outcome to mmCfg.model.substringAfterLast('/').ifBlank { "多模态" }
+            } else {
+                val chunks = if (effectiveIntent == VoiceIntentMode.DICTATE) {
+                    splitLongTextForChunkedPolish(rawTranscript, CHUNKED_POLISH_THRESHOLD_CHARS)
+                } else {
+                    listOf(rawTranscript)
+                }
+                val outcome = if (chunks.size > 1 && effectiveIntent == VoiceIntentMode.DICTATE) {
+                    val semaphore = Semaphore(MAX_CONCURRENT_POLISH_CHUNKS)
+                    val chunkOutcomes = coroutineScope {
+                        chunks.mapIndexed { idx, chunkText ->
+                            async {
+                                semaphore.withPermit {
+                                    val chunkContext = if (idx == 0) safeContext else chunks[idx - 1].takeLast(80)
+                                    val (sysPrompt, usrPrompt) = PromptBuilder.buildDictationPrompts(
+                                        rawSpeech = chunkText,
+                                        style = activeStyle,
+                                        targetAppName = targetAppName,
+                                        dictionary = settings.dictionary,
+                                        surroundingBeforeCursor = chunkContext
+                                    )
+                                    executeLlmChatWithDiagnostics(
+                                        config = llmCfg,
+                                        systemPrompt = sysPrompt,
+                                        userPrompt = usrPrompt
+                                    )
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                    ChatCallOutcome(
+                        text = chunkOutcomes.mapIndexed { idx, o -> o.text.ifBlank { chunks[idx] } }.joinToString(""),
+                        diagnosticLog = chunkOutcomes.mapIndexed { idx, o ->
+                            "[Chunk ${idx + 1}/${chunkOutcomes.size}] ${o.diagnosticLog}"
+                        }.joinToString("\n")
+                    )
+                } else {
+                    val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
+                    val canSendVision = canRouteVisionScreenshot(
+                        primaryBaseUrl = llmCfg.baseUrl,
+                        primaryModel = llmCfg.model,
+                        fallbackGeminiConfig = fallbackGeminiCfg
+                    )
+                    val activeImageB64 = if (effectiveIntent == VoiceIntentMode.HELP_ME_WRITE && canSendVision) {
+                        chatContextScreenshotBase64
+                    } else {
+                        ""
+                    }
+                    val (sysPrompt, usrPrompt) = buildCloudVoicePrompts(
+                        effectiveIntent = effectiveIntent,
+                        rawTranscript = rawTranscript,
+                        selectedText = selectedText,
+                        safeContext = safeContext,
+                        translateTargetLanguage = translateTargetLanguage,
+                        activeStyle = activeStyle,
+                        targetAppName = targetAppName,
+                        settings = settings,
+                        chatContextMessages = chatContextMessages,
+                        hasChatScreenshot = activeImageB64.isNotBlank(),
+                        attitudeInstruction = attitudeInstruction,
+                        editorDraft = editorDraft
+                    )
+                    executeLlmChatWithDiagnostics(
+                        config = llmCfg,
+                        systemPrompt = sysPrompt,
+                        userPrompt = usrPrompt,
+                        imageJpegBase64 = activeImageB64,
+                        fallbackGeminiConfig = fallbackGeminiCfg
+                    )
+                }
+                outcome to llmCfg.model.substringAfterLast('/').ifBlank { "LLM" }
+            }
+        }
+    }
+
+    private fun buildCloudVoicePrompts(
+        effectiveIntent: VoiceIntentMode,
+        rawTranscript: String,
+        selectedText: String,
+        safeContext: String,
+        translateTargetLanguage: String,
+        activeStyle: ToneStyle,
+        targetAppName: String,
+        settings: AppSettings,
+        chatContextMessages: List<String>,
+        hasChatScreenshot: Boolean,
+        attitudeInstruction: String,
+        editorDraft: String
+    ): Pair<String, String> = when (effectiveIntent) {
+        VoiceIntentMode.SPEAK_TO_EDIT -> PromptBuilder.buildSpeakToEditPrompts(
+            selectedText = selectedText,
+            voiceInstruction = rawTranscript,
+            style = activeStyle,
+            dictionary = settings.dictionary
+        )
+        VoiceIntentMode.HELP_ME_WRITE -> PromptBuilder.buildHelpMeWritePrompts(
+            voiceInstruction = PromptBuilder.combineAttitudeAndVoiceInstruction(
+                attitudeInstruction = attitudeInstruction,
+                voiceTranscript = rawTranscript
+            ),
+            style = activeStyle,
+            targetAppName = targetAppName,
+            dictionary = settings.dictionary,
+            surroundingBeforeCursor = safeContext,
+            chatContextMessages = chatContextMessages,
+            hasChatScreenshot = hasChatScreenshot,
+            editorDraft = editorDraft
+        )
+        VoiceIntentMode.JEV_COPILOT -> PromptBuilder.buildJevCopilotPrompts(
+            domainProfile = JevDomainProfile.FORMAL_WORKFLOW,
+            targetAppName = targetAppName,
+            chatContextMessages = chatContextMessages,
+            hasChatScreenshot = hasChatScreenshot,
+            userBottomLine = rawTranscript,
+            surroundingBeforeCursor = safeContext,
+            style = activeStyle,
+            dictionary = settings.dictionary
+        )
+        VoiceIntentMode.TRANSLATE -> PromptBuilder.buildTranslatePrompts(
+            rawSpeech = rawTranscript,
+            targetLanguage = translateTargetLanguage,
+            style = activeStyle,
+            dictionary = settings.dictionary
+        )
+        VoiceIntentMode.DICTATE -> PromptBuilder.buildDictationPrompts(
+            rawSpeech = rawTranscript,
+            style = activeStyle,
+            targetAppName = targetAppName,
+            dictionary = settings.dictionary,
+            surroundingBeforeCursor = safeContext
+        )
+    }
+
+    private fun executeCloudMultimodalTextFallback(
+        settings: AppSettings,
+        sysPrompt: String,
+        usrPrompt: String,
+        imageJpegBase64: String = "",
+        forJevCopilot: Boolean = false,
+        geminiMaxOutputTokens: Int? = null,
+        onThinkingStarted: (() -> Unit)? = null,
+        onStreamingTextUpdate: ((String) -> Unit)? = null
+    ): ChatCallOutcome {
+        val mmCfg = settings.multimodalConfig
+        if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
+            throw IllegalStateException("请先填写多模态 API Key")
+        }
+        return when (mmCfg.protocol) {
+            MultimodalProtocol.GEMINI_NATIVE -> callGeminiTextOnlyWithDiagnostics(
+                config = mmCfg,
+                fullPrompt = "$sysPrompt\n\n$usrPrompt",
+                imageJpegBase64 = imageJpegBase64,
+                forJevCopilot = forJevCopilot,
+                maxOutputTokens = geminiMaxOutputTokens,
+                onThinkingStarted = onThinkingStarted,
+                onStreamingTextUpdate = onStreamingTextUpdate
+            )
+            MultimodalProtocol.OPENAI_AUDIO_CHAT -> executeLlmChatWithDiagnostics(
+                config = LlmConfig(
+                    baseUrl = mmCfg.baseUrl,
+                    apiKey = mmCfg.apiKey,
+                    model = mmCfg.model,
+                    temperature = mmCfg.temperature,
+                    thinkingMode = mmCfg.thinkingMode
+                ),
+                systemPrompt = sysPrompt,
+                userPrompt = usrPrompt,
+                imageJpegBase64 = imageJpegBase64,
+                fallbackGeminiConfig = resolveAvailableGeminiVisionConfig(settings),
+                forJevCopilot = forJevCopilot,
+                geminiMaxOutputTokens = geminiMaxOutputTokens,
+                onThinkingStarted = onThinkingStarted,
+                onStreamingTextUpdate = onStreamingTextUpdate
+            )
+        }
+    }
+
+    private suspend fun formatLocalMetricsSummary(includeSlmMetrics: Boolean): String {
+        val m = localAiClient?.getRuntimeMetrics() ?: return ""
+        val pssPart = if (m.totalPssKb > 0) {
+            String.format(Locale.US, "PSS %.0fMB", m.totalPssMb)
+        } else {
+            ""
+        }
+        val parts = buildList {
+            if (includeSlmMetrics) {
+                if (m.lastSlmTtftMs > 0L) add("TTFT ${m.lastSlmTtftMs}ms")
+                if (m.lastSlmTokensPerSec > 0f) add(String.format(Locale.US, "%.1f tok/s", m.lastSlmTokensPerSec))
+            } else {
+                if (m.lastAsrLatencyMs > 0L) add("ASR ${m.lastAsrLatencyMs}ms")
+            }
+            if (pssPart.isNotEmpty()) add(pssPart)
+        }
+        return parts.joinToString(" · ")
+    }
+
+    private fun extractTopDictionaryTerms(settings: AppSettings): List<String> {
+        return settings.dictionary
+            .asSequence()
+            .filter { it.enabled && it.term.isNotBlank() }
+            .map { it.term.trim() }
+            .distinct()
+            .take(LocalPromptTemplates.MAX_LOCAL_DICT_TERMS)
+            .toList()
+    }
+
+    private fun VoiceIntentMode.toAiTask(): AiTask = when (this) {
+        VoiceIntentMode.DICTATE -> AiTask.DICTATE
+        VoiceIntentMode.SPEAK_TO_EDIT -> AiTask.SPEAK_TO_EDIT
+        VoiceIntentMode.HELP_ME_WRITE -> AiTask.HELP_ME_WRITE
+        VoiceIntentMode.TRANSLATE -> AiTask.TRANSLATE
+        VoiceIntentMode.JEV_COPILOT -> AiTask.JEV_COPILOT
+    }
+
+    private fun shortLocalModelLabel(modelId: String): String = when (modelId) {
+        OfflineModelCatalog.ID_ASR_ZIPFORMER_ZH_14M -> "Zipformer 14M"
+        OfflineModelCatalog.ID_ASR_PARAFORMER_ZH_SMALL -> "Paraformer"
+        OfflineModelCatalog.ID_ASR_ZIPFORMER_BILINGUAL -> "Zipformer 双语"
+        OfflineModelCatalog.ID_ASR_SENSEVOICE_SMALL -> "SenseVoice"
+        OfflineModelCatalog.ID_ASR_STREAMING_PARAFORMER_ZH_EN -> "Paraformer 流式"
+        OfflineModelCatalog.ID_ASR_FIRERED2_CTC_ZH_EN -> "FireRed2"
+        OfflineModelCatalog.ID_ASR_FUNASR_NANO -> "Fun-ASR-Nano"
+        OfflineModelCatalog.ID_ASR_QWEN3_ASR_0_6B -> "Qwen3-ASR"
+        OfflineModelCatalog.ID_SLM_CORE_0_8B -> "0.8B"
+        OfflineModelCatalog.ID_SLM_PLUS_2B -> "2B"
+        OfflineModelCatalog.ID_SLM_PRO_4B -> "4B"
+        else -> OfflineModelCatalog.findById(modelId)?.displayName ?: modelId
+    }
+
+    private fun routeBlockMessage(reason: RouteBlockReason, defaultCloudHint: String): String = when (reason) {
+        RouteBlockReason.SECURE_FIELD -> "当前为密码框或安全输入域，已禁用语音与 AI 推理"
+        RouteBlockReason.OFFLINE_ONLY_UNSUPPORTED_TASK -> "纯离线锁已开启，当前任务不支持离线执行（可切换至混合模式或关闭纯离线锁）"
+        RouteBlockReason.OFFLINE_ONLY_NO_MODEL -> "纯离线锁已开启，请先在「离线模型」页面下载并启用所需本机模型"
+        RouteBlockReason.LOCAL_MODEL_UNAVAILABLE -> "已选本机离线模型损坏或推理服务暂不可用，请重新校验或切换模型"
+        RouteBlockReason.NO_CLOUD_OR_LOCAL_AVAILABLE -> defaultCloudHint
     }
 
     private fun validateSttConfig(
@@ -935,6 +1949,80 @@ class AiPipelineEngine(
     ): Result<PipelineExecutionResult> = withContext(Dispatchers.IO) {
         val startMs = System.currentTimeMillis()
         try {
+            val isContextualReply = chatContextMessages.isNotEmpty() || chatContextScreenshotBase64.isNotBlank()
+            val task = when {
+                isContextualReply -> AiTask.HELP_ME_WRITE
+                !explicitInstruction.isNullOrBlank() -> AiTask.SPEAK_TO_EDIT
+                else -> AiTask.TEXT_TRANSFORM
+            }
+            val plan = resolveRoutePlanEnsuringLocalService(task = task, settings = settings)
+            val planText = plan.text
+            if (planText is TextRoute.Blocked &&
+                (!plan.egressAllowed || settings.offlineConfig.mode != OfflineMode.OFF)
+            ) {
+                return@withContext Result.failure(
+                    IllegalStateException(routeBlockMessage(planText.reason, "请先填写 LLM API Key"))
+                )
+            }
+
+            if (planText is TextRoute.Local) {
+                val topDict = extractTopDictionaryTerms(settings)
+                val prompt = when (task) {
+                    AiTask.HELP_ME_WRITE -> LocalPromptTemplates.buildHelpMeWritePrompt(
+                        writingRequest = explicitInstruction?.takeIf { it.isNotBlank() } ?: rawOrSelectedText,
+                        chatContext = chatContextMessages.joinToString("\n"),
+                        dictionaryTerms = topDict,
+                        toneHint = activeStyle.name
+                    )
+                    AiTask.SPEAK_TO_EDIT -> LocalPromptTemplates.buildSpeakToEditPrompt(
+                        selectedText = rawOrSelectedText,
+                        voiceInstruction = explicitInstruction.orEmpty(),
+                        dictionaryTerms = topDict,
+                        toneHint = activeStyle.name
+                    )
+                    else -> LocalPromptTemplates.buildDictatePrompt(
+                        rawTranscript = rawOrSelectedText,
+                        dictionaryTerms = topDict,
+                        toneHint = activeStyle.name
+                    )
+                }
+                val localRes = executeLocalSlmPrompt(
+                    modelId = planText.modelId,
+                    taskName = task.name,
+                    prompt = prompt,
+                    temperature = settings.llmConfig.temperature,
+                    priority = PRIORITY_EDIT_WRITE,
+                    incognito = plan.clearLocalStateAfterRun
+                )
+                if (localRes.isSuccess) {
+                    val elapsed = System.currentTimeMillis() - startMs
+                    val cleaned = cleanModelOutput(localRes.getOrThrow().text)
+                    val metrics = formatLocalMetricsSummary(includeSlmMetrics = true)
+                    val slmTag = shortLocalModelLabel(planText.modelId)
+                    return@withContext Result.success(
+                        PipelineExecutionResult(
+                            rawTranscript = rawOrSelectedText,
+                            finalOutput = cleaned.ifBlank { rawOrSelectedText },
+                            latencyMs = elapsed,
+                            modeSummary = "本机 $slmTag",
+                            llmLatencyMs = elapsed,
+                            diagnosticLog = "Local SLM [$slmTag]: ${elapsed} ms${if (metrics.isNotBlank()) " ($metrics)" else ""}",
+                            executionSource = ExecutionSource.LOCAL,
+                            localMetricsSummary = metrics
+                        )
+                    )
+                }
+                if (!plan.egressAllowed) {
+                    return@withContext Result.failure(localRes.exceptionOrNull()!!)
+                }
+            }
+
+            if (!plan.egressAllowed) {
+                return@withContext Result.failure(
+                    IllegalStateException(routeBlockMessage(RouteBlockReason.OFFLINE_ONLY_UNSUPPORTED_TASK, "纯离线锁已开启"))
+                )
+            }
+
             val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
             val canSendVision = when (settings.pipelineMode) {
                 PipelineMode.DUAL_STAGE -> {
@@ -959,7 +2047,6 @@ class AiPipelineEngine(
                 }
             }
             val effectiveScreenshotB64 = if (canSendVision) chatContextScreenshotBase64 else ""
-            val isContextualReply = chatContextMessages.isNotEmpty() || chatContextScreenshotBase64.isNotBlank()
             val (sysPrompt, usrPrompt) = if (isContextualReply) {
                 PromptBuilder.buildHelpMeWritePrompts(
                     voiceInstruction = explicitInstruction?.takeIf { it.isNotBlank() } ?: rawOrSelectedText,
@@ -991,57 +2078,69 @@ class AiPipelineEngine(
             val modelLabel: String
             var diagLog = ""
 
-            when (settings.pipelineMode) {
-                PipelineMode.DUAL_STAGE -> {
-                    val llmCfg = resolveEffectiveLlmConfig(settings)
-                    if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
-                        return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
-                    }
-                    val outcome = executeLlmChatWithDiagnostics(
-                        config = llmCfg,
-                        systemPrompt = sysPrompt,
-                        userPrompt = usrPrompt,
-                        imageJpegBase64 = effectiveScreenshotB64,
-                        fallbackGeminiConfig = fallbackGeminiCfg
-                    )
-                    output = outcome.text
-                    diagLog = outcome.diagnosticLog
-                    modelLabel = llmCfg.model
-                }
-                PipelineMode.MULTIMODAL_DIRECT -> {
-                    val mmCfg = settings.multimodalConfig
-                    if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
-                        return@withContext Result.failure(IllegalStateException("请先填写多模态 API Key"))
-                    }
-                    when (mmCfg.protocol) {
-                        MultimodalProtocol.GEMINI_NATIVE -> {
-                            val outcome = callGeminiTextOnlyWithDiagnostics(
-                                config = mmCfg,
-                                fullPrompt = "$sysPrompt\n\n$usrPrompt",
-                                imageJpegBase64 = effectiveScreenshotB64
-                            )
-                            output = outcome.text
-                            diagLog = outcome.diagnosticLog
+            if (plan.text is TextRoute.CloudMultimodalTextFallback) {
+                val outcome = executeCloudMultimodalTextFallback(
+                    settings = settings,
+                    sysPrompt = sysPrompt,
+                    usrPrompt = usrPrompt,
+                    imageJpegBase64 = effectiveScreenshotB64
+                )
+                output = outcome.text
+                diagLog = outcome.diagnosticLog
+                modelLabel = settings.multimodalConfig.model
+            } else {
+                when (settings.pipelineMode) {
+                    PipelineMode.DUAL_STAGE -> {
+                        val llmCfg = resolveEffectiveLlmConfig(settings)
+                        if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
+                            return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
                         }
-                        MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
-                            val outcome = executeLlmChatWithDiagnostics(
-                                config = LlmConfig(
-                                    baseUrl = mmCfg.baseUrl,
-                                    apiKey = mmCfg.apiKey,
-                                    model = mmCfg.model,
-                                    temperature = mmCfg.temperature,
-                                    thinkingMode = mmCfg.thinkingMode
-                                ),
-                                systemPrompt = sysPrompt,
-                                userPrompt = usrPrompt,
-                                imageJpegBase64 = effectiveScreenshotB64,
-                                fallbackGeminiConfig = fallbackGeminiCfg
-                            )
-                            output = outcome.text
-                            diagLog = outcome.diagnosticLog
-                        }
+                        val outcome = executeLlmChatWithDiagnostics(
+                            config = llmCfg,
+                            systemPrompt = sysPrompt,
+                            userPrompt = usrPrompt,
+                            imageJpegBase64 = effectiveScreenshotB64,
+                            fallbackGeminiConfig = fallbackGeminiCfg
+                        )
+                        output = outcome.text
+                        diagLog = outcome.diagnosticLog
+                        modelLabel = llmCfg.model
                     }
-                    modelLabel = mmCfg.model
+                    PipelineMode.MULTIMODAL_DIRECT -> {
+                        val mmCfg = settings.multimodalConfig
+                        if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
+                            return@withContext Result.failure(IllegalStateException("请先填写多模态 API Key"))
+                        }
+                        when (mmCfg.protocol) {
+                            MultimodalProtocol.GEMINI_NATIVE -> {
+                                val outcome = callGeminiTextOnlyWithDiagnostics(
+                                    config = mmCfg,
+                                    fullPrompt = "$sysPrompt\n\n$usrPrompt",
+                                    imageJpegBase64 = effectiveScreenshotB64
+                                )
+                                output = outcome.text
+                                diagLog = outcome.diagnosticLog
+                            }
+                            MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
+                                val outcome = executeLlmChatWithDiagnostics(
+                                    config = LlmConfig(
+                                        baseUrl = mmCfg.baseUrl,
+                                        apiKey = mmCfg.apiKey,
+                                        model = mmCfg.model,
+                                        temperature = mmCfg.temperature,
+                                        thinkingMode = mmCfg.thinkingMode
+                                    ),
+                                    systemPrompt = sysPrompt,
+                                    userPrompt = usrPrompt,
+                                    imageJpegBase64 = effectiveScreenshotB64,
+                                    fallbackGeminiConfig = fallbackGeminiCfg
+                                )
+                                output = outcome.text
+                                diagLog = outcome.diagnosticLog
+                            }
+                        }
+                        modelLabel = mmCfg.model
+                    }
                 }
             }
 
@@ -1053,7 +2152,8 @@ class AiPipelineEngine(
                     latencyMs = elapsed,
                     modeSummary = modelLabel,
                     llmLatencyMs = elapsed,
-                    diagnosticLog = diagLog
+                    diagnosticLog = diagLog,
+                    executionSource = ExecutionSource.CLOUD
                 )
             )
         } catch (e: Exception) {
@@ -1072,6 +2172,21 @@ class AiPipelineEngine(
     ): Result<PipelineExecutionResult> = withContext(Dispatchers.IO) {
         val startMs = System.currentTimeMillis()
         try {
+            val plan = resolveRoutePlan(task = AiTask.ASK_AI_CARD, settings = settings)
+            val planText = plan.text
+            if (!plan.egressAllowed) {
+                val reason = (planText as? TextRoute.Blocked)?.reason
+                    ?: RouteBlockReason.OFFLINE_ONLY_UNSUPPORTED_TASK
+                return@withContext Result.failure(
+                    IllegalStateException(routeBlockMessage(reason, "纯离线锁已开启，问AI需要联网"))
+                )
+            }
+            if (planText is TextRoute.Blocked && settings.offlineConfig.mode != OfflineMode.OFF) {
+                return@withContext Result.failure(
+                    IllegalStateException(routeBlockMessage(planText.reason, "请先填写 LLM API Key"))
+                )
+            }
+
             val (sysPrompt, usrPrompt) = PromptBuilder.buildAskAiCardPrompts(
                 query = query,
                 targetAppName = targetAppName,
@@ -1082,54 +2197,65 @@ class AiPipelineEngine(
             val modelLabel: String
             var diagLog = ""
 
-            when (settings.pipelineMode) {
-                PipelineMode.DUAL_STAGE -> {
-                    val llmCfg = resolveEffectiveLlmConfig(settings)
-                    if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
-                        return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
-                    }
-                    val outcome = executeLlmChatWithDiagnostics(
-                        config = llmCfg,
-                        systemPrompt = sysPrompt,
-                        userPrompt = usrPrompt,
-                        imageJpegBase64 = "",
-                        fallbackGeminiConfig = fallbackGeminiCfg
-                    )
-                    output = outcome.text
-                    diagLog = outcome.diagnosticLog
-                    modelLabel = llmCfg.model
-                }
-                PipelineMode.MULTIMODAL_DIRECT -> {
-                    val mmCfg = settings.multimodalConfig
-                    if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
-                        return@withContext Result.failure(IllegalStateException("请先填写多模态 API Key"))
-                    }
-                    when (mmCfg.protocol) {
-                        MultimodalProtocol.GEMINI_NATIVE -> {
-                            val outcome = callGeminiTextOnlyWithDiagnostics(
-                                config = mmCfg,
-                                fullPrompt = "$sysPrompt\n\n$usrPrompt"
-                            )
-                            output = outcome.text
-                            diagLog = outcome.diagnosticLog
-                            modelLabel = mmCfg.model
+            if (plan.text is TextRoute.CloudMultimodalTextFallback) {
+                val outcome = executeCloudMultimodalTextFallback(
+                    settings = settings,
+                    sysPrompt = sysPrompt,
+                    usrPrompt = usrPrompt
+                )
+                output = outcome.text
+                diagLog = outcome.diagnosticLog
+                modelLabel = settings.multimodalConfig.model
+            } else {
+                when (settings.pipelineMode) {
+                    PipelineMode.DUAL_STAGE -> {
+                        val llmCfg = resolveEffectiveLlmConfig(settings)
+                        if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
+                            return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
                         }
-                        MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
-                            val outcome = executeLlmChatWithDiagnostics(
-                                config = LlmConfig(
-                                    baseUrl = mmCfg.baseUrl,
-                                    apiKey = mmCfg.apiKey,
-                                    model = mmCfg.model,
-                                    temperature = mmCfg.temperature
-                                ),
-                                systemPrompt = sysPrompt,
-                                userPrompt = usrPrompt,
-                                imageJpegBase64 = "",
-                                fallbackGeminiConfig = fallbackGeminiCfg
-                            )
-                            output = outcome.text
-                            diagLog = outcome.diagnosticLog
-                            modelLabel = mmCfg.model
+                        val outcome = executeLlmChatWithDiagnostics(
+                            config = llmCfg,
+                            systemPrompt = sysPrompt,
+                            userPrompt = usrPrompt,
+                            imageJpegBase64 = "",
+                            fallbackGeminiConfig = fallbackGeminiCfg
+                        )
+                        output = outcome.text
+                        diagLog = outcome.diagnosticLog
+                        modelLabel = llmCfg.model
+                    }
+                    PipelineMode.MULTIMODAL_DIRECT -> {
+                        val mmCfg = settings.multimodalConfig
+                        if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
+                            return@withContext Result.failure(IllegalStateException("请先填写多模态 API Key"))
+                        }
+                        when (mmCfg.protocol) {
+                            MultimodalProtocol.GEMINI_NATIVE -> {
+                                val outcome = callGeminiTextOnlyWithDiagnostics(
+                                    config = mmCfg,
+                                    fullPrompt = "$sysPrompt\n\n$usrPrompt"
+                                )
+                                output = outcome.text
+                                diagLog = outcome.diagnosticLog
+                                modelLabel = mmCfg.model
+                            }
+                            MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
+                                val outcome = executeLlmChatWithDiagnostics(
+                                    config = LlmConfig(
+                                        baseUrl = mmCfg.baseUrl,
+                                        apiKey = mmCfg.apiKey,
+                                        model = mmCfg.model,
+                                        temperature = mmCfg.temperature
+                                    ),
+                                    systemPrompt = sysPrompt,
+                                    userPrompt = usrPrompt,
+                                    imageJpegBase64 = "",
+                                    fallbackGeminiConfig = fallbackGeminiCfg
+                                )
+                                output = outcome.text
+                                diagLog = outcome.diagnosticLog
+                                modelLabel = mmCfg.model
+                            }
                         }
                     }
                 }
@@ -1143,7 +2269,8 @@ class AiPipelineEngine(
                     latencyMs = elapsed,
                     modeSummary = "问AI · $modelLabel",
                     llmLatencyMs = elapsed,
-                    diagnosticLog = diagLog
+                    diagnosticLog = diagLog,
+                    executionSource = ExecutionSource.CLOUD
                 )
             )
         } catch (e: Exception) {
@@ -1162,6 +2289,8 @@ class AiPipelineEngine(
      */
     internal fun canJevUseVisionScreenshot(settings: AppSettings): Boolean {
         if (!settings.chatContextSendScreenshot) return false
+        val plan = resolveRoutePlan(task = AiTask.JEV_COPILOT, settings = settings)
+        if (!plan.egressAllowed || !plan.jevVisionAllowed) return false
         val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
         val dedicatedCfg = resolveEffectiveJevLlmConfig(settings)
         return if (dedicatedCfg != null) {
@@ -1227,23 +2356,147 @@ class AiPipelineEngine(
         onPartialResult: ((JevCopilotResult) -> Unit)? = null
     ): Result<Pair<JevCopilotResult, String>> = withContext(Dispatchers.IO) {
         try {
+            val plan = resolveRoutePlan(task = AiTask.JEV_COPILOT, settings = settings)
+            val planText = plan.text
+            if (planText is TextRoute.Blocked &&
+                (!plan.egressAllowed || settings.offlineConfig.mode != OfflineMode.OFF)
+            ) {
+                return@withContext Result.failure(
+                    IllegalStateException(routeBlockMessage(planText.reason, "请先填写云端 API Key 或启用 4B 本机离线军师"))
+                )
+            }
+
             val resolvedBottomLine = when {
                 !preTranscribedBottomLine.isNullOrBlank() -> cleanRawTranscript(preTranscribedBottomLine)
                 wavFile != null && wavFile.exists() && wavFile.length() > 44L -> {
-                    val effectiveStt = resolveEffectiveSttConfig(settings)
-                    validateSttConfig(effectiveStt, settings)?.let { errMsg ->
-                        return@withContext Result.failure(IllegalStateException(errMsg))
-                    }
-                    val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
-                    val bias = PromptBuilder.buildSttBiasPrompt(settings.dictionary)
-                    if (effectiveStt.protocol == SttProtocol.GEMINI_LIVE_WS) {
-                        transcribeGeminiWavWithFastFallback(wavFile, effectiveStt, hotwords)
-                    } else {
-                        transcribeWithOpenAiStt(wavFile, effectiveStt, bias)
+                    val asrPlan = resolveRoutePlan(task = AiTask.DICTATE, settings = settings)
+                    when (val asr = asrPlan.asr) {
+                        is AsrRoute.Local -> {
+                            val localAsrRes = transcribeWithLocalAsrFile(
+                                wavFile = wavFile,
+                                modelId = asr.modelId,
+                                settings = settings,
+                                incognito = asrPlan.clearLocalStateAfterRun
+                            )
+                            if (localAsrRes.isSuccess) {
+                                localAsrRes.getOrThrow()
+                            } else if (plan.egressAllowed) {
+                                transcribeWithCloudSttStage(wavFile, settings)
+                            } else {
+                                return@withContext Result.failure(localAsrRes.exceptionOrNull()!!)
+                            }
+                        }
+                        is AsrRoute.Cloud -> {
+                            if (!plan.egressAllowed) {
+                                return@withContext Result.failure(
+                                    IllegalStateException(routeBlockMessage(RouteBlockReason.OFFLINE_ONLY_NO_MODEL, "纯离线锁已开启"))
+                                )
+                            }
+                            val effectiveStt = resolveEffectiveSttConfig(settings)
+                            validateSttConfig(effectiveStt, settings)?.let { errMsg ->
+                                return@withContext Result.failure(IllegalStateException(errMsg))
+                            }
+                            val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
+                            val bias = PromptBuilder.buildSttBiasPrompt(settings.dictionary)
+                            if (effectiveStt.protocol == SttProtocol.GEMINI_LIVE_WS) {
+                                transcribeGeminiWavWithFastFallback(wavFile, effectiveStt, hotwords)
+                            } else {
+                                transcribeWithOpenAiStt(wavFile, effectiveStt, bias)
+                            }
+                        }
+                        is AsrRoute.None -> {
+                            if (!plan.egressAllowed) {
+                                return@withContext Result.failure(
+                                    IllegalStateException(routeBlockMessage(RouteBlockReason.OFFLINE_ONLY_NO_MODEL, "纯离线锁已开启"))
+                                )
+                            }
+                            val effectiveStt = resolveEffectiveSttConfig(settings)
+                            validateSttConfig(effectiveStt, settings)?.let { errMsg ->
+                                return@withContext Result.failure(IllegalStateException(errMsg))
+                            }
+                            val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
+                            val bias = PromptBuilder.buildSttBiasPrompt(settings.dictionary)
+                            if (effectiveStt.protocol == SttProtocol.GEMINI_LIVE_WS) {
+                                transcribeGeminiWavWithFastFallback(wavFile, effectiveStt, hotwords)
+                            } else {
+                                transcribeWithOpenAiStt(wavFile, effectiveStt, bias)
+                            }
+                        }
                     }
                 }
                 userBottomLine.isNotBlank() -> userBottomLine.trim()
                 else -> ""
+            }
+
+            // On-device 4B Jev Copilot (pure OCR text mode, no vision screenshot)
+            if (planText is TextRoute.Local) {
+                val localPrompt = LocalPromptTemplates.buildJevCopilotPrompt(
+                    chatContext = chatContextMessages.joinToString("\n"),
+                    userBottomLine = resolvedBottomLine,
+                    domainHint = domainProfile.name
+                )
+                val streamAccum = StringBuilder()
+                var lastSubtextClosedLocal = false
+                var lastOptCloseCountLocal = 0
+                var lastWeightsClosedLocal = false
+                val localRes = executeLocalSlmPrompt(
+                    modelId = planText.modelId,
+                    taskName = AiTask.JEV_COPILOT.name,
+                    prompt = localPrompt,
+                    temperature = settings.jevLlmConfig.temperature,
+                    priority = PRIORITY_EDIT_WRITE,
+                    incognito = plan.clearLocalStateAfterRun,
+                    onTokenBatch = if (onPartialResult != null) {
+                        { chunk, _ ->
+                            streamAccum.append(chunk)
+                            val partialText = streamAccum.toString()
+                            val subtextClosed = partialText.contains("</subtext>", ignoreCase = true)
+                            val optCloseCount = OPT_CLOSE_TAG_REGEX.findAll(partialText).count()
+                            val weightsClosed = partialText.contains("</weights>", ignoreCase = true)
+                            if ((subtextClosed && !lastSubtextClosedLocal) ||
+                                optCloseCount > lastOptCloseCountLocal ||
+                                (weightsClosed && !lastWeightsClosedLocal)
+                            ) {
+                                lastSubtextClosedLocal = subtextClosed
+                                lastOptCloseCountLocal = optCloseCount
+                                lastWeightsClosedLocal = weightsClosed
+                                JevResponseParser.parseStreamingPreview(
+                                    rawPartialOutput = partialText,
+                                    redactionSession = redactionSession,
+                                    usedVision = false,
+                                    redactionCount = redactionSession?.redactionCount ?: 0,
+                                    priorWeightFuser = priorWeightFuser,
+                                    lockVisualOrder = shouldLockOptionOrder()
+                                )?.let { preview -> onPartialResult(preview) }
+                            }
+                        }
+                    } else null
+                )
+                if (localRes.isSuccess) {
+                    val localRaw = cleanModelOutput(localRes.getOrThrow().text)
+                    if (localRaw.isNotBlank()) {
+                        val parsed = JevResponseParser.parse(
+                            rawModelOutput = localRaw,
+                            redactionSession = redactionSession,
+                            usedVision = false,
+                            redactionCount = redactionSession?.redactionCount ?: 0,
+                            priorWeightFuser = priorWeightFuser,
+                            lockVisualOrder = shouldLockOptionOrder()
+                        )
+                        return@withContext Result.success(parsed to resolvedBottomLine)
+                    }
+                }
+                if (!plan.egressAllowed) {
+                    return@withContext Result.failure(
+                        localRes.exceptionOrNull() ?: IOException("离线军师返回内容为空，请重试")
+                    )
+                }
+            }
+
+            if (!plan.egressAllowed) {
+                return@withContext Result.failure(
+                    IllegalStateException(routeBlockMessage(RouteBlockReason.OFFLINE_ONLY_UNSUPPORTED_TASK, "纯离线锁已开启"))
+                )
             }
 
             val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
@@ -1279,7 +2532,8 @@ class AiPipelineEngine(
                 }
             }
 
-            val allowScreenshot = canSendVision &&
+            val allowScreenshot = plan.jevVisionAllowed &&
+                canSendVision &&
                 settings.chatContextSendScreenshot &&
                 redactionSession?.hasHighRiskCredentials != true
             val effectiveScreenshotB64 = if (allowScreenshot) chatContextScreenshotBase64 else ""
@@ -1455,6 +2709,33 @@ class AiPipelineEngine(
             if (!wavFile.exists() || wavFile.length() <= 44L) {
                 return@withContext Result.failure(IllegalArgumentException("未检测到有效语音，请贴近麦克风说话"))
             }
+            val plan = resolveRoutePlanEnsuringLocalService(task = AiTask.NOTE_TRANSCRIBE, settings = settings)
+            val planAsr = plan.asr
+            if (planAsr is AsrRoute.Local) {
+                val localRes = transcribeWithLocalAsrFile(
+                    wavFile = wavFile,
+                    modelId = planAsr.modelId,
+                    settings = settings,
+                    incognito = plan.clearLocalStateAfterRun
+                )
+                if (localRes.isSuccess) {
+                    val cleaned = localRes.getOrThrow().trim()
+                    return@withContext if (cleaned.isBlank()) {
+                        Result.failure(IllegalArgumentException("未识别到清晰人声，请重试"))
+                    } else {
+                        Result.success(cleaned)
+                    }
+                }
+                if (!plan.egressAllowed) {
+                    return@withContext Result.failure(localRes.exceptionOrNull()!!)
+                }
+            } else if (!plan.egressAllowed) {
+                val reason = (plan.text as? TextRoute.Blocked)?.reason ?: RouteBlockReason.OFFLINE_ONLY_NO_MODEL
+                return@withContext Result.failure(
+                    IllegalStateException(routeBlockMessage(reason, "纯离线锁已开启，请先启用本机语音模型"))
+                )
+            }
+
             when (settings.pipelineMode) {
                 PipelineMode.DUAL_STAGE -> {
                     val effectiveStt = resolveEffectiveSttConfig(settings)
@@ -1550,48 +2831,103 @@ class AiPipelineEngine(
             if (clippedContext.isEmpty()) {
                 return@withContext Result.success("")
             }
+            val plan = resolveRoutePlanEnsuringLocalService(task = AiTask.SENTENCE_COMPLETION, settings = settings)
+            val planText = plan.text
+            if (planText is TextRoute.Blocked &&
+                (!plan.egressAllowed || settings.offlineConfig.mode != OfflineMode.OFF)
+            ) {
+                return@withContext Result.failure(
+                    IllegalStateException(routeBlockMessage(planText.reason, "请先填写 LLM API Key"))
+                )
+            }
+
+            if (planText is TextRoute.Local) {
+                val currentJob = coroutineContext[Job]
+                activeLocalCompletionJob.set(currentJob)
+                try {
+                    val prompt = LocalPromptTemplates.buildSentenceCompletionPrompt(
+                        cursorBeforeContext = clippedContext,
+                        toneHint = activeStyle.name
+                    )
+                    val localRes = executeLocalSlmPrompt(
+                        modelId = planText.modelId,
+                        taskName = AiTask.SENTENCE_COMPLETION.name,
+                        prompt = prompt,
+                        temperature = 0.2f,
+                        priority = PRIORITY_COMPLETION,
+                        incognito = plan.clearLocalStateAfterRun
+                    )
+                    if (localRes.isSuccess) {
+                        val cleaned = com.typefree.ime.ime.predict.AiSentenceCompleter.cleanCompletionOutput(
+                            rawOutput = cleanModelOutput(localRes.getOrThrow().text),
+                            contextBeforeCursor = clippedContext
+                        )
+                        return@withContext Result.success(cleaned)
+                    }
+                    if (!plan.egressAllowed) {
+                        return@withContext Result.failure(localRes.exceptionOrNull()!!)
+                    }
+                } finally {
+                    activeLocalCompletionJob.compareAndSet(currentJob, null)
+                }
+            }
+
+            if (!plan.egressAllowed) {
+                return@withContext Result.failure(
+                    IllegalStateException(routeBlockMessage(RouteBlockReason.OFFLINE_ONLY_UNSUPPORTED_TASK, "纯离线锁已开启"))
+                )
+            }
+
             val (sysPrompt, usrPrompt) = PromptBuilder.buildSentenceCompletionPrompts(
                 contextBeforeCursor = clippedContext,
                 style = activeStyle,
                 targetAppName = targetAppName,
                 dictionary = settings.dictionary
             )
-            val rawOutput: String = when (settings.pipelineMode) {
-                PipelineMode.DUAL_STAGE -> {
-                    val llmCfg = resolveEffectiveLlmConfig(settings).copy(
-                        thinkingMode = ThinkingMode.DISABLED
-                    )
-                    if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
-                        return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
-                    }
-                    executeLlmChatWithDiagnostics(llmCfg, sysPrompt, usrPrompt).text
-                }
-                PipelineMode.MULTIMODAL_DIRECT -> {
-                    val mmCfg = settings.multimodalConfig.copy(
-                        thinkingMode = ThinkingMode.DISABLED
-                    )
-                    if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
-                        return@withContext Result.failure(IllegalStateException("请先填写多模态 API Key"))
-                    }
-                    when (mmCfg.protocol) {
-                        MultimodalProtocol.GEMINI_NATIVE -> {
-                            callGeminiTextOnlyWithDiagnostics(
-                                config = mmCfg,
-                                fullPrompt = "$sysPrompt\n\n$usrPrompt"
-                            ).text
+            val rawOutput: String = if (plan.text is TextRoute.CloudMultimodalTextFallback) {
+                executeCloudMultimodalTextFallback(
+                    settings = settings,
+                    sysPrompt = sysPrompt,
+                    usrPrompt = usrPrompt
+                ).text
+            } else {
+                when (settings.pipelineMode) {
+                    PipelineMode.DUAL_STAGE -> {
+                        val llmCfg = resolveEffectiveLlmConfig(settings).copy(
+                            thinkingMode = ThinkingMode.DISABLED
+                        )
+                        if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
+                            return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
                         }
-                        MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
-                            callOpenAiChatCompletionWithDiagnostics(
-                                config = LlmConfig(
-                                    baseUrl = mmCfg.baseUrl,
-                                    apiKey = mmCfg.apiKey,
-                                    model = mmCfg.model,
-                                    temperature = mmCfg.temperature,
-                                    thinkingMode = ThinkingMode.DISABLED
-                                ),
-                                systemPrompt = sysPrompt,
-                                userPrompt = usrPrompt
-                            ).text
+                        executeLlmChatWithDiagnostics(llmCfg, sysPrompt, usrPrompt).text
+                    }
+                    PipelineMode.MULTIMODAL_DIRECT -> {
+                        val mmCfg = settings.multimodalConfig.copy(
+                            thinkingMode = ThinkingMode.DISABLED
+                        )
+                        if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
+                            return@withContext Result.failure(IllegalStateException("请先填写多模态 API Key"))
+                        }
+                        when (mmCfg.protocol) {
+                            MultimodalProtocol.GEMINI_NATIVE -> {
+                                callGeminiTextOnlyWithDiagnostics(
+                                    config = mmCfg,
+                                    fullPrompt = "$sysPrompt\n\n$usrPrompt"
+                                ).text
+                            }
+                            MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
+                                callOpenAiChatCompletionWithDiagnostics(
+                                    config = LlmConfig(
+                                        baseUrl = mmCfg.baseUrl,
+                                        apiKey = mmCfg.apiKey,
+                                        model = mmCfg.model,
+                                        temperature = mmCfg.temperature,
+                                        thinkingMode = ThinkingMode.DISABLED
+                                    ),
+                                    systemPrompt = sysPrompt,
+                                    userPrompt = usrPrompt
+                                ).text
+                            }
                         }
                     }
                 }
@@ -1601,6 +2937,8 @@ class AiPipelineEngine(
                 contextBeforeCursor = clippedContext
             )
             Result.success(cleaned)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
