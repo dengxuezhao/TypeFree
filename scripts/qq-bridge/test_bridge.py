@@ -35,6 +35,7 @@ class FakeGitHubClient:
         return {
             "tag_name": "v3.7.1",
             "html_url": "https://github.com/dengxuezhao/TypeFree/releases/tag/v3.7.1",
+            "body": "### 更新亮点\n\n- **端侧离线语音**：支持断网识别\n- **小鹤原包导入**：免解压直接导入\n\n---\n\n### 安装包说明\n- 忽略此行",
             "assets": [
                 {
                     "name": "TypeFree-v3.7.1-standard-release.apk",
@@ -205,6 +206,7 @@ class BridgeTests(unittest.TestCase):
                     "release_url": "https://github.com/dengxuezhao/TypeFree/releases/tag/v3.7.2",
                     "is_signed": "true",
                     "notified_issues": "#1, #2",
+                    "release_notes": "### 更新亮点\n\n- **端侧离线模型**：断网可用\n- **26 键优化**：大写键帽与上滑清空\n\n---\n\n### 安装包说明\n- 不应出现",
                 }).encode("utf-8"),
                 headers={
                     "Content-Type": "application/json",
@@ -216,6 +218,8 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(resp.status, 200)
             self.assertEqual(len(ob.sent), 1)
             self.assertIn("v3.7.2", ob.sent[0]["text"])
+            self.assertIn("端侧离线模型", ob.sent[0]["text"])
+            self.assertNotIn("不应出现", ob.sent[0]["text"])
             self.assertIn("https://typefree.xuezhao.space/downloads/TypeFree-v3.7.2-release.apk", ob.sent[0]["text"])
             self.assertIn("#1, #2", ob.sent[0]["text"])
 
@@ -238,6 +242,8 @@ class BridgeTests(unittest.TestCase):
             with urllib.request.urlopen(req_ev) as resp:
                 self.assertEqual(resp.status, 200)
             self.assertIn("v3.7.1", ob.sent[-1]["text"])
+            self.assertIn("端侧离线语音", ob.sent[-1]["text"])
+            self.assertNotIn("忽略此行", ob.sent[-1]["text"])
             self.assertIn("https://typefree.xuezhao.space/downloads/TypeFree-v3.7.1-release.apk", ob.sent[-1]["text"])
 
             # Chunked Transfer-Encoding (as used by Node/NapCat HTTP clients)

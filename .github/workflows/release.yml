@@ -529,6 +529,9 @@ jobs:
               if (not is_prerelease and re.match(r"^v\d+\.\d+\.\d+$", tag))
               else ""
           )
+          release_notes = ""
+          if os.path.isfile("/tmp/release_notes_full.md"):
+              release_notes = open("/tmp/release_notes_full.md", encoding="utf-8").read()
 
           payload = {
               "event": "release",
@@ -540,6 +543,7 @@ jobs:
               "apk_file": os.environ["APK_FILE"],
               "is_signed": os.environ.get("IS_SIGNED", "false"),
               "notified_issues": os.environ.get("NOTIFIED_ISSUES", ""),
+              "release_notes": release_notes,
           }
           if group_id.isdigit():
               payload["group_id"] = int(group_id)

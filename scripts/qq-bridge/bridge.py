@@ -476,6 +476,56 @@ class BridgeService:
             return ""
         return f"{origin}/downloads/TypeFree-{tag.strip()}-release.apk"
 
+    @staticmethod
+    def _extract_release_highlights(
+        raw_highlights: Any,
+        max_items: int = 5,
+        max_item_len: int = 72,
+    ) -> list[str]:
+        if isinstance(raw_highlights, list):
+            raw_lines = [str(item) for item in raw_highlights]
+        elif isinstance(raw_highlights, str):
+            raw_lines = raw_highlights.splitlines()
+        else:
+            return []
+
+        items: list[str] = []
+        in_code_fence = False
+        stop_heading_re = re.compile(r"^#{1,6}\s*(?:安装包说明|下载说明|校验|checksum|assets)\b", re.IGNORECASE)
+        skip_heading_re = re.compile(r"^#{1,6}\s*")
+        skip_meta_re = re.compile(r"^(?:full changelog|https?://|sha-?256)", re.IGNORECASE)
+
+        for raw in raw_lines:
+            line = raw.strip()
+            if line.startswith("```"):
+                in_code_fence = not in_code_fence
+                continue
+            if in_code_fence or not line:
+                continue
+            if set(line) <= {"-", "=", "_", "*"} and len(line) >= 3:
+                if items:
+                    break
+                continue
+            if stop_heading_re.match(line):
+                break
+            if skip_heading_re.match(line):
+                continue
+            if skip_meta_re.match(line):
+                continue
+
+            cleaned = re.sub(r"^(?:[-*•]+|\d+[.)、])\s*", "", line)
+            cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
+            cleaned = cleaned.replace("**", "").replace("__", "").replace("`", "")
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if len(cleaned) < 3:
+                continue
+            if len(cleaned) > max_item_len:
+                cleaned = cleaned[: max_item_len - 1].rstrip(" ，,、：:·") + "…"
+            items.append(cleaned)
+            if len(items) >= max_items:
+                break
+        return items
+
     def _handle_latest_release(self) -> str:
         try:
             release = self.github.get_latest_release()
@@ -488,7 +538,12 @@ class BridgeService:
         assets = release.get("assets") or []
         apk_asset = next((a for a in assets if str(a.get("name", "")).endswith(".apk")), None)
         official_apk_url = self._derive_official_apk_url(str(tag))
+        highlights = self._extract_release_highlights(release.get("body") or "", max_items=4, max_item_len=64)
         lines = [f"📦 TypeFree 最新公开版本：{tag}"]
+        if highlights:
+            lines.append("✨ 更新亮点：")
+            for item in highlights:
+                lines.append(f"• {item}")
         if official_apk_url:
             lines.append(f"🌐 官网下载直链：{official_apk_url}")
         elif self.config.official_site_origin:
@@ -540,8 +595,17 @@ class BridgeService:
             apk_name = str(payload.get("apk_file") or "").strip()
             notified_issues = str(payload.get("notified_issues") or "").strip()
             is_signed = str(payload.get("is_signed") or "").lower() == "true"
+            highlights = self._extract_release_highlights(
+                payload.get("highlights") if payload.get("highlights") is not None else payload.get("release_notes"),
+                max_items=6,
+                max_item_len=72,
+            )
 
             lines = [f"🚀 TypeFree {tag} 已正式发布！"]
+            if highlights:
+                lines.append("✨ 本版更新亮点：")
+                for item in highlights:
+                    lines.append(f"• {item}")
             if apk_name:
                 sign_hint = "正式签名" if is_signed else "Debug 签名"
                 lines.append(f"📦 安装包：{apk_name}（{sign_hint}）")
@@ -554,7 +618,7 @@ class BridgeService:
             if notified_issues and notified_issues.lower() != "none":
                 lines.append(f"🔧 本版已修复关联 Issue：{notified_issues}")
             if release_url:
-                lines.append(f"📝 更新日志：{release_url}")
+                lines.append(f"📝 完整更新日志：{release_url}")
             lines.append("💡 小鹤音形专享版用户请注意勿直接用公开版覆盖安装。")
             message = "\n".join(lines)
         elif event_type == "issue":
