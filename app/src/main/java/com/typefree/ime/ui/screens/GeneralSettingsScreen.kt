@@ -28,6 +28,9 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -63,11 +66,14 @@ import com.typefree.core.offline.OfflineMode
 import com.typefree.ime.BuildConfig
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.ThemePreference
+import com.typefree.ime.data.stats.StatsTimeRange
 import com.typefree.ime.network.AppUpdateChecker
 import com.typefree.ime.network.UpdateCheckInfo
+import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @Composable
 fun GeneralSettingsScreen(
@@ -77,7 +83,21 @@ fun GeneralSettingsScreen(
     val coroutineScope = rememberCoroutineScope()
     val settings by repository.settings.collectAsState()
     val clipboardItems by repository.clipboardItems.collectAsState()
+    val statsRev by repository.dailyStatsRevision.collectAsState()
+    val statsMeta = remember(settings, statsRev) {
+        repository.computeInsightsSnapshot(StatsTimeRange.ALL)
+    }
+    val formattedStatsKb = remember(statsMeta.statsDbSizeBytes) {
+        val bytes = statsMeta.statsDbSizeBytes.coerceAtLeast(0L)
+        when {
+            bytes == 0L -> "0 KB"
+            bytes < 1024L -> "< 1 KB"
+            bytes < 1024L * 1024L -> String.format(Locale.US, "%.1f KB", bytes / 1024.0)
+            else -> String.format(Locale.US, "%.2f MB", bytes / (1024.0 * 1024.0))
+        }
+    }
 
+    var showResetStatsConfirm by remember { mutableStateOf(false) }
     var isCheckingUpdate by remember { mutableStateOf(false) }
     var updateDialogState by remember { mutableStateOf<SharedUpdateDialogState?>(null) }
     var availableUpdate by remember {
@@ -465,7 +485,109 @@ fun GeneralSettingsScreen(
                 }
             }
 
-            // 4. 更新与关于隐私
+            // 4. 端侧纯数字表达统计
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = ContinuousRoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "端侧纯数字表达统计",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = TypeFreeEmerald.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.34f))
+                        ) {
+                            Text(
+                                text = "0 正文 · 纯本地",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = TypeFreeEmerald,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    PreferenceSwitchRow(
+                        title = "开启端侧按日纯数字统计",
+                        subtitle = "仅按日累计字数、耗时与使用次数等纯数字指标，绝不记录任何输入正文；无痕模式与密码框自动跳过",
+                        checked = settings.inputStatsEnabled,
+                        onCheckedChange = { enabled ->
+                            repository.setInputStatsEnabled(enabled)
+                        }
+                    )
+
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.52f)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Text(
+                                text = "本地统计表：${statsMeta.statsTrackedDays} 天 · $formattedStatsKb",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "写入方式：内存累加 + 后台异步合并",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "无痕 / 密码框隔离：强制零计数",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = { showResetStatsConfirm = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(11.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f)),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "重置累计纯数字统计与里程碑",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+
+            // 5. 更新与关于隐私
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
@@ -600,6 +722,38 @@ fun GeneralSettingsScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
         }
+    }
+
+    if (showResetStatsConfirm) {
+        AlertDialog(
+            onDismissRequest = { showResetStatsConfirm = false },
+            title = { Text("重置累计纯数字统计与里程碑") },
+            text = {
+                Text(
+                    "确定要清零本机累计的 ${statsMeta.statsTrackedDays} 天纯数字表达统计、24 小时节律与里程碑进度吗？此操作不会影响你的识别历史、个人词典或 Jev 记忆，且无法撤销。"
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        repository.resetDailyStats()
+                        showResetStatsConfirm = false
+                        Toast.makeText(context, "已重置累计纯数字统计与里程碑", Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("确认重置")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetStatsConfirm = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 
     updateDialogState?.let { dialogState ->

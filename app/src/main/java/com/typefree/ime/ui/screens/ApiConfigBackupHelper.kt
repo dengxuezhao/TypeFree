@@ -7,11 +7,14 @@ import com.google.gson.JsonParser
 import com.typefree.core.offline.OfflineMode
 import com.typefree.core.offline.PendingOfflineRestore
 import com.typefree.ime.data.ApiPreset
+import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.AppToneRule
+import com.typefree.ime.data.ClipboardEntry
 import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.DictionaryEntry
 import com.typefree.ime.data.DictionarySource
+import com.typefree.ime.data.HistoryRecord
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
@@ -29,6 +32,13 @@ import com.typefree.ime.data.ThemePreference
 import com.typefree.ime.data.ThinkingMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.UnifiedProviderCatalog
+import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.data.stats.BigramBackupItem
+import com.typefree.ime.data.stats.DailyStatsRecord
+import com.typefree.ime.data.stats.FullBackupMergeSummary
+import com.typefree.ime.data.stats.FullBackupOptions
+import com.typefree.ime.data.stats.PredictionBackupArchive
+import com.typefree.ime.data.stats.TrigramBackupItem
 import com.typefree.ime.ime.jev.memory.AndroidKeystoreSaltProvider
 import com.typefree.ime.ime.jev.memory.EncryptedJevMemoryArchive
 import com.typefree.ime.ime.jev.memory.JevMemoryImportSummary
@@ -39,10 +49,13 @@ import com.typefree.ime.network.asr.VolcengineSaucAsrClient
 object ApiConfigBackupHelper {
 
     const val REDACTED_SECRET = "***REDACTED***"
+    const val BACKUP_FORMAT_VERSION = 2
+    const val CLIPBOARD_SAFE_MAX_BYTES = 350_000
 
     private val prettyGson: Gson = GsonBuilder().setPrettyPrinting().create()
 
     private val KNOWN_CONFIG_KEYS = setOf(
+        "backupFormatVersion",
         "pipelineMode",
         "sttConfig",
         "llmConfig",
@@ -80,6 +93,7 @@ object ApiConfigBackupHelper {
         "jevMemoryEnabled",
         "jevMaskTitleHintEnabled",
         "jevMemoryArchive",
+        "inputStatsEnabled",
         "themePreference",
         "appAwareToneEnabled",
         "selectedManualStyleId",
@@ -93,7 +107,11 @@ object ApiConfigBackupHelper {
         "activeTranslateTarget",
         "styles",
         "appRules",
-        "dictionary"
+        "dictionary",
+        "historyRecords",
+        "dailyStatsRecords",
+        "predictionArchive",
+        "clipboardPinnedItems"
     )
 
     fun applyPresetToStt(current: SttConfig, preset: ApiPreset): SttConfig {
@@ -373,7 +391,8 @@ object ApiConfigBackupHelper {
 
     data class FullBackupImportOutcome(
         val settings: AppSettings,
-        val memorySummary: JevMemoryImportSummary? = null
+        val memorySummary: JevMemoryImportSummary? = null,
+        val mergeSummary: FullBackupMergeSummary = FullBackupMergeSummary()
     )
 
     fun hasEncryptedJevMemoryArchive(rawJson: String): Boolean {
@@ -449,6 +468,260 @@ object ApiConfigBackupHelper {
             },
             onFailure = { err -> Result.failure(err) }
         )
+    }
+
+    /**
+     * Full lossless user-data backup exporter (v2):
+     * Exports [AppSettings] plus optional encrypted Jev memory, history records (with local `audioFilePath` stripped),
+     * zero-PII daily stats + token usage records, L2 personal bigram/trigram prediction archive,
+     * and pinned clipboard items.
+     *
+     * When `options.includeSecrets == false` (redacted share mode), strictly omits secrets and personal user data.
+     */
+    fun exportFullBackupJson(
+        settings: AppSettings,
+        options: FullBackupOptions = FullBackupOptions(),
+        history: List<HistoryRecord> = emptyList(),
+        dailyStats: List<DailyStatsRecord> = emptyList(),
+        predictions: PredictionBackupArchive = PredictionBackupArchive(),
+        pinnedClipboard: List<ClipboardEntry> = emptyList(),
+        memoryRepository: JevMemoryRepository? = null,
+        memoryPassphrase: CharArray? = null,
+        wipePassphraseAfterUse: Boolean = true
+    ): String {
+        val baseJson = exportSettingsJson(settings, includeSecrets = options.includeSecrets)
+        val rootObj = JsonParser.parseString(baseJson).asJsonObject
+        rootObj.addProperty("backupFormatVersion", BACKUP_FORMAT_VERSION)
+
+        if (!options.includeSecrets) {
+            return prettyGson.toJson(rootObj)
+        }
+
+        if (options.includeJevMemory && memoryRepository != null && memoryPassphrase != null && memoryPassphrase.isNotEmpty()) {
+            val encrypted = memoryRepository.exportEncryptedArchive(
+                passphrase = memoryPassphrase,
+                wipePassphraseAfterUse = wipePassphraseAfterUse
+            )
+            rootObj.add("jevMemoryArchive", prettyGson.toJsonTree(encrypted))
+        }
+
+        if (options.includeHistory && history.isNotEmpty()) {
+            val portableHistory = history.map { it.copy(audioFilePath = "") }
+            rootObj.add("historyRecords", prettyGson.toJsonTree(portableHistory))
+        }
+
+        if (options.includeDailyStats && dailyStats.isNotEmpty()) {
+            rootObj.add("dailyStatsRecords", prettyGson.toJsonTree(dailyStats))
+        }
+
+        if (options.includePredictions && !predictions.isEmpty) {
+            rootObj.add("predictionArchive", prettyGson.toJsonTree(predictions))
+        }
+
+        if (options.includePinnedClipboard) {
+            val pinnedOnly = pinnedClipboard.filter { it.isPinned && it.text.isNotBlank() }
+            if (pinnedOnly.isNotEmpty()) {
+                rootObj.add("clipboardPinnedItems", prettyGson.toJsonTree(pinnedOnly))
+            }
+        }
+
+        return prettyGson.toJson(rootObj)
+    }
+
+    /**
+     * Full lossless user-data backup importer (v2 + 100% backward compatible with v1 config/Jev JSON):
+     * Restores settings, optional encrypted Jev memory, and losslessly merges/deduplicates
+     * daily stats (incl. v2 token counters), history records, L2 prediction archive, and pinned clipboard items.
+     */
+    fun importFullBackupJson(
+        rawJson: String,
+        existingSettings: AppSettings = AppSettings(),
+        repository: AppRepository? = null,
+        memoryRepository: JevMemoryRepository? = repository?.jevMemoryRepository,
+        memoryPassphrase: CharArray? = null,
+        adoptSaltProvider: AndroidKeystoreSaltProvider? = repository?.jevMemorySaltProvider as? AndroidKeystoreSaltProvider,
+        skipMemoryIfNoPassphrase: Boolean = false,
+        wipePassphraseAfterUse: Boolean = true
+    ): Result<FullBackupImportOutcome> {
+        val baseRes = importBackupWithJevMemory(
+            rawJson = rawJson,
+            existingSettings = existingSettings,
+            memoryRepository = memoryRepository,
+            memoryPassphrase = memoryPassphrase,
+            adoptSaltProvider = adoptSaltProvider,
+            skipMemoryIfNoPassphrase = skipMemoryIfNoPassphrase,
+            wipePassphraseAfterUse = wipePassphraseAfterUse
+        )
+        val baseOutcome = baseRes.getOrElse { return Result.failure(it) }
+
+        val cleaned = unwrapCodeFence(rawJson)
+        val rootObj = runCatching { JsonParser.parseString(cleaned).asJsonObject }.getOrNull()
+            ?: return Result.success(baseOutcome)
+
+        val parsedHistory = parseHistoryRecords(rootObj)
+        val parsedDailyStats = parseDailyStatsRecords(rootObj)
+        val parsedPredictions = parsePredictionArchive(rootObj)
+        val parsedPinnedClipboard = parsePinnedClipboardItems(rootObj)
+
+        val mergeSummary = if (repository != null) {
+            val mergedDays = if (parsedDailyStats.isNotEmpty()) {
+                repository.mergeImportedDailyStats(parsedDailyStats)
+            } else {
+                0
+            }
+            val mergedHistory = if (parsedHistory.isNotEmpty()) {
+                repository.mergeImportedHistory(parsedHistory)
+            } else {
+                0
+            }
+            val (mergedBigrams, mergedTrigrams) = if (!parsedPredictions.isEmpty) {
+                repository.importAndMergePredictions(parsedPredictions)
+            } else {
+                0 to 0
+            }
+            val mergedPinned = if (parsedPinnedClipboard.isNotEmpty()) {
+                repository.mergeImportedPinnedClipboard(parsedPinnedClipboard)
+            } else {
+                0
+            }
+            FullBackupMergeSummary(
+                mergedHistoryCount = mergedHistory,
+                mergedDailyStatsDays = mergedDays,
+                mergedBigramCount = mergedBigrams,
+                mergedTrigramCount = mergedTrigrams,
+                mergedPinnedClipboardCount = mergedPinned
+            )
+        } else {
+            FullBackupMergeSummary(
+                mergedHistoryCount = parsedHistory.size,
+                mergedDailyStatsDays = parsedDailyStats.size,
+                mergedBigramCount = parsedPredictions.bigrams.size,
+                mergedTrigramCount = parsedPredictions.trigrams.size,
+                mergedPinnedClipboardCount = parsedPinnedClipboard.size
+            )
+        }
+
+        return Result.success(
+            baseOutcome.copy(mergeSummary = mergeSummary)
+        )
+    }
+
+    private fun parseHistoryRecords(rootObj: JsonObject): List<HistoryRecord> {
+        val arr = rootObj.optArrayObjects("historyRecords") ?: return emptyList()
+        return arr.mapNotNull { obj ->
+            val polished = obj.optString("polishedText")?.trim().orEmpty()
+            if (polished.isEmpty()) return@mapNotNull null
+            val isSpeakToEdit = obj.optBoolean("isSpeakToEdit") ?: false
+            val intent = obj.optString("intentMode")?.let { raw ->
+                VoiceIntentMode.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
+            } ?: if (isSpeakToEdit) VoiceIntentMode.SPEAK_TO_EDIT else VoiceIntentMode.DICTATE
+            HistoryRecord(
+                id = obj.optString("id")?.takeIf { it.isNotBlank() } ?: java.util.UUID.randomUUID().toString(),
+                timestamp = obj.optLong("timestamp")?.takeIf { it > 0L } ?: System.currentTimeMillis(),
+                targetAppName = obj.optString("targetAppName") ?: "未知应用",
+                targetPackage = obj.optString("targetPackage") ?: "",
+                styleName = obj.optString("styleName") ?: "智能润色",
+                isSpeakToEdit = isSpeakToEdit,
+                intentMode = intent,
+                translateTargetLanguage = obj.optString("translateTargetLanguage") ?: "",
+                originalSelectedText = obj.optString("originalSelectedText") ?: "",
+                rawTranscript = obj.optString("rawTranscript") ?: "",
+                polishedText = polished,
+                durationMs = (obj.optLong("durationMs") ?: 0L).coerceAtLeast(0L),
+                latencyMs = (obj.optLong("latencyMs") ?: 0L).coerceAtLeast(0L),
+                modeLabel = obj.optString("modeLabel") ?: "",
+                audioFilePath = "",
+                executionSource = obj.optString("executionSource") ?: ""
+            )
+        }
+    }
+
+    private fun parseDailyStatsRecords(rootObj: JsonObject): List<DailyStatsRecord> {
+        val arr = rootObj.optArrayObjects("dailyStatsRecords") ?: return emptyList()
+        return arr.mapNotNull { obj ->
+            val dateKey = obj.optLong("dateKey")?.toInt() ?: return@mapNotNull null
+            if (dateKey <= 0) return@mapNotNull null
+            val promptTok = (obj.optLong("cloudPromptTokens") ?: 0L).coerceAtLeast(0L)
+            val cachedTok = (obj.optLong("cloudCachedTokens") ?: 0L).coerceIn(0L, promptTok)
+            DailyStatsRecord(
+                dateKey = dateKey,
+                voiceChars = (obj.optLong("voiceChars") ?: 0L).toInt().coerceAtLeast(0),
+                voiceCount = (obj.optLong("voiceCount") ?: 0L).toInt().coerceAtLeast(0),
+                voiceDurationMs = (obj.optLong("voiceDurationMs") ?: 0L).coerceAtLeast(0L),
+                voiceLatencySumMs = (obj.optLong("voiceLatencySumMs") ?: 0L).coerceAtLeast(0L),
+                voiceLatencyCount = (obj.optLong("voiceLatencyCount") ?: 0L).toInt().coerceAtLeast(0),
+                helpWriteRawChars = (obj.optLong("helpWriteRawChars") ?: 0L).toInt().coerceAtLeast(0),
+                helpWritePolishedChars = (obj.optLong("helpWritePolishedChars") ?: 0L).toInt().coerceAtLeast(0),
+                helpWriteCount = (obj.optLong("helpWriteCount") ?: 0L).toInt().coerceAtLeast(0),
+                keyChars = (obj.optLong("keyChars") ?: 0L).toInt().coerceAtLeast(0),
+                keyCommits = (obj.optLong("keyCommits") ?: 0L).toInt().coerceAtLeast(0),
+                offlineCount = (obj.optLong("offlineCount") ?: 0L).toInt().coerceAtLeast(0),
+                cloudCount = (obj.optLong("cloudCount") ?: 0L).toInt().coerceAtLeast(0),
+                snippetHits = (obj.optLong("snippetHits") ?: 0L).toInt().coerceAtLeast(0),
+                snippetSavedChars = (obj.optLong("snippetSavedChars") ?: 0L).toInt().coerceAtLeast(0),
+                predictionHits = (obj.optLong("predictionHits") ?: 0L).toInt().coerceAtLeast(0),
+                predictionSavedKeys = (obj.optLong("predictionSavedKeys") ?: 0L).toInt().coerceAtLeast(0),
+                jevAdopts = (obj.optLong("jevAdopts") ?: 0L).toInt().coerceAtLeast(0),
+                hourlyVoiceChars = obj.optIntList24("hourlyVoiceChars"),
+                hourlyKeyChars = obj.optIntList24("hourlyKeyChars"),
+                schemeChars = obj.optIntMap("schemeChars"),
+                intentCounts = obj.optIntMap("intentCounts"),
+                appCounts = obj.optIntMap("appCounts"),
+                styleCounts = obj.optIntMap("styleCounts"),
+                cloudPromptTokens = promptTok,
+                cloudCachedTokens = cachedTok,
+                cloudCompletionTokens = (obj.optLong("cloudCompletionTokens") ?: 0L).coerceAtLeast(0L),
+                cloudReasoningTokens = (obj.optLong("cloudReasoningTokens") ?: 0L).coerceAtLeast(0L),
+                cloudEstimatedTokenCalls = (obj.optLong("cloudEstimatedTokenCalls") ?: 0L).toInt().coerceAtLeast(0),
+                cloudVoiceDurationMs = (obj.optLong("cloudVoiceDurationMs") ?: 0L).coerceAtLeast(0L),
+                offlineVoiceDurationMs = (obj.optLong("offlineVoiceDurationMs") ?: 0L).coerceAtLeast(0L),
+                tokenByModel = obj.optLongMap("tokenByModel"),
+                tokenByFeature = obj.optLongMap("tokenByFeature")
+            )
+        }
+    }
+
+    private fun parsePredictionArchive(rootObj: JsonObject): PredictionBackupArchive {
+        val archObj = rootObj.optObject("predictionArchive") ?: return PredictionBackupArchive()
+        val bigrams = archObj.optArrayObjects("bigrams")?.mapNotNull { obj ->
+            val prev = obj.optString("prevWord")?.trim().orEmpty()
+            val next = obj.optString("nextWord")?.trim().orEmpty()
+            if (prev.isEmpty() || next.isEmpty() || prev == next) return@mapNotNull null
+            BigramBackupItem(
+                prevWord = prev,
+                nextWord = next,
+                count = (obj.optLong("count") ?: 1L).toInt().coerceAtLeast(1),
+                lastUsedMs = (obj.optLong("lastUsedMs") ?: 0L).coerceAtLeast(0L)
+            )
+        }.orEmpty()
+        val trigrams = archObj.optArrayObjects("trigrams")?.mapNotNull { obj ->
+            val pp = obj.optString("prevPrevWord")?.trim().orEmpty()
+            val prev = obj.optString("prevWord")?.trim().orEmpty()
+            val next = obj.optString("nextWord")?.trim().orEmpty()
+            if (pp.isEmpty() || prev.isEmpty() || next.isEmpty() || prev == next) return@mapNotNull null
+            TrigramBackupItem(
+                prevPrevWord = pp,
+                prevWord = prev,
+                nextWord = next,
+                count = (obj.optLong("count") ?: 1L).toInt().coerceAtLeast(1),
+                lastUsedMs = (obj.optLong("lastUsedMs") ?: 0L).coerceAtLeast(0L)
+            )
+        }.orEmpty()
+        return PredictionBackupArchive(bigrams = bigrams, trigrams = trigrams)
+    }
+
+    private fun parsePinnedClipboardItems(rootObj: JsonObject): List<ClipboardEntry> {
+        val arr = rootObj.optArrayObjects("clipboardPinnedItems") ?: return emptyList()
+        return arr.mapNotNull { obj ->
+            val text = obj.optString("text")?.trim().orEmpty()
+            if (text.isEmpty()) return@mapNotNull null
+            ClipboardEntry(
+                id = obj.optString("id")?.takeIf { it.isNotBlank() } ?: java.util.UUID.randomUUID().toString(),
+                text = text,
+                timestamp = obj.optLong("timestamp")?.takeIf { it > 0L } ?: System.currentTimeMillis(),
+                isPinned = true
+            )
+        }
     }
 
     fun unwrapCodeFence(raw: String): String {
@@ -820,6 +1093,8 @@ object ApiConfigBackupHelper {
                     ?: existingSettings.jevMemoryEnabled,
                 jevMaskTitleHintEnabled = rootObj.optBoolean("jevMaskTitleHintEnabled")
                     ?: existingSettings.jevMaskTitleHintEnabled,
+                inputStatsEnabled = rootObj.optBoolean("inputStatsEnabled")
+                    ?: existingSettings.inputStatsEnabled,
                 themePreference = themePref,
                 appAwareToneEnabled = rootObj.optBoolean("appAwareToneEnabled")
                     ?: existingSettings.appAwareToneEnabled,
@@ -923,5 +1198,44 @@ object ApiConfigBackupHelper {
         return el.asJsonArray.mapNotNull { item ->
             if (item.isJsonPrimitive) item.asString else null
         }
+    }
+
+    private fun JsonObject.optIntList24(key: String): List<Int> {
+        val el = get(key) ?: return List(24) { 0 }
+        if (!el.isJsonArray) return List(24) { 0 }
+        val arr = el.asJsonArray
+        return List(24) { idx ->
+            if (idx < arr.size() && arr[idx].isJsonPrimitive && arr[idx].asJsonPrimitive.isNumber) {
+                arr[idx].asInt.coerceAtLeast(0)
+            } else {
+                0
+            }
+        }
+    }
+
+    private fun JsonObject.optIntMap(key: String): Map<String, Int> {
+        val obj = optObject(key) ?: return emptyMap()
+        val out = LinkedHashMap<String, Int>(obj.size())
+        for ((k, v) in obj.entrySet()) {
+            val cleanKey = k.trim()
+            if (cleanKey.isNotEmpty() && v.isJsonPrimitive && v.asJsonPrimitive.isNumber) {
+                val count = v.asInt
+                if (count > 0) out[cleanKey] = count
+            }
+        }
+        return out
+    }
+
+    private fun JsonObject.optLongMap(key: String): Map<String, Long> {
+        val obj = optObject(key) ?: return emptyMap()
+        val out = LinkedHashMap<String, Long>(obj.size())
+        for ((k, v) in obj.entrySet()) {
+            val cleanKey = k.trim()
+            if (cleanKey.isNotEmpty() && v.isJsonPrimitive && v.asJsonPrimitive.isNumber) {
+                val count = v.asLong
+                if (count > 0L) out[cleanKey] = count
+            }
+        }
+        return out
     }
 }

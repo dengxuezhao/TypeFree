@@ -34,6 +34,7 @@ import com.typefree.ime.data.ThinkingMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.UnifiedProviderCatalog
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.data.stats.TokenUsage
 import com.typefree.ime.ime.jev.ChatTopology
 import com.typefree.ime.ime.jev.JevCopilotResult
 import com.typefree.ime.ime.jev.JevDomainProfile
@@ -95,12 +96,16 @@ data class PipelineExecutionResult(
     val usedStreamingAsr: Boolean = false,
     val diagnosticLog: String = "",
     val executionSource: ExecutionSource = ExecutionSource.CLOUD,
-    val localMetricsSummary: String = ""
+    val localMetricsSummary: String = "",
+    val tokenUsage: TokenUsage? = null,
+    val modelName: String = ""
 )
 
 internal data class ChatCallOutcome(
     val text: String,
-    val diagnosticLog: String
+    val diagnosticLog: String,
+    val tokenUsage: TokenUsage? = null,
+    val modelName: String = ""
 )
 
 class AiPipelineEngine(
@@ -620,7 +625,10 @@ class AiPipelineEngine(
                             }.joinToString(""),
                             diagnosticLog = chunkOutcomes.mapIndexed { idx, outcome ->
                                 "[Chunk ${idx + 1}/${chunkOutcomes.size}] ${outcome.diagnosticLog}"
-                            }.joinToString("\n")
+                            }.joinToString("\n"),
+                            tokenUsage = sumTokenUsages(chunkOutcomes.map { it.tokenUsage }),
+                            modelName = chunkOutcomes.firstOrNull { it.modelName.isNotBlank() }?.modelName
+                                ?: llmCfg.model.trim()
                         )
                     } else {
                         val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
@@ -705,7 +713,9 @@ class AiPipelineEngine(
                             sttLatencyMs = sttElapsedMs,
                             llmLatencyMs = llmElapsedMs,
                             usedStreamingAsr = usedLiveStream,
-                            diagnosticLog = fullDiag
+                            diagnosticLog = fullDiag,
+                            tokenUsage = llmOutcome.tokenUsage,
+                            modelName = llmOutcome.modelName.ifBlank { llmCfg.model.trim() }
                         )
                     )
                 }
@@ -738,7 +748,7 @@ class AiPipelineEngine(
                         attitudeInstruction = attitudeInstruction,
                         editorDraft = editorDraft
                     )
-                    val output = when (mmCfg.protocol) {
+                    val mmOutcome = when (mmCfg.protocol) {
                         MultimodalProtocol.GEMINI_NATIVE -> {
                             val compressedM4a = AacAudioCompressor.compressWavToM4aOrNull(wavFile)
                             try {
@@ -748,7 +758,7 @@ class AiPipelineEngine(
                                     wavFile.readBytes() to "audio/wav"
                                 }
                                 val b64 = java.util.Base64.getEncoder().encodeToString(uploadBytes)
-                                callGeminiMultimodalAudio(
+                                callGeminiMultimodalAudioWithDiagnostics(
                                     config = mmCfg,
                                     prompt = prompt,
                                     base64Wav = b64,
@@ -763,13 +773,14 @@ class AiPipelineEngine(
                         }
                         MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
                             val b64 = java.util.Base64.getEncoder().encodeToString(wavFile.readBytes())
-                            callOpenAiMultimodalAudio(
+                            callOpenAiMultimodalAudioWithDiagnostics(
                                 config = mmCfg,
                                 prompt = prompt,
                                 base64Wav = b64
                             )
                         }
                     }
+                    val output = mmOutcome.text
 
                     if (output.isBlank() || output.contains("[EMPTY_SPEECH]")) {
                         return@withContext Result.failure(IllegalArgumentException("未识别到清晰人声，请重试"))
@@ -788,7 +799,10 @@ class AiPipelineEngine(
                             rawTranscript = rawSummary,
                             finalOutput = output,
                             latencyMs = elapsed,
-                            modeSummary = "多模态 (${mmCfg.model})"
+                            modeSummary = "多模态 (${mmCfg.model})",
+                            diagnosticLog = mmOutcome.diagnosticLog,
+                            tokenUsage = mmOutcome.tokenUsage,
+                            modelName = mmOutcome.modelName.ifBlank { mmCfg.model.trim() }
                         )
                     )
                 }
@@ -1004,7 +1018,9 @@ class AiPipelineEngine(
                                     } else {
                                         ExecutionSource.CLOUD
                                     },
-                                    localMetricsSummary = metrics
+                                    localMetricsSummary = metrics,
+                                    tokenUsage = outcome.tokenUsage,
+                                    modelName = outcome.modelName.ifBlank { modelLabel }
                                 )
                             )
                         }
@@ -1079,7 +1095,9 @@ class AiPipelineEngine(
                                 } else {
                                     ExecutionSource.CLOUD
                                 },
-                                localMetricsSummary = metrics
+                                localMetricsSummary = metrics,
+                                tokenUsage = outcome.tokenUsage,
+                                modelName = outcome.modelName.ifBlank { modelLabel }
                             )
                         )
                     },
@@ -1393,7 +1411,10 @@ class AiPipelineEngine(
                         text = chunkOutcomes.mapIndexed { idx, o -> o.text.ifBlank { chunks[idx] } }.joinToString(""),
                         diagnosticLog = chunkOutcomes.mapIndexed { idx, o ->
                             "[Chunk ${idx + 1}/${chunkOutcomes.size}] ${o.diagnosticLog}"
-                        }.joinToString("\n")
+                        }.joinToString("\n"),
+                        tokenUsage = sumTokenUsages(chunkOutcomes.map { it.tokenUsage }),
+                        modelName = chunkOutcomes.firstOrNull { it.modelName.isNotBlank() }?.modelName
+                            ?: llmCfg.model.trim()
                     )
                 } else {
                     val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
@@ -2077,6 +2098,8 @@ class AiPipelineEngine(
             val output: String
             val modelLabel: String
             var diagLog = ""
+            var usageOut: TokenUsage? = null
+            var effectiveModelName = ""
 
             if (plan.text is TextRoute.CloudMultimodalTextFallback) {
                 val outcome = executeCloudMultimodalTextFallback(
@@ -2087,6 +2110,8 @@ class AiPipelineEngine(
                 )
                 output = outcome.text
                 diagLog = outcome.diagnosticLog
+                usageOut = outcome.tokenUsage
+                effectiveModelName = outcome.modelName.ifBlank { settings.multimodalConfig.model.trim() }
                 modelLabel = settings.multimodalConfig.model
             } else {
                 when (settings.pipelineMode) {
@@ -2104,6 +2129,8 @@ class AiPipelineEngine(
                         )
                         output = outcome.text
                         diagLog = outcome.diagnosticLog
+                        usageOut = outcome.tokenUsage
+                        effectiveModelName = outcome.modelName.ifBlank { llmCfg.model.trim() }
                         modelLabel = llmCfg.model
                     }
                     PipelineMode.MULTIMODAL_DIRECT -> {
@@ -2120,6 +2147,8 @@ class AiPipelineEngine(
                                 )
                                 output = outcome.text
                                 diagLog = outcome.diagnosticLog
+                                usageOut = outcome.tokenUsage
+                                effectiveModelName = outcome.modelName.ifBlank { mmCfg.model.trim() }
                             }
                             MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
                                 val outcome = executeLlmChatWithDiagnostics(
@@ -2137,6 +2166,8 @@ class AiPipelineEngine(
                                 )
                                 output = outcome.text
                                 diagLog = outcome.diagnosticLog
+                                usageOut = outcome.tokenUsage
+                                effectiveModelName = outcome.modelName.ifBlank { mmCfg.model.trim() }
                             }
                         }
                         modelLabel = mmCfg.model
@@ -2153,7 +2184,9 @@ class AiPipelineEngine(
                     modeSummary = modelLabel,
                     llmLatencyMs = elapsed,
                     diagnosticLog = diagLog,
-                    executionSource = ExecutionSource.CLOUD
+                    executionSource = ExecutionSource.CLOUD,
+                    tokenUsage = usageOut,
+                    modelName = effectiveModelName.ifBlank { modelLabel.trim() }
                 )
             )
         } catch (e: Exception) {
@@ -2196,6 +2229,8 @@ class AiPipelineEngine(
             val output: String
             val modelLabel: String
             var diagLog = ""
+            var usageOut: TokenUsage? = null
+            var effectiveModelName = ""
 
             if (plan.text is TextRoute.CloudMultimodalTextFallback) {
                 val outcome = executeCloudMultimodalTextFallback(
@@ -2205,6 +2240,8 @@ class AiPipelineEngine(
                 )
                 output = outcome.text
                 diagLog = outcome.diagnosticLog
+                usageOut = outcome.tokenUsage
+                effectiveModelName = outcome.modelName.ifBlank { settings.multimodalConfig.model.trim() }
                 modelLabel = settings.multimodalConfig.model
             } else {
                 when (settings.pipelineMode) {
@@ -2222,6 +2259,8 @@ class AiPipelineEngine(
                         )
                         output = outcome.text
                         diagLog = outcome.diagnosticLog
+                        usageOut = outcome.tokenUsage
+                        effectiveModelName = outcome.modelName.ifBlank { llmCfg.model.trim() }
                         modelLabel = llmCfg.model
                     }
                     PipelineMode.MULTIMODAL_DIRECT -> {
@@ -2237,6 +2276,8 @@ class AiPipelineEngine(
                                 )
                                 output = outcome.text
                                 diagLog = outcome.diagnosticLog
+                                usageOut = outcome.tokenUsage
+                                effectiveModelName = outcome.modelName.ifBlank { mmCfg.model.trim() }
                                 modelLabel = mmCfg.model
                             }
                             MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
@@ -2254,6 +2295,8 @@ class AiPipelineEngine(
                                 )
                                 output = outcome.text
                                 diagLog = outcome.diagnosticLog
+                                usageOut = outcome.tokenUsage
+                                effectiveModelName = outcome.modelName.ifBlank { mmCfg.model.trim() }
                                 modelLabel = mmCfg.model
                             }
                         }
@@ -2270,7 +2313,9 @@ class AiPipelineEngine(
                     modeSummary = "问AI · $modelLabel",
                     llmLatencyMs = elapsed,
                     diagnosticLog = diagLog,
-                    executionSource = ExecutionSource.CLOUD
+                    executionSource = ExecutionSource.CLOUD,
+                    tokenUsage = usageOut,
+                    modelName = effectiveModelName.ifBlank { modelLabel.trim() }
                 )
             )
         } catch (e: Exception) {
@@ -2597,7 +2642,7 @@ class AiPipelineEngine(
             fun promoteSharedThinking(mode: ThinkingMode): ThinkingMode =
                 if (mode == ThinkingMode.DISABLED) ThinkingMode.AUTO else mode
 
-            val rawOutput: String = if (dedicatedCfg != null) {
+            val jevOutcome: ChatCallOutcome = if (dedicatedCfg != null) {
                 if (dedicatedCfg.apiKey.isBlank() && !isLocalEndpoint(dedicatedCfg.baseUrl)) {
                     return@withContext Result.failure(
                         IllegalStateException("请先在「API 配置」中填写 Jev 军师专用模型 API Key")
@@ -2613,7 +2658,7 @@ class AiPipelineEngine(
                     geminiMaxOutputTokens = JEV_GEMINI_MAX_OUTPUT_TOKENS,
                     onThinkingStarted = notifyThinkingStartedOnce,
                     onStreamingTextUpdate = onStreamingTextUpdate
-                ).text
+                )
             } else {
                 when (settings.pipelineMode) {
                     PipelineMode.DUAL_STAGE -> {
@@ -2633,7 +2678,7 @@ class AiPipelineEngine(
                             geminiMaxOutputTokens = JEV_GEMINI_MAX_OUTPUT_TOKENS,
                             onThinkingStarted = notifyThinkingStartedOnce,
                             onStreamingTextUpdate = onStreamingTextUpdate
-                        ).text
+                        )
                     }
                     PipelineMode.MULTIMODAL_DIRECT -> {
                         val mmCfg = settings.multimodalConfig.let {
@@ -2652,7 +2697,7 @@ class AiPipelineEngine(
                                     maxOutputTokens = JEV_GEMINI_MAX_OUTPUT_TOKENS,
                                     onThinkingStarted = notifyThinkingStartedOnce,
                                     onStreamingTextUpdate = onStreamingTextUpdate
-                                ).text
+                                )
                             }
                             MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
                                 executeLlmChatWithDiagnostics(
@@ -2671,12 +2716,13 @@ class AiPipelineEngine(
                                     geminiMaxOutputTokens = JEV_GEMINI_MAX_OUTPUT_TOKENS,
                                     onThinkingStarted = notifyThinkingStartedOnce,
                                     onStreamingTextUpdate = onStreamingTextUpdate
-                                ).text
+                                )
                             }
                         }
                     }
                 }
             }
+            val rawOutput = jevOutcome.text
 
             if (rawOutput.isBlank()) {
                 return@withContext Result.failure(
@@ -2691,6 +2737,10 @@ class AiPipelineEngine(
                 redactionCount = redactionSession?.redactionCount ?: 0,
                 priorWeightFuser = priorWeightFuser,
                 lockVisualOrder = shouldLockOptionOrder()
+            ).copy(
+                tokenUsage = jevOutcome.tokenUsage,
+                modelName = jevOutcome.modelName,
+                executionSource = ExecutionSource.CLOUD
             )
             Result.success(parsed to resolvedBottomLine)
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -2824,7 +2874,8 @@ class AiPipelineEngine(
         settings: AppSettings,
         activeStyle: ToneStyle,
         contextBeforeCursor: String,
-        targetAppName: String = ""
+        targetAppName: String = "",
+        onTokenUsage: ((TokenUsage, String) -> Unit)? = null
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
             val clippedContext = contextBeforeCursor.takeLast(200).trimEnd()
@@ -2884,12 +2935,12 @@ class AiPipelineEngine(
                 targetAppName = targetAppName,
                 dictionary = settings.dictionary
             )
-            val rawOutput: String = if (plan.text is TextRoute.CloudMultimodalTextFallback) {
+            val completionOutcome: ChatCallOutcome = if (plan.text is TextRoute.CloudMultimodalTextFallback) {
                 executeCloudMultimodalTextFallback(
                     settings = settings,
                     sysPrompt = sysPrompt,
                     usrPrompt = usrPrompt
-                ).text
+                )
             } else {
                 when (settings.pipelineMode) {
                     PipelineMode.DUAL_STAGE -> {
@@ -2899,7 +2950,7 @@ class AiPipelineEngine(
                         if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
                             return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
                         }
-                        executeLlmChatWithDiagnostics(llmCfg, sysPrompt, usrPrompt).text
+                        executeLlmChatWithDiagnostics(llmCfg, sysPrompt, usrPrompt)
                     }
                     PipelineMode.MULTIMODAL_DIRECT -> {
                         val mmCfg = settings.multimodalConfig.copy(
@@ -2913,7 +2964,7 @@ class AiPipelineEngine(
                                 callGeminiTextOnlyWithDiagnostics(
                                     config = mmCfg,
                                     fullPrompt = "$sysPrompt\n\n$usrPrompt"
-                                ).text
+                                )
                             }
                             MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
                                 callOpenAiChatCompletionWithDiagnostics(
@@ -2926,14 +2977,17 @@ class AiPipelineEngine(
                                     ),
                                     systemPrompt = sysPrompt,
                                     userPrompt = usrPrompt
-                                ).text
+                                )
                             }
                         }
                     }
                 }
             }
+            completionOutcome.tokenUsage?.takeIf { it.hasUsage }?.let { usage ->
+                runCatching { onTokenUsage?.invoke(usage, completionOutcome.modelName) }
+            }
             val cleaned = com.typefree.ime.ime.predict.AiSentenceCompleter.cleanCompletionOutput(
-                rawOutput = rawOutput,
+                rawOutput = completionOutcome.text,
                 contextBeforeCursor = clippedContext
             )
             Result.success(cleaned)
@@ -3477,6 +3531,8 @@ class AiPipelineEngine(
         val url = EndpointResolver.resolveChatEndpoint(config.baseUrl)
         val includeTemp = !isSamplingTemperatureDeprecated(config.model)
         val useStream = onStreamingTextUpdate != null
+        val streamOptionsKey = "${config.baseUrl.trim().lowercase()}|${config.model.trim().lowercase()}"
+        var useStreamOptions = useStream && streamOptionsKey !in unsupportedStreamOptionsKeys
         val traceLines = mutableListOf<String>()
         traceLines.add("POST $url")
         traceLines.add("Model=${config.model.trim()} | ThinkingMode=${config.thinkingMode.name} | Stream=$useStream")
@@ -3484,7 +3540,8 @@ class AiPipelineEngine(
         fun buildBody(
             withTemp: Boolean,
             thinkingOverride: String?, // null = default applyThinkingControl, "none" = omit
-            enableStream: Boolean = useStream
+            enableStream: Boolean = useStream,
+            includeStreamUsage: Boolean = useStreamOptions
         ): Pair<JsonObject, Boolean> {
             var injectedThinking = false
             val obj = JsonObject().apply {
@@ -3493,6 +3550,11 @@ class AiPipelineEngine(
                     addProperty("temperature", config.temperature)
                 }
                 addProperty("stream", enableStream)
+                if (enableStream && includeStreamUsage) {
+                    add("stream_options", JsonObject().apply {
+                        addProperty("include_usage", true)
+                    })
+                }
                 when (thinkingOverride) {
                     null -> {
                         injectedThinking = applyThinkingControl(
@@ -3575,15 +3637,28 @@ class AiPipelineEngine(
                     }
                     return Triple(resp.code, text, null)
                 }
-                val (streamText, usageDiag) = readOpenAiStreamOrBufferedJson(
+                val streamRead = readOpenAiStreamOrBufferedJson(
                     reader = resp.body?.charStream()?.buffered(),
                     onThinkingStarted = onThinkingStarted,
                     onStreamingTextUpdate = onStreamingTextUpdate
                 )
+                val resolvedUsage = streamRead.tokenUsage
+                    ?: TokenUsage.estimateFromTexts("$systemPrompt\n$userPrompt", streamRead.text)
                 val ms = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
                 traceLines.add("#$attemptNo [$paramTag] -> HTTP ${resp.code} (${ms} ms stream)")
-                usageDiag?.let { traceLines.add(it) }
-                return Triple(resp.code, "", ChatCallOutcome(streamText, traceLines.joinToString("\n")))
+                (streamRead.usageDiagnostic ?: formatTokenUsageDiagnostics(resolvedUsage))?.let {
+                    traceLines.add(it)
+                }
+                return Triple(
+                    resp.code,
+                    "",
+                    ChatCallOutcome(
+                        text = streamRead.text,
+                        diagnosticLog = traceLines.joinToString("\n"),
+                        tokenUsage = resolvedUsage,
+                        modelName = config.model.trim()
+                    )
+                )
             }
         }
 
@@ -3602,8 +3677,32 @@ class AiPipelineEngine(
             )
         }
 
+        // Safe fallback when a legacy OpenAI-compatible proxy rejects `stream_options.include_usage` with HTTP 400
+        if (code == 400 && useStream && useStreamOptions &&
+            (respText.contains("stream_options", ignoreCase = true) || respText.contains("include_usage", ignoreCase = true))
+        ) {
+            unsupportedStreamOptionsKeys.add(streamOptionsKey)
+            useStreamOptions = false
+            val (noOptsBody, _) = buildBody(
+                withTemp = includeTemp,
+                thinkingOverride = null,
+                enableStream = true,
+                includeStreamUsage = false
+            )
+            val noOptsRes = sendOnce(noOptsBody, true)
+            code = noOptsRes.first
+            respText = noOptsRes.second
+            streamOutcome = noOptsRes.third
+        }
+
         if (code == 400 && useStream && respText.contains("stream", ignoreCase = true)) {
-            val (nonStreamBody, _) = buildBody(withTemp = includeTemp, thinkingOverride = null, enableStream = false)
+            useStreamOptions = false
+            val (nonStreamBody, _) = buildBody(
+                withTemp = includeTemp,
+                thinkingOverride = null,
+                enableStream = false,
+                includeStreamUsage = false
+            )
             val nonStreamRes = sendOnce(nonStreamBody, false)
             code = nonStreamRes.first
             respText = nonStreamRes.second
@@ -3668,10 +3767,17 @@ class AiPipelineEngine(
         if (streamOutcome != null) {
             return streamOutcome
         }
-        extractUsageDiagnostics(respText)?.let { traceLines.add(it) }
+        val parsedText = parseOpenAiChatResponse(respText)
+        val parsedUsage = extractOpenAiTokenUsageFromBody(respText)
+            ?: TokenUsage.estimateFromTexts("$systemPrompt\n$userPrompt", parsedText)
+        (extractUsageDiagnostics(respText) ?: formatTokenUsageDiagnostics(parsedUsage))?.let {
+            traceLines.add(it)
+        }
         return ChatCallOutcome(
-            text = parseOpenAiChatResponse(respText),
-            diagnosticLog = traceLines.joinToString("\n")
+            text = parsedText,
+            diagnosticLog = traceLines.joinToString("\n"),
+            tokenUsage = parsedUsage,
+            modelName = config.model.trim()
         )
     }
 
@@ -3681,7 +3787,21 @@ class AiPipelineEngine(
         base64Wav: String,
         mimeType: String = "audio/wav",
         imageJpegBase64: String = ""
-    ): String {
+    ): String = callGeminiMultimodalAudioWithDiagnostics(
+        config = config,
+        prompt = prompt,
+        base64Wav = base64Wav,
+        mimeType = mimeType,
+        imageJpegBase64 = imageJpegBase64
+    ).text
+
+    internal fun callGeminiMultimodalAudioWithDiagnostics(
+        config: MultimodalConfig,
+        prompt: String,
+        base64Wav: String,
+        mimeType: String = "audio/wav",
+        imageJpegBase64: String = ""
+    ): ChatCallOutcome {
         val parts = JsonArray().apply {
             add(JsonObject().apply {
                 addProperty("text", prompt)
@@ -3701,7 +3821,7 @@ class AiPipelineEngine(
                 })
             })
         }
-        return executeGeminiGenerateContentWithDiagnostics(config, parts).text
+        return executeGeminiGenerateContentWithDiagnostics(config, parts)
     }
 
     internal fun callGeminiTextOnly(
@@ -3820,15 +3940,29 @@ class AiPipelineEngine(
                     }
                     return Triple(resp.code, text, null)
                 }
-                val (streamText, usageDiag) = readGeminiStreamOrBufferedJson(
+                val streamRead = readGeminiStreamOrBufferedJson(
                     reader = resp.body?.charStream()?.buffered(),
                     onThinkingStarted = onThinkingStarted,
                     onStreamingTextUpdate = onStreamingTextUpdate
                 )
+                val fallbackPromptText = extractTextFromGeminiParts(parts)
+                val resolvedUsage = streamRead.tokenUsage
+                    ?: TokenUsage.estimateFromTexts(fallbackPromptText, streamRead.text)
                 val ms = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
                 traceLines.add("#$attemptNo [$label] -> HTTP ${resp.code} (${ms} ms stream)")
-                usageDiag?.let { traceLines.add(it) }
-                return Triple(resp.code, "", ChatCallOutcome(streamText, traceLines.joinToString("\n")))
+                (streamRead.usageDiagnostic ?: formatTokenUsageDiagnostics(resolvedUsage))?.let {
+                    traceLines.add(it)
+                }
+                return Triple(
+                    resp.code,
+                    "",
+                    ChatCallOutcome(
+                        text = streamRead.text,
+                        diagnosticLog = traceLines.joinToString("\n"),
+                        tokenUsage = resolvedUsage,
+                        modelName = config.model.trim()
+                    )
+                )
             }
         }
 
@@ -3878,9 +4012,15 @@ class AiPipelineEngine(
         if (streamOutcome != null) {
             return streamOutcome
         }
+        val parsedText = parseGeminiResponse(respText)
+        val parsedUsage = extractGeminiTokenUsageFromBody(respText)
+            ?: TokenUsage.estimateFromTexts(extractTextFromGeminiParts(parts), parsedText)
+        formatTokenUsageDiagnostics(parsedUsage)?.let { traceLines.add(it) }
         return ChatCallOutcome(
-            text = parseGeminiResponse(respText),
-            diagnosticLog = traceLines.joinToString("\n")
+            text = parsedText,
+            diagnosticLog = traceLines.joinToString("\n"),
+            tokenUsage = parsedUsage,
+            modelName = config.model.trim()
         )
     }
 
@@ -3888,7 +4028,13 @@ class AiPipelineEngine(
         config: MultimodalConfig,
         prompt: String,
         base64Wav: String
-    ): String {
+    ): String = callOpenAiMultimodalAudioWithDiagnostics(config, prompt, base64Wav).text
+
+    internal fun callOpenAiMultimodalAudioWithDiagnostics(
+        config: MultimodalConfig,
+        prompt: String,
+        base64Wav: String
+    ): ChatCallOutcome {
         val url = EndpointResolver.resolveChatEndpoint(config.baseUrl)
         val includeTemp = !isSamplingTemperatureDeprecated(config.model)
 
@@ -3962,10 +4108,24 @@ class AiPipelineEngine(
         if (code !in 200..299) {
             throw IOException("多模态接口错误 ($code): ${extractErrorDetail(respText)}")
         }
-        return parseOpenAiChatResponse(respText)
+        val parsedText = parseOpenAiChatResponse(respText)
+        val parsedUsage = extractOpenAiTokenUsageFromBody(respText)
+            ?: TokenUsage.estimateFromTexts(prompt, parsedText)
+        return ChatCallOutcome(
+            text = parsedText,
+            diagnosticLog = formatTokenUsageDiagnostics(parsedUsage).orEmpty(),
+            tokenUsage = parsedUsage,
+            modelName = config.model.trim()
+        )
     }
 
     companion object {
+        internal data class StreamReadOutcome(
+            val text: String,
+            val usageDiagnostic: String?,
+            val tokenUsage: TokenUsage?
+        )
+
         private const val PREWARM_COOLDOWN_MS = 25_000L
         private const val JEV_GEMINI_MAX_OUTPUT_TOKENS = 1536
         private val OPT_CLOSE_TAG_REGEX = Regex("</opt>", RegexOption.IGNORE_CASE)
@@ -3974,6 +4134,8 @@ class AiPipelineEngine(
         private val THINK_BLOCK_REGEX = Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE)
         private val UNCLOSED_THINK_BLOCK_REGEX = Regex("<think>[\\s\\S]*$", RegexOption.IGNORE_CASE)
         private val unsupportedThinkingHintKeys: MutableSet<String> =
+            Collections.newSetFromMap(ConcurrentHashMap())
+        private val unsupportedStreamOptionsKeys: MutableSet<String> =
             Collections.newSetFromMap(ConcurrentHashMap())
         private val preferredThinkingSyntaxCache: ConcurrentHashMap<String, String> =
             ConcurrentHashMap()
@@ -4007,6 +4169,7 @@ class AiPipelineEngine(
 
         fun clearUnsupportedThinkingCache() {
             unsupportedThinkingHintKeys.clear()
+            unsupportedStreamOptionsKeys.clear()
             preferredThinkingSyntaxCache.clear()
             runtimeNonVisionModelKeys.clear()
         }
@@ -4122,6 +4285,137 @@ class AiPipelineEngine(
                 parts.add("temp=$it")
             }
             return if (parts.isEmpty()) "bare" else parts.joinToString(", ")
+        }
+
+        internal fun sumTokenUsages(usages: List<TokenUsage?>): TokenUsage? {
+            var acc: TokenUsage? = null
+            for (u in usages) {
+                if (u != null && u.hasUsage) {
+                    acc = if (acc == null) u else acc + u
+                }
+            }
+            return acc
+        }
+
+        internal fun extractTextFromGeminiParts(parts: JsonArray): String {
+            val sb = StringBuilder()
+            parts.forEach { el ->
+                if (el.isJsonObject) {
+                    el.asJsonObject.get("text")?.takeIf { it.isJsonPrimitive }?.asString?.let {
+                        sb.append(it)
+                    }
+                }
+            }
+            return sb.toString()
+        }
+
+        /**
+         * Parses structured [TokenUsage] from an OpenAI-compatible `usage` JSON object.
+         * Normalizes `completionTokens` to visible output tokens so OpenAI/DeepSeek/Ark responses
+         * (where `completion_tokens` already includes `reasoning_tokens`) are never double-counted.
+         */
+        internal fun extractOpenAiTokenUsage(usage: JsonObject?): TokenUsage? {
+            if (usage == null) return null
+            val promptTok = usage.get("prompt_tokens")?.takeIf { it.isJsonPrimitive }?.asLong?.coerceAtLeast(0L) ?: 0L
+            val cachedTok = (usage.getAsJsonObject("prompt_tokens_details")
+                ?.get("cached_tokens")?.takeIf { it.isJsonPrimitive }?.asLong
+                ?: usage.get("prompt_cache_hit_tokens")?.takeIf { it.isJsonPrimitive }?.asLong
+                ?: 0L).coerceIn(0L, promptTok)
+            val rawCompTok = usage.get("completion_tokens")?.takeIf { it.isJsonPrimitive }?.asLong?.coerceAtLeast(0L) ?: 0L
+            val reasoningTok = (usage.getAsJsonObject("completion_tokens_details")
+                ?.get("reasoning_tokens")?.takeIf { it.isJsonPrimitive }?.asLong
+                ?: 0L).coerceAtLeast(0L)
+            val rawTotal = usage.get("total_tokens")?.takeIf { it.isJsonPrimitive }?.asLong?.coerceAtLeast(0L) ?: 0L
+            if (promptTok == 0L && rawCompTok == 0L && reasoningTok == 0L && rawTotal == 0L) return null
+
+            val visibleComp = when {
+                reasoningTok <= 0L -> rawCompTok
+                rawTotal > 0L && rawTotal >= promptTok + rawCompTok + reasoningTok -> rawCompTok
+                rawCompTok >= reasoningTok -> (rawCompTok - reasoningTok).coerceAtLeast(0L)
+                else -> rawCompTok
+            }
+            val effectiveTotal = if (rawTotal > 0L) {
+                maxOf(rawTotal, promptTok + visibleComp + reasoningTok)
+            } else {
+                promptTok + visibleComp + reasoningTok
+            }
+            return TokenUsage(
+                promptTokens = promptTok,
+                cachedTokens = cachedTok,
+                completionTokens = visibleComp,
+                reasoningTokens = reasoningTok,
+                totalTokensOverride = effectiveTotal,
+                isEstimated = false
+            )
+        }
+
+        internal fun extractOpenAiTokenUsageFromBody(respBody: String): TokenUsage? {
+            return runCatching {
+                val root = JsonParser.parseString(respBody.trim())
+                if (!root.isJsonObject) return@runCatching null
+                extractOpenAiTokenUsage(root.asJsonObject.getAsJsonObject("usage"))
+            }.getOrNull()
+        }
+
+        /**
+         * Parses structured [TokenUsage] from a Google Gemini `usageMetadata` JSON object.
+         * Gemini reports `candidatesTokenCount` and `thoughtsTokenCount` as separate non-overlapping counts.
+         */
+        internal fun extractGeminiTokenUsage(usageMetadata: JsonObject?): TokenUsage? {
+            if (usageMetadata == null) return null
+            val promptTok = usageMetadata.get("promptTokenCount")?.takeIf { it.isJsonPrimitive }?.asLong?.coerceAtLeast(0L) ?: 0L
+            val cachedTok = (usageMetadata.get("cachedContentTokenCount")
+                ?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L).coerceIn(0L, promptTok)
+            val candTok = usageMetadata.get("candidatesTokenCount")?.takeIf { it.isJsonPrimitive }?.asLong?.coerceAtLeast(0L) ?: 0L
+            val thoughtsTok = usageMetadata.get("thoughtsTokenCount")?.takeIf { it.isJsonPrimitive }?.asLong?.coerceAtLeast(0L) ?: 0L
+            val totalTok = usageMetadata.get("totalTokenCount")?.takeIf { it.isJsonPrimitive }?.asLong?.coerceAtLeast(0L) ?: 0L
+            if (promptTok == 0L && candTok == 0L && thoughtsTok == 0L && totalTok == 0L) return null
+            val effectiveTotal = if (totalTok > 0L) {
+                maxOf(totalTok, promptTok + candTok + thoughtsTok)
+            } else {
+                promptTok + candTok + thoughtsTok
+            }
+            return TokenUsage(
+                promptTokens = promptTok,
+                cachedTokens = cachedTok,
+                completionTokens = candTok,
+                reasoningTokens = thoughtsTok,
+                totalTokensOverride = effectiveTotal,
+                isEstimated = false
+            )
+        }
+
+        internal fun extractGeminiTokenUsageFromBody(respBody: String): TokenUsage? {
+            return runCatching {
+                val parsed = JsonParser.parseString(respBody.trim())
+                when {
+                    parsed.isJsonObject -> extractGeminiTokenUsage(parsed.asJsonObject.getAsJsonObject("usageMetadata"))
+                    parsed.isJsonArray -> {
+                        var lastUsage: TokenUsage? = null
+                        parsed.asJsonArray.forEach { el ->
+                            if (el.isJsonObject) {
+                                extractGeminiTokenUsage(el.asJsonObject.getAsJsonObject("usageMetadata"))?.let {
+                                    lastUsage = it
+                                }
+                            }
+                        }
+                        lastUsage
+                    }
+                    else -> null
+                }
+            }.getOrNull()
+        }
+
+        internal fun formatTokenUsageDiagnostics(usage: TokenUsage?, reasoningTextLen: Int = 0): String? {
+            if (usage == null || !usage.hasUsage) return null
+            return buildString {
+                append("Tokens: in=${usage.safePromptTokens}")
+                if (usage.safeCachedTokens > 0L) append(" (cache=${usage.safeCachedTokens})")
+                append(" | out=${usage.visibleOutputTokens}")
+                if (usage.safeReasoningTokens > 0L) append(" | reasoning=${usage.safeReasoningTokens}")
+                if (usage.isEstimated) append(" (est)")
+                if (reasoningTextLen > 0) append(" (reasoning_chars=$reasoningTextLen)")
+            }
         }
 
         internal fun extractUsageDiagnostics(respBody: String): String? {
@@ -4662,7 +4956,7 @@ class AiPipelineEngine(
             reader: java.io.BufferedReader?,
             onThinkingStarted: (() -> Unit)? = null,
             onStreamingTextUpdate: ((String) -> Unit)? = null
-        ): Pair<String, String?> {
+        ): StreamReadOutcome {
             if (reader == null) throw IOException("模型返回结果为空")
             var firstNonBlank: String? = null
             while (true) {
@@ -4679,7 +4973,8 @@ class AiPipelineEngine(
                 val fullBody = if (rest.isEmpty()) firstNonBlank else "$firstNonBlank\n$rest"
                 val parsed = parseOpenAiChatResponse(fullBody)
                 val usage = extractUsageDiagnostics(fullBody)
-                return parsed to usage
+                val tokenUsage = extractOpenAiTokenUsageFromBody(fullBody)
+                return StreamReadOutcome(parsed, usage, tokenUsage)
             }
 
             val rawAcc = StringBuilder()
@@ -4693,7 +4988,7 @@ class AiPipelineEngine(
                     if (data.isNotEmpty() && data != "[DONE]") {
                         runCatching {
                             val obj = JsonParser.parseString(data).asJsonObject
-                            obj.getAsJsonObject("usage")?.let { lastUsageChunk = it }
+                            obj.get("usage")?.takeIf { it.isJsonObject }?.asJsonObject?.let { lastUsageChunk = it }
                             val choices = obj.getAsJsonArray("choices")
                             if (choices != null && choices.size() > 0) {
                                 val delta = choices[0].asJsonObject.getAsJsonObject("delta")
@@ -4734,21 +5029,16 @@ class AiPipelineEngine(
                 }
                 currLine = reader.readLine()
             }
-            val usageDiag = lastUsageChunk?.let { usage ->
-                val p = usage.get("prompt_tokens")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
-                val c = usage.get("completion_tokens")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
-                val r = usage.getAsJsonObject("completion_tokens_details")
-                    ?.get("reasoning_tokens")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
-                "Tokens: in=$p | out=$c | reasoning_tokens=$r"
-            }
-            return cleanModelOutput(rawAcc.toString()) to usageDiag
+            val parsedUsage = extractOpenAiTokenUsage(lastUsageChunk)
+            val usageDiag = formatTokenUsageDiagnostics(parsedUsage)
+            return StreamReadOutcome(cleanModelOutput(rawAcc.toString()), usageDiag, parsedUsage)
         }
 
         internal fun readGeminiStreamOrBufferedJson(
             reader: java.io.BufferedReader?,
             onThinkingStarted: (() -> Unit)? = null,
             onStreamingTextUpdate: ((String) -> Unit)? = null
-        ): Pair<String, String?> {
+        ): StreamReadOutcome {
             if (reader == null) throw IOException("Gemini 未返回候选文本")
             var firstNonBlank: String? = null
             while (true) {
@@ -4763,15 +5053,23 @@ class AiPipelineEngine(
             if (trimmedStart.startsWith("{")) {
                 val rest = reader.readText()
                 val fullBody = if (rest.isEmpty()) firstNonBlank else "$firstNonBlank\n$rest"
-                return parseGeminiResponse(fullBody) to null
+                val parsedUsage = extractGeminiTokenUsageFromBody(fullBody)
+                return StreamReadOutcome(
+                    text = parseGeminiResponse(fullBody),
+                    usageDiagnostic = formatTokenUsageDiagnostics(parsedUsage),
+                    tokenUsage = parsedUsage
+                )
             }
             if (trimmedStart.startsWith("[")) {
                 val rest = reader.readText()
                 val fullBody = if (rest.isEmpty()) firstNonBlank else "$firstNonBlank\n$rest"
                 val arr = JsonParser.parseString(fullBody).asJsonArray
                 val sb = StringBuilder()
+                var lastUsage: TokenUsage? = null
                 arr.forEach { chunk ->
-                    val parts = chunk.asJsonObject.getAsJsonArray("candidates")
+                    val chunkObj = chunk.asJsonObject
+                    extractGeminiTokenUsage(chunkObj.getAsJsonObject("usageMetadata"))?.let { lastUsage = it }
+                    val parts = chunkObj.getAsJsonArray("candidates")
                         ?.get(0)?.asJsonObject
                         ?.getAsJsonObject("content")
                         ?.getAsJsonArray("parts")
@@ -4785,14 +5083,20 @@ class AiPipelineEngine(
                         }
                     }
                 }
-                return cleanModelOutput(sb.toString()) to null
+                return StreamReadOutcome(
+                    text = cleanModelOutput(sb.toString()),
+                    usageDiagnostic = formatTokenUsageDiagnostics(lastUsage),
+                    tokenUsage = lastUsage
+                )
             }
 
             val accText = StringBuilder()
             var thinkingEmitted = false
-            var thoughtsTok = 0
-            var candTok = 0
-            var promptTok = 0
+            var thoughtsTok = 0L
+            var candTok = 0L
+            var promptTok = 0L
+            var cachedTok = 0L
+            var totalTok = 0L
             var currLine: String? = firstNonBlank
             while (currLine != null) {
                 val t = currLine.trim()
@@ -4802,9 +5106,11 @@ class AiPipelineEngine(
                         runCatching {
                             val obj = JsonParser.parseString(data).asJsonObject
                             obj.getAsJsonObject("usageMetadata")?.let { um ->
-                                um.get("promptTokenCount")?.takeIf { it.isJsonPrimitive }?.asInt?.let { promptTok = it }
-                                um.get("thoughtsTokenCount")?.takeIf { it.isJsonPrimitive }?.asInt?.let { thoughtsTok = it }
-                                um.get("candidatesTokenCount")?.takeIf { it.isJsonPrimitive }?.asInt?.let { candTok = it }
+                                um.get("promptTokenCount")?.takeIf { it.isJsonPrimitive }?.asLong?.let { promptTok = it.coerceAtLeast(0L) }
+                                um.get("cachedContentTokenCount")?.takeIf { it.isJsonPrimitive }?.asLong?.let { cachedTok = it.coerceAtLeast(0L) }
+                                um.get("thoughtsTokenCount")?.takeIf { it.isJsonPrimitive }?.asLong?.let { thoughtsTok = it.coerceAtLeast(0L) }
+                                um.get("candidatesTokenCount")?.takeIf { it.isJsonPrimitive }?.asLong?.let { candTok = it.coerceAtLeast(0L) }
+                                um.get("totalTokenCount")?.takeIf { it.isJsonPrimitive }?.asLong?.let { totalTok = it.coerceAtLeast(0L) }
                             }
                             val candidates = obj.getAsJsonArray("candidates")
                             if (candidates != null && candidates.size() > 0) {
@@ -4841,12 +5147,23 @@ class AiPipelineEngine(
                 }
                 currLine = reader.readLine()
             }
-            val usageDiag = if (promptTok > 0 || thoughtsTok > 0 || candTok > 0) {
-                "Tokens: in=$promptTok | thoughts=$thoughtsTok | out=$candTok"
+            val parsedUsage = if (promptTok > 0L || thoughtsTok > 0L || candTok > 0L || totalTok > 0L) {
+                TokenUsage(
+                    promptTokens = promptTok,
+                    cachedTokens = cachedTok.coerceIn(0L, promptTok),
+                    completionTokens = candTok,
+                    reasoningTokens = thoughtsTok,
+                    totalTokensOverride = maxOf(totalTok, promptTok + candTok + thoughtsTok),
+                    isEstimated = false
+                )
             } else {
                 null
             }
-            return cleanModelOutput(accText.toString()) to usageDiag
+            return StreamReadOutcome(
+                text = cleanModelOutput(accText.toString()),
+                usageDiagnostic = formatTokenUsageDiagnostics(parsedUsage),
+                tokenUsage = parsedUsage
+            )
         }
 
         /**

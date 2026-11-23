@@ -72,6 +72,7 @@ import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.data.HistoryRecord
 import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.data.stats.TokenFeatureKeys
 import com.typefree.ime.ime.ImeLogic
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PipelineStage
@@ -169,6 +170,7 @@ class TypeFreeBubbleService :
 
     override fun onDestroy() {
         TypeFreeBubbleController.setBubbleServiceRunning(false)
+        runCatching { repository.dailyStatsStore.flushAsync() }
         activeStreamingSession?.cancel()
         activeStreamingSession = null
         pipelineJob?.cancel()
@@ -470,6 +472,18 @@ class TypeFreeBubbleService :
                             if (isIncognito) {
                                 runCatching { recorded.wavFile.delete() }
                             } else {
+                                if (settings.inputStatsEnabled) {
+                                    repository.dailyStatsStore.recordTokenUsage(
+                                        usage = exec.tokenUsage,
+                                        modelName = exec.modelName,
+                                        featureKey = TokenFeatureKeys.fromVoiceIntent(
+                                            intent = intentMode,
+                                            isMultimodalAudio = settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT
+                                        ),
+                                        enabled = true,
+                                        incognito = false
+                                    )
+                                }
                                 val archivedWav = WavAudioRecorder.archiveWavForHistory(
                                     baseDir = filesDir,
                                     wavFile = recorded.wavFile,
@@ -488,7 +502,8 @@ class TypeFreeBubbleService :
                                         durationMs = recorded.durationMs,
                                         latencyMs = exec.latencyMs,
                                         modeLabel = "胶囊 · ${exec.modeSummary}",
-                                        audioFilePath = archivedWav.absolutePath
+                                        audioFilePath = archivedWav.absolutePath,
+                                        executionSource = exec.executionSource.name
                                     )
                                 )
                             }

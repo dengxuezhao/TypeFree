@@ -43,6 +43,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -59,6 +60,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -84,6 +86,7 @@ import com.typefree.ime.data.HistoryRecord
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.data.stats.TokenFeatureKeys
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PipelineExecutionResult
 import com.typefree.ime.network.PipelineStage
@@ -114,7 +117,8 @@ private data class HistoryDateGroup(
 @Composable
 fun HistoryScreen(
     repository: AppRepository,
-    aiEngine: AiPipelineEngine
+    aiEngine: AiPipelineEngine,
+    initialDateKey: Int? = null
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -126,8 +130,13 @@ fun HistoryScreen(
     var searchQuery by rememberSaveable { mutableStateOf("") }
     // 0 = 全部, 1 = 口述净写 (DICTATE), 2 = 帮我写与编辑 (HELP_ME_WRITE & SPEAK_TO_EDIT), 3 = 实时快译 (TRANSLATE)
     var selectedFilter by rememberSaveable { mutableIntStateOf(0) }
+    var activeDateFilterKey by rememberSaveable(initialDateKey) { mutableStateOf(initialDateKey) }
+    LaunchedEffect(initialDateKey) {
+        activeDateFilterKey = initialDateKey
+    }
 
     var showClearAllConfirm by remember { mutableStateOf(false) }
+    var alsoResetStats by remember { mutableStateOf(false) }
     var retentionMenuExpanded by remember { mutableStateOf(false) }
 
     var activeBusyRecordId by remember { mutableStateOf<String?>(null) }
@@ -147,11 +156,12 @@ fun HistoryScreen(
         history.count { resolveRecordIntent(it) == VoiceIntentMode.TRANSLATE }
     }
 
-    val filteredHistory = remember(history, searchQuery, selectedFilter) {
+    val filteredHistory = remember(history, searchQuery, selectedFilter, activeDateFilterKey) {
         val q = searchQuery.trim()
         history
             .sortedByDescending { it.timestamp }
             .filter { record ->
+                val dateMatch = activeDateFilterKey == null || epochMsToDateKey(record.timestamp) == activeDateFilterKey
                 val mode = resolveRecordIntent(record)
                 val modeMatch = when (selectedFilter) {
                     1 -> mode == VoiceIntentMode.DICTATE
@@ -169,8 +179,12 @@ fun HistoryScreen(
                         record.styleName.contains(q, ignoreCase = true) ||
                         record.translateTargetLanguage.contains(q, ignoreCase = true)
                 }
-                modeMatch && queryMatch
+                dateMatch && modeMatch && queryMatch
             }
+    }
+
+    val filteredStats = remember(filteredHistory) {
+        SetupStatsHelper.computeProductivityStats(filteredHistory)
     }
 
     val groupedHistory = remember(filteredHistory) {
@@ -218,6 +232,15 @@ fun HistoryScreen(
 
             result.fold(
                 onSuccess = { exec ->
+                    if (settings.inputStatsEnabled && !settings.manualIncognitoMode) {
+                        repository.dailyStatsStore.recordTokenUsage(
+                            usage = exec.tokenUsage,
+                            modelName = exec.modelName,
+                            featureKey = TokenFeatureKeys.fromVoiceIntent(mode),
+                            enabled = true,
+                            incognito = false
+                        )
+                    }
                     repolishDialogState = RepolishDialogState(
                         sourceRecord = record,
                         styleUsed = styleToUse,
@@ -269,6 +292,18 @@ fun HistoryScreen(
 
             result.fold(
                 onSuccess = { exec ->
+                    if (settings.inputStatsEnabled && !settings.manualIncognitoMode) {
+                        repository.dailyStatsStore.recordTokenUsage(
+                            usage = exec.tokenUsage,
+                            modelName = exec.modelName,
+                            featureKey = TokenFeatureKeys.fromVoiceIntent(
+                                intent = mode,
+                                isMultimodalAudio = settings.pipelineMode == com.typefree.ime.data.PipelineMode.MULTIMODAL_DIRECT
+                            ),
+                            enabled = true,
+                            incognito = false
+                        )
+                    }
                     repolishDialogState = RepolishDialogState(
                         sourceRecord = record,
                         styleUsed = styleToUse,
@@ -307,7 +342,10 @@ fun HistoryScreen(
 
                 if (history.isNotEmpty()) {
                     OutlinedButton(
-                        onClick = { showClearAllConfirm = true },
+                        onClick = {
+                            alsoResetStats = false
+                            showClearAllConfirm = true
+                        },
                         shape = RoundedCornerShape(10.dp),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                     ) {
@@ -558,6 +596,51 @@ fun HistoryScreen(
                         )
                     }
                 }
+
+                activeDateFilterKey?.let { dateKey ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            onClick = { activeDateFilterKey = null },
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.78f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Text(
+                                    text = "筛选日期：${formatDateKeyLabel(dateKey)} ×",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (filteredHistory.isNotEmpty()) {
+                    val formatChars = SetupStatsHelper.formatCharCount(filteredStats.totalPolishedChars)
+                    val savedMin = SetupStatsHelper.formatSavedMinutes(filteredStats.savedMinutes)
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)
+                    ) {
+                        Text(
+                            text = "当前筛选 ${filteredHistory.size} 条 · 共 $formatChars 字 · 约省 $savedMin 分钟",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                        )
+                    }
+                }
             }
         }
 
@@ -597,6 +680,7 @@ fun HistoryScreen(
                                 onClick = {
                                     searchQuery = ""
                                     selectedFilter = 0
+                                    activeDateFilterKey = null
                                 }
                             ) {
                                 Text("重置搜索与分类筛选")
@@ -659,20 +743,78 @@ fun HistoryScreen(
         }
     }
 
-    // Clear All Confirmation Dialog
+    // Clear All Confirmation Dialog (with optional dual-clear pure numeric stats checkbox)
     if (showClearAllConfirm) {
         AlertDialog(
-            onDismissRequest = { showClearAllConfirm = false },
+            onDismissRequest = {
+                showClearAllConfirm = false
+                alsoResetStats = false
+            },
             title = { Text("清空全部历史记录") },
             text = {
-                Text("确定要从本机永久清空全部 ${history.size} 条历史记录吗？此操作无法撤销。")
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "确定要从本机永久清空全部 ${history.size} 条历史记录吗？此操作无法撤销。",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { alsoResetStats = !alsoResetStats },
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        border = BorderStroke(
+                            1.dp,
+                            if (alsoResetStats) {
+                                MaterialTheme.colorScheme.error.copy(alpha = 0.45f)
+                            } else {
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                            }
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Checkbox(
+                                checked = alsoResetStats,
+                                onCheckedChange = { alsoResetStats = it },
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = "同时清零累计纯数字统计与里程碑",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "按日累计的纯数字统计不包含任何正文内容，默认保留以便继续追踪长期效率与成就。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    lineHeight = 17.sp
+                                )
+                            }
+                        }
+                    }
+                }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        repository.clearHistory()
+                        val resetStats = alsoResetStats
+                        repository.clearHistory(alsoResetStats = resetStats)
                         showClearAllConfirm = false
-                        Toast.makeText(context, "已清空全部历史记录", Toast.LENGTH_SHORT).show()
+                        alsoResetStats = false
+                        Toast.makeText(
+                            context,
+                            if (resetStats) "已清空全部历史记录并清零累计统计" else "已清空全部历史记录（已保留纯数字统计）",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error,
@@ -683,7 +825,12 @@ fun HistoryScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showClearAllConfirm = false }) {
+                TextButton(
+                    onClick = {
+                        showClearAllConfirm = false
+                        alsoResetStats = false
+                    }
+                ) {
                     Text("取消")
                 }
             }
@@ -1316,6 +1463,24 @@ private fun formatClockTime(epochMs: Long): String {
     val zone = ZoneId.systemDefault()
     val dt = Instant.ofEpochMilli(epochMs).atZone(zone)
     return dt.format(DateTimeFormatter.ofPattern("HH:mm", Locale.CHINA))
+}
+
+private fun epochMsToDateKey(epochMs: Long): Int {
+    val date = Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).toLocalDate()
+    return date.year * 10000 + date.monthValue * 100 + date.dayOfMonth
+}
+
+private fun formatDateKeyLabel(dateKey: Int): String {
+    val year = dateKey / 10000
+    val month = (dateKey % 10000) / 100
+    val day = dateKey % 100
+    if (month !in 1..12 || day !in 1..31) return dateKey.toString()
+    val today = LocalDate.now(ZoneId.systemDefault())
+    return if (year == today.year) {
+        "${month}月${day}日"
+    } else {
+        "${year}年${month}月${day}日"
+    }
 }
 
 private fun copyTextToClipboard(

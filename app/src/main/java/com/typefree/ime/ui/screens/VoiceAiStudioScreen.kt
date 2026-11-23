@@ -56,8 +56,10 @@ import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.OfflineRouteBridge
 import com.typefree.ime.data.PipelineMode
+import com.typefree.ime.data.stats.StatsTimeRange
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.ui.AppDestinations
+import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
 import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
@@ -374,6 +376,14 @@ private fun AiCopilotAndPrivacyCard(
 ) {
     var showChatContextDisclosureDialog by remember { mutableStateOf(false) }
     var showJevMemoryDialog by remember { mutableStateOf(false) }
+    val statsRev by repository.dailyStatsRevision.collectAsState()
+    val jevInsights = remember(settings, statsRev, showJevMemoryDialog) {
+        repository.computeInsightsSnapshot(StatsTimeRange.ALL)
+    }
+    val activeDnaCount = remember(jevInsights.jevDnaItems) {
+        jevInsights.jevDnaItems.count { it.isActive }
+    }
+    val jevSessionCount = jevInsights.jevSessionCount
     val jevRoutePlan = remember(settings, registrySnapshot) {
         OfflineRouteBridge.resolvePlan(
             task = AiTask.JEV_COPILOT,
@@ -530,6 +540,60 @@ private fun AiCopilotAndPrivacyCard(
 
             AnimatedVisibility(visible = settings.jevMemoryEnabled) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val hasLearnedSignals = activeDnaCount > 0 || jevSessionCount > 0
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = ContinuousRoundedCornerShape(12.dp),
+                        color = if (hasLearnedSignals) {
+                            TypeFreeEmerald.copy(alpha = 0.10f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.50f)
+                        },
+                        border = BorderStroke(
+                            1.dp,
+                            if (hasLearnedSignals) {
+                                TypeFreeEmerald.copy(alpha = 0.34f)
+                            } else {
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.30f)
+                            }
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 11.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(7.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (hasLearnedSignals) {
+                                            TypeFreeEmerald
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                                        }
+                                    )
+                            )
+                            Text(
+                                text = if (hasLearnedSignals) {
+                                    "已习得 $activeDnaCount 条语体习惯 · $jevSessionCount 个会话档案"
+                                } else {
+                                    "正在端侧学习你的语体习惯"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (hasLearnedSignals) {
+                                    TypeFreeEmerald
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                    }
+
                     PreferenceSwitchRow(
                         title = "保存首尾字掩码提示（如 张*三）",
                         subtitle = "仅用于在管理列表中区分会话，关闭后只保留不可逆哈希",

@@ -15,6 +15,8 @@ import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.HistoryRecord
 import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.data.stats.TokenFeatureKeys
+import com.typefree.ime.data.stats.TokenUsage
 import com.typefree.ime.ime.jev.ChatTopology
 import com.typefree.ime.ime.jev.InputConnectionDraftTarget
 import com.typefree.ime.ime.jev.JevDomainProfile
@@ -79,6 +81,7 @@ class VoiceController(
     private val jevDraftSession = JevDraftSession()
     private var activeJevAnchor: AnchorResolution = AnchorResolution.EphemeralUnanchored("unknown")
     private var activeJevInitialPrefix: String = ""
+    private var currentEditorFieldId: Int = 0
     private val jevFeedbackMonitor = JevDraftFeedbackMonitor(
         onLearningEvent = { event ->
             val stateSnap = host.stateFlow.value
@@ -103,6 +106,15 @@ class VoiceController(
                     featureObservations = event.featureObservations,
                     includeMaskedHint = event.includeMaskedHint
                 )
+                if (settingsSnap.inputStatsEnabled &&
+                    !settingsSnap.manualIncognitoMode &&
+                    !stateSnap.isIncognitoMode &&
+                    !ImeLogic.isPasswordEditorInputType(stateSnap.currentInputType)
+                ) {
+                    host.repository.dailyStatsStore.recordJevAdopt(
+                        appName = stateSnap.targetAppName
+                    )
+                }
             }
         },
         onDirectSendDuringPreview = {
@@ -369,7 +381,7 @@ class VoiceController(
                     activeStyleFeatures = activeFeatures,
                     includeMaskedHint = host.repository.settings.value.jevMaskTitleHintEnabled,
                     targetPackage = stateSnap.targetPackage,
-                    fieldId = 0,
+                    fieldId = host.currentEditorFieldId().takeIf { it != 0 } ?: currentEditorFieldId,
                     startedAtMs = System.currentTimeMillis()
                 )
             )
@@ -972,6 +984,11 @@ class VoiceController(
 
         result.fold(
             onSuccess = { (jevResult, resolvedBottomLine) ->
+                recordTokenUsageIfAllowed(
+                    usage = jevResult.tokenUsage,
+                    modelName = jevResult.modelName,
+                    featureKey = TokenFeatureKeys.JEV_COPILOT
+                )
                 host.performHaptic(strong = false)
                 host.stateFlow.update { curr ->
                     val prevSelectedReply = curr.jevCopilotResult?.options
@@ -2079,7 +2096,7 @@ class VoiceController(
                         host.stateFlow.update {
                             it.copy(
                                 voicePhase = VoicePhase.SuccessToast(
-                                    preview = ImeLogic.formatSelectionPreview(finalOutput, 24),
+                                    preview = formatSuccessToastPreview(finalOutput),
                                     latencyMs = displayLatencyMs
                                 ),
                                 voiceSubPanel = VoiceSubPanel.NONE,
@@ -2102,10 +2119,21 @@ class VoiceController(
                         )
                     }
                 }
-                val isIncognito = host.stateFlow.value.isIncognitoMode || settings.manualIncognitoMode
+                val isIncognito = host.stateFlow.value.isIncognitoMode ||
+                    settings.manualIncognitoMode ||
+                    ImeLogic.isPasswordEditorInputType(host.stateFlow.value.currentInputType)
                 if (isIncognito) {
                     runCatching { wavFile.delete() }
                 } else {
+                    recordTokenUsageIfAllowed(
+                        usage = exec.tokenUsage,
+                        modelName = exec.modelName,
+                        featureKey = TokenFeatureKeys.fromVoiceIntent(
+                            intent = resolvedIntent,
+                            isMultimodalAudio = settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT
+                        ),
+                        settings = settings
+                    )
                     val historyAudioFile = host.archiveWavForHistory(wavFile, settings.historyRetention)
                     host.repository.addHistory(
                         HistoryRecord(
@@ -2190,7 +2218,16 @@ class VoiceController(
                         overwrittenSelection = liveSelected,
                         latencyMs = exec.latencyMs
                     )
-                    if (!host.stateFlow.value.isIncognitoMode) {
+                    val isQuickEditIncognito = host.stateFlow.value.isIncognitoMode ||
+                        settings.manualIncognitoMode ||
+                        ImeLogic.isPasswordEditorInputType(host.stateFlow.value.currentInputType)
+                    if (!isQuickEditIncognito) {
+                        recordTokenUsageIfAllowed(
+                            usage = exec.tokenUsage,
+                            modelName = exec.modelName,
+                            featureKey = TokenFeatureKeys.SPEAK_TO_EDIT,
+                            settings = settings
+                        )
                         host.repository.addHistory(
                             HistoryRecord(
                                 targetAppName = targetAppName,
@@ -2272,7 +2309,16 @@ class VoiceController(
                         overwrittenSelection = existingSel,
                         latencyMs = exec.latencyMs
                     )
-                    if (!host.stateFlow.value.isIncognitoMode) {
+                    val isPresetIncognito = host.stateFlow.value.isIncognitoMode ||
+                        settings.manualIncognitoMode ||
+                        ImeLogic.isPasswordEditorInputType(host.stateFlow.value.currentInputType)
+                    if (!isPresetIncognito) {
+                        recordTokenUsageIfAllowed(
+                            usage = exec.tokenUsage,
+                            modelName = exec.modelName,
+                            featureKey = TokenFeatureKeys.HELP_ME_WRITE,
+                            settings = settings
+                        )
                         host.repository.addHistory(
                             HistoryRecord(
                                 targetAppName = targetAppName,
@@ -2391,7 +2437,7 @@ class VoiceController(
         host.stateFlow.update {
             it.copy(
                 voicePhase = VoicePhase.SuccessToast(
-                    preview = ImeLogic.formatSelectionPreview(outcome.finalCommittedText.ifBlank { finalText }, 24),
+                    preview = formatSuccessToastPreview(outcome.finalCommittedText.ifBlank { finalText }),
                     latencyMs = latencyMs
                 ),
                 voiceSubPanel = VoiceSubPanel.NONE,
@@ -2439,7 +2485,7 @@ class VoiceController(
         host.stateFlow.update {
             it.copy(
                 voicePhase = VoicePhase.SuccessToast(
-                    preview = ImeLogic.formatSelectionPreview(finalText, 24),
+                    preview = formatSuccessToastPreview(finalText),
                     latencyMs = latencyMs
                 ),
                 voiceSubPanel = VoiceSubPanel.NONE,
@@ -2529,6 +2575,12 @@ class VoiceController(
 
             transformResult.fold(
                 onSuccess = { exec ->
+                    recordTokenUsageIfAllowed(
+                        usage = exec.tokenUsage,
+                        modelName = exec.modelName,
+                        featureKey = TokenFeatureKeys.HELP_ME_WRITE,
+                        settings = settings
+                    )
                     val finalOutput = exec.finalOutput
                     replaceFullEditorTextSafely(finalOutput = finalOutput, originalText = currentDraft)
                     host.stateFlow.update {
@@ -2603,6 +2655,12 @@ class VoiceController(
             )
             result.fold(
                 onSuccess = { exec ->
+                    recordTokenUsageIfAllowed(
+                        usage = exec.tokenUsage,
+                        modelName = exec.modelName,
+                        featureKey = TokenFeatureKeys.ASK_AI,
+                        settings = settings
+                    )
                     host.stateFlow.update {
                         it.copy(
                             isAskAiLoading = false,
@@ -2752,6 +2810,12 @@ class VoiceController(
 
             transformResult.fold(
                 onSuccess = { exec ->
+                    recordTokenUsageIfAllowed(
+                        usage = exec.tokenUsage,
+                        modelName = exec.modelName,
+                        featureKey = TokenFeatureKeys.ASK_AI,
+                        settings = settings
+                    )
                     val finalOutput = exec.finalOutput
                     val ic = host.currentInputConnection()
                     val currentFull = host.readFullEditorTextSafely().ifEmpty { fullEditorText }
@@ -2802,7 +2866,10 @@ class VoiceController(
                         host.showQuickActionToast("✓ AI 已填入答案 · 可点 ↶ 撤回")
                     }
 
-                    if (!host.stateFlow.value.isIncognitoMode) {
+                    val isAskAiIncognito = host.stateFlow.value.isIncognitoMode ||
+                        settings.manualIncognitoMode ||
+                        ImeLogic.isPasswordEditorInputType(host.stateFlow.value.currentInputType)
+                    if (!isAskAiIncognito) {
                         host.repository.addHistory(
                             HistoryRecord(
                                 targetAppName = targetAppName,
@@ -2855,9 +2922,18 @@ class VoiceController(
     }
 
     fun onEditorTargetChanged(pkg: String, fieldId: Int, restarting: Boolean) {
+        currentEditorFieldId = fieldId
         if (!restarting) {
             jevFeedbackMonitor.onInputTargetChanged(pkg, fieldId)
         }
+    }
+
+    fun isJevFeedbackActive(): Boolean {
+        return jevFeedbackMonitor.phase != JevDraftFeedbackMonitor.MonitorPhase.IDLE
+    }
+
+    fun shouldPollEditorTextForJev(isComposing: Boolean): Boolean {
+        return jevFeedbackMonitor.shouldPollSnapshotNow(isComposing)
     }
 
     fun onSelectionUpdated(
@@ -2929,9 +3005,39 @@ class VoiceController(
         toastDismissJob?.cancel()
     }
 
+    private fun recordTokenUsageIfAllowed(
+        usage: TokenUsage?,
+        modelName: String,
+        featureKey: String,
+        settings: AppSettings = host.repository.settings.value
+    ) {
+        if (usage == null || !usage.hasUsage) return
+        val stateSnap = host.stateFlow.value
+        val isIncognito = stateSnap.isIncognitoMode ||
+            settings.manualIncognitoMode ||
+            ImeLogic.isPasswordEditorInputType(stateSnap.currentInputType)
+        if (!isIncognito && settings.inputStatsEnabled) {
+            host.repository.dailyStatsStore.recordTokenUsage(
+                usage = usage,
+                modelName = modelName,
+                featureKey = featureKey,
+                enabled = true,
+                incognito = false
+            )
+        }
+    }
+
     companion object {
         const val HANDS_FREE_SILENCE_AUTO_STOP_MS: Long = 8_000L
         const val HANDS_FREE_SILENCE_AMPLITUDE_THRESHOLD: Float = 0.12f
+
+        internal fun formatSuccessToastPreview(finalText: String): String {
+            val base = ImeLogic.formatSelectionPreview(finalText, 24)
+            if (finalText.length < 80) return base
+            val savedMinutes = ((finalText.length / 42.0) * 0.72).coerceAtLeast(0.5)
+            val suffix = String.format(java.util.Locale.US, "· 约省 %.1f 分钟", savedMinutes)
+            return if (base.isNotEmpty()) "$base $suffix" else suffix
+        }
 
         fun isSilentAmplitudeFrame(
             amplitudes: List<Float>,

@@ -53,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.core.ime.profile.SchemaArchetype
@@ -63,12 +64,15 @@ import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.KeycapBadgeMode
+import com.typefree.ime.data.stats.SchemeStatsKeys
+import com.typefree.ime.data.stats.StatsTimeRange
 import com.typefree.ime.ime.KeyboardMetrics
 import com.typefree.ime.ime.engine.RimeDataManager
 import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.ime.flypy.FlypyDictionary
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.components.CompletionBackendHint
+import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
 import com.typefree.ime.ui.theme.TypeFreeAmber
@@ -1055,6 +1059,20 @@ private fun KeyboardDictionaryPane(
     val scope = rememberCoroutineScope()
     val rimeDataManager = remember { TypeFreeApp.instance.rimeDataManager }
     val flypyDict by TypeFreeApp.instance.flypyDictionary.collectAsState()
+    val statsRev by repository.dailyStatsRevision.collectAsState()
+    val allSnapshot = remember(settings, statsRev) {
+        repository.computeInsightsSnapshot(StatsTimeRange.ALL)
+    }
+    val activeSchemeKey = remember(settings.inputScheme) {
+        SchemeStatsKeys.fromInputScheme(settings.inputScheme, isChineseMode = true)
+    }
+    val mainSchemeStat = remember(allSnapshot.schemeShares, activeSchemeKey) {
+        allSnapshot.schemeShares.firstOrNull { it.key == activeSchemeKey && it.chars > 0 }
+            ?: allSnapshot.schemeShares.maxByOrNull { it.chars }
+    }
+    val primarySchemeLabel = mainSchemeStat?.displayName ?: SchemeStatsKeys.displayNameForKey(activeSchemeKey)
+    val primarySchemeChars = mainSchemeStat?.chars ?: allSnapshot.keyChars
+    val personalPredictionCount = allSnapshot.personalBigramCount + allSnapshot.personalTrigramCount
     val isCustomActive = remember(flypyDict) { FlypyDictionary.isCustomDictionaryActive(context) }
     val isDeployingRime = rimeDeployState is RimeDeploymentState.Deploying
     val readyRimeState = rimeDeployState as? RimeDeploymentState.Ready
@@ -1095,6 +1113,61 @@ private fun KeyboardDictionaryPane(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // 轻量级端侧输入资产卡（主方案累计字数 / 私人 L2 联想记忆 / 短语省字）
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = ContinuousRoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.52f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "本机输入资产",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "端侧纯数字累计",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    KeyboardAssetMetricTile(
+                        label = "${primarySchemeLabel}累计",
+                        value = SetupStatsHelper.formatCharCount(primarySchemeChars),
+                        unit = "字",
+                        modifier = Modifier.weight(1f)
+                    )
+                    KeyboardAssetMetricTile(
+                        label = "L2 私人联想",
+                        value = SetupStatsHelper.formatCharCount(personalPredictionCount),
+                        unit = "条",
+                        modifier = Modifier.weight(1f)
+                    )
+                    KeyboardAssetMetricTile(
+                        label = "短语省字",
+                        value = SetupStatsHelper.formatCharCount(allSnapshot.snippetSavedChars),
+                        unit = "字",
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+
         if (isolationKind != SchemeIsolationKind.PINYIN_OR_DOUBLE_PINYIN) {
             // 小鹤 / 码表方案：精简后的 CodetableAdvancedManagementCard + ZIP 导入 & 兼容 TSV 导入
             Card(
@@ -1568,5 +1641,48 @@ private fun KeyboardDictionaryPane(
             },
             dismissButton = { TextButton(onClick = { showRestoreConfirmDialog = false }) { Text("取消") } }
         )
+    }
+}
+
+@Composable
+private fun KeyboardAssetMetricTile(
+    label: String,
+    value: String,
+    unit: String,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.52f)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1
+                )
+                Spacer(modifier = Modifier.width(3.dp))
+                Text(
+                    text = unit,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 1.dp)
+                )
+            }
+        }
     }
 }

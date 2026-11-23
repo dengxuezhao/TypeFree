@@ -8,6 +8,15 @@ import com.google.gson.GsonBuilder
 import com.google.gson.reflect.TypeToken
 import com.typefree.core.offline.OfflineMode
 import com.typefree.core.offline.PendingOfflineRestore
+import com.typefree.ime.data.stats.DailyStatsRecord
+import com.typefree.ime.data.stats.DailyStatsStore
+import com.typefree.ime.data.stats.InMemoryDailyStatsBackend
+import com.typefree.ime.data.stats.InsightsAggregator
+import com.typefree.ime.data.stats.InsightsSnapshot
+import com.typefree.ime.data.stats.PredictionBackupArchive
+import com.typefree.ime.data.stats.SqliteDailyStatsBackend
+import com.typefree.ime.data.stats.StatsTimeRange
+import com.typefree.ime.data.stats.TokenUsageSnapshot
 import com.typefree.ime.ime.jev.memory.AnchorSaltProvider
 import com.typefree.ime.ime.jev.memory.AndroidKeystoreSaltProvider
 import com.typefree.ime.ime.jev.memory.ConversationAnchorExtractor
@@ -15,6 +24,7 @@ import com.typefree.ime.ime.jev.memory.InMemoryAnchorSaltProvider
 import com.typefree.ime.ime.jev.memory.InMemoryJevMemoryBackend
 import com.typefree.ime.ime.jev.memory.JevMemoryRepository
 import com.typefree.ime.ime.jev.memory.SqliteJevMemoryBackend
+import com.typefree.ime.ime.predict.PredictionStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -67,6 +77,26 @@ class AppRepository(
         pruneHistoryByRetention(loadHistoryInternal(), _settings.value.historyRetention)
     )
     val history: StateFlow<List<HistoryRecord>> = _history.asStateFlow()
+
+    val dailyStatsStore: DailyStatsStore = DailyStatsStore(
+        backend = if (appContext != null) {
+            SqliteDailyStatsBackend(appContext)
+        } else {
+            InMemoryDailyStatsBackend()
+        }
+    ).also { store ->
+        store.isStatsEnabled = _settings.value.inputStatsEnabled
+        store.isIncognitoMode = _settings.value.manualIncognitoMode
+        val alreadyBackfilled = publicStore.getBoolean(KEY_DAILY_STATS_BACKFILLED, false)
+        if (!alreadyBackfilled && _history.value.isNotEmpty()) {
+            store.backfillFromHistoryIfEmpty(_history.value)
+            publicStore.putBoolean(KEY_DAILY_STATS_BACKFILLED, true)
+        }
+    }
+
+    val dailyStatsRevision: StateFlow<Int> get() = dailyStatsStore.revision
+
+    internal val fallbackPredictionStore: PredictionStore = PredictionStore.inMemory()
 
     private val _clipboardItems = MutableStateFlow(loadClipboardInternal())
     val clipboardItems: StateFlow<List<ClipboardEntry>> = _clipboardItems.asStateFlow()
@@ -340,6 +370,11 @@ class AppRepository(
             } else {
                 false
             }
+            val resolvedInputStatsEnabled = if (raw.contains("\"inputStatsEnabled\"")) {
+                parsed.inputStatsEnabled
+            } else {
+                true
+            }
             val safeReplyAttitudes = (parsed.replyAttitudePresets ?: emptyList())
                 .mapNotNull { item ->
                     val lbl = (item.label ?: "").trim()
@@ -468,7 +503,7 @@ class AppRepository(
                 pendingOfflineRestore = safePendingOfflineRestore,
                 jevUseDedicatedModel = resolvedJevUseDedicatedModel,
                 jevLlmConfig = safeJevLlm,
-                themePreference = parsed.themePreference ?: ThemePreference.LIGHT,
+                themePreference = parsed.themePreference ?: ThemePreference.SYSTEM,
                 flypyEnabled = resolvedFlypyEnabled,
                 flypyCommaPeriodQuickSelect = resolvedCommaPeriodQuickSelect,
                 rememberLastKeyboardMode = resolvedRememberLastKeyboard,
@@ -510,6 +545,7 @@ class AppRepository(
                 jevMemoryEnabled = resolvedJevMemoryEnabled,
                 jevMaskTitleHintEnabled = resolvedJevMaskTitleHintEnabled,
                 manualIncognitoMode = resolvedManualIncognitoMode,
+                inputStatsEnabled = resolvedInputStatsEnabled,
                 replyAttitudePresets = safeReplyAttitudes,
                 providerVault = safeVault,
                 snippets = safeSnippets,
@@ -639,6 +675,8 @@ class AppRepository(
         val prevRetention = _settings.value.historyRetention
         val updated = transform(_settings.value)
         _settings.value = updated
+        dailyStatsStore.isStatsEnabled = updated.inputStatsEnabled
+        dailyStatsStore.isIncognitoMode = updated.manualIncognitoMode
         secretVault.saveSecretsFromSettings(updated)
         val sanitized = secretVault.stripSecretsForPublicPersistence(updated)
         publicStore.putString(KEY_SETTINGS, gson.toJson(sanitized))
@@ -650,6 +688,167 @@ class AppRepository(
                 publicStore.putString(KEY_HISTORY, gson.toJson(pruned))
             }
         }
+    }
+
+    fun setInputStatsEnabled(enabled: Boolean) {
+        dailyStatsStore.isStatsEnabled = enabled
+        updateSettings { it.copy(inputStatsEnabled = enabled) }
+    }
+
+    fun resetDailyStats() {
+        publicStore.putBoolean(KEY_DAILY_STATS_BACKFILLED, true)
+        dailyStatsStore.resetAll()
+    }
+
+    fun computeInsightsSnapshot(
+        range: StatsTimeRange,
+        nowMs: Long = System.currentTimeMillis()
+    ): InsightsSnapshot {
+        val settingsSnap = _settings.value
+        val historySnap = _history.value
+        val dailyRecords = dailyStatsStore.listAllRecords()
+        val jevSessions = runCatching { jevMemoryRepository.listAllSessionsSorted() }.getOrDefault(emptyList())
+        val jevBuckets = runCatching { jevMemoryRepository.listAllBuckets() }.getOrDefault(emptyList())
+        val (bigramCount, trigramCount, topChains) = appContext?.let { ctx ->
+            PredictionStore.readTopWordChainsSummary(ctx, limit = 8)
+        } ?: Triple(
+            fallbackPredictionStore.totalBigramCount(),
+            fallbackPredictionStore.totalTrigramCount(),
+            fallbackPredictionStore.listTopBigrams(8).map { "${it.prevWord} → ${it.nextWord}" }
+        )
+        return InsightsAggregator.buildSnapshot(
+            range = range,
+            dailyRecords = dailyRecords,
+            history = historySnap,
+            settings = settingsSnap,
+            jevSessions = jevSessions,
+            jevBuckets = jevBuckets,
+            personalBigramCount = bigramCount,
+            personalTrigramCount = trigramCount,
+            topWordChains = topChains,
+            dbSizeBytes = dailyStatsStore.dbSizeBytes(),
+            nowMs = nowMs
+        )
+    }
+
+    fun computeTokenUsageSnapshot(
+        range: StatsTimeRange,
+        nowMs: Long = System.currentTimeMillis()
+    ): TokenUsageSnapshot {
+        val dailyRecords = dailyStatsStore.listAllRecords()
+        return InsightsAggregator.buildTokenUsageSnapshot(
+            range = range,
+            dailyRecords = dailyRecords,
+            nowMs = nowMs
+        )
+    }
+
+    /**
+     * Losslessly merges imported [HistoryRecord] items into local history without duplicating existing
+     * entries (deduped by `id` and `(timestamp, polishedText)`), stripping cross-device `audioFilePath`.
+     * Returns the number of newly added unique history records.
+     */
+    fun mergeImportedHistory(imported: List<HistoryRecord>): Int {
+        if (imported.isEmpty()) return 0
+        val existing = _history.value
+        val existingIds = HashSet<String>(existing.size * 2)
+        val existingSignatures = HashSet<Pair<Long, String>>(existing.size * 2)
+        for (item in existing) {
+            if (item.id.isNotBlank()) existingIds.add(item.id)
+            existingSignatures.add(item.timestamp to item.polishedText.trim())
+        }
+
+        val added = ArrayList<HistoryRecord>()
+        for (raw in imported) {
+            val cleanPolished = raw.polishedText.trim()
+            if (cleanPolished.isEmpty()) continue
+            val cleanId = raw.id.ifBlank { UUID.randomUUID().toString() }
+            val sig = raw.timestamp to cleanPolished
+            if (cleanId in existingIds || sig in existingSignatures) continue
+            existingIds.add(cleanId)
+            existingSignatures.add(sig)
+            added.add(
+                raw.copy(
+                    id = cleanId,
+                    polishedText = cleanPolished,
+                    audioFilePath = "",
+                    translateTargetLanguage = raw.translateTargetLanguage,
+                    executionSource = raw.executionSource
+                )
+            )
+        }
+        if (added.isEmpty()) return 0
+
+        val retention = _settings.value.historyRetention
+        val effectiveRetention = if (retention == HistoryRetention.NEVER) HistoryRetention.FOREVER else retention
+        val merged = pruneHistoryByRetention(
+            (existing + added).sortedByDescending { it.timestamp },
+            effectiveRetention
+        ).take(MAX_HISTORY_ITEMS)
+        _history.value = merged
+        publicStore.putString(KEY_HISTORY, gson.toJson(merged))
+        return added.size
+    }
+
+    fun mergeImportedDailyStats(records: List<DailyStatsRecord>): Int {
+        if (records.isEmpty()) return 0
+        publicStore.putBoolean(KEY_DAILY_STATS_BACKFILLED, true)
+        return dailyStatsStore.mergeImportedRecords(records)
+    }
+
+    /**
+     * Losslessly merges imported pinned clipboard items into local clipboard history,
+     * preserving all existing entries and avoiding duplicates by trimmed text.
+     * Returns the number of newly added or newly pinned items.
+     */
+    fun mergeImportedPinnedClipboard(items: List<ClipboardEntry>): Int {
+        if (items.isEmpty()) return 0
+        val current = _clipboardItems.value.toMutableList()
+        var mergedCount = 0
+        for (raw in items) {
+            val cleanText = raw.text.trim()
+            if (cleanText.isEmpty()) continue
+            val capped = if (cleanText.length > MAX_CLIP_CHARS) cleanText.take(MAX_CLIP_CHARS) else cleanText
+            val safeTs = if (raw.timestamp > 0L) raw.timestamp else System.currentTimeMillis()
+            val idx = current.indexOfFirst { it.text == capped }
+            if (idx >= 0) {
+                val prev = current[idx]
+                if (!prev.isPinned || safeTs > prev.timestamp) {
+                    current[idx] = prev.copy(
+                        isPinned = true,
+                        timestamp = maxOf(prev.timestamp, safeTs)
+                    )
+                    if (!prev.isPinned) mergedCount++
+                }
+            } else {
+                current.add(
+                    ClipboardEntry(
+                        id = raw.id.ifBlank { UUID.randomUUID().toString() },
+                        text = capped,
+                        timestamp = safeTs,
+                        isPinned = true
+                    )
+                )
+                mergedCount++
+            }
+        }
+        if (mergedCount > 0 || current.size != _clipboardItems.value.size) {
+            saveClipboardList(current)
+        }
+        return mergedCount
+    }
+
+    fun exportPredictionsArchive(): PredictionBackupArchive {
+        return appContext?.let { ctx ->
+            PredictionStore.exportBackupArchive(ctx)
+        } ?: fallbackPredictionStore.exportArchive()
+    }
+
+    fun importAndMergePredictions(archive: PredictionBackupArchive): Pair<Int, Int> {
+        if (archive.isEmpty) return 0 to 0
+        return appContext?.let { ctx ->
+            PredictionStore.importAndMergeArchive(ctx, archive)
+        } ?: fallbackPredictionStore.mergeArchive(archive)
     }
 
     fun updateOfflineConfig(transform: (OfflineModelConfig) -> OfflineModelConfig) {
@@ -666,7 +865,11 @@ class AppRepository(
     }
 
     fun addHistory(record: HistoryRecord) {
-        val retention = _settings.value.historyRetention
+        val currSettings = _settings.value
+        if (currSettings.inputStatsEnabled && !currSettings.manualIncognitoMode) {
+            dailyStatsStore.recordVoiceAndAi(record)
+        }
+        val retention = currSettings.historyRetention
         if (retention == HistoryRetention.NEVER) {
             return
         }
@@ -682,9 +885,12 @@ class AppRepository(
         publicStore.putString(KEY_HISTORY, gson.toJson(updated))
     }
 
-    fun clearHistory() {
+    fun clearHistory(alsoResetStats: Boolean = false) {
         _history.value = emptyList()
         publicStore.remove(KEY_HISTORY)
+        if (alsoResetStats) {
+            resetDailyStats()
+        }
     }
 
     fun deleteDictionaryEntries(ids: Set<String>) {
@@ -812,6 +1018,7 @@ class AppRepository(
         private const val KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT = "migrated_v30_live_write_default"
         internal const val KEY_MIGRATED_V340_COMPACT_4ROW_AND_LIFT = "mig_v340_compact_4row_and_lift"
         internal const val KEY_MIGRATED_V360_XIAOHE_SCHEME = "mig_v360_xiaohe_scheme"
+        internal const val KEY_DAILY_STATS_BACKFILLED = "daily_stats_backfilled_v1"
         private const val MAX_HISTORY_ITEMS = 200
         private const val MAX_CLIPBOARD_UNPINNED = 200
         private const val MAX_CLIP_CHARS = 4000

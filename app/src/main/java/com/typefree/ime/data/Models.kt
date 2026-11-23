@@ -465,7 +465,7 @@ data class AppSettings(
     val multimodalConfig: MultimodalConfig = MultimodalConfig(),
     val offlineConfig: OfflineModelConfig = OfflineModelConfig(),
     val pendingOfflineRestore: PendingOfflineRestore? = null,
-    val themePreference: ThemePreference = ThemePreference.LIGHT,
+    val themePreference: ThemePreference = ThemePreference.SYSTEM,
     val appAwareToneEnabled: Boolean = true,
     val selectedManualStyleId: String = "auto", // "auto" 表示开启应用感知自动匹配，否则固定某风格
     val hapticFeedback: Boolean = true,
@@ -523,6 +523,7 @@ data class AppSettings(
     val jevMemoryEnabled: Boolean = true, // 启用「✦ Jev 军师」端侧关系记忆与语体习惯自学习
     val jevMaskTitleHintEnabled: Boolean = true, // 本机设置页展示脱敏会话缩写提示（如 大*群）
     val manualIncognitoMode: Boolean = false, // 手动无痕模式开关（开启后强制阻断个人词库/预测/剪贴板/历史音频/AI读屏）
+    val inputStatsEnabled: Boolean = true, // 端侧纯数字表达统计开关（仅按日累计纯数字，0正文；无痕/密码框自动跳过）
     val replyAttitudePresets: List<ReplyAttitudePreset> = DefaultPresets.defaultReplyAttitudes(),
     val providerVault: Map<String, ProviderCredential> = emptyMap(),
     val snippets: List<SnippetEntry> = DefaultPresets.defaultSnippets(),

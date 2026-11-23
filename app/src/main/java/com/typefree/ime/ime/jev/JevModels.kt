@@ -1,5 +1,8 @@
 package com.typefree.ime.ime.jev
 
+import com.typefree.core.offline.ExecutionSource
+import com.typefree.ime.data.stats.TokenUsage
+
 /**
  * Semantic tension tier mapped from the `Lv.1` .. `Lv.9` subtext radar score.
  * Rendered ONLY on the `6.dp` status dot inside the `25.dp` radar bar:
@@ -61,7 +64,10 @@ data class JevCopilotResult(
     val options: List<JevStrategyOption>,
     val usedVision: Boolean = false,
     val redactionCount: Int = 0,
-    val routeCode: String = ""
+    val routeCode: String = "",
+    val tokenUsage: TokenUsage? = null,
+    val modelName: String = "",
+    val executionSource: ExecutionSource = ExecutionSource.CLOUD
 ) {
     val clampedLevel: Int
         get() = level.coerceIn(1, 9)

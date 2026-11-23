@@ -4,6 +4,9 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.typefree.ime.data.stats.BigramBackupItem
+import com.typefree.ime.data.stats.PredictionBackupArchive
+import com.typefree.ime.data.stats.TrigramBackupItem
 import com.typefree.ime.ime.flypy.FlypyCandidate
 import java.util.concurrent.ConcurrentHashMap
 
@@ -36,6 +39,10 @@ interface PredictionStorageBackend {
     ): List<TrigramRecord> = emptyList()
     fun getTrigramRecord(prevPrevWord: String, prevWord: String, nextWord: String): TrigramRecord? = null
     fun totalTrigramCount(): Int = 0
+    fun listTopBigrams(limit: Int = 8): List<BigramRecord> = emptyList()
+    fun listAllBigrams(): List<BigramRecord> = emptyList()
+    fun listAllTrigrams(): List<TrigramRecord> = emptyList()
+    fun mergeArchive(archive: PredictionBackupArchive): Pair<Int, Int> = 0 to 0
     fun clearAll()
     fun totalBigramCount(): Int
 }
@@ -153,6 +160,93 @@ class InMemoryPredictionBackend : PredictionStorageBackend {
 
     override fun totalTrigramCount(): Int {
         return trigramTable.values.sumOf { it.size }
+    }
+
+    override fun listTopBigrams(limit: Int): List<BigramRecord> {
+        if (limit <= 0) return emptyList()
+        return table.values
+            .asSequence()
+            .flatMap { it.values.asSequence() }
+            .sortedWith(
+                compareByDescending<BigramRecord> { it.count }
+                    .thenByDescending { it.lastUsedMs }
+                    .thenBy { it.prevWord }
+                    .thenBy { it.nextWord }
+            )
+            .take(limit)
+            .toList()
+    }
+
+    override fun listAllBigrams(): List<BigramRecord> {
+        return table.values
+            .asSequence()
+            .flatMap { it.values.asSequence() }
+            .sortedWith(
+                compareByDescending<BigramRecord> { it.count }
+                    .thenByDescending { it.lastUsedMs }
+                    .thenBy { it.prevWord }
+                    .thenBy { it.nextWord }
+            )
+            .toList()
+    }
+
+    override fun listAllTrigrams(): List<TrigramRecord> {
+        return trigramTable.values
+            .asSequence()
+            .flatMap { it.values.asSequence() }
+            .sortedWith(
+                compareByDescending<TrigramRecord> { it.count }
+                    .thenByDescending { it.lastUsedMs }
+                    .thenBy { it.prevPrevWord }
+                    .thenBy { it.prevWord }
+                    .thenBy { it.nextWord }
+            )
+            .toList()
+    }
+
+    override fun mergeArchive(archive: PredictionBackupArchive): Pair<Int, Int> {
+        var mergedBigrams = 0
+        for (item in archive.bigrams) {
+            val prev = item.prevWord.trim()
+            val next = item.nextWord.trim()
+            if (!PredictionStore.isValidWord(prev) || !PredictionStore.isValidWord(next) || prev == next) continue
+            val safeCount = item.count.coerceAtLeast(1)
+            val safeTs = item.lastUsedMs.coerceAtLeast(0L)
+            val row = table.getOrPut(prev) { ConcurrentHashMap() }
+            row.compute(next) { _, existing ->
+                if (existing == null) {
+                    BigramRecord(prev, next, safeCount, safeTs)
+                } else {
+                    existing.copy(
+                        count = maxOf(existing.count, safeCount),
+                        lastUsedMs = maxOf(existing.lastUsedMs, safeTs)
+                    )
+                }
+            }
+            mergedBigrams++
+        }
+        var mergedTrigrams = 0
+        for (item in archive.trigrams) {
+            val pp = item.prevPrevWord.trim()
+            val prev = item.prevWord.trim()
+            val next = item.nextWord.trim()
+            if (!PredictionStore.isValidWord(pp) || !PredictionStore.isValidWord(prev) || !PredictionStore.isValidWord(next) || prev == next) continue
+            val safeCount = item.count.coerceAtLeast(1)
+            val safeTs = item.lastUsedMs.coerceAtLeast(0L)
+            val row = trigramTable.getOrPut(trigramKey(pp, prev)) { ConcurrentHashMap() }
+            row.compute(next) { _, existing ->
+                if (existing == null) {
+                    TrigramRecord(pp, prev, next, safeCount, safeTs)
+                } else {
+                    existing.copy(
+                        count = maxOf(existing.count, safeCount),
+                        lastUsedMs = maxOf(existing.lastUsedMs, safeTs)
+                    )
+                }
+            }
+            mergedTrigrams++
+        }
+        return mergedBigrams to mergedTrigrams
     }
 
     override fun clearAll() {
@@ -389,6 +483,74 @@ class SqlitePredictionBackend(
         ensureHydrated()
         return memoryCache.totalBigramCount()
     }
+
+    override fun listTopBigrams(limit: Int): List<BigramRecord> {
+        ensureHydrated()
+        return memoryCache.listTopBigrams(limit)
+    }
+
+    override fun listAllBigrams(): List<BigramRecord> {
+        ensureHydrated()
+        return memoryCache.listAllBigrams()
+    }
+
+    override fun listAllTrigrams(): List<TrigramRecord> {
+        ensureHydrated()
+        return memoryCache.listAllTrigrams()
+    }
+
+    @Synchronized
+    override fun mergeArchive(archive: PredictionBackupArchive): Pair<Int, Int> {
+        ensureHydrated()
+        val (mergedBigrams, mergedTrigrams) = memoryCache.mergeArchive(archive)
+        if (mergedBigrams == 0 && mergedTrigrams == 0) return 0 to 0
+        runCatching {
+            val db = writableDatabase
+            db.beginTransaction()
+            try {
+                for (item in archive.bigrams) {
+                    val prev = item.prevWord.trim()
+                    val next = item.nextWord.trim()
+                    val rec = memoryCache.getRecord(prev, next) ?: continue
+                    val values = ContentValues().apply {
+                        put("prev_word", rec.prevWord)
+                        put("next_word", rec.nextWord)
+                        put("freq_count", rec.count)
+                        put("last_used_ms", rec.lastUsedMs)
+                    }
+                    db.insertWithOnConflict(
+                        PredictionStore.TABLE_BIGRAMS,
+                        null,
+                        values,
+                        SQLiteDatabase.CONFLICT_REPLACE
+                    )
+                }
+                for (item in archive.trigrams) {
+                    val pp = item.prevPrevWord.trim()
+                    val prev = item.prevWord.trim()
+                    val next = item.nextWord.trim()
+                    val rec = memoryCache.getTrigramRecord(pp, prev, next) ?: continue
+                    val values = ContentValues().apply {
+                        put("prev_prev_word", rec.prevPrevWord)
+                        put("prev_word", rec.prevWord)
+                        put("next_word", rec.nextWord)
+                        put("freq_count", rec.count)
+                        put("last_used_ms", rec.lastUsedMs)
+                    }
+                    db.insertWithOnConflict(
+                        PredictionStore.TABLE_TRIGRAMS,
+                        null,
+                        values,
+                        SQLiteDatabase.CONFLICT_REPLACE
+                    )
+                }
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        }
+        return mergedBigrams to mergedTrigrams
+    }
 }
 
 /**
@@ -551,6 +713,35 @@ class PredictionStore(
 
     fun totalTrigramCount(): Int = backend.totalTrigramCount()
 
+    fun listTopBigrams(limit: Int = DEFAULT_LIMIT): List<BigramRecord> = backend.listTopBigrams(limit)
+
+    fun exportArchive(): PredictionBackupArchive {
+        return PredictionBackupArchive(
+            bigrams = backend.listAllBigrams().map {
+                BigramBackupItem(
+                    prevWord = it.prevWord,
+                    nextWord = it.nextWord,
+                    count = it.count,
+                    lastUsedMs = it.lastUsedMs
+                )
+            },
+            trigrams = backend.listAllTrigrams().map {
+                TrigramBackupItem(
+                    prevPrevWord = it.prevPrevWord,
+                    prevWord = it.prevWord,
+                    nextWord = it.nextWord,
+                    count = it.count,
+                    lastUsedMs = it.lastUsedMs
+                )
+            }
+        )
+    }
+
+    fun mergeArchive(archive: PredictionBackupArchive): Pair<Int, Int> {
+        if (archive.isEmpty) return 0 to 0
+        return backend.mergeArchive(archive)
+    }
+
     companion object {
         const val DB_NAME = "typefree_predictions.db"
         const val DB_VERSION = 2
@@ -651,11 +842,188 @@ class PredictionStore(
 
                     override fun totalTrigramCount(): Int = backend().totalTrigramCount()
 
+                    override fun listTopBigrams(limit: Int): List<BigramRecord> = backend().listTopBigrams(limit)
+
+                    override fun listAllBigrams(): List<BigramRecord> = backend().listAllBigrams()
+
+                    override fun listAllTrigrams(): List<TrigramRecord> = backend().listAllTrigrams()
+
+                    override fun mergeArchive(archive: PredictionBackupArchive): Pair<Int, Int> =
+                        backend().mergeArchive(archive)
+
                     override fun clearAll() = backend().clearAll()
 
                     override fun totalBigramCount(): Int = backend().totalBigramCount()
                 }
             )
+
+        /**
+         * Safely reads `(bigramCount, trigramCount, topWordChains)` directly from `typefree_predictions.db`
+         * in read-only mode so Insights UI queries never interfere with active IME prediction writes.
+         */
+        fun readTopWordChainsSummary(
+            context: Context,
+            limit: Int = DEFAULT_LIMIT
+        ): Triple<Int, Int, List<String>> {
+            val appCtx = context.applicationContext ?: context
+            val dbFile = runCatching { appCtx.getDatabasePath(DB_NAME) }.getOrNull()
+            if (dbFile == null || !dbFile.exists() || !dbFile.isFile) {
+                return Triple(0, 0, emptyList())
+            }
+            return runCatching {
+                SQLiteDatabase.openDatabase(
+                    dbFile.path,
+                    null,
+                    SQLiteDatabase.OPEN_READONLY
+                ).use { db ->
+                    val bigramCount = runCatching {
+                        db.rawQuery("SELECT COUNT(*) FROM $TABLE_BIGRAMS", null).use { c ->
+                            if (c.moveToFirst()) c.getInt(0).coerceAtLeast(0) else 0
+                        }
+                    }.getOrDefault(0)
+                    val trigramCount = runCatching {
+                        db.rawQuery("SELECT COUNT(*) FROM $TABLE_TRIGRAMS", null).use { c ->
+                            if (c.moveToFirst()) c.getInt(0).coerceAtLeast(0) else 0
+                        }
+                    }.getOrDefault(0)
+                    val chains = if (limit > 0 && bigramCount > 0) {
+                        runCatching {
+                            val out = ArrayList<String>(limit)
+                            db.query(
+                                TABLE_BIGRAMS,
+                                arrayOf("prev_word", "next_word"),
+                                null,
+                                null,
+                                null,
+                                null,
+                                "freq_count DESC, last_used_ms DESC",
+                                limit.toString()
+                            ).use { c ->
+                                val prevIdx = c.getColumnIndexOrThrow("prev_word")
+                                val nextIdx = c.getColumnIndexOrThrow("next_word")
+                                while (c.moveToNext()) {
+                                    val prev = c.getString(prevIdx).orEmpty().trim()
+                                    val next = c.getString(nextIdx).orEmpty().trim()
+                                    if (prev.isNotEmpty() && next.isNotEmpty()) {
+                                        out.add("$prev → $next")
+                                    }
+                                }
+                            }
+                            out
+                        }.getOrDefault(emptyList())
+                    } else {
+                        emptyList()
+                    }
+                    Triple(bigramCount, trigramCount, chains)
+                }
+            }.getOrDefault(Triple(0, 0, emptyList()))
+        }
+
+        /**
+         * Exports all personal L2 bigrams and trigrams from `typefree_predictions.db` in read-only mode
+         * for lossless cross-device/cross-package migration.
+         */
+        fun exportBackupArchive(context: Context): PredictionBackupArchive {
+            val appCtx = context.applicationContext ?: context
+            val dbFile = runCatching { appCtx.getDatabasePath(DB_NAME) }.getOrNull()
+            if (dbFile == null || !dbFile.exists() || !dbFile.isFile) {
+                return PredictionBackupArchive()
+            }
+            return runCatching {
+                SQLiteDatabase.openDatabase(
+                    dbFile.path,
+                    null,
+                    SQLiteDatabase.OPEN_READONLY
+                ).use { db ->
+                    val bigrams = ArrayList<BigramBackupItem>()
+                    runCatching {
+                        db.query(
+                            TABLE_BIGRAMS,
+                            arrayOf("prev_word", "next_word", "freq_count", "last_used_ms"),
+                            null,
+                            null,
+                            null,
+                            null,
+                            "freq_count DESC, last_used_ms DESC"
+                        ).use { c ->
+                            val prevIdx = c.getColumnIndexOrThrow("prev_word")
+                            val nextIdx = c.getColumnIndexOrThrow("next_word")
+                            val cntIdx = c.getColumnIndexOrThrow("freq_count")
+                            val tsIdx = c.getColumnIndexOrThrow("last_used_ms")
+                            while (c.moveToNext()) {
+                                val prev = c.getString(prevIdx).orEmpty().trim()
+                                val next = c.getString(nextIdx).orEmpty().trim()
+                                if (isValidWord(prev) && isValidWord(next) && prev != next) {
+                                    bigrams.add(
+                                        BigramBackupItem(
+                                            prevWord = prev,
+                                            nextWord = next,
+                                            count = c.getInt(cntIdx).coerceAtLeast(1),
+                                            lastUsedMs = c.getLong(tsIdx).coerceAtLeast(0L)
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    val trigrams = ArrayList<TrigramBackupItem>()
+                    runCatching {
+                        db.query(
+                            TABLE_TRIGRAMS,
+                            arrayOf("prev_prev_word", "prev_word", "next_word", "freq_count", "last_used_ms"),
+                            null,
+                            null,
+                            null,
+                            null,
+                            "freq_count DESC, last_used_ms DESC"
+                        ).use { c ->
+                            val ppIdx = c.getColumnIndexOrThrow("prev_prev_word")
+                            val prevIdx = c.getColumnIndexOrThrow("prev_word")
+                            val nextIdx = c.getColumnIndexOrThrow("next_word")
+                            val cntIdx = c.getColumnIndexOrThrow("freq_count")
+                            val tsIdx = c.getColumnIndexOrThrow("last_used_ms")
+                            while (c.moveToNext()) {
+                                val pp = c.getString(ppIdx).orEmpty().trim()
+                                val prev = c.getString(prevIdx).orEmpty().trim()
+                                val next = c.getString(nextIdx).orEmpty().trim()
+                                if (isValidWord(pp) && isValidWord(prev) && isValidWord(next) && prev != next) {
+                                    trigrams.add(
+                                        TrigramBackupItem(
+                                            prevPrevWord = pp,
+                                            prevWord = prev,
+                                            nextWord = next,
+                                            count = c.getInt(cntIdx).coerceAtLeast(1),
+                                            lastUsedMs = c.getLong(tsIdx).coerceAtLeast(0L)
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    PredictionBackupArchive(bigrams = bigrams, trigrams = trigrams)
+                }
+            }.getOrDefault(PredictionBackupArchive())
+        }
+
+        /**
+         * Losslessly merges an imported [PredictionBackupArchive] into `typefree_predictions.db`,
+         * keeping `maxOf(existing.count, imported.count)` and `maxOf(existing.lastUsedMs, imported.lastUsedMs)`
+         * for every bigram and trigram so re-importing is idempotent and local learning is never wiped.
+         */
+        fun importAndMergeArchive(
+            context: Context,
+            archive: PredictionBackupArchive
+        ): Pair<Int, Int> {
+            if (archive.isEmpty) return 0 to 0
+            return runCatching {
+                val backend = SqlitePredictionBackend(context)
+                try {
+                    backend.mergeArchive(archive)
+                } finally {
+                    runCatching { backend.close() }
+                }
+            }.getOrDefault(0 to 0)
+        }
 
         fun isPunctuationChar(ch: Char): Boolean {
             if (ch in EXPLICIT_PUNCTUATION_CHARS) return true

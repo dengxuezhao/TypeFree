@@ -17,6 +17,8 @@ import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.SnippetEntry
 import com.typefree.ime.data.SnippetMatcher
+import com.typefree.ime.data.stats.SchemeStatsKeys
+import com.typefree.ime.data.stats.TokenFeatureKeys
 import com.typefree.ime.ime.engine.CodetableEnhancedInputEngine
 import com.typefree.ime.ime.engine.EngineResult
 import com.typefree.ime.ime.engine.FlypyInputEngine
@@ -63,6 +65,7 @@ interface ImeHostCallbacks {
     fun onUserUndoForJev() {}
     fun onExplicitImeSendForJev(currentEditorText: String?) {}
     fun readClipboardTextForJevNote(): String? = null
+    fun currentEditorFieldId(): Int = 0
 
     fun readSelectedTextSafely(): String
     fun readSurroundingBeforeCursor(maxChars: Int): String
@@ -122,6 +125,7 @@ class TypingController(
     var onSaveUserPhrase: ((word: String, code: String) -> Unit)? = null
     var onUndoRequested: (() -> Unit)? = null
     private var lastCommittedForRepeat: String = ""
+    private var lastCommitDuringDispatch: String = ""
 
     val aiCompleter: AiSentenceCompleter = aiSentenceCompleter ?: AiSentenceCompleter(
         scope = host.scope,
@@ -130,7 +134,24 @@ class TypingController(
                 settings = settings,
                 activeStyle = activeStyle,
                 contextBeforeCursor = contextBeforeCursor,
-                targetAppName = targetAppName
+                targetAppName = targetAppName,
+                onTokenUsage = { usage, modelName ->
+                    val stateSnap = host.stateFlow.value
+                    val isIncognito = stateSnap.isIncognitoMode ||
+                        settings.manualIncognitoMode ||
+                        ImeLogic.isPasswordEditorInputType(stateSnap.currentInputType)
+                    if (!isIncognito && settings.inputStatsEnabled) {
+                        runCatching {
+                            host.repository.dailyStatsStore.recordTokenUsage(
+                                usage = usage,
+                                modelName = modelName,
+                                featureKey = TokenFeatureKeys.SENTENCE_COMPLETION,
+                                enabled = true,
+                                incognito = false
+                            )
+                        }
+                    }
+                }
             )
         }
     )
@@ -233,10 +254,70 @@ class TypingController(
     fun recordExternalCommit(text: String) {
         if (text.isNotBlank()) {
             lastCommittedForRepeat = text
+            lastCommitDuringDispatch = text
             flypyInputEngine.recordExternalCommit(text)
             rimeInputEngine?.recordExternalCommit(text)
             codetableEnhancedEngine?.recordExternalCommit(text)
         }
+    }
+
+    private fun canRecordInputStats(): Boolean {
+        val curr = host.stateFlow.value
+        val settings = safeSettings()
+        return settings.inputStatsEnabled &&
+            !settings.manualIncognitoMode &&
+            !isIncognitoMode &&
+            !curr.isIncognitoMode &&
+            !ImeLogic.isPasswordEditorInputType(curr.currentInputType)
+    }
+
+    private fun recordKeyboardCommitIfEligible(text: String) {
+        if (text.isBlank() || !canRecordInputStats()) return
+        val curr = host.stateFlow.value
+        val settings = safeSettings()
+        runCatching {
+            host.repository.dailyStatsStore.recordKeyboardCommit(
+                charCount = text.length,
+                schemeKey = SchemeStatsKeys.fromInputScheme(
+                    scheme = settings.inputScheme,
+                    isChineseMode = curr.isFlypyChineseMode
+                ),
+                appName = curr.targetAppName
+            )
+        }
+    }
+
+    private fun recordSnippetHitIfEligible(savedChars: Int) {
+        if (savedChars <= 0 || !canRecordInputStats()) return
+        runCatching {
+            host.repository.dailyStatsStore.recordSnippetHit(savedChars = savedChars)
+        }
+    }
+
+    private fun recordPredictionHitIfEligible(savedKeys: Int) {
+        if (savedKeys <= 0 || !canRecordInputStats()) return
+        runCatching {
+            host.repository.dailyStatsStore.recordPredictionHit(savedKeys = savedKeys)
+        }
+    }
+
+    private fun detectAndRecordSnippetHitIfMatched(prevCode: String, committedText: String) {
+        if (committedText.isEmpty() || committedText == "/") return
+        if (!(prevCode.startsWith("/") || prevCode.startsWith(";"))) return
+        if (!canRecordInputStats()) return
+        val snippets = safeSettings().snippets
+        if (snippets.isEmpty()) return
+        val matched = snippets.firstOrNull { entry ->
+            if (!entry.enabled || entry.content.isBlank()) return@firstOrNull false
+            val normCode = SnippetMatcher.normalizeFlypyCode(entry.flypyCode)
+            if (normCode.isEmpty()) return@firstOrNull false
+            val codeMatches = prevCode == "/" ||
+                normCode.startsWith(prevCode) ||
+                (prevCode.startsWith(";") && normCode.startsWith("/${prevCode.removePrefix(";")}"))
+            codeMatches && (committedText == entry.content || committedText.startsWith(entry.content))
+        } ?: return
+        val savedChars = (matched.content.length - prevCode.length).coerceAtLeast(1)
+        recordSnippetHitIfEligible(savedChars)
     }
 
     fun syncEngineStateToUi() {
@@ -292,12 +373,16 @@ class TypingController(
                 val stillComposing = result.remainComposing || isComposing
                 syncEngineStateToUi()
                 if (result.text.isNotEmpty()) {
+                    val markManual = activeAllowsAutoLearn
                     host.commitDirectText(
                         text = result.text,
                         recordUndo = true,
-                        markManualEdit = activeAllowsAutoLearn,
+                        markManualEdit = markManual,
                         playFeedback = false
                     )
+                    if (!markManual) {
+                        recordKeyboardCommitIfEligible(result.text)
+                    }
                     onCommittedTextForPhraseTracking(result.text)
                     predictionCoordinator.onWordCommitted(
                         committedText = result.text,
@@ -482,6 +567,10 @@ class TypingController(
             ic.commitText("$clean ", 1)
             ic.endBatchEdit()
             recordExternalCommit(clean)
+            val netAddedChars = (clean.length - replaceLen).coerceAtLeast(0)
+            if (netAddedChars > 0) {
+                recordKeyboardCommitIfEligible(clean.takeLast(netAddedChars))
+            }
             host.recordManualEditTouch()
         } else {
             host.commitDirectText(
@@ -683,7 +772,12 @@ class TypingController(
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode) {
             if (ch.length == 1) {
                 host.performKeyFeedback(strong = false)
+                val prevCode = activeEngine.state.value.rawCode
+                lastCommitDuringDispatch = ""
                 val result = activeEngine.onKey(KeyInput.CharKey(ch[0]))
+                val committed = (result as? EngineResult.Commit)?.text?.ifEmpty { null }
+                    ?: lastCommitDuringDispatch
+                detectAndRecordSnippetHitIfMatched(prevCode, committed)
                 handleEngineResult(result)
                 return
             } else {
@@ -720,12 +814,17 @@ class TypingController(
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode) {
             host.performKeyFeedback(strong = false)
             val quickSelect = safeSettings().flypyCommaPeriodQuickSelect
+            val prevCode = activeEngine.state.value.rawCode
+            lastCommitDuringDispatch = ""
             val result = activeEngine.onKey(
                 KeyInput.CommaOrPeriod(
                     isComma = isComma,
                     commaPeriodQuickSelect = quickSelect
                 )
             )
+            val committed = (result as? EngineResult.Commit)?.text?.ifEmpty { null }
+                ?: lastCommitDuringDispatch
+            detectAndRecordSnippetHitIfMatched(prevCode, committed)
             handleEngineResult(result)
             return
         }
@@ -740,7 +839,12 @@ class TypingController(
     fun selectFlypyCandidate(index: Int) {
         predictionCoordinator.onUserKeyPressed()
         host.performKeyFeedback(strong = false)
+        val prevCode = activeEngine.state.value.rawCode
+        lastCommitDuringDispatch = ""
         val result = activeEngine.select(index)
+        val committed = (result as? EngineResult.Commit)?.text?.ifEmpty { null }
+            ?: lastCommitDuringDispatch
+        detectAndRecordSnippetHitIfMatched(prevCode, committed)
         handleEngineResult(result)
     }
 
@@ -763,6 +867,7 @@ class TypingController(
             markManualEdit = true,
             playFeedback = false
         )
+        recordPredictionHitIfEligible(savedKeys = picked.length.coerceAtLeast(1))
         predictionCoordinator.onWordCommitted(
             committedText = picked,
             isComposing = false
@@ -863,7 +968,12 @@ class TypingController(
         val curr = host.stateFlow.value
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode && isComposing) {
             host.performKeyFeedback(strong = false)
+            val prevCode = activeEngine.state.value.rawCode
+            lastCommitDuringDispatch = ""
             val result = activeEngine.onKey(KeyInput.Space)
+            val committed = (result as? EngineResult.Commit)?.text?.ifEmpty { null }
+                ?: lastCommitDuringDispatch
+            detectAndRecordSnippetHitIfMatched(prevCode, committed)
             handleEngineResult(result)
             return
         }

@@ -22,6 +22,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -110,18 +111,24 @@ import com.typefree.ime.data.HistoryRecord
 import com.typefree.ime.data.OfflineRouteBridge
 import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.SttProtocol
-import com.typefree.ime.data.UsageStatsSummary
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.data.stats.InsightsSnapshot
+import com.typefree.ime.data.stats.StatsTimeRange
+import com.typefree.ime.data.stats.TokenFeatureKeys
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.EndpointResolver
 import com.typefree.ime.network.PipelineStage
 import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.ui.AppDestinations
+import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
+import com.typefree.ime.ui.components.springPressScale
 import com.typefree.ime.ui.screens.home.PlaygroundBottomSheet
 import com.typefree.ime.ui.screens.home.PlaygroundEntryCard
 import com.typefree.ime.ui.screens.home.SandboxPreviewDiff
+import com.typefree.ime.ui.screens.insights.InsightsScreen
+import com.typefree.ime.ui.screens.insights.MiniSevenDayWaveform
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import com.typefree.ime.ui.theme.TypeFreeRose
@@ -130,7 +137,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
-import kotlin.math.roundToInt
 
 data class ProductivityStats(
     val totalPolishedChars: Int,
@@ -315,8 +321,15 @@ fun HomeSetupScreen(
 
     val settings by repository.settings.collectAsState()
     val history by repository.history.collectAsState()
-    val usageStats = remember(settings, history) {
-        AppRepository.computeUsageStats(settings, history)
+    val statsRev by repository.dailyStatsRevision.collectAsState()
+    var showInsightsPage by rememberSaveable { mutableStateOf(false) }
+    var historyFilterDateKey by rememberSaveable { mutableStateOf<Int?>(null) }
+    var showJevMemoryDialog by remember { mutableStateOf(false) }
+    val weekSnapshot = remember(settings, history, statsRev, showInsightsPage, showJevMemoryDialog) {
+        repository.computeInsightsSnapshot(StatsTimeRange.DAYS_7)
+    }
+    val allSnapshot = remember(settings, history, statsRev, showInsightsPage, showJevMemoryDialog) {
+        repository.computeInsightsSnapshot(StatsTimeRange.ALL)
     }
 
     val a11yLiveConnected by TypeFreeBubbleController.isAccessibilityConnected.collectAsState()
@@ -340,6 +353,47 @@ fun HomeSetupScreen(
 
     BackHandler(enabled = showHistoryPage) {
         showHistoryPage = false
+        historyFilterDateKey = null
+    }
+
+    BackHandler(enabled = showInsightsPage) {
+        showInsightsPage = false
+    }
+
+    if (showInsightsPage) {
+        InsightsScreen(
+            repository = repository,
+            onBack = { showInsightsPage = false },
+            onOpenHistoryForDate = { dateKey ->
+                showInsightsPage = false
+                historyFilterDateKey = dateKey
+                showHistoryPage = true
+            },
+            onOpenPrivacySettings = {
+                showInsightsPage = false
+                onNavigateToTab(AppDestinations.TAB_GENERAL)
+            },
+            onOpenStylesSettings = {
+                showInsightsPage = false
+                onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_AI_STYLE)
+            },
+            onOpenPlayground = {
+                showInsightsPage = false
+                isPlaygroundSheetOpen = true
+            },
+            onOpenJevMemory = { showJevMemoryDialog = true },
+            onOpenApiUsage = {
+                showInsightsPage = false
+                onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_API)
+            }
+        )
+        if (showJevMemoryDialog) {
+            JevMemoryManagementDialog(
+                repository = repository,
+                onDismiss = { showJevMemoryDialog = false }
+            )
+        }
+        return
     }
 
     if (showHistoryPage) {
@@ -356,7 +410,12 @@ fun HomeSetupScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    TextButton(onClick = { showHistoryPage = false }) {
+                    TextButton(
+                        onClick = {
+                            showHistoryPage = false
+                            historyFilterDateKey = null
+                        }
+                    ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                             contentDescription = "返回首页",
@@ -381,7 +440,8 @@ fun HomeSetupScreen(
             ) {
                 HistoryScreen(
                     repository = repository,
-                    aiEngine = aiEngine
+                    aiEngine = aiEngine,
+                    initialDateKey = historyFilterDateKey
                 )
             }
         }
@@ -515,18 +575,21 @@ fun HomeSetupScreen(
             }
         )
 
-        // 2. Hero Efficiency Metrics Card (220 wpm + Total Words/Dictations + Saved Minutes)
+        // 2. Hero Efficiency Metrics Card (Real Insights Metrics + Mini 7-Day Waveform -> InsightsScreen)
         HeroMetricsCard(
-            usageStats = usageStats,
-            hasHistory = history.isNotEmpty(),
-            onClickViewHistory = { showHistoryPage = true }
+            weekSnapshot = weekSnapshot,
+            allSnapshot = allSnapshot,
+            onClickOpenInsights = { showInsightsPage = true }
         )
 
         // 2.5 Prominent Entry Card for Recognition History (no longer a bottom tab)
         HistoryEntryCard(
             totalCount = history.size,
             latestSnippet = history.firstOrNull()?.polishedText.orEmpty(),
-            onOpenHistory = { showHistoryPage = true }
+            onOpenHistory = {
+                historyFilterDateKey = null
+                showHistoryPage = true
+            }
         )
 
         // 3. Keyboard Setup Wizard (Auto-collapses to 1-line emerald banner when IME enabled + selected + API ready)
@@ -620,10 +683,11 @@ fun HomeSetupScreen(
             }
         )
 
-        // 5. Official Personalization Report Card
+        // 5. Real Growth Card (✦ 越来越懂你 -> InsightsScreen)
         PersonalizationReportCard(
-            usageStats = usageStats,
+            allSnapshot = allSnapshot,
             dictionarySize = settings.dictionary.size,
+            onOpenInsights = { showInsightsPage = true },
             onOpenStyles = {
                 onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_AI_STYLE)
             },
@@ -874,6 +938,18 @@ fun HomeSetupScreen(
                             latencyMs = exec.latencyMs,
                             modeSummary = exec.modeSummary
                         )
+                        if (settings.inputStatsEnabled && !settings.manualIncognitoMode) {
+                            repository.dailyStatsStore.recordTokenUsage(
+                                usage = exec.tokenUsage,
+                                modelName = exec.modelName,
+                                featureKey = TokenFeatureKeys.fromVoiceIntent(
+                                    intent = capturedIntent,
+                                    isMultimodalAudio = settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT
+                                ),
+                                enabled = true,
+                                incognito = false
+                            )
+                        }
                         repository.addHistory(
                             HistoryRecord(
                                 targetAppName = "TypeFree 沙盒",
@@ -995,13 +1071,33 @@ private fun TopBrandBar(
 
 @Composable
 private fun HeroMetricsCard(
-    usageStats: UsageStatsSummary,
-    hasHistory: Boolean,
-    onClickViewHistory: () -> Unit
+    weekSnapshot: InsightsSnapshot,
+    allSnapshot: InsightsSnapshot,
+    onClickOpenInsights: () -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val streakDays = allSnapshot.streakDays
+    val hasMeasuredWpm = weekSnapshot.hasMeasuredWpm || allSnapshot.hasMeasuredWpm
+    val displayWpm = if (weekSnapshot.hasMeasuredWpm) weekSnapshot.averageWpm else allSnapshot.averageWpm
+    val displayMultiplier = if (weekSnapshot.hasMeasuredWpm) weekSnapshot.speedMultiplier else allSnapshot.speedMultiplier
+    val wpmSubtitle = when {
+        !hasMeasuredWpm -> "口述 3 秒以上自动测算语速"
+        displayMultiplier > 1.05f -> String.format(
+            Locale.US,
+            "实测口述语速 · 约为手指打字 %.1f 倍",
+            displayMultiplier
+        )
+        else -> "实测语音口述语速"
+    }
+    val totalInputCount = allSnapshot.voiceCount + allSnapshot.keyCommits
+
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
+        onClick = onClickOpenInsights,
+        interactionSource = interactionSource,
+        modifier = Modifier
+            .fillMaxWidth()
+            .springPressScale(interactionSource = interactionSource),
+        shape = ContinuousRoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
@@ -1018,17 +1114,41 @@ private fun HeroMetricsCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Speak, don't type.",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 12.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Speak, don't type.",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (streakDays > 0) {
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = TypeFreeAmber.copy(alpha = 0.14f),
+                                border = BorderStroke(1.dp, TypeFreeAmber.copy(alpha = 0.36f))
+                            ) {
+                                Text(
+                                    text = "🔥 连续 $streakDays 天",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TypeFreeAmber,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(3.dp))
                     Row(verticalAlignment = Alignment.Bottom) {
                         Text(
-                            text = "${usageStats.averageWpm}",
+                            text = if (hasMeasuredWpm) "$displayWpm" else "—",
                             fontSize = 38.sp,
                             lineHeight = 40.sp,
                             fontWeight = FontWeight.ExtraBold,
@@ -1037,7 +1157,7 @@ private fun HeroMetricsCard(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "wpm",
+                            text = "字/分",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1045,76 +1165,87 @@ private fun HeroMetricsCard(
                         )
                     }
                     Text(
-                        text = "口述净写语速 · 约为手指打字速度 4.2 倍",
+                        text = wpmSubtitle,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Icon(
-                        imageVector = TypeFreeIcons.VoiceWaveform,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(25.dp)
+                    MiniSevenDayWaveform(
+                        values = weekSnapshot.mini7DayChars,
+                        modifier = Modifier
+                            .width(88.dp)
+                            .height(48.dp)
+                    )
+                    Text(
+                        text = "近 7 日活跃",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            // 3-Column Metrics Row
+            // 3-Column Real Insights Metrics Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 HeroMiniStatBox(
-                    label = "累计口述字数",
-                    value = SetupStatsHelper.formatCharCount(usageStats.totalCharacters),
+                    label = "本周总输出",
+                    value = SetupStatsHelper.formatCharCount(weekSnapshot.totalChars),
                     unit = "字",
                     modifier = Modifier.weight(1f)
                 )
                 HeroMiniStatBox(
-                    label = "累计口述次数",
-                    value = usageStats.totalDictations.toString(),
-                    unit = "次",
-                    modifier = Modifier.weight(1f)
-                )
-                HeroMiniStatBox(
                     label = "节省打字时间",
-                    value = usageStats.savedMinutes.toString(),
+                    value = allSnapshot.savedMinutes.toString(),
                     unit = "分钟",
                     modifier = Modifier.weight(1f)
                 )
-            }
-
-            if (hasHistory) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable(onClick = onClickViewHistory)
-                        .padding(vertical = 2.dp),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = TypeFreeIcons.History,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(14.dp)
+                if (allSnapshot.hasOfflineSplitData) {
+                    HeroMiniStatBox(
+                        label = "本机离线护航",
+                        value = allSnapshot.offlinePercent.toString(),
+                        unit = "%",
+                        modifier = Modifier.weight(1f)
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "查看本机口述与润色历史 ›",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    HeroMiniStatBox(
+                        label = "累计输入次数",
+                        value = SetupStatsHelper.formatCharCount(totalInputCount),
+                        unit = "次",
+                        modifier = Modifier.weight(1f)
                     )
                 }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = TypeFreeIcons.Sparkles,
+                    contentDescription = null,
+                    tint = TypeFreeEmerald,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(5.dp))
+                Text(
+                    text = "查看表达洞察 ›",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
@@ -1952,18 +2083,28 @@ private fun WizardStepItem(
 }
 
 /**
- * Official Personalization Report Card (Aligned with `personalization_report.webp`).
+ * Real Growth Card (✦ 越来越懂你) powered by live end-side Insights signals.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PersonalizationReportCard(
-    usageStats: UsageStatsSummary,
+    allSnapshot: InsightsSnapshot,
     dictionarySize: Int,
+    onOpenInsights: () -> Unit,
     onOpenStyles: () -> Unit,
     onOpenDictionary: () -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val topDna = remember(allSnapshot.jevDnaItems) { allSnapshot.jevDnaItems.take(3) }
+    val personalLinkMemoryCount = allSnapshot.personalBigramCount + allSnapshot.personalTrigramCount
+
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        onClick = onOpenInsights,
+        interactionSource = interactionSource,
+        modifier = Modifier
+            .fillMaxWidth()
+            .springPressScale(interactionSource = interactionSource),
+        shape = ContinuousRoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
     ) {
@@ -1980,73 +2121,103 @@ private fun PersonalizationReportCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "个性化适配度报告",
+                        text = "✦ 越来越懂你",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Overall personalization · 本机分析你的词典与宿主场景",
+                        text = "本机沉淀你的语体习惯、纠错词库与私人连词记忆",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
-                // Overall Percentage Ring Pill
-                Box(
-                    modifier = Modifier.size(54.dp),
-                    contentAlignment = Alignment.Center
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    CircularProgressIndicator(
-                        progress = { (usageStats.overallPersonalizationPercent / 100f).coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.primary,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
-                        strokeWidth = 4.5.dp
-                    )
                     Text(
-                        text = "${usageStats.overallPersonalizationPercent}%",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        text = "成长洞察",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = "查看表达洞察",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
                     )
                 }
             }
 
-            // 4 Application Category Progress Bars
-            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                usageStats.categoryProgress.forEach { (categoryName, progressVal) ->
-                    val clamped = progressVal.coerceIn(0f, 1f)
-                    val pct = (clamped * 100).roundToInt()
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+            // Top 3 Jev Style DNA Chips (Active emerald / Observing amber)
+            if (topDna.isNotEmpty()) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    topDna.forEach { item ->
+                        val accent = if (item.isActive) TypeFreeEmerald else TypeFreeAmber
+                        val chipText = if (item.isActive) {
+                            "✓ ${item.title}"
+                        } else {
+                            "${item.title} · 观察中 ${item.currentCount}/${item.requiredCount}"
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = accent.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, accent.copy(alpha = 0.36f))
                         ) {
                             Text(
-                                text = categoryName,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "$pct%",
-                                style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                text = chipText,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = accent,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                             )
                         }
-                        LinearProgressIndicator(
-                            progress = { clamped },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(6.dp)
-                                .clip(RoundedCornerShape(50)),
-                            color = MaterialTheme.colorScheme.primary,
-                            trackColor = MaterialTheme.colorScheme.surfaceVariant
-                        )
                     }
                 }
+            } else {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(11.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)
+                ) {
+                    Text(
+                        text = "正在端侧观察你的表达习惯，使用 ✦ Jev 军师或日常输入后将自动提炼专属语体 DNA",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp)
+                    )
+                }
+            }
+
+            // 3 Real End-Side Asset Counters
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                HeroMiniStatBox(
+                    label = "自动纠错词条",
+                    value = allSnapshot.autoLearnedDictCount.toString(),
+                    unit = "条",
+                    modifier = Modifier.weight(1f)
+                )
+                HeroMiniStatBox(
+                    label = "私人连词记忆",
+                    value = SetupStatsHelper.formatCharCount(personalLinkMemoryCount),
+                    unit = "条",
+                    modifier = Modifier.weight(1f)
+                )
+                HeroMiniStatBox(
+                    label = "Jev 关系档案",
+                    value = allSnapshot.jevSessionCount.toString(),
+                    unit = "个",
+                    modifier = Modifier.weight(1f)
+                )
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))

@@ -4,6 +4,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -127,16 +129,24 @@ import com.typefree.ime.data.ThinkingMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.UnifiedProviderCatalog
 import com.typefree.ime.data.UnifiedProviderSpec
+import com.typefree.ime.data.stats.FullBackupMergeSummary
+import com.typefree.ime.data.stats.FullBackupOptions
+import com.typefree.ime.data.stats.TokenFeatureKeys
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.EndpointResolver
 import com.typefree.ime.network.PipelineExecutionResult
 import com.typefree.ime.network.asr.VolcengineSaucAsrClient
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
+import com.typefree.ime.ui.screens.insights.TokenUsageObservabilityCard
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import com.typefree.ime.ui.theme.TypeFreeRose
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -208,12 +218,182 @@ fun ApiSettingsScreen(
     var copiedTestResult by remember { mutableStateOf(false) }
     var copiedDiagLog by remember { mutableStateOf(false) }
 
-    // Backup / Import status banner
+    // Backup / Import status banner & full backup module toggles
+    val historyItems by repository.history.collectAsState()
+    val clipboardItems by repository.clipboardItems.collectAsState()
+    val statsRevision by repository.dailyStatsRevision.collectAsState()
+    val dailyStatsDaysCount = remember(statsRevision) {
+        repository.dailyStatsStore.listAllRecords().size
+    }
+    val pinnedClipboardCount = remember(clipboardItems) {
+        clipboardItems.count { it.isPinned }
+    }
+
     var backupStatusMsg by remember { mutableStateOf<String?>(null) }
     var backupIsError by remember { mutableStateOf(false) }
+    var isBackupBusy by remember { mutableStateOf(false) }
     var includeEncryptedJevMemory by remember { mutableStateOf(false) }
+    var includeHistoryBackup by remember { mutableStateOf(true) }
+    var includeDailyStatsBackup by remember { mutableStateOf(true) }
+    var includePredictionsBackup by remember { mutableStateOf(true) }
+    var includePinnedClipboardBackup by remember { mutableStateOf(true) }
     var backupMemoryPassphrase by remember { mutableStateOf("") }
     var showImportMemorySkipAction by remember { mutableStateOf(false) }
+    var pendingImportJson by remember { mutableStateOf<String?>(null) }
+
+    fun currentFullBackupOptions(includeSecrets: Boolean = true): FullBackupOptions {
+        return FullBackupOptions(
+            includeSecrets = includeSecrets,
+            includeJevMemory = includeSecrets && includeEncryptedJevMemory,
+            includeHistory = includeSecrets && includeHistoryBackup,
+            includeDailyStats = includeSecrets && includeDailyStatsBackup,
+            includePredictions = includeSecrets && includePredictionsBackup,
+            includePinnedClipboard = includeSecrets && includePinnedClipboardBackup
+        )
+    }
+
+    fun formatMergeSuccessMessage(
+        outcome: ApiConfigBackupHelper.FullBackupImportOutcome,
+        skippedEncryptedMemory: Boolean
+    ): String {
+        val parts = mutableListOf<String>()
+        val merge: FullBackupMergeSummary = outcome.mergeSummary
+        if (merge.mergedDailyStatsDays > 0) parts.add("每日统计 ${merge.mergedDailyStatsDays} 天")
+        if (merge.mergedHistoryCount > 0) parts.add("历史 +${merge.mergedHistoryCount} 条")
+        val predTotal = merge.mergedBigramCount + merge.mergedTrigramCount
+        if (predTotal > 0) parts.add("L2 连词库 $predTotal 条")
+        if (merge.mergedPinnedClipboardCount > 0) parts.add("置顶剪贴板 +${merge.mergedPinnedClipboardCount} 条")
+        outcome.memorySummary?.let {
+            parts.add("军师记忆 ${it.importedSessions} 会话 / ${it.mergedBuckets} 风格组")
+        }
+        val extra = if (parts.isNotEmpty()) "；无损合并：${parts.joinToString(" · ")}" else ""
+        val skipNote = if (skippedEncryptedMemory) "（已按要求跳过加密军师记忆）" else ""
+        return "✓ 全量配置与数据导入成功！已同步密钥库、短语与个人词典$extra$skipNote"
+    }
+
+    fun executeImportJsonPayload(rawJson: String, skipMemoryIfNoPassphrase: Boolean) {
+        if (rawJson.isBlank()) {
+            backupIsError = true
+            backupStatusMsg = "✕ 未检测到可导入的备份 JSON 内容"
+            return
+        }
+        val hasEncryptedMemory = ApiConfigBackupHelper.hasEncryptedJevMemoryArchive(rawJson)
+        if (hasEncryptedMemory && !skipMemoryIfNoPassphrase && backupMemoryPassphrase.isBlank()) {
+            pendingImportJson = rawJson
+            showImportMemorySkipAction = true
+            backupIsError = true
+            backupStatusMsg = "检测到备份内含加密的军师记忆：请输入密码后点击「解锁并导入」，或点击「跳过记忆仅导其余数据」"
+            return
+        }
+        coroutineScope.launch {
+            isBackupBusy = true
+            val passChars = if (skipMemoryIfNoPassphrase) null else backupMemoryPassphrase.takeIf { it.isNotBlank() }?.toCharArray()
+            val res = withContext(Dispatchers.IO) {
+                ApiConfigBackupHelper.importFullBackupJson(
+                    rawJson = rawJson,
+                    existingSettings = settings,
+                    repository = repository,
+                    memoryRepository = repository.jevMemoryRepository,
+                    memoryPassphrase = passChars,
+                    adoptSaltProvider = repository.jevMemorySaltProvider as? AndroidKeystoreSaltProvider,
+                    skipMemoryIfNoPassphrase = skipMemoryIfNoPassphrase,
+                    wipePassphraseAfterUse = true
+                )
+            }
+            isBackupBusy = false
+            res.onSuccess { outcome ->
+                repository.updateSettings { outcome.settings }
+                backupMemoryPassphrase = ""
+                pendingImportJson = null
+                showImportMemorySkipAction = false
+                backupIsError = false
+                backupStatusMsg = formatMergeSuccessMessage(
+                    outcome = outcome,
+                    skippedEncryptedMemory = skipMemoryIfNoPassphrase && hasEncryptedMemory
+                )
+            }.onFailure { err ->
+                backupIsError = true
+                backupStatusMsg = "✕ ${err.message ?: "导入备份失败"}"
+            }
+        }
+    }
+
+    val exportBackupFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        coroutineScope.launch {
+            isBackupBusy = true
+            val options = currentFullBackupOptions(includeSecrets = true)
+            val passChars = if (options.includeJevMemory) backupMemoryPassphrase.toCharArray() else null
+            val writeRes = withContext(Dispatchers.IO) {
+                runCatching {
+                    val dailyStats = if (options.includeDailyStats) {
+                        repository.dailyStatsStore.flushBlocking(1_000L)
+                        repository.dailyStatsStore.listAllRecords()
+                    } else {
+                        emptyList()
+                    }
+                    val predictions = if (options.includePredictions) {
+                        repository.exportPredictionsArchive()
+                    } else {
+                        com.typefree.ime.data.stats.PredictionBackupArchive()
+                    }
+                    val json = ApiConfigBackupHelper.exportFullBackupJson(
+                        settings = settings,
+                        options = options,
+                        history = if (options.includeHistory) repository.history.value else emptyList(),
+                        dailyStats = dailyStats,
+                        predictions = predictions,
+                        pinnedClipboard = if (options.includePinnedClipboard) repository.clipboardItems.value else emptyList(),
+                        memoryRepository = repository.jevMemoryRepository,
+                        memoryPassphrase = passChars,
+                        wipePassphraseAfterUse = true
+                    )
+                    val bytes = json.toByteArray(Charsets.UTF_8)
+                    val out = context.contentResolver.openOutputStream(uri)
+                        ?: throw IllegalStateException("无法写入所选文件")
+                    out.use { it.write(bytes) }
+                    bytes.size
+                }
+            }
+            isBackupBusy = false
+            if (options.includeJevMemory) {
+                backupMemoryPassphrase = ""
+            }
+            writeRes.onSuccess { byteCount ->
+                val kb = String.format(Locale.US, "%.1f KB", byteCount / 1024.0)
+                backupIsError = false
+                backupStatusMsg = "✓ 全量数据备份已导出为 .json 文件（$kb，包含所选数据与密钥库，请妥善保管）"
+            }.onFailure { err ->
+                backupIsError = true
+                backupStatusMsg = "✕ 导出 .json 文件失败：${err.message ?: "未知错误"}"
+            }
+        }
+    }
+
+    val importBackupFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        coroutineScope.launch {
+            isBackupBusy = true
+            val readRes = withContext(Dispatchers.IO) {
+                runCatching {
+                    val input = context.contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("无法读取所选文件")
+                    input.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                }
+            }
+            isBackupBusy = false
+            readRes.onSuccess { raw ->
+                executeImportJsonPayload(rawJson = raw, skipMemoryIfNoPassphrase = false)
+            }.onFailure { err ->
+                backupIsError = true
+                backupStatusMsg = "✕ 读取 .json 文件失败：${err.message ?: "未知错误"}"
+            }
+        }
+    }
 
     // Universal Provider Model Discovery state (STT / LLM / Multimodal)
     var fetchingSlot by remember { mutableStateOf<ModelCapabilitySlot?>(null) }
@@ -717,6 +897,9 @@ fun ApiSettingsScreen(
             onFetchModels = ::triggerModelDiscovery
         )
 
+        // Layer 2.5: Pure Token & Voice Duration Observability Card (Zero Cost Estimation)
+        TokenUsageObservabilityCard(repository = repository)
+
         // Layer 3A: Collapsible Advanced Tuning Drawer
         CollapsibleStudioDrawer(
             title = "⚙️ 高级协议与路由参数",
@@ -787,6 +970,15 @@ fun ApiSettingsScreen(
                         )
                         isTestingApi = false
                         res.onSuccess { exec ->
+                            if (settings.inputStatsEnabled && !settings.manualIncognitoMode) {
+                                repository.dailyStatsStore.recordTokenUsage(
+                                    usage = exec.tokenUsage,
+                                    modelName = exec.modelName,
+                                    featureKey = TokenFeatureKeys.API_TEST,
+                                    enabled = true,
+                                    incognito = false
+                                )
+                            }
                             testSuccessResult = exec
                         }.onFailure { err ->
                             testErrorMessage = err.message ?: "请求失败，请检查网络连接与接口地址"
@@ -804,16 +996,28 @@ fun ApiSettingsScreen(
             )
         }
 
-        // Layer 3C: Collapsible JSON Config Backup / Migration Drawer
+        // Layer 3C: Collapsible Full Data Backup / Cross-Package Migration Drawer
         CollapsibleStudioDrawer(
-            title = "📦 配置 JSON 备份与跨机迁移",
-            subtitle = "一键导出完整或脱敏 JSON，跨设备恢复所有密钥、短语、词典与加密军师记忆",
+            title = "📦 全量数据备份与跨机迁移",
+            subtitle = "支持 .json 文件与剪贴板无损迁移：密钥、词典、短语、历史、每日统计、Token、连词库、置顶剪贴板与军师记忆",
             expanded = showBackupDrawer,
             onToggle = { showBackupDrawer = !showBackupDrawer }
         ) {
             ConfigBackupContent(
                 statusMessage = backupStatusMsg,
                 statusIsError = backupIsError,
+                isBusy = isBackupBusy,
+                historyCount = historyItems.size,
+                dailyStatsDaysCount = dailyStatsDaysCount,
+                pinnedClipboardCount = pinnedClipboardCount,
+                includeHistory = includeHistoryBackup,
+                onIncludeHistoryChange = { includeHistoryBackup = it },
+                includeDailyStats = includeDailyStatsBackup,
+                onIncludeDailyStatsChange = { includeDailyStatsBackup = it },
+                includePredictions = includePredictionsBackup,
+                onIncludePredictionsChange = { includePredictionsBackup = it },
+                includePinnedClipboard = includePinnedClipboardBackup,
+                onIncludePinnedClipboardChange = { includePinnedClipboardBackup = it },
                 includeEncryptedJevMemory = includeEncryptedJevMemory,
                 onIncludeEncryptedJevMemoryChange = { checked ->
                     includeEncryptedJevMemory = checked
@@ -825,87 +1029,107 @@ fun ApiSettingsScreen(
                 onMemoryPassphraseChange = { backupMemoryPassphrase = it },
                 showPassphraseField = includeEncryptedJevMemory || showImportMemorySkipAction,
                 showSkipMemoryImportButton = showImportMemorySkipAction,
-                onExportFullJson = {
-                    if (includeEncryptedJevMemory) {
-                        if (backupMemoryPassphrase.isBlank()) {
-                            backupIsError = true
-                            backupStatusMsg = "✕ 请先输入军师记忆加密密码再导出"
-                        } else {
-                            val json = ApiConfigBackupHelper.exportBackupWithJevMemory(
-                                settings = settings,
-                                includeSecrets = true,
-                                memoryRepository = repository.jevMemoryRepository,
-                                memoryPassphrase = backupMemoryPassphrase.toCharArray(),
-                                wipePassphraseAfterUse = true
-                            )
-                            backupMemoryPassphrase = ""
-                            writeToClipboard(context, "TypeFree Full Encrypted Backup", json)
-                            backupIsError = false
-                            backupStatusMsg = "✓ 完整配置 + 端到端加密军师记忆已复制到剪贴板"
-                        }
+                hasPendingFileImport = pendingImportJson != null,
+                onExportToJsonFile = {
+                    if (includeEncryptedJevMemory && backupMemoryPassphrase.isBlank()) {
+                        backupIsError = true
+                        backupStatusMsg = "✕ 请先输入军师记忆加密密码再导出文件"
                     } else {
-                        val json = ApiConfigBackupHelper.exportSettingsJson(settings, includeSecrets = true)
-                        writeToClipboard(context, "TypeFree Config Backup", json)
-                        backupIsError = false
-                        backupStatusMsg = "✓ 完整配置 JSON 已复制到剪贴板（包含服务商密钥库，请妥善保管）"
+                        val stamp = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE)
+                        exportBackupFileLauncher.launch("typefree-backup-$stamp.json")
+                    }
+                },
+                onImportFromJsonFile = {
+                    importBackupFileLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                },
+                onUnlockPendingImport = {
+                    val cached = pendingImportJson
+                    if (cached != null) {
+                        executeImportJsonPayload(rawJson = cached, skipMemoryIfNoPassphrase = false)
+                    } else {
+                        executeImportJsonPayload(rawJson = readFromClipboard(context), skipMemoryIfNoPassphrase = false)
+                    }
+                },
+                onExportFullJsonToClipboard = {
+                    if (includeEncryptedJevMemory && backupMemoryPassphrase.isBlank()) {
+                        backupIsError = true
+                        backupStatusMsg = "✕ 请先输入军师记忆加密密码再导出"
+                    } else {
+                        coroutineScope.launch {
+                            isBackupBusy = true
+                            val options = currentFullBackupOptions(includeSecrets = true)
+                            val passChars = if (options.includeJevMemory) backupMemoryPassphrase.toCharArray() else null
+                            val json = withContext(Dispatchers.IO) {
+                                val dailyStats = if (options.includeDailyStats) {
+                                    repository.dailyStatsStore.flushBlocking(1_000L)
+                                    repository.dailyStatsStore.listAllRecords()
+                                } else {
+                                    emptyList()
+                                }
+                                val predictions = if (options.includePredictions) {
+                                    repository.exportPredictionsArchive()
+                                } else {
+                                    com.typefree.ime.data.stats.PredictionBackupArchive()
+                                }
+                                ApiConfigBackupHelper.exportFullBackupJson(
+                                    settings = settings,
+                                    options = options,
+                                    history = if (options.includeHistory) repository.history.value else emptyList(),
+                                    dailyStats = dailyStats,
+                                    predictions = predictions,
+                                    pinnedClipboard = if (options.includePinnedClipboard) repository.clipboardItems.value else emptyList(),
+                                    memoryRepository = repository.jevMemoryRepository,
+                                    memoryPassphrase = passChars,
+                                    wipePassphraseAfterUse = true
+                                )
+                            }
+                            isBackupBusy = false
+                            if (options.includeJevMemory) {
+                                backupMemoryPassphrase = ""
+                            }
+                            val byteSize = json.toByteArray(Charsets.UTF_8).size
+                            if (byteSize > ApiConfigBackupHelper.CLIPBOARD_SAFE_MAX_BYTES) {
+                                val kb = String.format(Locale.US, "%.1f KB", byteSize / 1024.0)
+                                backupIsError = true
+                                backupStatusMsg = "全量备份体积约 $kb，超过系统剪贴板安全上限，请点「导出 .json 文件」进行无损迁移"
+                            } else {
+                                writeToClipboard(context, "TypeFree Full Backup", json)
+                                val kb = String.format(Locale.US, "%.1f KB", byteSize / 1024.0)
+                                backupIsError = false
+                                backupStatusMsg = "✓ 全量备份 JSON（$kb）已复制到剪贴板（包含密钥与所选数据，请妥善保管）"
+                            }
+                        }
                     }
                 },
                 onExportRedactedJson = {
-                    val json = ApiConfigBackupHelper.exportSettingsJson(settings, includeSecrets = false)
+                    val json = ApiConfigBackupHelper.exportFullBackupJson(
+                        settings = settings,
+                        options = FullBackupOptions(
+                            includeSecrets = false,
+                            includeJevMemory = false,
+                            includeHistory = false,
+                            includeDailyStats = false,
+                            includePredictions = false,
+                            includePinnedClipboard = false
+                        )
+                    )
                     writeToClipboard(context, "TypeFree Config Share", json)
                     backupIsError = false
-                    backupStatusMsg = "✓ 脱敏配置 JSON 已复制到剪贴板（已隐藏所有 API Key，可安全分享）"
+                    backupStatusMsg = "✓ 脱敏配置 JSON 已复制到剪贴板（已隐藏所有 API Key，不含历史/剪贴板/记忆，可安全分享）"
                 },
                 onImportFromClipboard = {
-                    val clipText = readFromClipboard(context)
-                    val hasEncryptedMemory = ApiConfigBackupHelper.hasEncryptedJevMemoryArchive(clipText)
-                    if (hasEncryptedMemory && backupMemoryPassphrase.isBlank()) {
-                        showImportMemorySkipAction = true
-                        backupIsError = true
-                        backupStatusMsg = "检测到备份内含加密的军师记忆：请输入备份密码再点导入，或点击「跳过记忆仅导配置」"
-                    } else {
-                        ApiConfigBackupHelper.importBackupWithJevMemory(
-                            rawJson = clipText,
-                            existingSettings = settings,
-                            memoryRepository = repository.jevMemoryRepository,
-                            memoryPassphrase = backupMemoryPassphrase.takeIf { it.isNotBlank() }?.toCharArray(),
-                            adoptSaltProvider = repository.jevMemorySaltProvider as? AndroidKeystoreSaltProvider,
-                            skipMemoryIfNoPassphrase = false,
-                            wipePassphraseAfterUse = true
-                        ).onSuccess { outcome ->
-                            repository.updateSettings { outcome.settings }
-                            backupMemoryPassphrase = ""
-                            showImportMemorySkipAction = false
-                            backupIsError = false
-                            val memMsg = outcome.memorySummary?.let {
-                                "，并解锁恢复 ${it.importedSessions} 条会话记忆与 ${it.mergedBuckets} 组风格规则"
-                            }.orEmpty()
-                            backupStatusMsg = "✓ 配置 JSON 导入成功！已同步密钥库、短语与个人词典$memMsg"
-                        }.onFailure { err ->
-                            backupIsError = true
-                            backupStatusMsg = "✕ ${err.message ?: "导入配置失败"}"
-                        }
-                    }
+                    pendingImportJson = null
+                    executeImportJsonPayload(
+                        rawJson = readFromClipboard(context),
+                        skipMemoryIfNoPassphrase = false
+                    )
                 },
                 onImportSkipEncryptedMemory = {
-                    val clipText = readFromClipboard(context)
-                    ApiConfigBackupHelper.importBackupWithJevMemory(
-                        rawJson = clipText,
-                        existingSettings = settings,
-                        memoryRepository = repository.jevMemoryRepository,
-                        memoryPassphrase = null,
-                        adoptSaltProvider = repository.jevMemorySaltProvider as? AndroidKeystoreSaltProvider,
+                    val sourceJson = pendingImportJson ?: readFromClipboard(context)
+                    executeImportJsonPayload(
+                        rawJson = sourceJson,
                         skipMemoryIfNoPassphrase = true
-                    ).onSuccess { outcome ->
-                        repository.updateSettings { outcome.settings }
-                        backupMemoryPassphrase = ""
-                        showImportMemorySkipAction = false
-                        backupIsError = false
-                        backupStatusMsg = "✓ 已导入常规配置 JSON（已按要求跳过加密军师记忆）"
-                    }.onFailure { err ->
-                        backupIsError = true
-                        backupStatusMsg = "✕ ${err.message ?: "导入配置失败"}"
-                    }
+                    )
                 }
             )
         }
@@ -2737,22 +2961,79 @@ private fun LiveApiTesterContent(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun ConfigBackupContent(
     statusMessage: String?,
     statusIsError: Boolean,
+    isBusy: Boolean = false,
+    historyCount: Int = 0,
+    dailyStatsDaysCount: Int = 0,
+    pinnedClipboardCount: Int = 0,
+    includeHistory: Boolean = true,
+    onIncludeHistoryChange: (Boolean) -> Unit = {},
+    includeDailyStats: Boolean = true,
+    onIncludeDailyStatsChange: (Boolean) -> Unit = {},
+    includePredictions: Boolean = true,
+    onIncludePredictionsChange: (Boolean) -> Unit = {},
+    includePinnedClipboard: Boolean = true,
+    onIncludePinnedClipboardChange: (Boolean) -> Unit = {},
     includeEncryptedJevMemory: Boolean = false,
     onIncludeEncryptedJevMemoryChange: (Boolean) -> Unit = {},
     memoryPassphrase: String = "",
     onMemoryPassphraseChange: (String) -> Unit = {},
     showPassphraseField: Boolean = false,
     showSkipMemoryImportButton: Boolean = false,
-    onExportFullJson: () -> Unit,
+    hasPendingFileImport: Boolean = false,
+    onExportToJsonFile: () -> Unit = {},
+    onImportFromJsonFile: () -> Unit = {},
+    onUnlockPendingImport: () -> Unit = {},
+    onExportFullJsonToClipboard: () -> Unit,
     onExportRedactedJson: () -> Unit,
     onImportFromClipboard: () -> Unit,
     onImportSkipEncryptedMemory: () -> Unit = {}
 ) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = "包含的用户数据（默认全选，导入时自动无损合并去重）",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            BackupModuleFilterChip(
+                selected = includeHistory,
+                label = if (historyCount > 0) "识别历史 ($historyCount)" else "识别历史",
+                onClick = { onIncludeHistoryChange(!includeHistory) }
+            )
+            BackupModuleFilterChip(
+                selected = includeDailyStats,
+                label = if (dailyStatsDaysCount > 0) "统计与 Token (${dailyStatsDaysCount}天)" else "统计与 Token",
+                onClick = { onIncludeDailyStatsChange(!includeDailyStats) }
+            )
+            BackupModuleFilterChip(
+                selected = includePredictions,
+                label = "L2 私人连词库",
+                onClick = { onIncludePredictionsChange(!includePredictions) }
+            )
+            BackupModuleFilterChip(
+                selected = includePinnedClipboard,
+                label = if (pinnedClipboardCount > 0) "置顶剪贴板 ($pinnedClipboardCount)" else "置顶剪贴板",
+                onClick = { onIncludePinnedClipboardChange(!includePinnedClipboard) }
+            )
+        }
+        Text(
+            text = "配置项（密钥库、短语、个人词典、风格、应用规则、手势）始终包含；脱敏导出仅保留配置结构并隐藏密钥与个人数据。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            lineHeight = 16.sp
+        )
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -2765,7 +3046,7 @@ private fun ConfigBackupContent(
                 fontWeight = FontWeight.Medium
             )
             Text(
-                text = "导出完整配置时使用密码 AES-GCM 加密打包关系与风格记忆；脱敏导出绝不包含记忆",
+                text = "使用密码 AES-GCM 加密打包关系与风格记忆；脱敏导出绝不包含记忆",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2790,13 +3071,48 @@ private fun ConfigBackupContent(
         )
     }
 
+    // Primary File Export / Import Row (Recommended for Full Lossless Migration)
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        Button(
+            onClick = onExportToJsonFile,
+            enabled = !isBusy,
+            shape = RoundedCornerShape(11.dp)
+        ) {
+            Text(if (includeEncryptedJevMemory) "导出全量加密 .json 文件" else "导出全量 .json 文件")
+        }
+
         FilledTonalButton(
-            onClick = onExportFullJson,
+            onClick = onImportFromJsonFile,
+            enabled = !isBusy,
+            shape = RoundedCornerShape(11.dp)
+        ) {
+            Text("从 .json 文件导入")
+        }
+
+        if (showSkipMemoryImportButton && hasPendingFileImport) {
+            Button(
+                onClick = onUnlockPendingImport,
+                enabled = !isBusy && memoryPassphrase.isNotBlank(),
+                shape = RoundedCornerShape(11.dp)
+            ) {
+                Text("密码解锁并导入")
+            }
+        }
+    }
+
+    // Secondary Clipboard Export / Import Row
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        OutlinedButton(
+            onClick = onExportFullJsonToClipboard,
+            enabled = !isBusy,
             shape = RoundedCornerShape(11.dp)
         ) {
             Icon(
@@ -2805,30 +3121,50 @@ private fun ConfigBackupContent(
                 modifier = Modifier.size(15.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
-            Text(if (includeEncryptedJevMemory) "加密导出完整 JSON" else "导出完整配置 JSON")
-        }
-
-        OutlinedButton(
-            onClick = onExportRedactedJson,
-            shape = RoundedCornerShape(11.dp)
-        ) {
-            Text("脱敏导出 (隐藏 Key)")
+            Text("复制全量 JSON")
         }
 
         OutlinedButton(
             onClick = onImportFromClipboard,
+            enabled = !isBusy,
             shape = RoundedCornerShape(11.dp)
         ) {
-            Text("从剪贴板导入 JSON")
+            Text("从剪贴板导入")
+        }
+
+        OutlinedButton(
+            onClick = onExportRedactedJson,
+            enabled = !isBusy,
+            shape = RoundedCornerShape(11.dp)
+        ) {
+            Text("脱敏分享 (隐藏 Key)")
         }
 
         if (showSkipMemoryImportButton) {
             OutlinedButton(
                 onClick = onImportSkipEncryptedMemory,
+                enabled = !isBusy,
                 shape = RoundedCornerShape(11.dp)
             ) {
-                Text("跳过记忆仅导配置")
+                Text("跳过记忆仅导其余数据")
             }
+        }
+    }
+
+    if (isBusy) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp
+            )
+            Text(
+                text = "正在处理全量备份数据…",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 
@@ -2850,6 +3186,38 @@ private fun ConfigBackupContent(
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BackupModuleFilterChip(
+    selected: Boolean,
+    label: String,
+    onClick: () -> Unit
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium
+            )
+        },
+        leadingIcon = if (selected) {
+            {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        } else null,
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+        )
+    )
 }
 
 // =============================================================================

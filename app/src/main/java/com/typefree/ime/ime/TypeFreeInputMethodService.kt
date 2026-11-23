@@ -30,6 +30,7 @@ import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.data.stats.SchemeStatsKeys
 import com.typefree.core.ime.coordinator.DirectCommandType
 import com.typefree.ime.commit.AndroidCommitExecutor
 import com.typefree.ime.ime.engine.CodetableEnhancedInputEngine
@@ -76,6 +77,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
 
     private val undoStack = ArrayDeque<UndoSnapshot>()
     private var androidCommitExecutor: AndroidCommitExecutor? = null
+    private var currentEditorFieldId: Int = 0
+    private var lastEditorTextSyncMs: Long = 0L
 
     // Auto-Learned Dictionary (`Auto-added`) tracking state
     private var lastDictatedFullText: String? = null
@@ -276,6 +279,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
+        currentEditorFieldId = attribute?.fieldId ?: 0
         if (!restarting) {
             lastDictatedFullText = null
             lastDictatedAtMs = 0L
@@ -288,6 +292,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        currentEditorFieldId = info?.fieldId ?: 0
         repository.setImeWindowVisible(true)
         val latestHeightLevel = repository.settings.value.keyboardHeightLevel
         val latestHeightMode = repository.settings.value.keyboardHeightMode
@@ -420,6 +425,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     }
 
     private fun syncEditorMetadata(info: EditorInfo?, restarting: Boolean) {
+        currentEditorFieldId = info?.fieldId ?: 0
         val pkg = info?.packageName.orEmpty()
         val appName = repository.resolveAppName(pkg)
         val inputType = info?.inputType ?: 0
@@ -522,9 +528,30 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             )
         }
         val isFlypyComposing = _imeState.value.isFlypyComposing
+        val isSystemComposing = candidatesStart >= 0 && candidatesEnd > candidatesStart
+        val isComposingNow = isFlypyComposing || isSystemComposing
         androidCommitExecutor?.notifyExternalCursorChange(newSelStart, newSelEnd)
-        if (!isFlypyComposing) {
+        val looksClearedByHostSend = newSelStart == 0 &&
+            newSelEnd == 0 &&
+            candidatesStart == -1 &&
+            candidatesEnd == -1
+        val nowMs = System.currentTimeMillis()
+        val jevActive = voiceController.isJevFeedbackActive()
+        val shouldSyncEditorText = when {
+            isComposingNow -> false
+            looksClearedByHostSend -> true
+            jevActive -> voiceController.shouldPollEditorTextForJev(isComposing = false)
+            else -> (nowMs - lastEditorTextSyncMs) >= 180L
+        }
+        if (shouldSyncEditorText) {
             syncCurrentEditorText()
+        }
+        val editorSnapshotForJev = when {
+            isComposingNow -> null
+            shouldSyncEditorText -> _imeState.value.currentEditorText
+            jevActive && (nowMs - lastEditorTextSyncMs) <= 120L && _imeState.value.currentEditorText.isNotEmpty() ->
+                _imeState.value.currentEditorText
+            else -> null
         }
         voiceController.onSelectionUpdated(
             oldSelStart = oldSelStart,
@@ -533,13 +560,14 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             newSelEnd = newSelEnd,
             candidatesStart = candidatesStart,
             candidatesEnd = candidatesEnd,
-            isComposing = isFlypyComposing,
-            editorTextSnapshot = if (!isFlypyComposing) _imeState.value.currentEditorText else null
+            isComposing = isComposingNow,
+            editorTextSnapshot = editorSnapshotForJev
         )
     }
 
     override fun onWindowHidden() {
         tryAutoLearnFromRecentEdit()
+        repository.dailyStatsStore.flushAsync()
         repository.setImeWindowVisible(false)
         super.onWindowHidden()
         voiceController.stopRecordingOnTabSwitchOrWindowHidden()
@@ -591,6 +619,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     }
 
     override fun onDestroy() {
+        repository.dailyStatsStore.flushAsync()
         repository.setImeWindowVisible(false)
         voiceController.onDestroy()
         autoLearnToastJob?.cancel()
@@ -895,6 +924,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
 
         if (markManualEdit) {
             recordManualEditTouch()
+            recordKeyboardCommitStatsIfEligible(text)
         }
 
         if (recordUndo) {
@@ -912,6 +942,29 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             }
         }
         syncCurrentEditorText()
+    }
+
+    override fun currentEditorFieldId(): Int = currentEditorFieldId
+
+    private fun recordKeyboardCommitStatsIfEligible(text: String) {
+        if (text.isBlank()) return
+        val stateSnap = _imeState.value
+        val settingsSnap = repository.settings.value
+        if (!settingsSnap.inputStatsEnabled ||
+            settingsSnap.manualIncognitoMode ||
+            stateSnap.isIncognitoMode ||
+            ImeLogic.isPasswordEditorInputType(stateSnap.currentInputType)
+        ) {
+            return
+        }
+        repository.dailyStatsStore.recordKeyboardCommit(
+            charCount = text.length,
+            schemeKey = SchemeStatsKeys.fromInputScheme(
+                scheme = settingsSnap.inputScheme,
+                isChineseMode = stateSnap.isFlypyChineseMode
+            ),
+            appName = stateSnap.targetAppName
+        )
     }
 
     override fun onDictationCommittedForAutoLearn(fullBufferAfterCommit: String) {
@@ -1733,6 +1786,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     private fun onEnhancedEngineCommitted(committedText: String, @Suppress("UNUSED_PARAMETER") allowAutoLearn: Boolean) {
         if (committedText.isNotEmpty()) {
             typingController.recordExternalCommit(committedText)
+            recordKeyboardCommitStatsIfEligible(committedText)
             val undo = ImeLogic.createUndoSnapshot(
                 committedText = committedText,
                 replacedSelection = ""
@@ -1764,6 +1818,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     }
 
     private fun syncCurrentEditorText() {
+        lastEditorTextSyncMs = System.currentTimeMillis()
         val stateSnap = _imeState.value
         if (ImeLogic.isPasswordEditorInputType(stateSnap.currentInputType)) {
             if (stateSnap.currentEditorText.isNotEmpty()) {
