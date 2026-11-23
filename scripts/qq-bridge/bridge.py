@@ -480,7 +480,7 @@ class BridgeService:
     def _extract_release_highlights(
         raw_highlights: Any,
         max_items: int = 5,
-        max_item_len: int = 34,
+        max_item_len: int = 52,
     ) -> list[str]:
         if isinstance(raw_highlights, list):
             raw_lines = [str(item) for item in raw_highlights]
@@ -494,9 +494,8 @@ class BridgeService:
         stop_heading_re = re.compile(r"^#{1,6}\s*(?:安装包说明|下载说明|校验|checksum|assets)\b", re.IGNORECASE)
         skip_heading_re = re.compile(r"^#{1,6}\s*")
         skip_meta_re = re.compile(r"^(?:full changelog|https?://|sha-?256)", re.IGNORECASE)
-        bold_lead_re = re.compile(r"^\*\*([^*]{2,32})\*\*\s*[：:]\s*(.+)$")
         conv_prefix_re = re.compile(r"^(?:feat|fix|perf|refactor|docs|chore|ci|build)(?:\([^)]*\))?:\s*", re.IGNORECASE)
-        paren_re = re.compile(r"（[^（）]{4,}）|\([^()]{4,}\)")
+        paren_re = re.compile(r"（[^（）]*）|\([^()]*\)")
 
         for raw in raw_lines:
             line = raw.strip()
@@ -516,27 +515,27 @@ class BridgeService:
             if skip_meta_re.match(line):
                 continue
 
-            body = re.sub(r"^(?:[-*•]+|\d+[.)、])\s*", "", line)
-            bold_match = bold_lead_re.match(body)
-            if bold_match:
-                cleaned = bold_match.group(1).strip()
-            else:
-                cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", body)
-                cleaned = cleaned.replace("**", "").replace("__", "").replace("`", "")
-                cleaned = conv_prefix_re.sub("", cleaned)
-                cleaned = paren_re.sub("", cleaned)
-                cleaned = re.sub(r"\s+", " ", cleaned).strip()
-                # If a plain line has "短标题：长技术细节", keep the concise title for QQ chat readability
-                if "：" in cleaned:
-                    head, tail = cleaned.split("：", 1)
-                    if 3 <= len(head.strip()) <= 26 and len(tail.strip()) > 16:
-                        cleaned = head.strip()
-
+            cleaned = re.sub(r"^(?:[-*•]+|\d+[.)、])\s*", "", line)
+            cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
+            cleaned = cleaned.replace("**", "").replace("__", "").replace("`", "")
+            cleaned = conv_prefix_re.sub("", cleaned)
+            # Strip parenthetical technical details (e.g. engine names / flags) while keeping plain explanation
+            for _ in range(3):
+                stripped = paren_re.sub("", cleaned)
+                if stripped == cleaned:
+                    break
+                cleaned = stripped
+            cleaned = re.sub(r"\s*([：:，,。；;])\s*", r"\1", cleaned)
             cleaned = re.sub(r"\s+", " ", cleaned).strip(" ；;，,。")
             if len(cleaned) < 3:
                 continue
+            # If still longer than limit, prefer keeping the first complete sentence/clause before ；/。
             if len(cleaned) > max_item_len:
-                cleaned = cleaned[: max_item_len - 1].rstrip(" ，,、：:·/-") + "…"
+                first_clause = re.split(r"[。；;]", cleaned, maxsplit=1)[0].strip(" ，,、：:·/-")
+                if 10 <= len(first_clause) <= max_item_len:
+                    cleaned = first_clause
+                else:
+                    cleaned = cleaned[: max_item_len - 1].rstrip(" ，,、：:·/-") + "…"
             items.append(cleaned)
             if len(items) >= max_items:
                 break
@@ -554,7 +553,7 @@ class BridgeService:
         assets = release.get("assets") or []
         apk_asset = next((a for a in assets if str(a.get("name", "")).endswith(".apk")), None)
         official_apk_url = self._derive_official_apk_url(str(tag))
-        highlights = self._extract_release_highlights(release.get("body") or "", max_items=4, max_item_len=32)
+        highlights = self._extract_release_highlights(release.get("body") or "", max_items=4, max_item_len=48)
         lines = [f"📦 TypeFree 最新公开版：{tag}"]
         if highlights:
             lines.extend(f"• {item}" for item in highlights)
@@ -611,7 +610,7 @@ class BridgeService:
             highlights = self._extract_release_highlights(
                 payload.get("highlights") if payload.get("highlights") is not None else payload.get("release_notes"),
                 max_items=5,
-                max_item_len=34,
+                max_item_len=52,
             )
 
             sign_hint = "正式签名，可覆盖升级" if is_signed else "Debug 签名"
