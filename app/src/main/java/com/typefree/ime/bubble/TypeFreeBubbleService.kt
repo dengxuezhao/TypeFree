@@ -15,14 +15,13 @@ import android.os.IBinder
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.view.Choreographer
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,6 +32,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -44,13 +44,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -92,6 +98,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 sealed interface BubblePhase {
@@ -120,8 +128,10 @@ class TypeFreeBubbleService :
 
     private lateinit var windowManager: WindowManager
     private lateinit var audioRecorder: WavAudioRecorder
-    private var overlayView: ComposeView? = null
-    private lateinit var windowParams: WindowManager.LayoutParams
+    private var orbOverlayView: ComposeView? = null
+    private var capsuleOverlayView: ComposeView? = null
+    private lateinit var orbWindowParams: WindowManager.LayoutParams
+    private lateinit var capsuleWindowParams: WindowManager.LayoutParams
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var pipelineJob: Job? = null
@@ -130,6 +140,10 @@ class TypeFreeBubbleService :
 
     private val _phase = MutableStateFlow<BubblePhase>(BubblePhase.Idle)
     val phase = _phase.asStateFlow()
+    private val _dockedLeft = MutableStateFlow(false)
+    private val _capsuleSurfaceVisible = MutableStateFlow(false)
+    private val _orbHandoffHidden = MutableStateFlow(false)
+    private val _pillExpanded = MutableStateFlow(false)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -188,37 +202,78 @@ class TypeFreeBubbleService :
     }
 
     private fun attachOverlayWindow() {
-        if (overlayView != null) return
+        if (orbOverlayView != null || capsuleOverlayView != null) return
         val metrics = resources.displayMetrics
-        val screenWidth = metrics.widthPixels
         val screenHeight = metrics.heightPixels
         val settings = repository.settings.value
         val edgeMarginPx = (10 * metrics.density).roundToInt()
-        val bubbleWidthPx = (62 * metrics.density).roundToInt()
+        val orbSizePx = (64 * metrics.density).roundToInt()
+        val capsuleWidthPx = (172 * metrics.density).roundToInt()
 
-        val initialX = if (settings.bubbleDockLeft) {
-            edgeMarginPx
-        } else {
-            (screenWidth - bubbleWidthPx - edgeMarginPx).coerceAtLeast(0)
-        }
         val initialY = (screenHeight * settings.bubbleYRatio)
             .roundToInt()
             .coerceIn((screenHeight * 0.08f).roundToInt(), (screenHeight * 0.85f).roundToInt())
 
-        windowParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+        _dockedLeft.value = settings.bubbleDockLeft
+        val initialGravity = Gravity.TOP or if (settings.bubbleDockLeft) Gravity.START else Gravity.END
+
+        // Window 1: Compact 64dp × 64dp Idle Orb Surface (never resizes, never blocks adjacent app touches)
+        orbWindowParams = WindowManager.LayoutParams(
+            orbSizePx,
+            orbSizePx,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = initialX
+            gravity = initialGravity
+            x = edgeMarginPx
             y = initialY
+            windowAnimations = 0
         }
 
-        val view = ComposeView(this).apply {
+        // Window 2: Fixed 172dp × 64dp Active Capsule Surface (never resizes -> zero MIUI relayoutWindow position drift;
+        // View.GONE while Idle so underlying apps receive 100% pass-through touches with zero Android 12 untrusted-touch penalty)
+        capsuleWindowParams = WindowManager.LayoutParams(
+            capsuleWidthPx,
+            orbSizePx,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = initialGravity
+            x = edgeMarginPx
+            y = initialY
+            windowAnimations = 0
+        }
+
+        // Make-Before-Break VSync handoff coordinator between fixed Orb surface and fixed Capsule surface
+        serviceScope.launch {
+            phase.collect { p ->
+                if (p !is BubblePhase.Idle) {
+                    _capsuleSurfaceVisible.value = true
+                    awaitChoreographerFrame()
+                    awaitChoreographerFrame()
+                    _orbHandoffHidden.value = true
+                    _pillExpanded.value = true
+                } else {
+                    _pillExpanded.value = false
+                    delay(175L)
+                    if (_phase.value is BubblePhase.Idle) {
+                        _orbHandoffHidden.value = false
+                        awaitChoreographerFrame()
+                        awaitChoreographerFrame()
+                        if (_phase.value is BubblePhase.Idle) {
+                            _capsuleSurfaceVisible.value = false
+                        }
+                    }
+                }
+            }
+        }
+
+        val orbView = ComposeView(this).apply {
+            id = android.R.id.button1
             setViewTreeLifecycleOwner(this@TypeFreeBubbleService)
             setViewTreeViewModelStoreOwner(this@TypeFreeBubbleService)
             setViewTreeSavedStateRegistryOwner(this@TypeFreeBubbleService)
@@ -229,27 +284,66 @@ class TypeFreeBubbleService :
                 val a11yConnected by TypeFreeBubbleController.isAccessibilityConnected.collectAsState()
                 val forcePreview by TypeFreeBubbleController.forcePreviewVisible.collectAsState()
                 val currPhase by phase.collectAsState()
-                val amplitudes by audioRecorder.amplitudes.collectAsState()
-                val elapsedMs by audioRecorder.elapsedMs.collectAsState()
+                val handoffHidden by _orbHandoffHidden.collectAsState()
 
-                val shouldShow = !imeVisible &&
+                val baseAllowed = !imeVisible &&
                     !focusedSnap.isSensitivePassword &&
                     (currPhase != BubblePhase.Idle ||
                         forcePreview ||
                         !a11yConnected ||
                         focusedSnap.hasEditableFocus)
+                val showOrb = baseAllowed && !handoffHidden
 
-                LaunchedEffect(shouldShow) {
-                    this@apply.visibility = if (shouldShow) View.VISIBLE else View.GONE
+                LaunchedEffect(showOrb) {
+                    this@apply.visibility = if (showOrb) View.VISIBLE else View.GONE
                 }
 
-                if (shouldShow) {
+                if (showOrb) {
                     TypeFreeTheme(themePreference = currSettings.themePreference) {
                         val isDark = resolveDarkTheme(currSettings.themePreference)
-                        BubbleOverlayWidget(
+                        BubbleIdleOrbWidget(
                             isDark = isDark,
-                            phase = currPhase,
                             hasSelectedText = focusedSnap.selectedText.isNotBlank(),
+                            onTapPrimary = ::handleBubbleTap,
+                            onDragDelta = ::moveWindowBy,
+                            onDragEnd = ::snapWindowToEdge
+                        )
+                    }
+                }
+            }
+        }
+
+        val capView = ComposeView(this).apply {
+            id = android.R.id.button2
+            visibility = View.GONE
+            setViewTreeLifecycleOwner(this@TypeFreeBubbleService)
+            setViewTreeViewModelStoreOwner(this@TypeFreeBubbleService)
+            setViewTreeSavedStateRegistryOwner(this@TypeFreeBubbleService)
+            setContent {
+                val currSettings by repository.settings.collectAsState()
+                val imeVisible by repository.isImeWindowVisible.collectAsState()
+                val focusedSnap by TypeFreeBubbleController.focusedInput.collectAsState()
+                val currPhase by phase.collectAsState()
+                val isDockedLeft by _dockedLeft.collectAsState()
+                val capVisible by _capsuleSurfaceVisible.collectAsState()
+                val pillExpanded by _pillExpanded.collectAsState()
+                val amplitudes by audioRecorder.amplitudes.collectAsState()
+                val elapsedMs by audioRecorder.elapsedMs.collectAsState()
+
+                val showCap = capVisible && !imeVisible && !focusedSnap.isSensitivePassword
+
+                LaunchedEffect(showCap) {
+                    this@apply.visibility = if (showCap) View.VISIBLE else View.GONE
+                }
+
+                if (showCap) {
+                    TypeFreeTheme(themePreference = currSettings.themePreference) {
+                        val isDark = resolveDarkTheme(currSettings.themePreference)
+                        BubbleActiveCapsuleWidget(
+                            isDark = isDark,
+                            dockLeft = isDockedLeft,
+                            pillExpanded = pillExpanded,
+                            phase = currPhase,
                             amplitudes = amplitudes,
                             elapsedMs = elapsedMs,
                             onTapPrimary = ::handleBubbleTap,
@@ -263,58 +357,91 @@ class TypeFreeBubbleService :
         }
 
         try {
-            windowManager.addView(view, windowParams)
-            overlayView = view
+            windowManager.addView(orbView, orbWindowParams)
+            orbOverlayView = orbView
+            windowManager.addView(capView, capsuleWindowParams)
+            capsuleOverlayView = capView
         } catch (_: Exception) {
+            detachOverlayWindow()
             stopSelf()
         }
     }
 
+    private suspend fun awaitChoreographerFrame() {
+        suspendCancellableCoroutine<Unit> { cont ->
+            val callback = Choreographer.FrameCallback {
+                if (cont.isActive) cont.resume(Unit)
+            }
+            Choreographer.getInstance().postFrameCallback(callback)
+            cont.invokeOnCancellation {
+                Choreographer.getInstance().removeFrameCallback(callback)
+            }
+        }
+    }
+
     private fun detachOverlayWindow() {
-        val view = overlayView ?: return
-        overlayView = null
-        try {
-            windowManager.removeView(view)
-        } catch (_: Exception) {
+        orbOverlayView?.let { v ->
+            orbOverlayView = null
+            runCatching { windowManager.removeView(v) }
+        }
+        capsuleOverlayView?.let { v ->
+            capsuleOverlayView = null
+            runCatching { windowManager.removeView(v) }
         }
     }
 
     private fun moveWindowBy(dx: Float, dy: Float) {
-        val view = overlayView ?: return
+        val orb = orbOverlayView ?: return
         val metrics = resources.displayMetrics
-        windowParams.x = (windowParams.x + dx.roundToInt())
-            .coerceIn(0, (metrics.widthPixels - view.width.coerceAtLeast(100)).coerceAtLeast(0))
-        windowParams.y = (windowParams.y + dy.roundToInt())
+        val orbW = (64 * metrics.density).roundToInt()
+        val isRightAnchored = (orbWindowParams.gravity and Gravity.END) == Gravity.END
+        val nextX = if (isRightAnchored) {
+            orbWindowParams.x - dx.roundToInt()
+        } else {
+            orbWindowParams.x + dx.roundToInt()
+        }
+        val clampedX = nextX.coerceIn(0, (metrics.widthPixels - orbW).coerceAtLeast(0))
+        val clampedY = (orbWindowParams.y + dy.roundToInt())
             .coerceIn(
                 (metrics.heightPixels * 0.05f).roundToInt(),
                 (metrics.heightPixels * 0.88f).roundToInt()
             )
-        try {
-            windowManager.updateViewLayout(view, windowParams)
-        } catch (_: Exception) {
+        orbWindowParams.x = clampedX
+        orbWindowParams.y = clampedY
+        capsuleWindowParams.x = clampedX
+        capsuleWindowParams.y = clampedY
+        runCatching { windowManager.updateViewLayout(orb, orbWindowParams) }
+        capsuleOverlayView?.let { cap ->
+            runCatching { windowManager.updateViewLayout(cap, capsuleWindowParams) }
         }
     }
 
     private fun snapWindowToEdge() {
-        val view = overlayView ?: return
+        val orb = orbOverlayView ?: return
         val metrics = resources.displayMetrics
         val screenWidth = metrics.widthPixels
         val screenHeight = metrics.heightPixels
         val edgeMarginPx = (10 * metrics.density).roundToInt()
-        val viewW = view.width.takeIf { it > 0 } ?: (58 * metrics.density).roundToInt()
+        val orbW = (64 * metrics.density).roundToInt()
+        val isRightAnchored = (orbWindowParams.gravity and Gravity.END) == Gravity.END
 
-        val centerX = windowParams.x + viewW / 2
-        val dockLeft = centerX < screenWidth / 2
-        windowParams.x = if (dockLeft) {
-            edgeMarginPx
+        val centerX = if (isRightAnchored) {
+            screenWidth - orbWindowParams.x - orbW / 2
         } else {
-            (screenWidth - viewW - edgeMarginPx).coerceAtLeast(0)
+            orbWindowParams.x + orbW / 2
         }
-        try {
-            windowManager.updateViewLayout(view, windowParams)
-        } catch (_: Exception) {
+        val dockLeft = centerX < screenWidth / 2
+        _dockedLeft.value = dockLeft
+        val newGravity = Gravity.TOP or if (dockLeft) Gravity.START else Gravity.END
+        orbWindowParams.gravity = newGravity
+        orbWindowParams.x = edgeMarginPx
+        capsuleWindowParams.gravity = newGravity
+        capsuleWindowParams.x = edgeMarginPx
+        runCatching { windowManager.updateViewLayout(orb, orbWindowParams) }
+        capsuleOverlayView?.let { cap ->
+            runCatching { windowManager.updateViewLayout(cap, capsuleWindowParams) }
         }
-        val yRatio = (windowParams.y.toFloat() / screenHeight.coerceAtLeast(1)).coerceIn(0.08f, 0.88f)
+        val yRatio = (orbWindowParams.y.toFloat() / screenHeight.coerceAtLeast(1)).coerceIn(0.08f, 0.88f)
         repository.updateSettings {
             it.copy(bubbleDockLeft = dockLeft, bubbleYRatio = yRatio)
         }
@@ -632,26 +759,20 @@ class TypeFreeBubbleService :
 }
 
 @Composable
-private fun BubbleOverlayWidget(
+private fun BubbleIdleOrbWidget(
     isDark: Boolean,
-    phase: BubblePhase,
     hasSelectedText: Boolean,
-    amplitudes: List<Float>,
-    elapsedMs: Long,
     onTapPrimary: () -> Unit,
-    onCancel: () -> Unit,
     onDragDelta: (Float, Float) -> Unit,
     onDragEnd: () -> Unit
 ) {
-    // Authentic `bubble_hero_light.png` / `bubble_hero_dark.png` colors:
-    // Light mode -> Pure charcoal (#141417) circle + white waveform + translucent light outer halo
-    // Dark mode  -> Crisp off-white (#F4F4F6) circle + dark waveform + translucent dark outer halo
     val primaryFill = if (isDark) Color(0xFFF4F4F6) else Color(0xFF141417)
     val contentFg = if (isDark) Color(0xFF141417) else Color(0xFFFFFFFF)
     val haloRing = if (isDark) Color(0x38FFFFFF) else Color(0x22000000)
 
     Box(
         modifier = Modifier
+            .size(64.dp)
             .padding(4.dp)
             .pointerInput(Unit) {
                 detectDragGestures(
@@ -662,154 +783,260 @@ private fun BubbleOverlayWidget(
                         onDragDelta(dragAmount.x, dragAmount.y)
                     }
                 )
-            }
+            },
+        contentAlignment = Alignment.Center
     ) {
-        AnimatedContent(
-            targetState = phase,
-            transitionSpec = { fadeIn(tween(150)) togetherWith fadeOut(tween(120)) },
-            label = "BubblePhaseAnim"
-        ) { targetPhase ->
-            when (targetPhase) {
-                is BubblePhase.Idle -> {
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(CircleShape)
+                .background(haloRing)
+                .padding(4.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .shadow(6.dp, CircleShape)
+                    .clip(CircleShape)
+                    .background(primaryFill)
+                    .clickable { onTapPrimary() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = TypeFreeIcons.VoiceWaveform,
+                    contentDescription = "TypeFree 悬浮语音",
+                    tint = contentFg,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            if (hasSelectedText) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(2.dp)
+                        .size(11.dp)
+                        .clip(CircleShape)
+                        .background(TypeFreeEmerald)
+                        .border(1.5.dp, Color.White, CircleShape)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BubbleActiveCapsuleWidget(
+    isDark: Boolean,
+    dockLeft: Boolean,
+    pillExpanded: Boolean,
+    phase: BubblePhase,
+    amplitudes: List<Float>,
+    elapsedMs: Long,
+    onTapPrimary: () -> Unit,
+    onCancel: () -> Unit,
+    onDragDelta: (Float, Float) -> Unit,
+    onDragEnd: () -> Unit
+) {
+    val primaryFill = if (isDark) Color(0xFFF4F4F6) else Color(0xFF141417)
+    val contentFg = if (isDark) Color(0xFF141417) else Color(0xFFFFFFFF)
+    val haloRing = if (isDark) Color(0x38FFFFFF) else Color(0x22000000)
+
+    val isActive = phase !is BubblePhase.Idle
+    var lastActivePhase by remember { mutableStateOf<BubblePhase>(BubblePhase.Recording) }
+    if (isActive) {
+        lastActivePhase = phase
+    }
+
+    val expandProgress by animateFloatAsState(
+        targetValue = if (pillExpanded) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = if (pillExpanded) 185 else 155,
+            easing = FastOutSlowInEasing
+        ),
+        label = "BubbleCapsuleProgress"
+    )
+
+    val displayActivePhase = if (isActive) phase else lastActivePhase
+    val expandedPillWidth = when (displayActivePhase) {
+        is BubblePhase.Recording -> 156.dp
+        is BubblePhase.Processing -> 148.dp
+        is BubblePhase.Feedback -> 152.dp
+        else -> 156.dp
+    }
+    val currentPillWidth = 48.dp + (expandedPillWidth - 48.dp) * expandProgress
+    val outerPad = (4f * (1f - expandProgress)).dp
+    val pillBg = if (displayActivePhase is BubblePhase.Feedback && displayActivePhase.isError && expandProgress > 0.25f) {
+        TypeFreeRose
+    } else {
+        primaryFill
+    }
+    val activeFg = if (displayActivePhase is BubblePhase.Feedback && displayActivePhase.isError) {
+        Color.White
+    } else {
+        contentFg
+    }
+    val dockAlignment = if (dockLeft) Alignment.CenterStart else Alignment.CenterEnd
+    val orbAlpha = (1f - expandProgress * 2.4f).coerceIn(0f, 1f)
+    val detailAlpha = ((expandProgress - 0.35f) / 0.65f).coerceIn(0f, 1f)
+
+    Box(
+        modifier = Modifier
+            .width(172.dp)
+            .height(64.dp)
+            .padding(horizontal = 4.dp)
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragEnd = { onDragEnd() },
+                    onDragCancel = { onDragEnd() },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        onDragDelta(dragAmount.x, dragAmount.y)
+                    }
+                )
+            },
+        contentAlignment = dockAlignment
+    ) {
+        Box(
+            modifier = Modifier
+                .height(48.dp + outerPad * 2)
+                .width(currentPillWidth + outerPad * 2)
+                .clip(RoundedCornerShape(50))
+                .background(haloRing.copy(alpha = haloRing.alpha * (1f - expandProgress)))
+                .padding(outerPad),
+            contentAlignment = dockAlignment
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(currentPillWidth)
+                    .height(48.dp)
+                    .shadow(6.dp, RoundedCornerShape(24.dp))
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(pillBg)
+                    .clickable { onTapPrimary() },
+                contentAlignment = Alignment.Center
+            ) {
+                if (orbAlpha > 0.01f) {
                     Box(
                         modifier = Modifier
-                            .size(56.dp)
-                            .clip(CircleShape)
-                            .background(haloRing)
-                            .padding(4.dp),
+                            .align(dockAlignment)
+                            .size(48.dp)
+                            .graphicsLayer { alpha = orbAlpha },
                         contentAlignment = Alignment.Center
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(48.dp)
-                                .shadow(6.dp, CircleShape)
-                                .clip(CircleShape)
-                                .background(primaryFill)
-                                .clickable { onTapPrimary() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = TypeFreeIcons.VoiceWaveform,
-                                contentDescription = "TypeFree 悬浮语音",
-                                tint = contentFg,
-                                modifier = Modifier.size(24.dp)
-                            )
-                        }
-                        if (hasSelectedText) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(2.dp)
-                                    .size(11.dp)
-                                    .clip(CircleShape)
-                                    .background(TypeFreeEmerald)
-                                    .border(1.5.dp, Color.White, CircleShape)
-                            )
-                        }
+                        Icon(
+                            imageVector = TypeFreeIcons.VoiceWaveform,
+                            contentDescription = "TypeFree 悬浮语音",
+                            tint = contentFg,
+                            modifier = Modifier.size(24.dp)
+                        )
                     }
                 }
 
-                is BubblePhase.Recording -> {
-                    Row(
+                if (detailAlpha > 0.01f) {
+                    Box(
                         modifier = Modifier
+                            .requiredWidth(expandedPillWidth)
                             .height(48.dp)
-                            .shadow(8.dp, RoundedCornerShape(24.dp))
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(primaryFill)
-                            .clickable { onTapPrimary() }
-                            .padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            .graphicsLayer { alpha = detailAlpha },
+                        contentAlignment = Alignment.Center
                     ) {
-                        // Mini live symmetrical 5-bar waveform
-                        val sample = amplitudes.takeLast(5).let {
-                            if (it.size < 5) List(5 - it.size) { 0.25f } + it else it
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.5.dp)
-                        ) {
-                            sample.forEachIndexed { idx, amp ->
-                                val baseFactor = if (idx == 2) 1.0f else if (idx == 1 || idx == 3) 0.75f else 0.5f
-                                val barH = (6f + (amp.coerceIn(0.08f, 1f) * 16f * baseFactor)).dp
-                                Box(
-                                    modifier = Modifier
-                                        .width(2.5.dp)
-                                        .height(barH)
-                                        .clip(CircleShape)
-                                        .background(contentFg)
-                                )
+                        when (displayActivePhase) {
+                            is BubblePhase.Recording -> {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    val sample = amplitudes.takeLast(5).let {
+                                        if (it.size < 5) List(5 - it.size) { 0.25f } + it else it
+                                    }
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(2.5.dp)
+                                    ) {
+                                        sample.forEachIndexed { idx, amp ->
+                                            val baseFactor = if (idx == 2) 1.0f else if (idx == 1 || idx == 3) 0.75f else 0.5f
+                                            val barH = (6f + (amp.coerceIn(0.08f, 1f) * 16f * baseFactor)).dp
+                                            Box(
+                                                modifier = Modifier
+                                                    .width(2.5.dp)
+                                                    .height(barH)
+                                                    .clip(CircleShape)
+                                                    .background(activeFg)
+                                            )
+                                        }
+                                    }
+
+                                    Text(
+                                        text = ImeLogic.formatElapsedTimer(elapsedMs),
+                                        color = activeFg,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        style = TextStyle(fontFeatureSettings = "tnum"),
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+
+                                    Box(
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .clip(CircleShape)
+                                            .background(activeFg.copy(alpha = 0.16f))
+                                            .clickable { onCancel() },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = TypeFreeIcons.Close,
+                                            contentDescription = "取消",
+                                            tint = activeFg,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                    }
+                                }
                             }
+
+                            is BubblePhase.Processing -> {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(15.dp),
+                                        strokeWidth = 2.dp,
+                                        color = activeFg
+                                    )
+                                    Text(
+                                        text = displayActivePhase.label,
+                                        color = activeFg,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                            }
+
+                            is BubblePhase.Feedback -> {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 13.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = displayActivePhase.message,
+                                        color = activeFg,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                }
+                            }
+
+                            is BubblePhase.Idle -> Unit
                         }
-
-                        Text(
-                            text = ImeLogic.formatElapsedTimer(elapsedMs),
-                            color = contentFg,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-
-                        Box(
-                            modifier = Modifier
-                                .size(22.dp)
-                                .clip(CircleShape)
-                                .background(contentFg.copy(alpha = 0.16f))
-                                .clickable { onCancel() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = TypeFreeIcons.Close,
-                                contentDescription = "取消",
-                                tint = contentFg,
-                                modifier = Modifier.size(13.dp)
-                            )
-                        }
-                    }
-                }
-
-                is BubblePhase.Processing -> {
-                    Row(
-                        modifier = Modifier
-                            .height(44.dp)
-                            .shadow(6.dp, RoundedCornerShape(22.dp))
-                            .clip(RoundedCornerShape(22.dp))
-                            .background(primaryFill)
-                            .padding(horizontal = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(15.dp),
-                            strokeWidth = 2.dp,
-                            color = contentFg
-                        )
-                        Text(
-                            text = targetPhase.label,
-                            color = contentFg,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                }
-
-                is BubblePhase.Feedback -> {
-                    Row(
-                        modifier = Modifier
-                            .height(42.dp)
-                            .shadow(6.dp, RoundedCornerShape(21.dp))
-                            .clip(RoundedCornerShape(21.dp))
-                            .background(if (targetPhase.isError) TypeFreeRose else primaryFill)
-                            .clickable { onTapPrimary() }
-                            .padding(horizontal = 13.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = targetPhase.message,
-                            color = if (targetPhase.isError) Color.White else contentFg,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(modifier = Modifier.width(2.dp))
                     }
                 }
             }

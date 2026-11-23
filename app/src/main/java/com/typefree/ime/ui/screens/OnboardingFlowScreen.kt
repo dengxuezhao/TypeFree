@@ -373,10 +373,14 @@ fun OnboardingFlowScreen(
         label = "onboardingProgress"
     )
 
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+        contentColor = MaterialTheme.colorScheme.onBackground
+    ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
@@ -741,6 +745,7 @@ fun OnboardingFlowScreen(
                 )
             }
         }
+    }
     }
 
     if (showKeyGuideDialog) {

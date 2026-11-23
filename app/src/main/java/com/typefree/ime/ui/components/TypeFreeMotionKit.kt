@@ -486,6 +486,7 @@ fun MochiSelectCard(
             .springPressScale(pressedScale = 0.98f, interactionSource = interactionSource),
         shape = shape,
         color = containerColor,
+        contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(borderWidth, borderColor)
     ) {
         Column(
