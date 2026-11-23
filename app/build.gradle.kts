@@ -197,7 +197,7 @@ dependencies {
     implementation(project(":rime"))
     implementation(project(":localai-native"))
 
-    val composeBom = platform("androidx.compose:compose-bom:2025.04.01")
+    val composeBom = platform("androidx.compose:compose-bom:2026.11.01")
     implementation(composeBom)
 
     implementation("androidx.core:core-ktx:1.13.1")
@@ -213,13 +213,13 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.foundation:foundation")
 
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.google.code.gson:gson:2.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.1")
+    implementation("com.google.code.gson:gson:2.15.0")
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
     implementation(files("libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar"))
-    implementation("androidx.work:work-runtime-ktx:2.10.0")
-    implementation("org.apache.commons:commons-compress:1.27.1")
+    implementation("androidx.work:work-runtime-ktx:2.12.0")
+    implementation("org.apache.commons:commons-compress:1.28.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation(project(":core"))
