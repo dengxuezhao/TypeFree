@@ -305,11 +305,12 @@ object OfflineModelCatalog {
             id = ID_SLM_CORE_0_8B,
             slot = LocalModelSlot.SLM,
             displayName = "轻巧净写版（0.8B）",
-            subtitle = "Qwen3.5-0.8B Q4_K_M：主接管净写与整句补全，断网/离线兜底选中改写与润色，6GB 机型友好",
+            subtitle = "Qwen3.5-0.8B Q4_K_M：免费端侧净写与整句补全，断网兜底选中改写与润色，6GB 机型友好",
             sizeBytes = 510L * MB,
             approxRamMb = 680,
             minRamMb = 0,
-            isProOnly = true,
+            isProOnly = false,
+            isDefaultRecommended = true,
             primaryTasks = setOf(
                 AiTask.DICTATE,
                 AiTask.SENTENCE_COMPLETION

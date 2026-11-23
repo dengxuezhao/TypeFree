@@ -776,6 +776,7 @@ fun VoiceHotwordsManagementSection(
     var editingEntry by remember { mutableStateOf<DictionaryEntry?>(null) }
     var showBatchImportDialog by remember { mutableStateOf(false) }
     var showBatchDeleteConfirm by remember { mutableStateOf(false) }
+    var expandedAllHotwords by rememberSaveable { mutableStateOf(false) }
 
     val autoCount = remember(dictionary) {
         dictionary.count { it.source == DictionarySource.AUTO_LEARNED }
@@ -1057,7 +1058,12 @@ fun VoiceHotwordsManagementSection(
                 }
             }
         } else {
-            filteredEntries.forEach { entry ->
+            val visibleEntries = if (expandedAllHotwords || searchQuery.isNotBlank() || isBatchMode || filteredEntries.size <= 6) {
+                filteredEntries
+            } else {
+                filteredEntries.take(6)
+            }
+            visibleEntries.forEach { entry ->
                 val isSelected = entry.id in validSelectedIds
                 SharedHotwordEntryCard(
                     entry = entry,
@@ -1084,6 +1090,17 @@ fun VoiceHotwordsManagementSection(
                         Toast.makeText(context, "已删除热词「${entry.term}」", Toast.LENGTH_SHORT).show()
                     }
                 )
+            }
+            if (searchQuery.isBlank() && !isBatchMode && filteredEntries.size > 6) {
+                TextButton(
+                    onClick = { expandedAllHotwords = !expandedAllHotwords },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = if (expandedAllHotwords) "收起热词列表" else "展开全部 ${filteredEntries.size} 条热词",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
             }
         }
     }

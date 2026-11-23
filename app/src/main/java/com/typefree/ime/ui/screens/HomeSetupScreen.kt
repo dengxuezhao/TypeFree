@@ -121,6 +121,7 @@ import com.typefree.ime.network.PipelineStage
 import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
+import com.typefree.ime.ui.components.SmoothDisclosure
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
 import com.typefree.ime.ui.components.springPressScale
@@ -312,7 +313,9 @@ fun HomeSetupScreen(
     onNavigateToTab: (Int) -> Unit,
     onNavigateToSettingsSubTab: (Int) -> Unit = { onNavigateToTab(AppDestinations.TAB_VOICE_AI) },
     onNavigateToVoiceAiSubTab: (Int) -> Unit = onNavigateToSettingsSubTab,
-    onOpenOfflineModels: () -> Unit = { onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_API) }
+    onOpenOfflineModels: () -> Unit = { onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_API) },
+    initialOpenInsights: Boolean = false,
+    onConsumeOpenInsights: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -322,7 +325,13 @@ fun HomeSetupScreen(
     val settings by repository.settings.collectAsState()
     val history by repository.history.collectAsState()
     val statsRev by repository.dailyStatsRevision.collectAsState()
-    var showInsightsPage by rememberSaveable { mutableStateOf(false) }
+    var showInsightsPage by rememberSaveable { mutableStateOf(initialOpenInsights) }
+    LaunchedEffect(initialOpenInsights) {
+        if (initialOpenInsights) {
+            showInsightsPage = true
+            onConsumeOpenInsights()
+        }
+    }
     var historyFilterDateKey by rememberSaveable { mutableStateOf<Int?>(null) }
     var showJevMemoryDialog by remember { mutableStateOf(false) }
     val weekSnapshot = remember(settings, history, statsRev, showInsightsPage, showJevMemoryDialog) {
@@ -575,18 +584,13 @@ fun HomeSetupScreen(
             }
         )
 
-        // 2. Hero Efficiency Metrics Card (Real Insights Metrics + Mini 7-Day Waveform -> InsightsScreen)
+        // 2. Hero Efficiency & History Unified Card (Real Insights Metrics + Recognition History Link)
         HeroMetricsCard(
             weekSnapshot = weekSnapshot,
             allSnapshot = allSnapshot,
-            onClickOpenInsights = { showInsightsPage = true }
-        )
-
-        // 2.5 Prominent Entry Card for Recognition History (no longer a bottom tab)
-        HistoryEntryCard(
-            totalCount = history.size,
-            latestSnippet = history.firstOrNull()?.polishedText.orEmpty(),
-            onOpenHistory = {
+            historyCount = history.size,
+            onClickOpenInsights = { showInsightsPage = true },
+            onClickOpenHistory = {
                 historyFilterDateKey = null
                 showHistoryPage = true
             }
@@ -1073,7 +1077,9 @@ private fun TopBrandBar(
 private fun HeroMetricsCard(
     weekSnapshot: InsightsSnapshot,
     allSnapshot: InsightsSnapshot,
-    onClickOpenInsights: () -> Unit
+    historyCount: Int = 0,
+    onClickOpenInsights: () -> Unit,
+    onClickOpenHistory: () -> Unit = {}
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val streakDays = allSnapshot.streakDays
@@ -1226,26 +1232,56 @@ private fun HeroMetricsCard(
                 }
             }
 
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp),
-                horizontalArrangement = Arrangement.End,
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = TypeFreeIcons.Sparkles,
-                    contentDescription = null,
-                    tint = TypeFreeEmerald,
-                    modifier = Modifier.size(14.dp)
-                )
-                Spacer(modifier = Modifier.width(5.dp))
-                Text(
-                    text = "查看表达洞察 ›",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onClickOpenHistory)
+                        .padding(horizontal = 4.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = TypeFreeIcons.History,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = "识别历史 ($historyCount 条) ›",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onClickOpenInsights)
+                        .padding(horizontal = 4.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = TypeFreeIcons.Sparkles,
+                        contentDescription = null,
+                        tint = TypeFreeEmerald,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = "表达洞察 ›",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
@@ -1688,123 +1724,33 @@ private fun KeyboardSetupWizardCard(
     var a11ySoftTipDismissed by rememberSaveable { mutableStateOf(false) }
 
     if (allReady && !manualExpanded) {
-        val readyAccent = if (isDegradedRawOnly) TypeFreeAmber else TypeFreeEmerald
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            // Sleek 1-Line Ready Banner (Emerald for full ready, Amber for raw-only degraded offline ASR)
+        if (hasPendingOfflineRestore) {
             Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .clickable { manualExpanded = true },
-                shape = RoundedCornerShape(16.dp),
-                color = readyAccent.copy(alpha = 0.10f),
-                border = BorderStroke(1.dp, readyAccent.copy(alpha = 0.45f))
+                onClick = onOpenOfflineModels,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = TypeFreeAmber.copy(alpha = 0.10f),
+                border = BorderStroke(1.dp, TypeFreeAmber.copy(alpha = 0.40f))
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 11.dp),
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    Text(
+                        text = "检测到导入配置启用了离线模型，点击前往下载恢复",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(22.dp)
-                                .clip(CircleShape)
-                                .background(readyAccent),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(13.dp)
-                            )
-                        }
-                        Text(
-                            text = if (isDegradedRawOnly) {
-                                "灵言语音键盘已就绪（仅转写）· 点击展开"
-                            } else {
-                                "灵言 TypeFree 语音键盘已就绪 (3/3) · 点击展开"
-                            },
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        TextButton(
-                            onClick = onShowImePicker,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                        ) {
-                            Text("切换输入法", style = MaterialTheme.typography.labelSmall)
-                        }
-                        Icon(
-                            imageVector = Icons.Default.KeyboardArrowDown,
-                            contentDescription = "展开详情",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-            }
-
-            // Optional soft guidance for ✦ Jev Copilot screen-reading Accessibility permission
-            if (jevCopilotEnabled && !isAccessibilityReady && !a11ySoftTipDismissed) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    color = TypeFreeAmber.copy(alpha = 0.10f),
-                    border = BorderStroke(1.dp, TypeFreeAmber.copy(alpha = 0.40f))
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Text(
-                                text = "✦ 军师读屏尚未开启无障碍（可选）",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "仅在主动点击「✦ 军师」时按需读取聊天上文并端侧脱敏；纯打字/帮写/问AI 无需开启",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Column(horizontalAlignment = Alignment.End) {
-                            FilledTonalButton(
-                                onClick = onOpenAccessibility,
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("去开启", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                            }
-                            TextButton(
-                                onClick = { a11ySoftTipDismissed = true },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                            ) {
-                                Text("暂不", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
+                    )
+                    Text(
+                        text = "去恢复 ›",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = TypeFreeAmber
+                    )
                 }
             }
         }
@@ -2097,9 +2043,21 @@ private fun PersonalizationReportCard(
     val interactionSource = remember { MutableInteractionSource() }
     val topDna = remember(allSnapshot.jevDnaItems) { allSnapshot.jevDnaItems.take(3) }
     val personalLinkMemoryCount = allSnapshot.personalBigramCount + allSnapshot.personalTrigramCount
+    val hasEnoughUsageToAutoExpand = (allSnapshot.voiceCount + allSnapshot.keyCommits) >= 5 ||
+        allSnapshot.autoLearnedDictCount > 0 ||
+        personalLinkMemoryCount > 0 ||
+        allSnapshot.jevSessionCount > 0
+    var manualExpanded by rememberSaveable { mutableStateOf(false) }
+    val expanded = hasEnoughUsageToAutoExpand || manualExpanded
 
     Card(
-        onClick = onOpenInsights,
+        onClick = {
+            if (!expanded) {
+                manualExpanded = true
+            } else {
+                onOpenInsights()
+            }
+        },
         interactionSource = interactionSource,
         modifier = Modifier
             .fillMaxWidth()
@@ -2126,7 +2084,11 @@ private fun PersonalizationReportCard(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "本机沉淀你的语体习惯、纠错词库与私人连词记忆",
+                        text = if (expanded) {
+                            "本机沉淀你的语体习惯、纠错词库与私人连词记忆"
+                        } else {
+                            "累计口述满 5 次自动展开语体与个人词库沉淀 · 点击预览"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2137,13 +2099,17 @@ private fun PersonalizationReportCard(
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
-                        text = "成长洞察",
+                        text = if (expanded) "成长洞察" else "展开",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        imageVector = if (expanded) {
+                            Icons.AutoMirrored.Filled.KeyboardArrowRight
+                        } else {
+                            Icons.Default.KeyboardArrowDown
+                        },
                         contentDescription = "查看表达洞察",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(16.dp)
@@ -2151,110 +2117,114 @@ private fun PersonalizationReportCard(
                 }
             }
 
-            // Top 3 Jev Style DNA Chips (Active emerald / Observing amber)
-            if (topDna.isNotEmpty()) {
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    topDna.forEach { item ->
-                        val accent = if (item.isActive) TypeFreeEmerald else TypeFreeAmber
-                        val chipText = if (item.isActive) {
-                            "✓ ${item.title}"
-                        } else {
-                            "${item.title} · 观察中 ${item.currentCount}/${item.requiredCount}"
+            SmoothDisclosure(expanded = expanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // Top 3 Jev Style DNA Chips (Active emerald / Observing amber)
+                    if (topDna.isNotEmpty()) {
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            topDna.forEach { item ->
+                                val accent = if (item.isActive) TypeFreeEmerald else TypeFreeAmber
+                                val chipText = if (item.isActive) {
+                                    "✓ ${item.title}"
+                                } else {
+                                    "${item.title} · 观察中 ${item.currentCount}/${item.requiredCount}"
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(50),
+                                    color = accent.copy(alpha = 0.12f),
+                                    border = BorderStroke(1.dp, accent.copy(alpha = 0.36f))
+                                ) {
+                                    Text(
+                                        text = chipText,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = accent,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                    )
+                                }
+                            }
                         }
+                    } else {
                         Surface(
-                            shape = RoundedCornerShape(50),
-                            color = accent.copy(alpha = 0.12f),
-                            border = BorderStroke(1.dp, accent.copy(alpha = 0.36f))
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(11.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)
                         ) {
                             Text(
-                                text = chipText,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = accent,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                text = "正在端侧观察你的表达习惯，使用 ✦ Jev 军师或日常输入后将自动提炼专属语体 DNA",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp)
                             )
                         }
                     }
-                }
-            } else {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(11.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)
-                ) {
-                    Text(
-                        text = "正在端侧观察你的表达习惯，使用 ✦ Jev 军师或日常输入后将自动提炼专属语体 DNA",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp)
-                    )
-                }
-            }
 
-            // 3 Real End-Side Asset Counters
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                HeroMiniStatBox(
-                    label = "自动纠错词条",
-                    value = allSnapshot.autoLearnedDictCount.toString(),
-                    unit = "条",
-                    modifier = Modifier.weight(1f)
-                )
-                HeroMiniStatBox(
-                    label = "私人连词记忆",
-                    value = SetupStatsHelper.formatCharCount(personalLinkMemoryCount),
-                    unit = "条",
-                    modifier = Modifier.weight(1f)
-                )
-                HeroMiniStatBox(
-                    label = "Jev 关系档案",
-                    value = allSnapshot.jevSessionCount.toString(),
-                    unit = "个",
-                    modifier = Modifier.weight(1f)
-                )
-            }
+                    // 3 Real End-Side Asset Counters
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        HeroMiniStatBox(
+                            label = "自动纠错词条",
+                            value = allSnapshot.autoLearnedDictCount.toString(),
+                            unit = "条",
+                            modifier = Modifier.weight(1f)
+                        )
+                        HeroMiniStatBox(
+                            label = "私人连词记忆",
+                            value = SetupStatsHelper.formatCharCount(personalLinkMemoryCount),
+                            unit = "条",
+                            modifier = Modifier.weight(1f)
+                        )
+                        HeroMiniStatBox(
+                            label = "Jev 关系档案",
+                            value = allSnapshot.jevSessionCount.toString(),
+                            unit = "个",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
 
-            // Quick Navigation Shortcuts to Styles & Dictionary
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                FilledTonalButton(
-                    onClick = onOpenStyles,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(11.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Icon(
-                        imageVector = TypeFreeIcons.Sparkles,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("场景风格规则 ›", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                }
+                    // Quick Navigation Shortcuts to Styles & Dictionary
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        FilledTonalButton(
+                            onClick = onOpenStyles,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(11.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                        ) {
+                            Icon(
+                                imageVector = TypeFreeIcons.Sparkles,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("场景风格规则 ›", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                        }
 
-                OutlinedButton(
-                    onClick = onOpenDictionary,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(11.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Icon(
-                        imageVector = TypeFreeIcons.Book,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("个人词典 ($dictionarySize) ›", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                        OutlinedButton(
+                            onClick = onOpenDictionary,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(11.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                        ) {
+                            Icon(
+                                imageVector = TypeFreeIcons.Book,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("个人词典 ($dictionarySize) ›", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
                 }
             }
         }

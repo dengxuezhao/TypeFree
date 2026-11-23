@@ -524,6 +524,7 @@ data class AppSettings(
     val jevMaskTitleHintEnabled: Boolean = true, // 本机设置页展示脱敏会话缩写提示（如 大*群）
     val manualIncognitoMode: Boolean = false, // 手动无痕模式开关（开启后强制阻断个人词库/预测/剪贴板/历史音频/AI读屏）
     val inputStatsEnabled: Boolean = true, // 端侧纯数字表达统计开关（仅按日累计纯数字，0正文；无痕/密码框自动跳过）
+    val onboardingCompleted: Boolean = false, // 首次安装 4 步引导完成标记（老版本升级自动置 true）
     val replyAttitudePresets: List<ReplyAttitudePreset> = DefaultPresets.defaultReplyAttitudes(),
     val providerVault: Map<String, ProviderCredential> = emptyMap(),
     val snippets: List<SnippetEntry> = DefaultPresets.defaultSnippets(),

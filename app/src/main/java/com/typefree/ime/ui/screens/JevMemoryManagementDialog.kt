@@ -29,6 +29,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,6 +70,7 @@ fun JevMemoryManagementDialog(
             listOf(BucketStyleProfile(bucketKey = RelationPragmaticMapper.GLOBAL_BUCKET_KEY)) + loaded
         }
     }
+    val settings by repository.settings.collectAsState()
     val allSessions = remember(refreshTick) {
         repository.jevMemoryRepository.listAllSessionsSorted()
     }
@@ -130,6 +132,15 @@ fun JevMemoryManagementDialog(
                             )
                         }
                     } else {
+                        PreferenceSwitchRow(
+                            title = "保存首尾字掩码提示（如 张*三）",
+                            subtitle = "仅用于在列表中区分会话，关闭后只保留不可逆哈希",
+                            checked = settings.jevMaskTitleHintEnabled,
+                            onCheckedChange = { enabled ->
+                                repository.updateSettings { it.copy(jevMaskTitleHintEnabled = enabled) }
+                            }
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
                         if (allSessions.isEmpty()) {
                             Text(
                                 text = "暂无已落盘会话记忆。你在聊天窗口打开「✦ 军师 → ⚡关系」设定对方身份/备忘，或采纳候选并发送后会自动建立加密索引。",

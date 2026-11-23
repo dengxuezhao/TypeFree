@@ -546,6 +546,11 @@ class AppRepository(
                 jevMaskTitleHintEnabled = resolvedJevMaskTitleHintEnabled,
                 manualIncognitoMode = resolvedManualIncognitoMode,
                 inputStatsEnabled = resolvedInputStatsEnabled,
+                onboardingCompleted = if (raw.contains("\"onboardingCompleted\"")) {
+                    parsed.onboardingCompleted
+                } else {
+                    true
+                },
                 replyAttitudePresets = safeReplyAttitudes,
                 providerVault = safeVault,
                 snippets = safeSnippets,

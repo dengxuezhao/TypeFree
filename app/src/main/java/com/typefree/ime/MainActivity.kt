@@ -44,6 +44,7 @@ import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.screens.GeneralSettingsScreen
 import com.typefree.ime.ui.screens.HomeSetupScreen
 import com.typefree.ime.ui.screens.KeyboardStudioScreen
+import com.typefree.ime.ui.screens.OnboardingFlowScreen
 import com.typefree.ime.ui.screens.VoiceAiStudioScreen
 import com.typefree.ime.ui.theme.TypeFreeTheme
 import com.typefree.ime.ui.theme.resolveDarkTheme
@@ -60,6 +61,7 @@ class MainActivity : ComponentActivity() {
     private val keyboardSubTabState = mutableIntStateOf(AppDestinations.SUBTAB_KB_SCHEME)
     private val voiceAiSubTabState = mutableIntStateOf(AppDestinations.SUBTAB_VOICE_MAIN)
     private val openOfflineModelsState = mutableStateOf(false)
+    private val openInsightsState = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -99,48 +101,67 @@ class MainActivity : ComponentActivity() {
                     val currentKeyboardSubTab by keyboardSubTabState
                     val currentVoiceAiSubTab by voiceAiSubTabState
                     val shouldOpenOfflineModels by openOfflineModelsState
+                    val shouldOpenInsights by openInsightsState
 
-                    TypeFreeMainScaffold(
-                        repository = repository,
-                        aiEngine = aiEngine,
-                        selectedTab = currentTab,
-                        keyboardSubTab = currentKeyboardSubTab,
-                        voiceAiSubTab = currentVoiceAiSubTab,
-                        openOfflineModels = shouldOpenOfflineModels,
-                        onSelectTab = { newTab ->
-                            selectedTabState.intValue = newTab.coerceIn(
-                                AppDestinations.TAB_HOME,
-                                AppDestinations.TAB_GENERAL
-                            )
-                        },
-                        onNavigateToVoiceAiSubTab = { subTab ->
-                            voiceAiSubTabState.intValue = subTab.coerceIn(
-                                AppDestinations.SUBTAB_VOICE_MAIN,
-                                AppDestinations.SUBTAB_VOICE_API
-                            )
-                            selectedTabState.intValue = AppDestinations.TAB_VOICE_AI
-                        },
-                        onOpenOfflineModels = {
-                            openOfflineModelsState.value = true
-                            voiceAiSubTabState.intValue = AppDestinations.SUBTAB_VOICE_API
-                            selectedTabState.intValue = AppDestinations.TAB_VOICE_AI
-                        },
-                        onConsumeOpenOfflineModels = {
-                            openOfflineModelsState.value = false
-                        },
-                        onKeyboardSubTabChanged = { subTab ->
-                            keyboardSubTabState.intValue = subTab.coerceIn(
-                                AppDestinations.SUBTAB_KB_SCHEME,
-                                AppDestinations.SUBTAB_KB_DICT
-                            )
-                        },
-                        onVoiceAiSubTabChanged = { subTab ->
-                            voiceAiSubTabState.intValue = subTab.coerceIn(
-                                AppDestinations.SUBTAB_VOICE_MAIN,
-                                AppDestinations.SUBTAB_VOICE_API
-                            )
-                        }
-                    )
+                    if (!settings.onboardingCompleted) {
+                        OnboardingFlowScreen(
+                            repository = repository,
+                            aiEngine = aiEngine,
+                            onCompleteOnboarding = {
+                                selectedTabState.intValue = AppDestinations.TAB_HOME
+                            }
+                        )
+                    } else {
+                        TypeFreeMainScaffold(
+                            repository = repository,
+                            aiEngine = aiEngine,
+                            selectedTab = currentTab,
+                            keyboardSubTab = currentKeyboardSubTab,
+                            voiceAiSubTab = currentVoiceAiSubTab,
+                            openOfflineModels = shouldOpenOfflineModels,
+                            openInsights = shouldOpenInsights,
+                            onSelectTab = { newTab ->
+                                selectedTabState.intValue = newTab.coerceIn(
+                                    AppDestinations.TAB_HOME,
+                                    AppDestinations.TAB_GENERAL
+                                )
+                            },
+                            onNavigateToVoiceAiSubTab = { subTab ->
+                                voiceAiSubTabState.intValue = subTab.coerceIn(
+                                    AppDestinations.SUBTAB_VOICE_MAIN,
+                                    AppDestinations.SUBTAB_VOICE_API
+                                )
+                                selectedTabState.intValue = AppDestinations.TAB_VOICE_AI
+                            },
+                            onOpenOfflineModels = {
+                                openOfflineModelsState.value = true
+                                voiceAiSubTabState.intValue = AppDestinations.SUBTAB_VOICE_API
+                                selectedTabState.intValue = AppDestinations.TAB_VOICE_AI
+                            },
+                            onConsumeOpenOfflineModels = {
+                                openOfflineModelsState.value = false
+                            },
+                            onOpenInsights = {
+                                openInsightsState.value = true
+                                selectedTabState.intValue = AppDestinations.TAB_HOME
+                            },
+                            onConsumeOpenInsights = {
+                                openInsightsState.value = false
+                            },
+                            onKeyboardSubTabChanged = { subTab ->
+                                keyboardSubTabState.intValue = subTab.coerceIn(
+                                    AppDestinations.SUBTAB_KB_SCHEME,
+                                    AppDestinations.SUBTAB_KB_DICT
+                                )
+                            },
+                            onVoiceAiSubTabChanged = { subTab ->
+                                voiceAiSubTabState.intValue = subTab.coerceIn(
+                                    AppDestinations.SUBTAB_VOICE_MAIN,
+                                    AppDestinations.SUBTAB_VOICE_API
+                                )
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -216,10 +237,13 @@ private fun TypeFreeMainScaffold(
     keyboardSubTab: Int,
     voiceAiSubTab: Int,
     openOfflineModels: Boolean,
+    openInsights: Boolean = false,
     onSelectTab: (Int) -> Unit,
     onNavigateToVoiceAiSubTab: (Int) -> Unit,
     onOpenOfflineModels: () -> Unit,
     onConsumeOpenOfflineModels: () -> Unit,
+    onOpenInsights: () -> Unit = {},
+    onConsumeOpenInsights: () -> Unit = {},
     onKeyboardSubTabChanged: (Int) -> Unit,
     onVoiceAiSubTabChanged: (Int) -> Unit
 ) {
@@ -303,7 +327,9 @@ private fun TypeFreeMainScaffold(
                     onNavigateToTab = onSelectTab,
                     onNavigateToSettingsSubTab = onNavigateToVoiceAiSubTab,
                     onNavigateToVoiceAiSubTab = onNavigateToVoiceAiSubTab,
-                    onOpenOfflineModels = onOpenOfflineModels
+                    onOpenOfflineModels = onOpenOfflineModels,
+                    initialOpenInsights = openInsights,
+                    onConsumeOpenInsights = onConsumeOpenInsights
                 )
                 AppDestinations.TAB_KEYBOARD -> KeyboardStudioScreen(
                     repository = repository,
@@ -316,6 +342,7 @@ private fun TypeFreeMainScaffold(
                     initialSubTab = voiceAiSubTab,
                     openOfflineModels = openOfflineModels,
                     onConsumeOpenOfflineModels = onConsumeOpenOfflineModels,
+                    onOpenInsights = onOpenInsights,
                     onSubTabChanged = onVoiceAiSubTabChanged
                 )
                 AppDestinations.TAB_GENERAL -> GeneralSettingsScreen(
@@ -327,7 +354,9 @@ private fun TypeFreeMainScaffold(
                     onNavigateToTab = onSelectTab,
                     onNavigateToSettingsSubTab = onNavigateToVoiceAiSubTab,
                     onNavigateToVoiceAiSubTab = onNavigateToVoiceAiSubTab,
-                    onOpenOfflineModels = onOpenOfflineModels
+                    onOpenOfflineModels = onOpenOfflineModels,
+                    initialOpenInsights = openInsights,
+                    onConsumeOpenInsights = onConsumeOpenInsights
                 )
             }
         }

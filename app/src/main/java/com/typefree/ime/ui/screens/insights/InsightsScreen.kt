@@ -115,9 +115,13 @@ fun InsightsScreen(
     val snapshot = remember(selectedRange, statsRevision, history, settings) {
         repository.computeInsightsSnapshot(selectedRange)
     }
+    val allTokenSnapshot = remember(statsRevision) {
+        repository.computeTokenUsageSnapshot(StatsTimeRange.ALL)
+    }
     val isGlobalColdStart = snapshot.isColdStart &&
         snapshot.lifetimeTotalChars == 0 &&
-        snapshot.lifetimeActiveDays == 0
+        snapshot.lifetimeActiveDays == 0 &&
+        !allTokenSnapshot.hasData
     val isRangeQuietOnly = snapshot.isColdStart && !isGlobalColdStart
 
     var showPosterStudio by remember { mutableStateOf(false) }
@@ -296,6 +300,12 @@ fun InsightsScreen(
                     EfficiencyBillCard(snapshot = snapshot)
                 }
 
+                // 3.5 Unified Model Token & Voice Duration Observability Card
+                TokenUsageObservabilityCard(
+                    repository = repository,
+                    externalRange = selectedRange
+                )
+
                 // 4. Companion Growth Trajectory Card (Monthly Trend / Heatmap)
                 GrowthTrajectoryCard(
                     snapshot = snapshot,
@@ -324,43 +334,6 @@ fun InsightsScreen(
 
                 // 9. Lifetime Milestones Wall
                 MilestonesWallCard(snapshot = snapshot)
-
-                // Subtle entry link to pure Token & Voice Duration observability in Model & API settings
-                Surface(
-                    onClick = onOpenApiUsage,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = ContinuousRoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 13.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                text = "查看模型 Token 与语音时长用量",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "按功能与模型统计真实 Token 结构（位于「语音与 AI → 模型与 API」）",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
 
                 // 10. Bottom Transparent Privacy Footer Card
                 InsightsPrivacyFooterCard(

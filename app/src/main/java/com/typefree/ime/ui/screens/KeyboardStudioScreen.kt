@@ -71,10 +71,9 @@ import com.typefree.ime.ime.engine.RimeDataManager
 import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.ime.flypy.FlypyDictionary
 import com.typefree.ime.ui.AppDestinations
-import com.typefree.ime.ui.components.CompletionBackendHint
 import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
+import com.typefree.ime.ui.components.SpringSegmentedControl
 import com.typefree.ime.ui.components.TypeFreeIcons
-import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import kotlinx.coroutines.Dispatchers
@@ -223,38 +222,12 @@ fun KeyboardStudioScreen(
                 }
             }
 
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(13.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    StudioSubTabPill(
-                        title = "方案与布局",
-                        selected = activeSubTab == AppDestinations.SUBTAB_KB_SCHEME,
-                        onClick = { selectSubTab(AppDestinations.SUBTAB_KB_SCHEME) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    StudioSubTabPill(
-                        title = "手势与短语",
-                        selected = activeSubTab == AppDestinations.SUBTAB_KB_GESTURE,
-                        onClick = { selectSubTab(AppDestinations.SUBTAB_KB_GESTURE) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    StudioSubTabPill(
-                        title = "词库管理",
-                        selected = activeSubTab == AppDestinations.SUBTAB_KB_DICT,
-                        onClick = { selectSubTab(AppDestinations.SUBTAB_KB_DICT) },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
+            SpringSegmentedControl(
+                options = listOf("方案与布局", "手势与短语", "词库管理"),
+                selectedIndex = activeSubTab,
+                onSelect = ::selectSubTab,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
 
         Box(
@@ -944,21 +917,6 @@ private fun KeyboardSchemeAndLayoutPane(
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(englishModeWordSuggestionEnabled = enabled) }
                     }
-                )
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
-
-                PreferenceSwitchRow(
-                    title = "AI 整句补全",
-                    subtitle = "停顿后把光标前文字发送到你配置的模型生成续写建议（默认关闭，密码框与无痕模式永不触发）",
-                    checked = settings.aiCompletionEnabled,
-                    onCheckedChange = { enabled ->
-                        repository.updateSettings { it.copy(aiCompletionEnabled = enabled) }
-                    }
-                )
-                CompletionBackendHint(
-                    settings = settings,
-                    registrySnapshot = rememberLocalModelRegistrySnapshot()
                 )
             }
         }

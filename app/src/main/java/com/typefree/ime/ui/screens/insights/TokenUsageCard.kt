@@ -6,7 +6,11 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material3.Icon
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -63,21 +67,22 @@ private val TOKEN_USAGE_RANGES = listOf(
 )
 
 /**
- * Pure Token & Cloud/Offline Voice Duration Observability Card mounted inside
- * 「语音与 AI → 模型与 API」. Strictly tracks raw token counts and voice durations
- * with zero currency / price estimation.
+ * Pure Token & Cloud/Offline Voice Duration Observability Card.
+ * When [externalRange] is provided (inside [InsightsScreen]), follows the parent range without
+ * rendering a duplicate range switcher.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TokenUsageObservabilityCard(
     repository: AppRepository,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    externalRange: StatsTimeRange? = null
 ) {
     val statsRevision by repository.dailyStatsRevision.collectAsState()
     var rangeIndex by rememberSaveable { mutableIntStateOf(0) }
     var breakdownTab by rememberSaveable { mutableIntStateOf(0) } // 0 = 按功能, 1 = 按模型
 
-    val selectedRange = TOKEN_USAGE_RANGES.getOrElse(rangeIndex) { StatsTimeRange.DAYS_7 }
+    val selectedRange = externalRange ?: TOKEN_USAGE_RANGES.getOrElse(rangeIndex) { StatsTimeRange.DAYS_7 }
     val snapshot = remember(selectedRange, statsRevision) {
         repository.computeTokenUsageSnapshot(selectedRange)
     }
@@ -141,14 +146,16 @@ fun TokenUsageObservabilityCard(
                 }
             }
 
-            // Range Segmented Control
-            SpringSegmentedControl(
-                options = TOKEN_USAGE_RANGES.map { it.label },
-                selectedIndex = rangeIndex,
-                onSelect = { rangeIndex = it },
-                compact = true,
-                modifier = Modifier.fillMaxWidth()
-            )
+            // Range Segmented Control (only shown when standalone without parent range)
+            if (externalRange == null) {
+                SpringSegmentedControl(
+                    options = TOKEN_USAGE_RANGES.map { it.label },
+                    selectedIndex = rangeIndex,
+                    onSelect = { rangeIndex = it },
+                    compact = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             if (!snapshot.hasData) {
                 Surface(
@@ -541,6 +548,95 @@ private fun VoiceDurationSplitSection(
                     dotColor = offlineColor,
                     label = "本机离线",
                     value = formatVoiceDuration(offlineDurationMs)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Compact 1-line summary card for `ApiSettingsScreen` that routes users to the unified
+ * `InsightsScreen` without cluttering the API configuration flow.
+ */
+@Composable
+fun TokenUsageSummaryJumpStrip(
+    repository: AppRepository,
+    onOpenInsights: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val statsRevision by repository.dailyStatsRevision.collectAsState()
+    val weekSnapshot = remember(statsRevision) {
+        repository.computeTokenUsageSnapshot(StatsTimeRange.DAYS_7)
+    }
+    val summarySubtitle = remember(weekSnapshot) {
+        when {
+            weekSnapshot.totalTokens > 0L -> {
+                val cacheSuffix = if (weekSnapshot.cacheHitPercent > 0) {
+                    " · 缓存命中 ${weekSnapshot.cacheHitPercent}%"
+                } else {
+                    ""
+                }
+                "近 7 天云端消耗 ${formatCompactTokens(weekSnapshot.totalTokens)} Tokens$cacheSuffix"
+            }
+            weekSnapshot.offlineVoiceDurationMs > 0L || weekSnapshot.cloudVoiceDurationMs > 0L -> {
+                val totalVoice = weekSnapshot.offlineVoiceDurationMs + weekSnapshot.cloudVoiceDurationMs
+                "近 7 天语音转写 ${formatVoiceDuration(totalVoice)}"
+            }
+            else -> "按功能与模型统计真实 Token 与转写时长，已统一归入表达洞察"
+        }
+    }
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(ContinuousRoundedCornerShape(16.dp))
+            .clickable(onClick = onOpenInsights),
+        shape = ContinuousRoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.48f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = "📊 模型 Token 与语音时长统计",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = summarySubtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = "查看统计",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = "查看表达洞察",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp)
                 )
             }
         }

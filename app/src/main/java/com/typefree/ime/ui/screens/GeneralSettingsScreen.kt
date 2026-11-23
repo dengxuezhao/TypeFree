@@ -701,6 +701,17 @@ fun GeneralSettingsScreen(
                         }
                     }
 
+                    OutlinedButton(
+                        onClick = {
+                            repository.updateSettings { it.copy(onboardingCompleted = false) }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        Text("重新查看首次引导向导", style = MaterialTheme.typography.labelLarge)
+                    }
+
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)

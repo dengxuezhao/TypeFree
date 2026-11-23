@@ -15,14 +15,18 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,9 +34,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
@@ -425,5 +434,146 @@ fun SmoothDisclosure(
         )
     ) {
         content()
+    }
+}
+
+/**
+ * Mochi-inspired G2 continuous-corner selection card with interruptible spring press bounce,
+ * animated border & container tint, and optional expandable body slot.
+ */
+@Composable
+fun MochiSelectCard(
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    accentColor: Color = MaterialTheme.colorScheme.primary,
+    cornerRadius: Dp = 20.dp,
+    showCheckIndicator: Boolean = true,
+    headerContent: @Composable () -> Unit,
+    expandedContent: (@Composable () -> Unit)? = null
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val containerColor by animateColorAsState(
+        targetValue = if (selected) {
+            accentColor.copy(alpha = 0.08f)
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+        label = "mochiSelectBg"
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (selected) {
+            accentColor
+        } else {
+            MaterialTheme.colorScheme.outline.copy(alpha = 0.48f)
+        },
+        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+        label = "mochiSelectBorder"
+    )
+    val borderWidth by animateDpAsState(
+        targetValue = if (selected) 1.6.dp else 1.dp,
+        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+        label = "mochiSelectBorderWidth"
+    )
+    val shape = remember(cornerRadius) { ContinuousRoundedCornerShape(cornerRadius) }
+
+    Surface(
+        onClick = onClick,
+        interactionSource = interactionSource,
+        modifier = modifier
+            .fillMaxWidth()
+            .springPressScale(pressedScale = 0.98f, interactionSource = interactionSource),
+        shape = shape,
+        color = containerColor,
+        border = BorderStroke(borderWidth, borderColor)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = if (showCheckIndicator) 12.dp else 0.dp)
+                ) {
+                    headerContent()
+                }
+                if (showCheckIndicator) {
+                    val radioFill by animateColorAsState(
+                        targetValue = if (selected) accentColor else Color.Transparent,
+                        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+                        label = "mochiRadioFill"
+                    )
+                    val radioBorder by animateColorAsState(
+                        targetValue = if (selected) {
+                            accentColor
+                        } else {
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)
+                        },
+                        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+                        label = "mochiRadioBorder"
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(radioFill)
+                            .border(1.5.dp, radioBorder, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (selected) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            if (expandedContent != null) {
+                SmoothDisclosure(expanded = selected) {
+                    expandedContent()
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Mochi-inspired G2 grouped settings container that replaces heavy boxy borders with soft
+ * continuous squircle geometry and subtle hairline outlines.
+ */
+@Composable
+fun MochiGroupedCard(
+    modifier: Modifier = Modifier,
+    cornerRadius: Dp = 20.dp,
+    borderColor: Color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+    containerColor: Color = MaterialTheme.colorScheme.surface,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val shape = remember(cornerRadius) { ContinuousRoundedCornerShape(cornerRadius) }
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = shape,
+        color = containerColor,
+        border = BorderStroke(1.dp, borderColor)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            content = content
+        )
     }
 }

@@ -27,7 +27,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -97,6 +99,8 @@ private val PRESET_EMOJIS = listOf(
 fun StylesAppAwareScreen(
     repository: AppRepository,
     showScreenHeader: Boolean = true,
+    fixedSubTab: Int? = null,
+    onBack: (() -> Unit)? = null,
     headerSlot: (@Composable () -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -104,7 +108,12 @@ fun StylesAppAwareScreen(
     val styles = settings.styles.ifEmpty { DefaultPresets.defaultStyles() }
     val appRules = settings.appRules
 
-    var selectedSubTab by rememberSaveable { mutableIntStateOf(0) }
+    var selectedSubTab by rememberSaveable(fixedSubTab) { mutableIntStateOf(fixedSubTab ?: 0) }
+    val effectiveSubTab = fixedSubTab ?: selectedSubTab
+
+    if (onBack != null) {
+        BackHandler(onBack = onBack)
+    }
     var ruleSearchQuery by rememberSaveable { mutableStateOf("") }
 
     // Dialog states
@@ -135,6 +144,35 @@ fun StylesAppAwareScreen(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        if (onBack != null) {
+            item(key = "styles_subpage_back_bar") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    TextButton(
+                        onClick = onBack,
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                            contentDescription = "返回",
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(2.dp))
+                        Text("返回 AI 助手", fontWeight = FontWeight.SemiBold)
+                    }
+                    Text(
+                        text = if (effectiveSubTab == 0) "语气风格库 (${styles.size})" else "应用自动匹配规则 (${appRules.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(72.dp))
+                }
+            }
+        }
+
         if (headerSlot != null) {
             item(key = "styles_top_header_slot") {
                 headerSlot()
@@ -142,7 +180,7 @@ fun StylesAppAwareScreen(
         }
 
         // Screen Header
-        if (showScreenHeader) {
+        if (showScreenHeader && fixedSubTab == null) {
             item(key = "styles_screen_header") {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(
@@ -170,7 +208,8 @@ fun StylesAppAwareScreen(
             }
         }
 
-        // Top Default Mode Selector Card
+        // Top Default Mode Selector Card (hidden when opened as dedicated sub-screen)
+        if (fixedSubTab == null) {
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -262,38 +301,41 @@ fun StylesAppAwareScreen(
                 }
             }
         }
+        }
 
-        // Sub-tab Segmented Switcher
-        item {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+        // Sub-tab Segmented Switcher (hidden when opened as dedicated sub-screen)
+        if (fixedSubTab == null) {
+            item {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
                 ) {
-                    SegmentedTabButton(
-                        title = "语气风格库 (${styles.size})",
-                        selected = selectedSubTab == 0,
-                        onClick = { selectedSubTab = 0 },
-                        modifier = Modifier.weight(1f)
-                    )
-                    SegmentedTabButton(
-                        title = "应用自动匹配规则 (${appRules.size})",
-                        selected = selectedSubTab == 1,
-                        onClick = { selectedSubTab = 1 },
-                        modifier = Modifier.weight(1f)
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        SegmentedTabButton(
+                            title = "语气风格库 (${styles.size})",
+                            selected = selectedSubTab == 0,
+                            onClick = { selectedSubTab = 0 },
+                            modifier = Modifier.weight(1f)
+                        )
+                        SegmentedTabButton(
+                            title = "应用自动匹配规则 (${appRules.size})",
+                            selected = selectedSubTab == 1,
+                            onClick = { selectedSubTab = 1 },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
         }
 
-        if (selectedSubTab == 0) {
+        if (effectiveSubTab == 0) {
             // Action bar for ToneStyle library
             item {
                 Row(

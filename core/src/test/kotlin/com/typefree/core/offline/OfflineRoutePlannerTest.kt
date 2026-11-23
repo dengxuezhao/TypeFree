@@ -616,7 +616,10 @@ class OfflineRoutePlannerTest {
         assertEquals(3, OfflineModelCatalog.slmModels.size)
         assertEquals(11, OfflineModelCatalog.allModels.size)
         assertTrue(OfflineModelCatalog.asrModels.all { !it.isProOnly && it.slot == LocalModelSlot.ASR })
-        assertTrue(OfflineModelCatalog.slmModels.all { it.isProOnly && it.slot == LocalModelSlot.SLM })
+        assertTrue(OfflineModelCatalog.slmModels.all { it.slot == LocalModelSlot.SLM })
+        assertFalse(OfflineModelCatalog.findById(OfflineModelCatalog.ID_SLM_CORE_0_8B)!!.isProOnly)
+        assertTrue(OfflineModelCatalog.findById(OfflineModelCatalog.ID_SLM_PLUS_2B)!!.isProOnly)
+        assertTrue(OfflineModelCatalog.findById(OfflineModelCatalog.ID_SLM_PRO_4B)!!.isProOnly)
 
         val senseVoice = OfflineModelCatalog.findById(OfflineModelCatalog.ID_ASR_SENSEVOICE_SMALL)
         assertNotNull(senseVoice)

@@ -138,7 +138,7 @@ import com.typefree.ime.network.PipelineExecutionResult
 import com.typefree.ime.network.asr.VolcengineSaucAsrClient
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
-import com.typefree.ime.ui.screens.insights.TokenUsageObservabilityCard
+import com.typefree.ime.ui.screens.insights.TokenUsageSummaryJumpStrip
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import com.typefree.ime.ui.theme.TypeFreeRose
@@ -160,7 +160,8 @@ fun ApiSettingsScreen(
     aiEngine: AiPipelineEngine,
     showScreenHeader: Boolean = true,
     initialOpenOfflineModels: Boolean = false,
-    onConsumeOpenOfflineModels: () -> Unit = {}
+    onConsumeOpenOfflineModels: () -> Unit = {},
+    onOpenInsights: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -206,6 +207,7 @@ fun ApiSettingsScreen(
     }
 
     // Collapsible Advanced Drawers (collapsed by default for a clean, zero-clutter studio)
+    var showMixRoutingDrawer by rememberSaveable { mutableStateOf(false) }
     var showAdvancedDrawer by rememberSaveable { mutableStateOf(false) }
     var showTesterDrawer by rememberSaveable { mutableStateOf(false) }
     var showBackupDrawer by rememberSaveable { mutableStateOf(false) }
@@ -742,163 +744,190 @@ fun ApiSettingsScreen(
             onPasteClipboard = { readFromClipboard(context) }
         )
 
-        // Layer 2: Clean Workflow & Role Model Routing Card (Mix-and-Match Cloud + Local Offline)
-        UnifiedWorkflowRoutingCard(
-            settings = settings,
-            dictatePlan = dictatePlan,
-            registrySnapshot = registrySnapshot,
-            vault = hydratedVault,
-            fetchingSlot = fetchingSlot,
-            modelFetchErrors = modelFetchErrors,
-            onSelectMode = { mode ->
-                repository.updateSettings { it.copy(pipelineMode = mode) }
-                testSuccessResult = null
-                testErrorMessage = null
-            },
-            onSelectLocalAsr = {
-                selectedVaultProviderId = ID_LOCAL_OFFLINE_PROVIDER
-                val installedAsr = OfflineModelCatalog.asrModels.firstOrNull { registrySnapshot.isInstalled(it.id) }
-                repository.updateOfflineConfig { curr ->
-                    val nextAsrId = curr.selectedAsrModelId?.takeIf { registrySnapshot.isInstalled(it) }
-                        ?: installedAsr?.id
-                        ?: curr.selectedAsrModelId
-                    curr.copy(
-                        mode = if (curr.mode == OfflineMode.OFF) OfflineMode.HYBRID else curr.mode,
-                        asrSlotOn = true,
-                        selectedAsrModelId = nextAsrId
-                    )
-                }
-            },
-            onSelectLocalAsrModel = { modelId ->
-                repository.updateOfflineConfig { curr ->
-                    curr.copy(
-                        mode = if (curr.mode == OfflineMode.OFF) OfflineMode.HYBRID else curr.mode,
-                        asrSlotOn = true,
-                        selectedAsrModelId = modelId
-                    )
-                }
-            },
-            onSelectLocalSlm = {
-                selectedVaultProviderId = ID_LOCAL_OFFLINE_PROVIDER
-                val installedSlm = OfflineModelCatalog.slmModels.firstOrNull { registrySnapshot.isInstalled(it.id) }
-                repository.updateSettings { curr ->
-                    val nextSlmId = curr.offlineConfig.selectedSlmModelId?.takeIf { registrySnapshot.isInstalled(it) }
-                        ?: installedSlm?.id
-                        ?: curr.offlineConfig.selectedSlmModelId
-                    curr.copy(
-                        llmConfig = curr.llmConfig.copy(enabled = true),
-                        offlineConfig = curr.offlineConfig.copy(
-                            mode = if (curr.offlineConfig.mode == OfflineMode.OFF) OfflineMode.HYBRID else curr.offlineConfig.mode,
-                            slmSlotOn = true,
-                            selectedSlmModelId = nextSlmId
-                        )
-                    )
-                }
-            },
-            onSelectLocalSlmModel = { modelId ->
-                repository.updateSettings { curr ->
-                    curr.copy(
-                        llmConfig = curr.llmConfig.copy(enabled = true),
-                        offlineConfig = curr.offlineConfig.copy(
-                            mode = if (curr.offlineConfig.mode == OfflineMode.OFF) OfflineMode.HYBRID else curr.offlineConfig.mode,
-                            slmSlotOn = true,
-                            selectedSlmModelId = modelId
-                        )
-                    )
-                }
-            },
-            onQuickDownloadLocalModel = { modelId ->
-                val workId = runCatching {
-                    ModelDownloadWorker.enqueueDownload(context, modelId, allowDeleteExistingFirst = false)
-                }.getOrNull()
-                if (workId != null) {
-                    Toast.makeText(context, "已开始后台下载，正在打开模型管理查看进度…", Toast.LENGTH_SHORT).show()
-                }
-                showOfflineModelsScreen = true
-            },
-            onOpenOfflineModels = { showOfflineModelsScreen = true },
-            onSelectSttProvider = { pid ->
-                selectedVaultProviderId = pid
-                val wasLocked = settings.offlineConfig.mode == OfflineMode.OFFLINE_ONLY
-                val willDisableAllOffline = !settings.offlineConfig.slmSlotOn
-                repository.updateSettings { curr ->
-                    val updated = UnifiedProviderCatalog.selectSttProvider(curr, pid)
-                    val nextMode = when {
-                        !curr.offlineConfig.slmSlotOn -> OfflineMode.OFF
-                        curr.offlineConfig.mode == OfflineMode.OFFLINE_ONLY -> OfflineMode.HYBRID
-                        else -> curr.offlineConfig.mode
-                    }
-                    updated.copy(
-                        offlineConfig = curr.offlineConfig.copy(
-                            mode = nextMode,
-                            asrSlotOn = false
-                        )
-                    )
-                }
-                if (willDisableAllOffline) {
-                    coroutineScope.launch {
-                        runCatching { TypeFreeApp.instance.localAiClient.unloadAll() }
-                    }
-                } else {
-                    coroutineScope.launch {
-                        runCatching { TypeFreeApp.instance.localAiClient.unloadSlot(LocalModelSlot.ASR) }
-                    }
-                }
-                if (wasLocked) {
-                    Toast.makeText(context, "已自动解除纯离线锁，切为端云混合/云端听音", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onSelectLlmProvider = { pid ->
-                selectedVaultProviderId = pid
-                val wasLocked = settings.offlineConfig.mode == OfflineMode.OFFLINE_ONLY
-                val willDisableAllOffline = !settings.offlineConfig.asrSlotOn
-                repository.updateSettings { curr ->
-                    val updated = UnifiedProviderCatalog.selectLlmProvider(curr, pid)
-                    val nextMode = when {
-                        !curr.offlineConfig.asrSlotOn -> OfflineMode.OFF
-                        curr.offlineConfig.mode == OfflineMode.OFFLINE_ONLY -> OfflineMode.HYBRID
-                        else -> curr.offlineConfig.mode
-                    }
-                    updated.copy(
-                        offlineConfig = curr.offlineConfig.copy(
-                            mode = nextMode,
-                            slmSlotOn = false
-                        )
-                    )
-                }
-                if (willDisableAllOffline) {
-                    coroutineScope.launch {
-                        runCatching { TypeFreeApp.instance.localAiClient.unloadAll() }
-                    }
-                } else {
-                    coroutineScope.launch {
-                        runCatching { TypeFreeApp.instance.localAiClient.unloadSlot(LocalModelSlot.SLM) }
-                    }
-                }
-                if (wasLocked) {
-                    Toast.makeText(context, "已自动解除纯离线锁，切为端云混合润色", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onSelectMultimodalProvider = { pid ->
-                selectedVaultProviderId = pid
-                repository.updateSettings { UnifiedProviderCatalog.selectMultimodalProvider(it, pid) }
-            },
-            onToggleJevDedicated = { enabled ->
-                repository.updateSettings { it.copy(jevUseDedicatedModel = enabled) }
-            },
-            onSelectJevProvider = { pid ->
-                selectedVaultProviderId = pid
-                repository.updateSettings { UnifiedProviderCatalog.selectJevProvider(it, pid) }
-            },
-            onUpdateStt = { updated -> repository.updateSettings { it.copy(sttConfig = updated) } },
-            onUpdateLlm = { updated -> repository.updateSettings { it.copy(llmConfig = updated) } },
-            onUpdateMultimodal = { updated -> repository.updateSettings { it.copy(multimodalConfig = updated) } },
-            onUpdateJev = { updated -> repository.updateSettings { it.copy(jevLlmConfig = updated) } },
-            onFetchModels = ::triggerModelDiscovery
-        )
+        // Layer 2: Collapsible Workflow & Multi-Provider Mix-and-Match Drawer (collapsed by default)
+        val activeLlmProviderId = remember(settings.llmConfig) {
+            UnifiedProviderCatalog.inferLlmProviderId(settings.llmConfig)
+        }
+        val isMixedSetup = dictatePlan.badge.isHybrid ||
+            settings.jevUseDedicatedModel ||
+            (settings.pipelineMode == PipelineMode.DUAL_STAGE &&
+                settings.llmConfig.enabled &&
+                activePrimaryProviderId != activeLlmProviderId)
+        val mixDrawerSubtitle = remember(settings, registrySnapshot, isMixedSetup) {
+            val activeLabel = SetupStatsHelper.formatActivePipelineBadge(settings, registrySnapshot)
+            if (isMixedSetup) {
+                "混搭中 · 当前：$activeLabel · 点击调整多平台混搭"
+            } else {
+                "当前：$activeLabel · 点击自定义双阶段、多模态或军师独立模型"
+            }
+        }
 
-        // Layer 2.5: Pure Token & Voice Duration Observability Card (Zero Cost Estimation)
-        TokenUsageObservabilityCard(repository = repository)
+        CollapsibleStudioDrawer(
+            title = "🔀 进阶：工作流与多平台混搭",
+            subtitle = mixDrawerSubtitle,
+            expanded = showMixRoutingDrawer,
+            onToggle = { showMixRoutingDrawer = !showMixRoutingDrawer }
+        ) {
+            UnifiedWorkflowRoutingCard(
+                settings = settings,
+                dictatePlan = dictatePlan,
+                registrySnapshot = registrySnapshot,
+                vault = hydratedVault,
+                fetchingSlot = fetchingSlot,
+                modelFetchErrors = modelFetchErrors,
+                onSelectMode = { mode ->
+                    repository.updateSettings { it.copy(pipelineMode = mode) }
+                    testSuccessResult = null
+                    testErrorMessage = null
+                },
+                onSelectLocalAsr = {
+                    selectedVaultProviderId = ID_LOCAL_OFFLINE_PROVIDER
+                    val installedAsr = OfflineModelCatalog.asrModels.firstOrNull { registrySnapshot.isInstalled(it.id) }
+                    repository.updateOfflineConfig { curr ->
+                        val nextAsrId = curr.selectedAsrModelId?.takeIf { registrySnapshot.isInstalled(it) }
+                            ?: installedAsr?.id
+                            ?: curr.selectedAsrModelId
+                        curr.copy(
+                            mode = if (curr.mode == OfflineMode.OFF) OfflineMode.HYBRID else curr.mode,
+                            asrSlotOn = true,
+                            selectedAsrModelId = nextAsrId
+                        )
+                    }
+                },
+                onSelectLocalAsrModel = { modelId ->
+                    repository.updateOfflineConfig { curr ->
+                        curr.copy(
+                            mode = if (curr.mode == OfflineMode.OFF) OfflineMode.HYBRID else curr.mode,
+                            asrSlotOn = true,
+                            selectedAsrModelId = modelId
+                        )
+                    }
+                },
+                onSelectLocalSlm = {
+                    selectedVaultProviderId = ID_LOCAL_OFFLINE_PROVIDER
+                    val installedSlm = OfflineModelCatalog.slmModels.firstOrNull { registrySnapshot.isInstalled(it.id) }
+                    repository.updateSettings { curr ->
+                        val nextSlmId = curr.offlineConfig.selectedSlmModelId?.takeIf { registrySnapshot.isInstalled(it) }
+                            ?: installedSlm?.id
+                            ?: curr.offlineConfig.selectedSlmModelId
+                        curr.copy(
+                            llmConfig = curr.llmConfig.copy(enabled = true),
+                            offlineConfig = curr.offlineConfig.copy(
+                                mode = if (curr.offlineConfig.mode == OfflineMode.OFF) OfflineMode.HYBRID else curr.offlineConfig.mode,
+                                slmSlotOn = true,
+                                selectedSlmModelId = nextSlmId
+                            )
+                        )
+                    }
+                },
+                onSelectLocalSlmModel = { modelId ->
+                    repository.updateSettings { curr ->
+                        curr.copy(
+                            llmConfig = curr.llmConfig.copy(enabled = true),
+                            offlineConfig = curr.offlineConfig.copy(
+                                mode = if (curr.offlineConfig.mode == OfflineMode.OFF) OfflineMode.HYBRID else curr.offlineConfig.mode,
+                                slmSlotOn = true,
+                                selectedSlmModelId = modelId
+                            )
+                        )
+                    }
+                },
+                onQuickDownloadLocalModel = { modelId ->
+                    val workId = runCatching {
+                        ModelDownloadWorker.enqueueDownload(context, modelId, allowDeleteExistingFirst = false)
+                    }.getOrNull()
+                    if (workId != null) {
+                        Toast.makeText(context, "已开始后台下载，正在打开模型管理查看进度…", Toast.LENGTH_SHORT).show()
+                    }
+                    showOfflineModelsScreen = true
+                },
+                onOpenOfflineModels = { showOfflineModelsScreen = true },
+                onSelectSttProvider = { pid ->
+                    selectedVaultProviderId = pid
+                    val wasLocked = settings.offlineConfig.mode == OfflineMode.OFFLINE_ONLY
+                    val willDisableAllOffline = !settings.offlineConfig.slmSlotOn
+                    repository.updateSettings { curr ->
+                        val updated = UnifiedProviderCatalog.selectSttProvider(curr, pid)
+                        val nextMode = when {
+                            !curr.offlineConfig.slmSlotOn -> OfflineMode.OFF
+                            curr.offlineConfig.mode == OfflineMode.OFFLINE_ONLY -> OfflineMode.HYBRID
+                            else -> curr.offlineConfig.mode
+                        }
+                        updated.copy(
+                            offlineConfig = curr.offlineConfig.copy(
+                                mode = nextMode,
+                                asrSlotOn = false
+                            )
+                        )
+                    }
+                    if (willDisableAllOffline) {
+                        coroutineScope.launch {
+                            runCatching { TypeFreeApp.instance.localAiClient.unloadAll() }
+                        }
+                    } else {
+                        coroutineScope.launch {
+                            runCatching { TypeFreeApp.instance.localAiClient.unloadSlot(LocalModelSlot.ASR) }
+                        }
+                    }
+                    if (wasLocked) {
+                        Toast.makeText(context, "已自动解除纯离线锁，切为端云混合/云端听音", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onSelectLlmProvider = { pid ->
+                    selectedVaultProviderId = pid
+                    val wasLocked = settings.offlineConfig.mode == OfflineMode.OFFLINE_ONLY
+                    val willDisableAllOffline = !settings.offlineConfig.asrSlotOn
+                    repository.updateSettings { curr ->
+                        val updated = UnifiedProviderCatalog.selectLlmProvider(curr, pid)
+                        val nextMode = when {
+                            !curr.offlineConfig.asrSlotOn -> OfflineMode.OFF
+                            curr.offlineConfig.mode == OfflineMode.OFFLINE_ONLY -> OfflineMode.HYBRID
+                            else -> curr.offlineConfig.mode
+                        }
+                        updated.copy(
+                            offlineConfig = curr.offlineConfig.copy(
+                                mode = nextMode,
+                                slmSlotOn = false
+                            )
+                        )
+                    }
+                    if (willDisableAllOffline) {
+                        coroutineScope.launch {
+                            runCatching { TypeFreeApp.instance.localAiClient.unloadAll() }
+                        }
+                    } else {
+                        coroutineScope.launch {
+                            runCatching { TypeFreeApp.instance.localAiClient.unloadSlot(LocalModelSlot.SLM) }
+                        }
+                    }
+                    if (wasLocked) {
+                        Toast.makeText(context, "已自动解除纯离线锁，切为端云混合润色", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onSelectMultimodalProvider = { pid ->
+                    selectedVaultProviderId = pid
+                    repository.updateSettings { UnifiedProviderCatalog.selectMultimodalProvider(it, pid) }
+                },
+                onToggleJevDedicated = { enabled ->
+                    repository.updateSettings { it.copy(jevUseDedicatedModel = enabled) }
+                },
+                onSelectJevProvider = { pid ->
+                    selectedVaultProviderId = pid
+                    repository.updateSettings { UnifiedProviderCatalog.selectJevProvider(it, pid) }
+                },
+                onUpdateStt = { updated -> repository.updateSettings { it.copy(sttConfig = updated) } },
+                onUpdateLlm = { updated -> repository.updateSettings { it.copy(llmConfig = updated) } },
+                onUpdateMultimodal = { updated -> repository.updateSettings { it.copy(multimodalConfig = updated) } },
+                onUpdateJev = { updated -> repository.updateSettings { it.copy(jevLlmConfig = updated) } },
+                onFetchModels = ::triggerModelDiscovery
+            )
+        }
+
+        // Layer 2.5: Compact 1-Line Token & Voice Duration Summary Jump Strip -> Unified InsightsScreen
+        TokenUsageSummaryJumpStrip(
+            repository = repository,
+            onOpenInsights = onOpenInsights
+        )
 
         // Layer 3A: Collapsible Advanced Tuning Drawer
         CollapsibleStudioDrawer(
@@ -1218,7 +1247,7 @@ private fun UnifiedProviderVaultCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "1. 服务商与本机离线库",
+                        text = "快速接入：本机离线与服务商密钥",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -1244,13 +1273,13 @@ private fun UnifiedProviderVaultCard(
                 )
             }
 
-            // Local Offline (1st tile) + Cloud Providers in clean 2-column grid
+            // Local Offline (1st tile) + Channel-Ordered Cloud Providers in clean 2-column grid
             val allVaultSpecs = remember(isPureOfflineLocked) {
                 listOf(
                     LOCAL_OFFLINE_VAULT_SPEC.copy(
                         badge = if (isPureOfflineLocked) "纯离线零出网" else "免Key/零费用"
                     )
-                ) + UnifiedProviderCatalog.providers
+                ) + OnboardingProviderOrderHelper.orderedCloudProviders()
             }
             allVaultSpecs.chunked(2).forEach { rowSpecs ->
                 Row(
