@@ -64,6 +64,9 @@ import com.typefree.ime.bubble.CapturedChatContext
 import com.typefree.ime.bubble.ChatSpeaker
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ime.ImeUiAction
 import com.typefree.ime.ime.ImeUiState
 import com.typefree.ime.ime.KeyboardTabMode
@@ -156,13 +159,14 @@ fun JevCopilotPanel(
                 )
 
                 // Redaction / Domain / Context status pill (toggles read-only JevContextInspectorCard)
+                val appLang = LocalAppLanguage.current
                 val statusLabel = when {
                     captured.redactionCount > 0 ->
                         "🛡${captured.redactionCount} ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
                     captured.hasContext ->
-                        "文·${captured.messageCount} ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
+                        "${tr("文", "Ctx", "文")}·${captured.messageCount} ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
                     else ->
-                        "${captured.effectiveBadgeTitle.take(3)} ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
+                        "${if (appLang == AppLang.EN) "Chat" else captured.effectiveBadgeTitle.take(3)} ${if (uiState.isJevContextInspectorOpen) "▴" else "▾"}"
                 }
                 val statusTint = when {
                     uiState.isJevContextInspectorOpen -> palette.primaryMicSolid
@@ -208,12 +212,12 @@ fun JevCopilotPanel(
 
                 // Relationship / Scene / Note Overlay pill (`ToggleJevRelationOverlay`)
                 val relationLabel = when {
-                    uiState.jevMemoryBypassedByPrivacy -> "🔒无痕"
+                    uiState.jevMemoryBypassedByPrivacy -> tr("🔒无痕", "🔒Incog", "🔒無痕")
                     captured.topology.isGroupChat && uiState.jevGroupSceneTag != GroupSceneTag.UNSET ->
                         "${uiState.jevGroupSceneTag.badgeEmoji}${uiState.jevGroupSceneTag.shortLabel.take(2)}"
                     !captured.topology.isGroupChat && uiState.jevPrivateRelationTag != PrivateRelationTag.UNSET ->
                         "${uiState.jevPrivateRelationTag.badgeEmoji}${uiState.jevPrivateRelationTag.shortLabel.take(2)}"
-                    else -> "⚡关系${if (uiState.isJevRelationOverlayOpen) "▴" else "▾"}"
+                    else -> "${tr("⚡关系", "⚡Role", "⚡關係")}${if (uiState.isJevRelationOverlayOpen) "▴" else "▾"}"
                 }
                 val relationHasSelection = uiState.isJevRelationOverlayOpen ||
                     (!uiState.jevMemoryBypassedByPrivacy && (
@@ -266,7 +270,11 @@ fun JevCopilotPanel(
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
-                        text = if (uiState.isFullScreenPeekCapturing) "取景中" else "⛶ 深读",
+                        text = if (uiState.isFullScreenPeekCapturing) {
+                            tr("取景中", "Scanning", "取景中")
+                        } else {
+                            tr("⛶ 深读", "⛶ Scan", "⛶ 深讀")
+                        },
                         style = TextStyle(
                             color = palette.keyTextPrimary,
                             fontSize = 9.5.sp,
@@ -368,7 +376,7 @@ fun JevCopilotPanel(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "重试",
+                            text = tr("重试", "Retry", "重試"),
                             style = TextStyle(
                                 color = palette.onPrimaryMic,
                                 fontSize = 10.5.sp,
@@ -463,22 +471,27 @@ private fun JevSubtextRadarBar(
         else -> TypeFreeAmber
     }
 
+    val appLang = LocalAppLanguage.current
     val badgeText = when {
         hasRadarText -> "Lv.${result!!.clampedLevel} ${result.tag}"
-        isLoading -> if (isThinking) "Lv.-- 深度思考中" else "Lv.-- 局势推演中"
-        hasError -> "Lv.-- 推演未完成"
-        else -> "Lv.-- $domainBadge"
+        isLoading -> if (isThinking) {
+            tr("Lv.-- 深度思考中", "Lv.-- Deep Reasoning", "Lv.-- 深度思考中")
+        } else {
+            tr("Lv.-- 局势推演中", "Lv.-- Analyzing Subtext", "Lv.-- 局勢推演中")
+        }
+        hasError -> tr("Lv.-- 推演未完成", "Lv.-- Paused", "Lv.-- 推演未完成")
+        else -> "Lv.-- ${if (appLang == AppLang.EN) "Subtext Radar" else domainBadge}"
     }
 
     val subtext = when {
         hasRadarText -> result!!.subtext
         isLoading -> if (isThinking) {
-            "正在深度推演对方真实动机与三套高筹码博弈话术…"
+            tr("正在深度推演对方真实动机与三套高筹码博弈话术…", "Analyzing real subtext and crafting 3 tactical replies…", "正在深度推演對方真實動機與三套高籌碼博弈話術…")
         } else {
-            "正在结合脱敏上文拆解对方潜台词与三套博弈话术…"
+            tr("正在结合脱敏上文拆解对方潜台词与三套博弈话术…", "Reading redacted context and drafting 3 reply strategies…", "正在結合去識別化上文拆解對方潛台詞與三套博弈話術…")
         }
         hasError -> errorMessage.orEmpty()
-        else -> "正在自动读取上文并推演三套博弈策略…"
+        else -> tr("正在自动读取上文并推演三套博弈策略…", "Analyzing conversation context to craft 3 reply options…", "正在自動讀取上文並推演三套博弈策略…")
     }
 
     val combinedRadarText = remember(badgeText, subtext, palette.keyTextPrimary, palette.keyTextMuted) {
@@ -654,7 +667,8 @@ private fun JevStrategyKeycapCard(
         )
     }
 
-    val cardAnnotatedText = remember(option.replyText, isSelected, checkColor, badgeText) {
+    val insertedSuffix = tr(" ✓已置入", " ✓Inserted", " ✓已置入")
+    val cardAnnotatedText = remember(option.replyText, isSelected, checkColor, badgeText, insertedSuffix) {
         buildAnnotatedString {
             appendInlineContent(inlinePillId, "[$badgeText] ")
             append(option.replyText)
@@ -666,7 +680,7 @@ private fun JevStrategyKeycapCard(
                         fontWeight = FontWeight.Bold
                     )
                 ) {
-                    append(" ✓已置入")
+                    append(insertedSuffix)
                 }
             }
         }
@@ -703,11 +717,15 @@ private fun JevPlaceholderCard(
     isLoading: Boolean
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
-    val defaultTags = listOf("稳妥顺接", "温和设限", "高维反客")
+    val defaultTags = listOf(
+        tr("稳妥顺接", "Graceful Pivot", "穩妥順接"),
+        tr("温和设限", "Firm Boundary", "溫和設限"),
+        tr("高维反客", "Dry Wit", "高維反客")
+    )
     val defaultHints = listOf(
-        "正在生成顺水推舟、不失礼貌的稳健回复方案…",
-        "正在生成明确边界、守住核心筹码的防御方案…",
-        "正在生成反客为主、把问题抛回对方的博弈方案…"
+        tr("正在生成顺水推舟、不失礼貌的稳健回复方案…", "Drafting a smooth, diplomatic reply option…", "正在生成順水推舟、不失禮貌的穩健回覆方案…"),
+        tr("正在生成明确边界、守住核心筹码的防御方案…", "Drafting a clear, polite boundary-setting reply…", "正在生成明確邊界、守住核心籌碼的防禦方案…"),
+        tr("正在生成反客为主、把问题抛回对方的博弈方案…", "Drafting a sharp, confident high-leverage reply…", "正在生成反客為主、把問題拋回對方的博弈方案…")
     )
     Row(
         modifier = Modifier
@@ -995,7 +1013,7 @@ private fun JevFirstTimeDisclosureCard(
         verticalArrangement = Arrangement.spacedBy(5.dp)
     ) {
         Text(
-            text = "开启「✦ Jev 军师」端侧脱敏读屏说明",
+            text = tr("开启「✦ Jev 军师」端侧脱敏读屏说明", "Enable Jev Copilot On-Device Redacted Context", "開啟「✦ Jev 軍師」本機去識別化讀屏說明"),
             style = TextStyle(
                 color = palette.keyTextPrimary,
                 fontSize = 11.5.sp,
@@ -1005,7 +1023,11 @@ private fun JevFirstTimeDisclosureCard(
             )
         )
         Text(
-            text = "仅在你主动打开军师时按需读取当前窗口上下文，端侧自动将手机号/邮箱/地址替换为占位符、涂黑截图敏感区，遇密码/验证码/身份证/银行卡自动弃图，关闭面板即刻清空内存。",
+            text = tr(
+                "仅在你主动打开军师时按需读取当前窗口上下文，端侧自动将手机号/邮箱/地址替换为占位符、涂黑截图敏感区，遇密码/验证码/身份证/银行卡自动弃图，关闭面板即刻清空内存。",
+                "Reads visible chat context only when you explicitly open Copilot. Phone numbers, emails, and sensitive fields are redacted locally on-device before AI processing, and cleared from memory as soon as you close the panel.",
+                "僅在您主動打開軍師時按需讀取目前視窗對話內容，本機自動將手機/信箱/地址替換為遮罩並塗黑敏感區，關閉面板即刻清空記憶體。"
+            ),
             style = TextStyle(
                 color = palette.keyTextMuted,
                 fontSize = 10.sp,
@@ -1030,7 +1052,7 @@ private fun JevFirstTimeDisclosureCard(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "仅口述底牌",
+                    text = tr("仅口述底牌", "Voice Only", "僅口述底牌"),
                     style = TextStyle(
                         color = palette.keyTextMuted,
                         fontSize = 10.sp,
@@ -1051,7 +1073,7 @@ private fun JevFirstTimeDisclosureCard(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "同意并启用",
+                    text = tr("同意并启用", "Allow & Enable", "同意並啟用"),
                     style = TextStyle(
                         color = palette.onPrimaryMic,
                         fontSize = 10.sp,
@@ -1100,17 +1122,17 @@ private fun JevBottomControlRow(
 
     val bottomStatusText = if (isRelationOverlayOpen) {
         when {
-            isRecording -> "正在聆听备忘 · 松手脱敏保存"
-            isProcessing -> "军师推演中…"
-            customRelationNote.isNotBlank() -> "备忘：$customRelationNote"
-            else -> "按住说备忘 · 如：甲方总监忌催进度"
+            isRecording -> tr("正在聆听备忘 · 松手脱敏保存", "Listening for note · Release to save", "正在聆聽備忘 · 放開儲存")
+            isProcessing -> tr("军师推演中…", "Crafting replies…", "軍師推演中…")
+            customRelationNote.isNotBlank() -> "${tr("备忘：", "Note: ", "備忘：")}$customRelationNote"
+            else -> tr("按住说备忘 · 如：甲方总监忌催进度", "Hold to speak relationship note", "按住說備忘 · 如：客戶總監忌催進度")
         }
     } else {
         when {
-            isRecording -> "正在聆听底牌 · 松手重算"
-            isProcessing -> "军师推演中…"
-            userBottomLine.isNotBlank() -> "底牌：$userBottomLine"
-            else -> "按住说底牌 · 如：底价800 / 周六补约"
+            isRecording -> tr("正在聆听底牌 · 松手重算", "Listening for your stance · Release", "正在聆聽底牌 · 放開重算")
+            isProcessing -> tr("军师推演中…", "Crafting replies…", "軍師推演中…")
+            userBottomLine.isNotBlank() -> "${tr("底牌：", "Stance: ", "底牌：")}$userBottomLine"
+            else -> tr("按住说底牌 · 如：底价800 / 周六补约", "Hold to speak your stance (e.g. reschedule to Fri)", "按住說底牌 · 如：底價800 / 週六補約")
         }
     }
 
@@ -1219,7 +1241,7 @@ private fun JevBottomControlRow(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "取消",
+                    text = tr("取消", "Cancel", "取消"),
                     style = TextStyle(
                         color = palette.keyTextPrimary,
                         fontSize = 10.5.sp,
@@ -1242,7 +1264,7 @@ private fun JevBottomControlRow(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "↻ 换一批",
+                    text = tr("↻ 换一批", "↻ Refresh", "↻ 換一批"),
                     style = TextStyle(
                         color = palette.keyTextPrimary,
                         fontSize = 10.5.sp,

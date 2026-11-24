@@ -53,6 +53,9 @@ import androidx.compose.ui.unit.sp
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ime.ImeLogic
 import com.typefree.ime.ime.ImeUiState
 import com.typefree.ime.ime.KeyboardTabMode
@@ -97,6 +100,7 @@ fun VoiceMainPanel(
     onShowImePicker: () -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val appLang = LocalAppLanguage.current
     val metrics = LocalKeyboardMetrics.current
     val s = metrics.elementScale
     val density = LocalDensity.current
@@ -157,24 +161,26 @@ fun VoiceMainPanel(
             activeTranslateLabel.isNotBlank()
         val topSubtitle = when (phase) {
             is VoicePhase.SuccessToast -> {
-                ImeLogic.formatSuccessToastSubtitle(phase.latencyMs)
+                ImeLogic.formatSuccessToastSubtitle(phase.latencyMs, isChineseLocale = appLang != AppLang.EN)
             }
             is VoicePhase.Recording -> {
                 val timerText = ImeLogic.formatElapsedTimer(elapsedMs)
                 val livePreview = uiState.streamingPartialPreview.trim()
+                val mediaPausedBadge = tr("外放已静音 · ", "Media paused · ", "外放已靜音 · ")
+                val whisperBadge = tr("轻声 · ", "Whisper · ", "輕聲 · ")
                 val recBadges = buildString {
-                    if (didPauseMedia) append("外放已静音 · ")
-                    if (settings.whisperModeEnabled) append("轻声 · ")
+                    if (didPauseMedia) append(mediaPausedBadge)
+                    if (settings.whisperModeEnabled) append(whisperBadge)
                 }
                 when {
                     uiState.liveWriteStatus == LiveWriteUiStatus.FROZEN ->
-                        "已暂停写入 · 松手后在光标处上屏"
+                        tr("已暂停写入 · 松手后在光标处上屏", "Live write paused · Release to insert", "已暫停寫入 · 放開後在游標處上屏")
                     uiState.liveWriteStatus == LiveWriteUiStatus.WRITING ->
-                        "$timerText · 正在写入输入框"
+                        "$timerText · ${tr("正在写入输入框", "Writing live…", "正在寫入輸入框")}"
                     isTranslateRecording && livePreview.isNotEmpty() ->
                         "$activeTranslateLabel · ${livePreview.takeLast(18)}"
                     isTranslateRecording ->
-                        "${recBadges}正在聆听 → $activeTranslateLabel · $timerText"
+                        "${recBadges}${tr("正在聆听", "Listening", "正在聆聽")} → $activeTranslateLabel · $timerText"
                     livePreview.isNotEmpty() ->
                         "$recBadges$timerText · ${livePreview.takeLast(20)}"
                     else ->
@@ -183,9 +189,9 @@ fun VoiceMainPanel(
             }
             is VoicePhase.Processing -> phase.stageText
             else -> if (settings.whisperModeEnabled) {
-                "轻声耳语高敏模式 · 靠近麦克风轻声说"
+                tr("轻声耳语高敏模式 · 靠近麦克风轻声说", "Whisper mode · Speak softly near mic", "輕聲耳語高敏模式 · 靠近麥克風輕聲說")
             } else {
-                "Tap to speak · 轻点说话 / 上滑快译"
+                tr("Tap to speak · 轻点说话 / 上滑快译", "Hold or tap to speak · Swipe up to translate", "輕點說話 / 上滑快譯")
             }
         }
 
@@ -382,9 +388,9 @@ fun VoiceMainPanel(
             ) {
                 if (phase is VoicePhase.Recording && phase.isHandsFree) {
                     val finishLabel = if (uiState.activeIntentMode == VoiceIntentMode.TRANSLATE) {
-                        "✓ 说完点此直译"
+                        tr("✓ 说完点此直译", "✓ Tap to translate", "✓ 說完點此直譯")
                     } else {
-                        "✓ 说完轻点完成"
+                        tr("✓ 说完轻点完成", "✓ Tap to finish", "✓ 說完輕點完成")
                     }
                     Box(
                         modifier = Modifier
@@ -406,8 +412,8 @@ fun VoiceMainPanel(
                     Text(
                         text = when {
                             phase is VoicePhase.Recording ->
-                                "松手完成 · 上滑选语言快译"
-                            else -> "正在处理语音..."
+                                tr("松手完成 · 上滑选语言快译", "Listening… Release to finish", "放開完成 · 上滑選語言快譯")
+                            else -> tr("正在处理语音...", "Polishing…", "正在處理語音...")
                         },
                         color = palette.keyTextMuted,
                         fontSize = 12.5.sp,
@@ -460,7 +466,7 @@ fun VoiceMainPanel(
             }
 
             // Bottom-Center Stadium White Key (`104.dp × 42.dp`, adaptive Enter/Action label)
-            val enterInfo = uiState.enterActionInfo
+            val enterInfo = uiState.resolveEnterActionInfo(appLang != AppLang.EN)
             val enterInteraction = remember { MutableInteractionSource() }
             val enterPressed by enterInteraction.collectIsPressedAsState()
             Box(
@@ -613,9 +619,9 @@ fun ArcTranslateFullPanel(
                 )
                 Text(
                     text = if (startedFromHandsFree) {
-                        "Release to translate · 松手立即直译"
+                        tr("Release to translate · 松手立即直译", "Release to translate", "放開立即直譯")
                     } else {
-                        "松手选定此语言 · 随后开口说话"
+                        tr("松手选定此语言 · 随后开口说话", "Release to select language · Then speak", "放開選定此語言 · 隨後開口說話")
                     },
                     color = palette.keyTextMuted,
                     fontSize = 13.sp,
@@ -709,7 +715,11 @@ fun ArcTranslateFullPanel(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = if (isCancelHovered) "松手取消翻译 · Cancel" else "取消 · Cancel",
+                    text = if (isCancelHovered) {
+                        tr("松手取消翻译 · Cancel", "Release to cancel", "放開取消翻譯")
+                    } else {
+                        tr("取消 · Cancel", "Slide down to cancel", "下滑取消")
+                    },
                     color = if (isCancelHovered) TypeFreeRose else palette.keyTextMuted,
                     fontSize = 13.5.sp,
                     fontWeight = if (isCancelHovered) FontWeight.SemiBold else FontWeight.Medium

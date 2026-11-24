@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.network.PipelineStage
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.TypeFreeEmerald
@@ -125,7 +126,7 @@ fun PlaygroundEntryCard(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            text = "全功能实测沙盒 (Playground)",
+                            text = tr("全功能实测沙盒 (Playground)", "Voice & AI Playground", "全功能實測沙盒 (Playground)"),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -134,7 +135,7 @@ fun PlaygroundEntryCard(
                             color = TypeFreeEmerald.copy(alpha = 0.14f)
                         ) {
                             Text(
-                                text = "弹层试玩",
+                                text = tr("弹层试玩", "Live Demo", "彈層試玩"),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = TypeFreeEmerald,
@@ -143,7 +144,11 @@ fun PlaygroundEntryCard(
                         }
                     }
                     Text(
-                        text = "当前风格：$activeStyleLabel · 点击打开独立试玩抽屉体验听写、改写与快译",
+                        text = tr(
+                            "当前风格：$activeStyleLabel · 点击打开独立试玩抽屉体验听写、改写与快译",
+                            "Active tone: $activeStyleLabel · Tap to test dictation, voice edit & live translation",
+                            "目前風格：$activeStyleLabel · 點擊開啟獨立試玩抽屜體驗聽寫、改寫與快譯"
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,
@@ -160,7 +165,7 @@ fun PlaygroundEntryCard(
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 Text(
-                    text = "立即体验",
+                    text = tr("立即体验", "Try Now", "立即體驗"),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold
                 )

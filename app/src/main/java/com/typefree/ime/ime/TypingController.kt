@@ -19,6 +19,7 @@ import com.typefree.ime.data.SnippetEntry
 import com.typefree.ime.data.SnippetMatcher
 import com.typefree.ime.data.stats.SchemeStatsKeys
 import com.typefree.ime.data.stats.TokenFeatureKeys
+import com.typefree.ime.i18n.AppStrings
 import com.typefree.ime.ime.engine.CodetableEnhancedInputEngine
 import com.typefree.ime.ime.engine.EngineResult
 import com.typefree.ime.ime.engine.FlypyInputEngine
@@ -121,6 +122,7 @@ class TypingController(
     var isRimeReady: Boolean = false
 
     val englishWordSuggester: EnglishWordSuggester = EnglishWordSuggester()
+    val englishSmartTyper: EnglishSmartTyper = EnglishSmartTyper()
     var reverseLookupMapProvider: () -> Map<String, List<String>> = { emptyMap() }
     var onSaveUserPhrase: ((word: String, code: String) -> Unit)? = null
     var onUndoRequested: (() -> Unit)? = null
@@ -238,8 +240,10 @@ class TypingController(
         flypyInputEngine.clear()
         rimeInputEngine?.clear()
         codetableEnhancedEngine?.clear()
+        englishSmartTyper.resetSession()
         predictionCoordinator.onPanelSwitched()
         syncEngineStateToUi()
+        refreshEnglishAutoCapState()
     }
 
     fun clearComposing(): Boolean {
@@ -580,7 +584,71 @@ class TypingController(
                 playFeedback = false
             )
         }
+        englishSmartTyper.onRegularInputCommitted()
         refreshPassiveMathSuggestion()
+        refreshEnglishAutoCapState()
+    }
+
+    fun refreshEnglishAutoCapState(overrideBeforeCursor: String? = null) {
+        val curr = host.stateFlow.value
+        val settings = safeSettings()
+        val shouldCap = if (curr.tabMode != KeyboardTabMode.QWERTY || curr.isFlypyChineseMode) {
+            false
+        } else {
+            val before = overrideBeforeCursor ?: host.readSurroundingBeforeCursor(32)
+            EnglishSmartTyper.shouldAutoCapitalize(
+                textBeforeCursor = before,
+                inputType = curr.currentInputType,
+                imeOptions = curr.currentImeOptions,
+                isChineseMode = false,
+                englishAutoCapEnabled = settings.englishAutoCap
+            )
+        }
+        if (curr.englishAutoCapActive != shouldCap) {
+            host.stateFlow.update { it.copy(englishAutoCapActive = shouldCap) }
+        }
+    }
+
+    private fun tryCommitEnglishAutoCorrectDelimiter(delimiter: String): Boolean {
+        val curr = host.stateFlow.value
+        if (curr.tabMode != KeyboardTabMode.QWERTY || curr.isFlypyChineseMode) {
+            englishSmartTyper.resetSession()
+            return false
+        }
+        val settings = safeSettings()
+        val before = host.readSurroundingBeforeCursor(48)
+        val commit = englishSmartTyper.onCommitDelimiter(
+            textBeforeCursor = before,
+            delimiter = delimiter,
+            inputType = curr.currentInputType,
+            imeOptions = curr.currentImeOptions,
+            isChineseMode = false,
+            englishAutoCorrectEnabled = settings.englishAutoCorrect
+        ) ?: return false
+
+        val ic = host.currentInputConnection() ?: run {
+            englishSmartTyper.resetSession()
+            return false
+        }
+        host.performKeyFeedback(strong = false)
+        try {
+            ic.beginBatchEdit()
+            if (commit.deleteBeforeLength > 0) {
+                ic.deleteSurroundingText(commit.deleteBeforeLength, 0)
+            }
+            ic.commitText(commit.textToCommit, 1)
+            ic.endBatchEdit()
+            recordExternalCommit(commit.replacementText)
+            host.recordManualEditTouch()
+        } catch (_: Exception) {
+            englishSmartTyper.resetSession()
+            return false
+        }
+        val updatedBefore = before.dropLast(commit.deleteBeforeLength.coerceAtMost(before.length)) + commit.textToCommit
+        refreshEnglishWordSuggestions()
+        refreshPassiveMathSuggestion()
+        refreshEnglishAutoCapState(overrideBeforeCursor = updatedBefore)
+        return true
     }
 
     fun togglePhraseRecording() {
@@ -739,7 +807,10 @@ class TypingController(
                 }
             }
         }
-        val scheme = safeSettings().inputScheme
+        val settings = safeSettings()
+        val lang = AppStrings.resolveLang(settings.appLanguage)
+        val scheme = settings.inputScheme
+        englishSmartTyper.resetSession()
         host.stateFlow.update {
             it.copy(
                 isFlypyChineseMode = nextChinese,
@@ -757,10 +828,11 @@ class TypingController(
                 englishSuggestionReplaceLength = 0
             )
         }
+        refreshEnglishAutoCapState()
         val toastText = if (nextChinese) {
-            "${scheme.shortBadge} · ${scheme.label}"
+            "${AppStrings.inputSchemeShortBadge(scheme, lang)} · ${AppStrings.inputSchemeLabel(scheme, lang)}"
         } else {
-            "EN · 英文键盘"
+            AppStrings.pick(lang, "EN · 英文键盘", "EN · English Keyboard", "EN · 英文鍵盤")
         }
         host.showQuickActionToast(toastText)
     }
@@ -803,9 +875,11 @@ class TypingController(
         } else {
             predictionCoordinator.dismissPredictions(resetChain = true)
         }
+        englishSmartTyper.onRegularInputCommitted()
         host.commitDirectText(text = ch, recordUndo = true, markManualEdit = true)
         refreshEnglishWordSuggestions()
         refreshPassiveMathSuggestion()
+        refreshEnglishAutoCapState()
     }
 
     fun handleCommaOrPeriodKey(isComma: Boolean) {
@@ -828,12 +902,18 @@ class TypingController(
             handleEngineResult(result)
             return
         }
+        val punct = if (isComma) "," else "."
         predictionCoordinator.onPunctuationCommitted()
+        if (tryCommitEnglishAutoCorrectDelimiter(punct)) {
+            return
+        }
         host.commitDirectText(
-            text = if (isComma) "," else ".",
+            text = punct,
             recordUndo = true,
             markManualEdit = true
         )
+        refreshEnglishWordSuggestions()
+        refreshEnglishAutoCapState()
     }
 
     fun selectFlypyCandidate(index: Int) {
@@ -987,8 +1067,12 @@ class TypingController(
                 englishSuggestionReplaceLength = 0
             )
         }
+        if (tryCommitEnglishAutoCorrectDelimiter(" ")) {
+            return
+        }
         host.tryAutoLearnFromRecentEdit()
         host.commitDirectText(" ", recordUndo = false, markManualEdit = false)
+        refreshEnglishAutoCapState()
     }
 
     fun deleteBackward() {
@@ -1007,8 +1091,29 @@ class TypingController(
         try {
             val selected = ic.getSelectedText(0)?.toString().orEmpty()
             if (selected.isNotEmpty()) {
+                englishSmartTyper.resetSession()
                 ic.commitText("", 1)
             } else {
+                if (curr.tabMode == KeyboardTabMode.QWERTY && !curr.isFlypyChineseMode) {
+                    val beforeForRevert = ic.getTextBeforeCursor(48, 0)?.toString().orEmpty()
+                    val revert = englishSmartTyper.onBackspace(beforeForRevert)
+                    if (revert != null) {
+                        ic.beginBatchEdit()
+                        ic.deleteSurroundingText(revert.deleteBeforeLength, 0)
+                        ic.commitText(revert.restoredToken, 1)
+                        ic.endBatchEdit()
+                        host.recordManualEditTouch()
+                        val restoredBefore = beforeForRevert
+                            .dropLast(revert.deleteBeforeLength.coerceAtMost(beforeForRevert.length)) +
+                            revert.restoredToken
+                        refreshEnglishWordSuggestions()
+                        refreshPassiveMathSuggestion()
+                        refreshEnglishAutoCapState(overrideBeforeCursor = restoredBefore)
+                        return
+                    }
+                } else {
+                    englishSmartTyper.resetSession()
+                }
                 val before = ic.getTextBeforeCursor(2, 0)?.toString().orEmpty()
                 val deleteLen = ImeLogic.computeBackspaceDeleteLength(before).coerceAtLeast(1)
                 ic.deleteSurroundingText(deleteLen, 0)
@@ -1019,6 +1124,7 @@ class TypingController(
         }
         refreshEnglishWordSuggestions()
         refreshPassiveMathSuggestion()
+        refreshEnglishAutoCapState()
     }
 
     fun performEnterOrNewline(onRunEqualEqualAskAi: (String, String) -> Unit) {
@@ -1051,6 +1157,7 @@ class TypingController(
         }
 
         predictionCoordinator.dismissPredictions(resetChain = true)
+        englishSmartTyper.resetSession()
 
         host.performKeyFeedback(strong = false)
         host.tryAutoLearnFromRecentEdit()
@@ -1082,28 +1189,30 @@ class TypingController(
         } else {
             ic.commitText("\n", 1)
         }
+        refreshEnglishAutoCapState()
     }
 
     fun handleEditorShortcutAction(action: EditorShortcutAction) {
         resetComposing()
         host.performHaptic(strong = true)
         val ic = host.currentInputConnection() ?: return
+        val lang = AppStrings.resolveLang(safeSettings().appLanguage)
         when (action) {
             EditorShortcutAction.SELECT_ALL -> {
                 runCatching { ic.performContextMenuAction(android.R.id.selectAll) }
-                host.showQuickActionToast("✓ 已全选")
+                host.showQuickActionToast(AppStrings.pick(lang, "✓ 已全选", "✓ Selected All", "✓ 已全選"))
             }
             EditorShortcutAction.CUT -> {
                 runCatching { ic.performContextMenuAction(android.R.id.cut) }
                 host.recordManualEditTouch()
                 host.onUserDeleteOrCutForJev()
                 host.syncSystemClipboardIfNeeded(allowFreshBanner = true)
-                host.showQuickActionToast("✓ 已剪切")
+                host.showQuickActionToast(AppStrings.pick(lang, "✓ 已剪切", "✓ Cut", "✓ 已剪下"))
             }
             EditorShortcutAction.COPY -> {
                 runCatching { ic.performContextMenuAction(android.R.id.copy) }
                 host.syncSystemClipboardIfNeeded(allowFreshBanner = true)
-                host.showQuickActionToast("✓ 已复制")
+                host.showQuickActionToast(AppStrings.pick(lang, "✓ 已复制", "✓ Copied", "✓ 已複製"))
             }
             EditorShortcutAction.PASTE -> {
                 val handled = runCatching {
@@ -1122,9 +1231,10 @@ class TypingController(
                 } else {
                     host.recordManualEditTouch()
                 }
-                host.showQuickActionToast("✓ 已粘贴")
+                host.showQuickActionToast(AppStrings.pick(lang, "✓ 已粘贴", "✓ Pasted", "✓ 已貼上"))
             }
         }
+        refreshEnglishAutoCapState()
     }
 
     fun commitSecondarySymbol(symbol: String) {
@@ -1145,6 +1255,17 @@ class TypingController(
             flushFlypyComposing()
         }
         predictionCoordinator.onPunctuationCommitted()
+        if (
+            state.tabMode == KeyboardTabMode.QWERTY &&
+            !state.isFlypyChineseMode &&
+            symbol in setOf(".", ",", "!", "?", ";", ":")
+        ) {
+            if (tryCommitEnglishAutoCorrectDelimiter(symbol)) {
+                return
+            }
+        } else {
+            englishSmartTyper.onRegularInputCommitted()
+        }
         host.commitDirectText(
             text = symbol,
             recordUndo = true,
@@ -1153,6 +1274,7 @@ class TypingController(
         )
         refreshEnglishWordSuggestions()
         refreshPassiveMathSuggestion()
+        refreshEnglishAutoCapState()
     }
 
     fun commitPairedSymbol(open: String, close: String) {

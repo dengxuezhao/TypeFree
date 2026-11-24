@@ -123,6 +123,12 @@ android {
         }
     }
 
+    bundle {
+        language {
+            enableSplit = false
+        }
+    }
+
     val privateDictDir = rootProject.file("local_private")
     val stagedStandardAssetsDir = layout.buildDirectory.dir("generated/standardCleanAssets")
     val stagedXiaoheAssetsDir = layout.buildDirectory.dir("generated/xiaoheDictAssets")

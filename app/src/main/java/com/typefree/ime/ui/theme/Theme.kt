@@ -10,7 +10,11 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import com.typefree.ime.data.ThemePreference
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import java.util.Locale
 
 // Authentic TypeFree Monochrome Minimalist Tokens + Semantic Status Accents
 val TypeFreeBgDark = Color(0xFF0E0F12)
@@ -147,6 +151,7 @@ fun resolveDarkTheme(themePreference: ThemePreference): Boolean {
 @Composable
 fun TypeFreeTheme(
     themePreference: ThemePreference? = null,
+    appLanguage: String = AppStrings.LANG_SYSTEM,
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
@@ -157,8 +162,16 @@ fun TypeFreeTheme(
     }
     val colors = if (useDark) DarkColorPalette else LightColorPalette
     val kbPalette = if (useDark) DarkKeyboardPalette else LightKeyboardPalette
+    val config = LocalConfiguration.current
+    val sysLocale = config.locales.let { list ->
+        if (!list.isEmpty) list[0] else null
+    } ?: Locale.getDefault()
+    val resolvedLang = AppStrings.resolveLang(appLanguage, sysLocale)
 
-    CompositionLocalProvider(LocalTypeFreeKeyboardPalette provides kbPalette) {
+    CompositionLocalProvider(
+        LocalTypeFreeKeyboardPalette provides kbPalette,
+        LocalAppLanguage provides resolvedLang
+    ) {
         MaterialTheme(
             colorScheme = colors,
             content = content

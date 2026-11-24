@@ -63,6 +63,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeycapBadgeMode
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.LocalTypeFreeKeyboardPalette
 import kotlinx.coroutines.Job
@@ -300,13 +304,20 @@ fun BuiltInQwertyKeyboard(
     fiveKeyBottomRow: Boolean = false,
     onSwipeUpPeriodSlash: (() -> Unit)? = null,
     keycapBadgeMode: KeycapBadgeMode = KeycapBadgeMode.SWIPE_UP,
+    autoCapShift: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val appLang = LocalAppLanguage.current
 
     var isSymbolLayer by remember { mutableStateOf(false) }
     var isMoreSymbols by remember { mutableStateOf(false) }
-    var shiftState by remember { mutableStateOf(ShiftKeyState.OFF) }
+    var shiftState by remember {
+        mutableStateOf(
+            if (!isFlypyChineseMode && autoCapShift) ShiftKeyState.ONCE else ShiftKeyState.OFF
+        )
+    }
+    var shiftSetByAutoCap by remember { mutableStateOf(!isFlypyChineseMode && autoCapShift) }
     var lastShiftTapMs by remember { mutableLongStateOf(0L) }
 
     var rootOriginInWindow by remember { mutableStateOf(Offset.Zero) }
@@ -317,10 +328,26 @@ fun BuiltInQwertyKeyboard(
     LaunchedEffect(inputSessionToken) {
         isSymbolLayer = false
         isMoreSymbols = false
-        if (shiftState == ShiftKeyState.ONCE) {
+        if (!isFlypyChineseMode && autoCapShift) {
+            shiftState = ShiftKeyState.ONCE
+            shiftSetByAutoCap = true
+        } else if (shiftState == ShiftKeyState.ONCE) {
             shiftState = ShiftKeyState.OFF
+            shiftSetByAutoCap = false
         }
         activeKeyPreview = null
+    }
+
+    LaunchedEffect(autoCapShift, isFlypyChineseMode) {
+        if (!isFlypyChineseMode && autoCapShift) {
+            if (shiftState == ShiftKeyState.OFF) {
+                shiftState = ShiftKeyState.ONCE
+                shiftSetByAutoCap = true
+            }
+        } else if (shiftState == ShiftKeyState.ONCE && shiftSetByAutoCap) {
+            shiftState = ShiftKeyState.OFF
+            shiftSetByAutoCap = false
+        }
     }
 
     val isUpperCase = shiftState != ShiftKeyState.OFF
@@ -460,6 +487,7 @@ fun BuiltInQwertyKeyboard(
                             onClick = {
                                 onCommitChar(commitText)
                                 shiftState = ImeLogic.consumeShiftAfterCharCommit(shiftState)
+                                shiftSetByAutoCap = false
                             },
                             onSwipeUp = if (swipeBinding != null) {
                                 { executeKeyGestureBinding(swipeBinding) }
@@ -541,6 +569,7 @@ fun BuiltInQwertyKeyboard(
                                     val now = System.currentTimeMillis()
                                     val delta = if (lastShiftTapMs > 0L) now - lastShiftTapMs else Long.MAX_VALUE
                                     shiftState = ImeLogic.nextShiftState(shiftState, delta)
+                                    shiftSetByAutoCap = false
                                     lastShiftTapMs = now
                                 }
                             },
@@ -553,6 +582,7 @@ fun BuiltInQwertyKeyboard(
                                     } else {
                                         ShiftKeyState.CAPS_LOCK
                                     }
+                                    shiftSetByAutoCap = false
                                     lastShiftTapMs = 0L
                                 }
                             }
@@ -570,7 +600,7 @@ fun BuiltInQwertyKeyboard(
                         QwertyRepeatingBackspaceKey(
                             onBackspace = onBackspace,
                             onSwipeUpAction = if (backspaceSwipeUpClearEnabled) onSwipeUpBackspaceClear else onSwipeUpBackspaceUndo,
-                            swipeUpBadge = if (backspaceSwipeUpClearEnabled) "清" else "撤",
+                            swipeUpBadge = if (backspaceSwipeUpClearEnabled) tr("清", "Clr", "清") else tr("撤", "Undo", "撤"),
                             verticalCellPad = rowVPad,
                             modifier = Modifier
                                 .weight(1.5f)
@@ -665,7 +695,7 @@ fun BuiltInQwertyKeyboard(
                         QwertyRepeatingBackspaceKey(
                             onBackspace = onBackspace,
                             onSwipeUpAction = if (backspaceSwipeUpClearEnabled) onSwipeUpBackspaceClear else onSwipeUpBackspaceUndo,
-                            swipeUpBadge = if (backspaceSwipeUpClearEnabled) "清" else "撤",
+                            swipeUpBadge = if (backspaceSwipeUpClearEnabled) tr("清", "Clr", "清") else tr("撤", "Undo", "撤"),
                             verticalCellPad = rowVPad,
                             modifier = Modifier
                                 .weight(1.5f)
@@ -873,7 +903,7 @@ fun BuiltInQwertyKeyboard(
                         ) {
                             if (hasActiveFlypyComposing) {
                                 Text(
-                                    text = "编码",
+                                    text = tr("编码", "Code", "編碼"),
                                     color = enterContentColor,
                                     fontSize = 12.5.sp,
                                     fontWeight = FontWeight.SemiBold,
@@ -1362,10 +1392,15 @@ private fun QwertySpaceBarKey(
             borderColor = palette.keyBorder.copy(alpha = if (palette.isDark) 0.58f else 0.50f),
             shadowColor = palette.keyShadow
         ) {
+            val spaceLang = LocalAppLanguage.current
             val label = when {
-                isCursorSliding -> "‹ 滑动移光标 ›"
-                hasComposing -> "空格首选"
-                isFlypyChineseMode -> shortInputSchemeLabel(activeInputScheme)
+                isCursorSliding -> tr("‹ 滑动移光标 ›", "‹ Slide to move cursor ›", "‹ 滑動移游標 ›")
+                hasComposing -> tr("空格首选", "Space: 1st", "空白首選")
+                isFlypyChineseMode -> if (spaceLang == AppLang.EN) {
+                    AppStrings.inputSchemeLabel(activeInputScheme, spaceLang)
+                } else {
+                    shortInputSchemeLabel(activeInputScheme)
+                }
                 else -> "English"
             }
             Text(
@@ -1472,7 +1507,7 @@ private fun QwertyShiftKey(
         ) {
             if (isClearCodeMode) {
                 Text(
-                    text = "清码",
+                    text = tr("清码", "Clear", "清碼"),
                     color = textColor,
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.SemiBold,

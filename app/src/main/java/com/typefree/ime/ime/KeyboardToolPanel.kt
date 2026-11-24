@@ -41,6 +41,10 @@ import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.components.rememberLocalModelRegistrySnapshot
 import com.typefree.ime.ui.components.resolveCompletionBackendCompactLabel
@@ -84,6 +88,7 @@ fun KeyboardToolPanel(
 ) {
     val metrics = LocalKeyboardMetrics.current
     val palette = LocalTypeFreeKeyboardPalette.current
+    val appLang = LocalAppLanguage.current
     val s = metrics.elementScale
 
     Column(
@@ -156,9 +161,9 @@ fun KeyboardToolPanel(
                     )
                     Text(
                         text = when {
-                            isManualIncognito -> "无痕已开启"
-                            uiState.isIncognitoMode -> "输入框自动无痕"
-                            else -> "无痕模式"
+                            isManualIncognito -> tr("无痕已开启", "Incognito On", "無痕已開啟")
+                            uiState.isIncognitoMode -> tr("输入框自动无痕", "Auto Incognito", "輸入框自動無痕")
+                            else -> tr("无痕模式", "Incognito", "無痕模式")
                         },
                         color = if (isEffectiveIncognito) activeAccent else palette.keyTextMuted,
                         fontSize = 10.5.sp,
@@ -201,7 +206,7 @@ fun KeyboardToolPanel(
                         modifier = Modifier.size(13.dp)
                     )
                     Text(
-                        text = if (whisperEnabled) "轻声开" else "轻声模式",
+                        text = if (whisperEnabled) tr("轻声开", "Whisper On", "輕聲開") else tr("轻声模式", "Whisper", "輕聲模式"),
                         color = if (whisperEnabled) activeAccent else palette.keyTextMuted,
                         fontSize = 10.5.sp,
                         fontWeight = if (whisperEnabled) FontWeight.SemiBold else FontWeight.Medium,
@@ -228,7 +233,7 @@ fun KeyboardToolPanel(
                         modifier = Modifier.size(12.dp)
                     )
                     Text(
-                        text = "帮写",
+                        text = tr("帮写", "Help Write", "幫寫"),
                         color = palette.keyTextPrimary,
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -251,12 +256,12 @@ fun KeyboardToolPanel(
                     ) {
                         Icon(
                             imageVector = TypeFreeIcons.CopilotStar,
-                            contentDescription = "Jev 军师",
+                            contentDescription = tr("Jev 军师", "Jev Copilot", "Jev 軍師"),
                             tint = palette.keyTextPrimary,
                             modifier = Modifier.size(12.dp)
                         )
                         Text(
-                            text = "军师",
+                            text = tr("军师", "Copilot", "軍師"),
                             color = palette.keyTextPrimary,
                             fontSize = 10.5.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -294,7 +299,7 @@ fun KeyboardToolPanel(
                         horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         Text(
-                            text = "单字",
+                            text = tr("单字", "1-Char", "單字"),
                             color = if (singleCharEnabled) activeAccent else palette.keyTextMuted,
                             fontSize = 10.5.sp,
                             fontWeight = if (singleCharEnabled) FontWeight.SemiBold else FontWeight.Medium,
@@ -337,7 +342,7 @@ fun KeyboardToolPanel(
                             )
                         }
                         Text(
-                            text = if (isPhraseRecording) "造词中" else "造词",
+                            text = if (isPhraseRecording) tr("造词中", "Recording…", "造詞中") else tr("造词", "Add Phrase", "造詞"),
                             color = if (isPhraseRecording) activeAccent else palette.keyTextMuted,
                             fontSize = 10.5.sp,
                             fontWeight = if (isPhraseRecording) FontWeight.SemiBold else FontWeight.Medium,
@@ -360,7 +365,7 @@ fun KeyboardToolPanel(
                         horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         Text(
-                            text = "中/英",
+                            text = tr("中/英", "CN/EN", "中/英"),
                             color = palette.keyTextPrimary,
                             fontSize = 10.5.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -380,8 +385,12 @@ fun KeyboardToolPanel(
         ) {
             ToolPanelTile(
                 icon = TypeFreeIcons.Clipboard,
-                title = "剪贴板",
-                subtitle = if (clipboardCount > 0) "$clipboardCount 条记录" else "常用语",
+                title = tr("剪贴板", "Clipboard", "剪貼簿"),
+                subtitle = if (clipboardCount > 0) {
+                    tr("$clipboardCount 条记录", "$clipboardCount items", "$clipboardCount 筆紀錄")
+                } else {
+                    tr("常用语", "Snippets", "常用語")
+                },
                 badgeDot = uiState.freshClipboardBannerItem != null,
                 onClick = onOpenClipboard,
                 modifier = Modifier
@@ -391,8 +400,8 @@ fun KeyboardToolPanel(
 
             ToolPanelTile(
                 icon = TypeFreeIcons.Tune,
-                title = "键盘高度",
-                subtitle = "垫高 · ${KeyboardMetrics.labelForLiftLevel(uiState.activeLiftLevel)}",
+                title = tr("键盘高度", "Height", "鍵盤高度"),
+                subtitle = "${tr("垫高", "Lift", "墊高")} · ${KeyboardMetrics.labelForLiftLevel(uiState.activeLiftLevel)}",
                 isExpandedActive = uiState.isToolPanelHeightExpanded,
                 onClick = onToggleHeightExpanded,
                 modifier = Modifier
@@ -402,8 +411,12 @@ fun KeyboardToolPanel(
 
             ToolPanelTile(
                 icon = TypeFreeIcons.KeyboardGrid,
-                title = "输入方案",
-                subtitle = shortInputSchemeLabel(uiState.activeInputScheme),
+                title = tr("输入方案", "Scheme", "輸入方案"),
+                subtitle = if (appLang == AppLang.EN) {
+                    AppStrings.inputSchemeLabel(uiState.activeInputScheme, appLang)
+                } else {
+                    shortInputSchemeLabel(uiState.activeInputScheme)
+                },
                 onClick = onCycleInputScheme,
                 modifier = Modifier
                     .weight(1f)
@@ -412,8 +425,8 @@ fun KeyboardToolPanel(
 
             ToolPanelTile(
                 icon = TypeFreeIcons.Sparkles,
-                title = "文风",
-                subtitle = activeStyle.name,
+                title = tr("文风", "Tone", "文風"),
+                subtitle = AppStrings.toneStyleName(activeStyle, appLang),
                 onClick = onOpenStylePicker,
                 modifier = Modifier
                     .weight(1f)
@@ -431,7 +444,7 @@ fun KeyboardToolPanel(
             val localRegistrySnapshot = rememberLocalModelRegistrySnapshot()
             ToolPanelTile(
                 icon = TypeFreeIcons.VoicePen,
-                title = "AI 补全",
+                title = tr("AI 补全", "AI Complete", "AI 補全"),
                 subtitle = resolveCompletionBackendCompactLabel(settings, localRegistrySnapshot),
                 isToggleEnabled = settings.aiCompletionEnabled,
                 onClick = onToggleAiCompletion,
@@ -442,8 +455,8 @@ fun KeyboardToolPanel(
 
             ToolPanelTile(
                 icon = TypeFreeIcons.VoiceWaveform,
-                title = "实时写入",
-                subtitle = if (settings.liveWriteToEditor) "已开启" else "已关闭",
+                title = tr("实时写入", "Live Write", "即時寫入"),
+                subtitle = if (settings.liveWriteToEditor) tr("已开启", "On", "已開啟") else tr("已关闭", "Off", "已關閉"),
                 isToggleEnabled = settings.liveWriteToEditor,
                 onClick = onToggleLiveWrite,
                 modifier = Modifier
@@ -453,8 +466,8 @@ fun KeyboardToolPanel(
 
             ToolPanelTile(
                 icon = TypeFreeIcons.Book,
-                title = "词库",
-                subtitle = "词典与方案",
+                title = tr("词库", "Dictionary", "詞庫"),
+                subtitle = tr("词典与方案", "Words & Rime", "詞典與方案"),
                 onClick = onOpenDictionary,
                 modifier = Modifier
                     .weight(1f)
@@ -463,8 +476,8 @@ fun KeyboardToolPanel(
 
             ToolPanelTile(
                 icon = TypeFreeIcons.Tune,
-                title = "设置",
-                subtitle = "偏好与模型",
+                title = tr("设置", "Settings", "設定"),
+                subtitle = tr("偏好与模型", "AI & Prefs", "偏好與模型"),
                 onClick = onOpenSettings,
                 modifier = Modifier
                     .weight(1f)
@@ -500,7 +513,7 @@ private fun ToolPanelHeightAdjustStrip(
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text(
-            text = "底部垫高",
+            text = tr("底部垫高", "Bottom Lift", "底部墊高"),
             color = palette.keyTextMuted,
             fontSize = 10.5.sp,
             fontWeight = FontWeight.SemiBold,
@@ -553,7 +566,7 @@ private fun ToolPanelHeightAdjustStrip(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = "默认",
+                text = tr("默认", "Reset", "預設"),
                 color = if (isDefault) palette.keyTextMuted.copy(alpha = 0.5f) else palette.keyTextPrimary,
                 fontSize = 10.5.sp,
                 fontWeight = FontWeight.SemiBold,

@@ -8,6 +8,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -35,6 +37,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -67,6 +71,9 @@ import com.typefree.ime.BuildConfig
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.ThemePreference
 import com.typefree.ime.data.stats.StatsTimeRange
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.network.AppUpdateChecker
 import com.typefree.ime.network.UpdateCheckInfo
 import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
@@ -75,11 +82,13 @@ import com.typefree.ime.ui.theme.TypeFreeEmerald
 import kotlinx.coroutines.launch
 import java.util.Locale
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun GeneralSettingsScreen(
     repository: AppRepository
 ) {
     val context = LocalContext.current
+    val appLang = LocalAppLanguage.current
     val coroutineScope = rememberCoroutineScope()
     val settings by repository.settings.collectAsState()
     val clipboardItems by repository.clipboardItems.collectAsState()
@@ -137,7 +146,12 @@ fun GeneralSettingsScreen(
                 }
             }.onFailure { err ->
                 updateDialogState = SharedUpdateDialogState.Error(
-                    err.message ?: "检查更新失败，请稍后重试或前往 GitHub Releases 手动查看"
+                    err.message ?: AppStrings.pick(
+                        appLang,
+                        "检查更新失败，请稍后重试或前往 GitHub Releases 手动查看",
+                        "Update check failed — please try again later or check GitHub Releases",
+                        "檢查更新失敗，請稍後重試或前往 GitHub Releases 手動查看"
+                    )
                 )
             }
         }
@@ -159,7 +173,7 @@ fun GeneralSettingsScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "通用",
+                    text = tr("通用", "General", "一般"),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.ExtraBold
                 )
@@ -205,8 +219,8 @@ fun GeneralSettingsScreen(
                         }
                         Text(
                             text = when {
-                                isCheckingUpdate -> "检查更新中…"
-                                availableUpdate?.hasUpdate == true -> "有更新 v${availableUpdate!!.latestVersion}"
+                                isCheckingUpdate -> tr("检查更新中…", "Checking…", "檢查更新中…")
+                                availableUpdate?.hasUpdate == true -> tr("有更新 v${availableUpdate!!.latestVersion}", "Update v${availableUpdate!!.latestVersion}", "有更新 v${availableUpdate!!.latestVersion}")
                                 else -> "v${BuildConfig.VERSION_NAME} · BYOK"
                             },
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
@@ -243,7 +257,7 @@ fun GeneralSettingsScreen(
                 }
             }
 
-            // 1. 外观主题
+            // 1. 界面语言与外观主题
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
@@ -258,12 +272,63 @@ fun GeneralSettingsScreen(
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            text = "外观主题",
+                            text = tr("界面语言 · Language", "Language / 界面语言", "介面語言 · Language"),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "切换宿主应用、内置语音键盘与悬浮语音胶囊的视觉配色",
+                            text = tr(
+                                "即时切换应用、内置键盘与 AI 提示词语言（非中文系统默认展示英文）",
+                                "Switch app, keyboard chrome, and AI prompt language live",
+                                "即時切換應用、內建鍵盤與 AI 提示詞語言（非中文系統預設顯示英文）"
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    val normalizedCurrentLang = AppStrings.normalizeAppLanguage(settings.appLanguage)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        AppStrings.LANGUAGE_OPTIONS.forEach { option ->
+                            val isSelected = normalizedCurrentLang == option
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    repository.updateSettings { it.copy(appLanguage = option) }
+                                },
+                                label = {
+                                    Text(
+                                        text = AppStrings.languageOptionLabel(option, appLang),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = tr("外观主题", "Appearance", "外觀主題"),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = tr(
+                                "切换宿主应用、内置语音键盘与悬浮语音胶囊的视觉配色",
+                                "Choose color theme across the app, keyboard, and floating voice bubble",
+                                "切換宿主應用、內建語音鍵盤與懸浮語音膠囊的視覺配色"
+                            ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -274,8 +339,8 @@ fun GeneralSettingsScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         GeneralThemeOptionCard(
-                            title = "浅色单色",
-                            subtitle = "TypeFree 经典",
+                            title = tr("浅色单色", "Light", "淺色單色"),
+                            subtitle = tr("TypeFree 经典", "Classic Mono", "TypeFree 經典"),
                             preference = ThemePreference.LIGHT,
                             selected = settings.themePreference == ThemePreference.LIGHT,
                             onClick = {
@@ -284,8 +349,8 @@ fun GeneralSettingsScreen(
                             modifier = Modifier.weight(1f)
                         )
                         GeneralThemeOptionCard(
-                            title = "深色曜石",
-                            subtitle = "沉浸暗色",
+                            title = tr("深色曜石", "Obsidian", "深色曜石"),
+                            subtitle = tr("沉浸暗色", "Pure Dark", "沉浸暗色"),
                             preference = ThemePreference.DARK,
                             selected = settings.themePreference == ThemePreference.DARK,
                             onClick = {
@@ -294,8 +359,8 @@ fun GeneralSettingsScreen(
                             modifier = Modifier.weight(1f)
                         )
                         GeneralThemeOptionCard(
-                            title = "跟随系统",
-                            subtitle = "日夜自适应",
+                            title = tr("跟随系统", "System", "跟隨系統"),
+                            subtitle = tr("日夜自适应", "Auto Day/Night", "日夜自適應"),
                             preference = ThemePreference.SYSTEM,
                             selected = settings.themePreference == ThemePreference.SYSTEM,
                             onClick = {
@@ -321,14 +386,18 @@ fun GeneralSettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "面板记忆与声音振动",
+                        text = tr("面板记忆与声音振动", "Keyboard Memory, Sound & Haptics", "面板記憶與聲音震動"),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
 
                     PreferenceSwitchRow(
-                        title = "记忆上一次使用的键盘模式",
-                        subtitle = "收起键盘或切换应用后自动恢复上次面板；密码框临时切英文后自动还原",
+                        title = tr("记忆上一次使用的键盘模式", "Remember Last Keyboard Mode", "記憶上一次使用的鍵盤模式"),
+                        subtitle = tr(
+                            "收起键盘或切换应用后自动恢复上次面板；密码框临时切英文后自动还原",
+                            "Restore your last active panel across apps; auto-restores after password fields",
+                            "收起鍵盤或切換應用後自動恢復上次面板；密碼框臨時切英文後自動還原"
+                        ),
                         checked = settings.rememberLastKeyboardMode,
                         onCheckedChange = { enabled ->
                             repository.updateSettings { it.copy(rememberLastKeyboardMode = enabled) }
@@ -338,8 +407,12 @@ fun GeneralSettingsScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
 
                     PreferenceSwitchRow(
-                        title = "按键与录音提示音",
-                        subtitle = "点击麦克风开始聆听、结束录音及按键反馈轻音效",
+                        title = tr("按键与录音提示音", "Key Click & Mic Sounds", "按鍵與錄音提示音"),
+                        subtitle = tr(
+                            "点击麦克风开始聆听、结束录音及按键反馈轻音效",
+                            "Subtle audio cues when starting/stopping dictation and tapping keys",
+                            "點擊麥克風開始聆聽、結束錄音及按鍵回饋輕音效"
+                        ),
                         checked = settings.interactionSounds,
                         onCheckedChange = { enabled ->
                             repository.updateSettings { it.copy(interactionSounds = enabled) }
@@ -349,8 +422,12 @@ fun GeneralSettingsScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
 
                     PreferenceSwitchRow(
-                        title = "触觉振动反馈",
-                        subtitle = "按下说话键、弧形转盘选词及文字上屏时提供振动反馈",
+                        title = tr("触觉振动反馈", "Haptic Feedback", "觸覺震動回饋"),
+                        subtitle = tr(
+                            "按下说话键、弧形转盘选词及文字上屏时提供振动反馈",
+                            "Crisp tactile vibration on key presses, mic button, and text commit",
+                            "按下說話鍵、弧形轉盤選詞及文字上屏時提供震動回饋"
+                        ),
                         checked = settings.hapticFeedback,
                         onCheckedChange = { enabled ->
                             repository.updateSettings { it.copy(hapticFeedback = enabled) }
@@ -384,12 +461,16 @@ fun GeneralSettingsScreen(
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             Text(
-                                text = "内置剪贴板历史管理",
+                                text = tr("内置剪贴板历史管理", "Clipboard History", "內建剪貼簿歷史管理"),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "键盘顶栏可唤起双列剪贴板，支持置顶常用语 (${clipboardItems.size} 条)",
+                                text = tr(
+                                    "键盘顶栏可唤起双列剪贴板，支持置顶常用语 (${clipboardItems.size} 条)",
+                                    "Two-column clipboard in keyboard top bar with pin support (${clipboardItems.size} items)",
+                                    "鍵盤頂欄可喚起雙欄剪貼簿，支援置頂常用語 (${clipboardItems.size} 條)"
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -398,17 +479,25 @@ fun GeneralSettingsScreen(
                             TextButton(
                                 onClick = {
                                     repository.clearUnpinnedClipboardItems()
-                                    Toast.makeText(context, "已清空未置顶剪贴板记录", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(
+                                        context,
+                                        AppStrings.pick(appLang, "已清空未置顶剪贴板记录", "Cleared unpinned clipboard items", "已清空未置頂剪貼簿紀錄"),
+                                        Toast.LENGTH_SHORT
+                                    ).show()
                                 }
                             ) {
-                                Text("清空未置顶 ($unpinnedCount)")
+                                Text(tr("清空未置顶 ($unpinnedCount)", "Clear ($unpinnedCount)", "清空未置頂 ($unpinnedCount)"))
                             }
                         }
                     }
 
                     PreferenceSwitchRow(
-                        title = "自动记录剪贴板历史",
-                        subtitle = "自动收纳最近 200 条复制文本，自动过滤密码管理器敏感内容",
+                        title = tr("自动记录剪贴板历史", "Save Clipboard History", "自動記錄剪貼簿歷史"),
+                        subtitle = tr(
+                            "自动收纳最近 200 条复制文本，自动过滤密码管理器敏感内容",
+                            "Keep up to 200 copied snippets locally; automatically skips password-manager secrets",
+                            "自動收納最近 200 條複製文字，自動過濾密碼管理器敏感內容"
+                        ),
                         checked = settings.clipboardEnabled,
                         onCheckedChange = { enabled ->
                             repository.updateSettings { it.copy(clipboardEnabled = enabled) }
@@ -418,8 +507,12 @@ fun GeneralSettingsScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
 
                     PreferenceSwitchRow(
-                        title = "顶栏刚复制内容一键粘贴提示",
-                        subtitle = "复制短信验证码、链接或文本后在键盘顶栏浮现快捷胶囊，一键填入",
+                        title = tr("顶栏刚复制内容一键粘贴提示", "One-Tap Paste Pill in Top Bar", "頂欄剛複製內容一鍵貼上提示"),
+                        subtitle = tr(
+                            "复制短信验证码、链接或文本后在键盘顶栏浮现快捷胶囊，一键填入",
+                            "Surface newly copied OTP codes, links, or text as a quick-paste pill in the top bar",
+                            "複製簡訊驗證碼、連結或文字後在鍵盤頂欄浮現快捷膠囊，一鍵填入"
+                        ),
                         checked = settings.clipboardQuickPasteSuggestion,
                         onCheckedChange = { enabled ->
                             repository.updateSettings { it.copy(clipboardQuickPasteSuggestion = enabled) }
@@ -429,7 +522,7 @@ fun GeneralSettingsScreen(
                     if (clipboardItems.isNotEmpty()) {
                         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
                         Text(
-                            text = "最近记录预览（可置顶或删除）",
+                            text = tr("最近记录预览（可置顶或删除）", "Recent Items (Pin or Delete)", "最近紀錄預覽（可置頂或刪除）"),
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -461,7 +554,7 @@ fun GeneralSettingsScreen(
                                         ) {
                                             Icon(
                                                 imageVector = TypeFreeIcons.Pin,
-                                                contentDescription = if (item.isPinned) "取消置顶" else "置顶",
+                                                contentDescription = if (item.isPinned) tr("取消置顶", "Unpin", "取消置頂") else tr("置顶", "Pin", "置頂"),
                                                 tint = if (item.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                                 modifier = Modifier.size(16.dp)
                                             )
@@ -472,7 +565,7 @@ fun GeneralSettingsScreen(
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Delete,
-                                                contentDescription = "删除",
+                                                contentDescription = tr("删除", "Delete", "刪除"),
                                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 modifier = Modifier.size(16.dp)
                                             )
@@ -504,7 +597,7 @@ fun GeneralSettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "端侧纯数字表达统计",
+                            text = tr("端侧纯数字表达统计", "On-Device Numeric Stats", "端側純數字表達統計"),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -514,7 +607,7 @@ fun GeneralSettingsScreen(
                             border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.34f))
                         ) {
                             Text(
-                                text = "0 正文 · 纯本地",
+                                text = tr("0 正文 · 纯本地", "0 Text · Local Only", "0 正文 · 純本機"),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 color = TypeFreeEmerald,
@@ -524,8 +617,12 @@ fun GeneralSettingsScreen(
                     }
 
                     PreferenceSwitchRow(
-                        title = "开启端侧按日纯数字统计",
-                        subtitle = "仅按日累计字数、耗时与使用次数等纯数字指标，绝不记录任何输入正文；无痕模式与密码框自动跳过",
+                        title = tr("开启端侧按日纯数字统计", "Enable Daily Numeric Insights", "開啟端側按日純數字統計"),
+                        subtitle = tr(
+                            "仅按日累计字数、耗时与使用次数等纯数字指标，绝不记录任何输入正文；无痕模式与密码框自动跳过",
+                            "Counts daily character totals, time saved, and run counts only — never stores typed text; auto-skips incognito & password fields",
+                            "僅按日累計字數、耗時與使用次數等純數字指標，絕不記錄任何輸入正文；無痕模式與密碼框自動略過"
+                        ),
                         checked = settings.inputStatsEnabled,
                         onCheckedChange = { enabled ->
                             repository.setInputStatsEnabled(enabled)
@@ -544,18 +641,22 @@ fun GeneralSettingsScreen(
                             verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
                             Text(
-                                text = "本地统计表：${statsMeta.statsTrackedDays} 天 · $formattedStatsKb",
+                                text = tr(
+                                    "本地统计表：${statsMeta.statsTrackedDays} 天 · $formattedStatsKb",
+                                    "Local DB: ${statsMeta.statsTrackedDays} days · $formattedStatsKb",
+                                    "本機統計表：${statsMeta.statsTrackedDays} 天 · $formattedStatsKb"
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "写入方式：内存累加 + 后台异步合并",
+                                text = tr("写入方式：内存累加 + 后台异步合并", "Write path: In-memory counters + async flush", "寫入方式：記憶體累加 + 背景非同步合併"),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
-                                text = "无痕 / 密码框隔离：强制零计数",
+                                text = tr("无痕 / 密码框隔离：强制零计数", "Incognito / Password fields: Strict zero-logging", "無痕 / 密碼框隔離：強制零計數"),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -579,7 +680,7 @@ fun GeneralSettingsScreen(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "重置累计纯数字统计与里程碑",
+                            text = tr("重置累计纯数字统计与里程碑", "Reset Numeric Stats & Milestones", "重置累計純數字統計與里程碑"),
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.SemiBold
                         )
@@ -625,7 +726,11 @@ fun GeneralSettingsScreen(
                                 fontWeight = FontWeight.ExtraBold
                             )
                             Text(
-                                text = "v${BuildConfig.VERSION_NAME} · BYOK 自有接口版",
+                                text = tr(
+                                    "v${BuildConfig.VERSION_NAME} · BYOK 自有接口版",
+                                    "v${BuildConfig.VERSION_NAME} · Open-Source On-Device & BYOK",
+                                    "v${BuildConfig.VERSION_NAME} · BYOK 自備介面版"
+                                ),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -652,13 +757,17 @@ fun GeneralSettingsScreen(
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Text(
-                                    text = "自有 API 直连 · 数据仅存本机",
+                                    text = tr("自有 API 直连 · 数据仅存本机", "Direct BYOK & On-Device Privacy", "自備 API 直連 · 資料僅存本機"),
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
                             Text(
-                                text = "• 自有接口直连：音频与文本由手机直接发送至你配置的模型或自定义网关接口，无第三方中转。\n• 本机存储：API Key、历史记录、个人词库、剪贴板与风格配置均保存在当前设备本地。",
+                                text = tr(
+                                    "• 自有接口直连：音频与文本由手机直接发送至你配置的模型或自定义网关接口，无第三方中转。\n• 本机存储：API Key、历史记录、个人词库、剪贴板与风格配置均保存在当前设备本地。",
+                                    "• Direct Connection: Audio and text run locally on-device or connect straight from your phone to your chosen API endpoint — zero middleman relay.\n• Local Storage: API keys, history, personal dictionary, and clipboard stay strictly on your device.",
+                                    "• 自備介面直連：音訊與文字由手機直接發送至您設定的模型介面，無第三方中轉。\n• 本機儲存：API Key、歷史紀錄、個人詞庫與剪貼簿均保存在本機。"
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 lineHeight = 19.sp
@@ -684,11 +793,11 @@ fun GeneralSettingsScreen(
                                     color = MaterialTheme.colorScheme.onSecondaryContainer
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("正在检查…", style = MaterialTheme.typography.labelLarge)
+                                Text(tr("正在检查…", "Checking…", "正在檢查…"), style = MaterialTheme.typography.labelLarge)
                             } else {
                                 Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(15.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("检查更新", style = MaterialTheme.typography.labelLarge)
+                                Text(tr("检查更新", "Check Updates", "檢查更新"), style = MaterialTheme.typography.labelLarge)
                             }
                         }
 
@@ -709,7 +818,7 @@ fun GeneralSettingsScreen(
                         shape = RoundedCornerShape(10.dp),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                     ) {
-                        Text("重新查看首次引导向导", style = MaterialTheme.typography.labelLarge)
+                        Text(tr("重新查看首次引导向导", "Replay Onboarding Guide", "重新查看首次引導精靈"), style = MaterialTheme.typography.labelLarge)
                     }
 
                     Row(
@@ -738,10 +847,14 @@ fun GeneralSettingsScreen(
     if (showResetStatsConfirm) {
         AlertDialog(
             onDismissRequest = { showResetStatsConfirm = false },
-            title = { Text("重置累计纯数字统计与里程碑") },
+            title = { Text(tr("重置累计纯数字统计与里程碑", "Reset Numeric Stats & Milestones", "重置累計純數字統計與里程碑")) },
             text = {
                 Text(
-                    "确定要清零本机累计的 ${statsMeta.statsTrackedDays} 天纯数字表达统计、24 小时节律与里程碑进度吗？此操作不会影响你的识别历史、个人词典或 Jev 记忆，且无法撤销。"
+                    tr(
+                        "确定要清零本机累计的 ${statsMeta.statsTrackedDays} 天纯数字表达统计、24 小时节律与里程碑进度吗？此操作不会影响你的识别历史、个人词典或 Jev 记忆，且无法撤销。",
+                        "Clear ${statsMeta.statsTrackedDays} days of local numeric stats, 24h rhythm, and milestones? Your dictation history, personal dictionary, and Jev memory will NOT be affected.",
+                        "確定要清零本機累計的 ${statsMeta.statsTrackedDays} 天純數字表達統計、24 小時節律與里程碑進度嗎？此操作不會影響您的識別歷史、個人詞典或 Jev 記憶，且無法復原。"
+                    )
                 )
             },
             confirmButton = {
@@ -749,19 +862,23 @@ fun GeneralSettingsScreen(
                     onClick = {
                         repository.resetDailyStats()
                         showResetStatsConfirm = false
-                        Toast.makeText(context, "已重置累计纯数字统计与里程碑", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            AppStrings.pick(appLang, "已重置累计纯数字统计与里程碑", "Numeric stats & milestones reset", "已重置累計純數字統計與里程碑"),
+                            Toast.LENGTH_SHORT
+                        ).show()
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error,
                         contentColor = Color.White
                     )
                 ) {
-                    Text("确认重置")
+                    Text(tr("确认重置", "Reset", "確認重置"))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showResetStatsConfirm = false }) {
-                    Text("取消")
+                    Text(tr("取消", "Cancel", "取消"))
                 }
             }
         )

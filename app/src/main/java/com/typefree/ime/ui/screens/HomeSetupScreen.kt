@@ -115,6 +115,10 @@ import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.data.stats.InsightsSnapshot
 import com.typefree.ime.data.stats.StatsTimeRange
 import com.typefree.ime.data.stats.TokenFeatureKeys
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.EndpointResolver
 import com.typefree.ime.network.PipelineStage
@@ -194,8 +198,14 @@ object SetupStatsHelper {
         )
     }
 
-    fun formatCharCount(chars: Int): String {
-        return if (chars >= 10_000) {
+    fun formatCharCount(chars: Int, lang: AppLang = AppLang.ZH_CN): String {
+        return if (lang == AppLang.EN) {
+            if (chars >= 10_000) {
+                String.format(Locale.US, "%.1fk", chars / 1_000.0)
+            } else {
+                String.format(Locale.US, "%,d", chars)
+            }
+        } else if (chars >= 10_000) {
             String.format(Locale.US, "%.1fw", chars / 10_000.0)
         } else {
             String.format(Locale.US, "%,d", chars)
@@ -238,7 +248,8 @@ object SetupStatsHelper {
 
     fun formatActivePipelineBadge(
         settings: AppSettings,
-        registrySnapshot: LocalModelRegistrySnapshot = LocalModelRegistrySnapshot()
+        registrySnapshot: LocalModelRegistrySnapshot = LocalModelRegistrySnapshot(),
+        lang: AppLang = AppLang.ZH_CN
     ): String {
         val routeBadge = OfflineRouteBridge.formatBadgeForDictate(
             settings = settings,
@@ -247,7 +258,15 @@ object SetupStatsHelper {
         if (settings.offlineConfig.mode != OfflineMode.OFF &&
             (routeBadge.isPureOffline || routeBadge.isHybrid || resolveReadiness(settings, registrySnapshot) is ReadinessState.NotReady)
         ) {
-            return routeBadge.shortLabel
+            return if (lang == AppLang.EN) {
+                when {
+                    routeBadge.isPureOffline -> "On-Device Offline AI"
+                    routeBadge.isHybrid -> "Hybrid · Local ASR + Cloud"
+                    else -> routeBadge.shortLabel
+                }
+            } else {
+                routeBadge.shortLabel
+            }
         }
         return when (settings.pipelineMode) {
             PipelineMode.DUAL_STAGE -> {
@@ -259,23 +278,25 @@ object SetupStatsHelper {
                     } else {
                         settings.sttConfig.model.substringAfterLast('/').ifBlank { "STT" }
                     }
-                    SttProtocol.ALIYUN_DASHSCOPE_WS -> "百炼流式"
-                    SttProtocol.VOLCENGINE_SAUC_WS -> "豆包流式"
+                    SttProtocol.ALIYUN_DASHSCOPE_WS -> AppStrings.pick(lang, "百炼流式", "Bailian WS", "百煉串流")
+                    SttProtocol.VOLCENGINE_SAUC_WS -> AppStrings.pick(lang, "豆包流式", "Doubao WS", "豆包串流")
                     SttProtocol.GEMINI_LIVE_WS -> "Gemini Live"
                 }
                 if (settings.llmConfig.enabled) {
                     val llmShort = settings.llmConfig.model.substringAfterLast('/').ifBlank { "LLM" }
-                    "双阶段 · $sttShort + $llmShort"
+                    AppStrings.pick(lang, "双阶段 · $sttShort + $llmShort", "Dual · $sttShort + $llmShort", "雙階段 · $sttShort + $llmShort")
                 } else if (settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS) {
-                    "流式智能净写 · Gemini Live"
+                    AppStrings.pick(lang, "流式智能净写 · Gemini Live", "Live Dictate · Gemini Live", "串流智慧淨寫 · Gemini Live")
                 } else {
-                    "双阶段 · 仅 $sttShort"
+                    AppStrings.pick(lang, "双阶段 · 仅 $sttShort", "STT Only · $sttShort", "雙階段 · 僅 $sttShort")
                 }
             }
 
             PipelineMode.MULTIMODAL_DIRECT -> {
-                val mmShort = settings.multimodalConfig.model.substringAfterLast('/').ifBlank { "多模态" }
-                "多模态 · $mmShort"
+                val mmShort = settings.multimodalConfig.model.substringAfterLast('/').ifBlank {
+                    AppStrings.pick(lang, "多模态", "Multimodal", "多模態")
+                }
+                AppStrings.pick(lang, "多模态 · $mmShort", "Multimodal · $mmShort", "多模態 · $mmShort")
             }
         }
     }
@@ -305,6 +326,9 @@ object SetupStatsHelper {
 private const val SAMPLE_PLAYGROUND_TEXT =
     "王总，明天下午三点那个项目评审会我可能赶不过去了，因为客户那边临时加了个 deep seek 接口联调需求，咱们能不能推迟到周四上午十点？"
 
+private const val SAMPLE_PLAYGROUND_TEXT_EN =
+    "Hey Sarah, I might not make tomorrow's 3 PM design review since the client just asked for an urgent Gemini API integration check — could we move it to Thursday at 10 AM?"
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun HomeSetupScreen(
@@ -318,6 +342,7 @@ fun HomeSetupScreen(
     onConsumeOpenInsights: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val appLang = LocalAppLanguage.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val windowInfo = LocalWindowInfo.current
     val coroutineScope = rememberCoroutineScope()
@@ -427,14 +452,14 @@ fun HomeSetupScreen(
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                            contentDescription = "返回首页",
+                            contentDescription = tr("返回首页", "Back to Home", "返回首頁"),
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(modifier = Modifier.width(2.dp))
-                        Text("返回首页", fontWeight = FontWeight.SemiBold)
+                        Text(tr("返回首页", "Home", "返回首頁"), fontWeight = FontWeight.SemiBold)
                     }
                     Text(
-                        text = "识别历史 (${history.size})",
+                        text = tr("识别历史 (${history.size})", "History (${history.size})", "識別歷史 (${history.size})"),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -510,15 +535,16 @@ fun HomeSetupScreen(
     val amplitudes by recorder.amplitudes.collectAsState()
     val elapsedMs by recorder.elapsedMs.collectAsState()
 
-    var sandboxValue by remember {
+    val defaultSampleText = if (appLang == AppLang.EN) SAMPLE_PLAYGROUND_TEXT_EN else SAMPLE_PLAYGROUND_TEXT
+    var sandboxValue by remember(appLang == AppLang.EN) {
         mutableStateOf(
             TextFieldValue(
-                text = SAMPLE_PLAYGROUND_TEXT,
-                selection = TextRange(SAMPLE_PLAYGROUND_TEXT.length)
+                text = defaultSampleText,
+                selection = TextRange(defaultSampleText.length)
             )
         )
     }
-    var lastDictatedBaseline by remember { mutableStateOf<String?>(SAMPLE_PLAYGROUND_TEXT) }
+    var lastDictatedBaseline by remember(appLang == AppLang.EN) { mutableStateOf<String?>(defaultSampleText) }
     var undoSnapshot by remember { mutableStateOf<TextFieldValue?>(null) }
     var sandboxManualIntent by rememberSaveable { mutableStateOf(VoiceIntentMode.DICTATE) }
 
@@ -644,7 +670,12 @@ fun HomeSetupScreen(
                 if (enabled && !TypeFreeBubbleController.hasOverlayPermission(context)) {
                     Toast.makeText(
                         context,
-                        "请授予「悬浮窗显示权限」以启用跨应用悬浮声波球",
+                        AppStrings.pick(
+                            appLang,
+                            "请授予「悬浮窗显示权限」以启用跨应用悬浮声波球",
+                            "Grant Display over other apps permission to enable the Floating Voice Bubble",
+                            "請授予「懸浮視窗顯示權限」以啟用跨應用懸浮聲波球"
+                        ),
                         Toast.LENGTH_LONG
                     ).show()
                     TypeFreeBubbleController.openOverlayPermissionSettings(context)
@@ -657,7 +688,12 @@ fun HomeSetupScreen(
                     if (!TypeFreeBubbleController.hasOverlayPermission(context)) {
                         Toast.makeText(
                             context,
-                            "请先开启「悬浮窗权限」后再预览屏幕悬浮球",
+                            AppStrings.pick(
+                                appLang,
+                                "请先开启「悬浮窗权限」后再预览屏幕悬浮球",
+                                "Enable Display over other apps permission first to preview the floating bubble",
+                                "請先開啟「懸浮視窗權限」後再預覽螢幕懸浮球"
+                            ),
                             Toast.LENGTH_SHORT
                         ).show()
                         TypeFreeBubbleController.openOverlayPermissionSettings(context)
@@ -701,7 +737,9 @@ fun HomeSetupScreen(
         )
 
         // 6. Compact Playground Entry Card -> Opens ModalBottomSheet on demand (R5.1)
-        val activeStyleBadge = "${activeStyle.emoji} ${activeStyle.name}" + if (isAutoStyle) " · 自动" else ""
+        val localizedStyleName = AppStrings.toneStyleName(activeStyle, appLang)
+        val autoSuffix = if (isAutoStyle) tr(" · 自动", " · Auto", " · 自動") else ""
+        val activeStyleBadge = "${activeStyle.emoji} $localizedStyleName$autoSuffix"
         PlaygroundEntryCard(
             activeStyleLabel = activeStyleBadge,
             onOpenPlayground = { isPlaygroundSheetOpen = true }
@@ -993,12 +1031,13 @@ private fun TopBrandBar(
     readiness: ReadinessState,
     onClickApiCapsule: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val isFullReady = readiness is ReadinessState.Ready
     val capsuleAccent = if (isFullReady) TypeFreeEmerald else TypeFreeAmber
     val capsuleLabel = when (readiness) {
-        is ReadinessState.Ready -> SetupStatsHelper.formatActivePipelineBadge(settings, registrySnapshot)
-        is ReadinessState.DegradedRawOnly -> readiness.badge.shortLabel
-        is ReadinessState.NotReady -> "配置模型 / API"
+        is ReadinessState.Ready -> SetupStatsHelper.formatActivePipelineBadge(settings, registrySnapshot, appLang)
+        is ReadinessState.DegradedRawOnly -> if (appLang == AppLang.EN) "Raw ASR Only" else readiness.badge.shortLabel
+        is ReadinessState.NotReady -> tr("配置模型 / API", "Setup AI / Offline", "設定模型 / API")
     }
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1007,7 +1046,7 @@ private fun TopBrandBar(
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Box(
                 modifier = Modifier
@@ -1026,16 +1065,21 @@ private fun TopBrandBar(
 
             Text(
                 text = "TypeFree",
-                fontSize = 23.sp,
+                fontSize = 21.sp,
                 fontWeight = FontWeight.ExtraBold,
                 letterSpacing = (-0.5).sp,
-                color = MaterialTheme.colorScheme.onBackground
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                softWrap = false
             )
         }
+
+        Spacer(modifier = Modifier.width(8.dp))
 
         // Right Custom API / Offline Engine Status Capsule
         Surface(
             onClick = onClickApiCapsule,
+            modifier = Modifier.weight(1f, fill = false),
             shape = RoundedCornerShape(50),
             color = MaterialTheme.colorScheme.surface,
             border = BorderStroke(
@@ -1081,19 +1125,28 @@ private fun HeroMetricsCard(
     onClickOpenInsights: () -> Unit,
     onClickOpenHistory: () -> Unit = {}
 ) {
+    val appLang = LocalAppLanguage.current
     val interactionSource = remember { MutableInteractionSource() }
     val streakDays = allSnapshot.streakDays
     val hasMeasuredWpm = weekSnapshot.hasMeasuredWpm || allSnapshot.hasMeasuredWpm
     val displayWpm = if (weekSnapshot.hasMeasuredWpm) weekSnapshot.averageWpm else allSnapshot.averageWpm
     val displayMultiplier = if (weekSnapshot.hasMeasuredWpm) weekSnapshot.speedMultiplier else allSnapshot.speedMultiplier
     val wpmSubtitle = when {
-        !hasMeasuredWpm -> "口述 3 秒以上自动测算语速"
+        !hasMeasuredWpm -> tr(
+            "口述 3 秒以上自动测算语速",
+            "Speak for 3s+ to measure live dictation speed",
+            "口述 3 秒以上自動測算語速"
+        )
         displayMultiplier > 1.05f -> String.format(
             Locale.US,
-            "实测口述语速 · 约为手指打字 %.1f 倍",
+            tr(
+                "实测口述语速 · 约为手指打字 %.1f 倍",
+                "Measured voice speed · ~%.1fx faster than thumb typing",
+                "實測口述語速 · 約為手指打字 %.1f 倍"
+            ),
             displayMultiplier
         )
-        else -> "实测语音口述语速"
+        else -> tr("实测语音口述语速", "Measured voice dictation speed", "實測語音口述語速")
     }
     val totalInputCount = allSnapshot.voiceCount + allSnapshot.keyCommits
 
@@ -1142,7 +1195,7 @@ private fun HeroMetricsCard(
                                 border = BorderStroke(1.dp, TypeFreeAmber.copy(alpha = 0.36f))
                             ) {
                                 Text(
-                                    text = "🔥 连续 $streakDays 天",
+                                    text = tr("🔥 连续 $streakDays 天", "🔥 ${streakDays}d streak", "🔥 連續 $streakDays 天"),
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = TypeFreeAmber,
@@ -1163,7 +1216,7 @@ private fun HeroMetricsCard(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "字/分",
+                            text = tr("字/分", "chars/min", "字/分"),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1190,7 +1243,7 @@ private fun HeroMetricsCard(
                             .height(48.dp)
                     )
                     Text(
-                        text = "近 7 日活跃",
+                        text = tr("近 7 日活跃", "7-Day Activity", "近 7 日活躍"),
                         style = MaterialTheme.typography.labelSmall,
                         fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1204,29 +1257,29 @@ private fun HeroMetricsCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 HeroMiniStatBox(
-                    label = "本周总输出",
-                    value = SetupStatsHelper.formatCharCount(weekSnapshot.totalChars),
-                    unit = "字",
+                    label = tr("本周总输出", "7-Day Output", "本週總輸出"),
+                    value = SetupStatsHelper.formatCharCount(weekSnapshot.totalChars, appLang),
+                    unit = tr("字", "chars", "字"),
                     modifier = Modifier.weight(1f)
                 )
                 HeroMiniStatBox(
-                    label = "节省打字时间",
+                    label = tr("节省打字时间", "Time Saved", "節省打字時間"),
                     value = allSnapshot.savedMinutes.toString(),
-                    unit = "分钟",
+                    unit = tr("分钟", "min", "分鐘"),
                     modifier = Modifier.weight(1f)
                 )
                 if (allSnapshot.hasOfflineSplitData) {
                     HeroMiniStatBox(
-                        label = "本机离线护航",
+                        label = tr("本机离线护航", "On-Device AI", "本機離線護航"),
                         value = allSnapshot.offlinePercent.toString(),
                         unit = "%",
                         modifier = Modifier.weight(1f)
                     )
                 } else {
                     HeroMiniStatBox(
-                        label = "累计输入次数",
-                        value = SetupStatsHelper.formatCharCount(totalInputCount),
-                        unit = "次",
+                        label = tr("累计输入次数", "Total Inputs", "累計輸入次數"),
+                        value = SetupStatsHelper.formatCharCount(totalInputCount, appLang),
+                        unit = tr("次", "runs", "次"),
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -1254,7 +1307,7 @@ private fun HeroMetricsCard(
                     )
                     Spacer(modifier = Modifier.width(5.dp))
                     Text(
-                        text = "识别历史 ($historyCount 条) ›",
+                        text = tr("识别历史 ($historyCount 条) ›", "History ($historyCount) ›", "識別歷史 ($historyCount 條) ›"),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1276,7 +1329,7 @@ private fun HeroMetricsCard(
                     )
                     Spacer(modifier = Modifier.width(5.dp))
                     Text(
-                        text = "表达洞察 ›",
+                        text = tr("表达洞察 ›", "Insights ›", "表達洞察 ›"),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1501,28 +1554,42 @@ private fun FloatingBubbleHeroCard(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
-                                text = "无需切换键盘语音输入",
+                                text = tr("无需切键盘语音", "Floating Voice Bubble", "無需切鍵盤語音"),
                                 style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.ExtraBold
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
                             )
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
                                 color = MaterialTheme.colorScheme.primary
                             ) {
                                 Text(
-                                    text = "悬浮胶囊",
+                                    text = tr("悬浮胶囊", "Keep Gboard", "懸浮膠囊"),
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onPrimary,
+                                    maxLines = 1,
+                                    softWrap = false,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                 )
                             }
                         }
                         Text(
                             text = if (bubbleEnabled) {
-                                "已开启跨应用悬浮球 · 输入框聚焦时自动浮现"
+                                tr(
+                                    "已开启跨应用悬浮球 · 输入框聚焦时自动浮现",
+                                    "Enabled · Floating voice capsule appears automatically when any text field is focused",
+                                    "已開啟跨應用懸浮球 · 輸入框聚焦時自動浮現"
+                                )
                             } else {
-                                "可选特性：保留第三方键盘，输入框旁浮现声波球（点击展开权限说明）"
+                                tr(
+                                    "可选特性：保留第三方键盘，输入框旁浮现声波球（点击展开权限说明）",
+                                    "Optional: Keep Gboard or your favorite keyboard and dictate anywhere with a floating capsule",
+                                    "可選特性：保留第三方鍵盤，輸入框旁浮現聲波球（點擊展開權限說明）"
+                                )
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1547,32 +1614,40 @@ private fun FloatingBubbleHeroCard(
 
                     BubblePermissionRow(
                         stepLabel = "1",
-                        title = "麦克风录音权限",
-                        subtitle = if (hasMicPermission) "已授权 16kHz 清晰语音采集" else "采集跨应用语音输入必需权限",
+                        title = tr("麦克风录音权限", "Microphone Permission", "麥克風錄音權限"),
+                        subtitle = if (hasMicPermission) {
+                            tr("已授权 16kHz 清晰语音采集", "Granted · 16kHz clean voice capture", "已授權 16kHz 清晰語音擷取")
+                        } else {
+                            tr("采集跨应用语音输入必需权限", "Required to capture speech across apps", "擷取跨應用語音輸入必需權限")
+                        },
                         isGranted = hasMicPermission,
-                        actionText = "去授权",
+                        actionText = tr("去授权", "Grant", "去授權"),
                         onClickAction = onGrantMic
                     )
 
                     BubblePermissionRow(
                         stepLabel = "2",
-                        title = "悬浮窗显示权限",
-                        subtitle = if (hasOverlayPermission) "允许在其他应用上方展示声波圆球" else "开启后方可在微信/飞书等应用旁浮现声波球",
+                        title = tr("悬浮窗显示权限", "Display Over Other Apps", "懸浮視窗顯示權限"),
+                        subtitle = if (hasOverlayPermission) {
+                            tr("允许在其他应用上方展示声波圆球", "Allowed to display the floating voice orb", "允許在其他應用上方顯示聲波圓球")
+                        } else {
+                            tr("开启后方可在微信/飞书等应用旁浮现声波球", "Required to show the floating voice capsule next to input fields", "開啟後方可在聊天與辦公應用旁浮現聲波球")
+                        },
                         isGranted = hasOverlayPermission,
-                        actionText = "开启悬浮窗",
+                        actionText = tr("开启悬浮窗", "Allow", "開啟懸浮窗"),
                         onClickAction = onGrantOverlay
                     )
 
                     BubblePermissionRow(
                         stepLabel = "3",
-                        title = "无障碍光标直插服务",
+                        title = tr("无障碍光标直插服务", "Direct Cursor Insert (Accessibility)", "無障礙游標直插服務"),
                         subtitle = if (isAccessibilityReady) {
-                            "已连接 · 自动感知焦点并将润色结果直插光标"
+                            tr("已连接 · 自动感知焦点并将润色结果直插光标", "Connected · Inserts polished speech directly at the cursor", "已連線 · 自動感知焦點並將潤飾結果直插游標")
                         } else {
-                            "识别输入框焦点并直接填入光标（未开启时自动回退剪贴板）"
+                            tr("识别输入框焦点并直接填入光标（未开启时自动回退剪贴板）", "Detects focused input fields for direct insertion (falls back to clipboard if off)", "識別輸入框焦點並直接填入游標（未開啟時自動回退剪貼簿）")
                         },
                         isGranted = isAccessibilityReady,
-                        actionText = "开启服务",
+                        actionText = tr("开启服务", "Enable", "開啟服務"),
                         onClickAction = onOpenAccessibility
                     )
 
@@ -1594,13 +1669,17 @@ private fun FloatingBubbleHeroCard(
                                     .padding(end = 10.dp)
                             ) {
                                 Text(
-                                    text = "在屏幕上预览悬浮球",
+                                    text = tr("在屏幕上预览悬浮球", "Preview Floating Bubble Now", "在螢幕上預覽懸浮球"),
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "无视输入框焦点立即在屏幕边缘显示悬浮声波球，可拖拽吸边并点击实测",
+                                    text = tr(
+                                        "无视输入框焦点立即在屏幕边缘显示悬浮声波球，可拖拽吸边并点击实测",
+                                        "Show the floating orb right now regardless of text focus — drag to snap and tap to test",
+                                        "無視輸入框焦點立即在螢幕邊緣顯示懸浮聲波球，可拖曳吸邊並點擊實測"
+                                    ),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1673,7 +1752,7 @@ private fun BubblePermissionRow(
 
         if (isGranted) {
             Text(
-                text = "已就绪",
+                text = tr("已就绪", "Ready", "已就緒"),
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = TypeFreeEmerald
@@ -1740,13 +1819,17 @@ private fun KeyboardSetupWizardCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "检测到导入配置启用了离线模型，点击前往下载恢复",
+                        text = tr(
+                            "检测到导入配置启用了离线模型，点击前往下载恢复",
+                            "Imported config uses on-device offline models — tap to download",
+                            "偵測到匯入設定啟用了離線模型，點擊前往下載復原"
+                        ),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f)
                     )
                     Text(
-                        text = "去恢复 ›",
+                        text = tr("去恢复 ›", "Restore ›", "去復原 ›"),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = TypeFreeAmber
@@ -1781,12 +1864,16 @@ private fun KeyboardSetupWizardCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "完整版语音键盘启用三步向导",
+                        text = tr("完整版语音键盘启用三步向导", "3-Step Keyboard Setup", "完整版語音鍵盤啟用三步精靈"),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "完成输入法启用、默认切换与 API 配置后将自动收起为单行就绪条",
+                        text = tr(
+                            "完成输入法启用、默认切换与 API 配置后将自动收起为单行就绪条",
+                            "Auto-collapses once TypeFree is enabled, selected, and paired with offline or cloud AI",
+                            "完成輸入法啟用、預設切換與 API 設定後將自動收起"
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1797,7 +1884,7 @@ private fun KeyboardSetupWizardCard(
                         onClick = { manualExpanded = false },
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                     ) {
-                        Text("收起", style = MaterialTheme.typography.labelMedium)
+                        Text(tr("收起", "Collapse", "收起"), style = MaterialTheme.typography.labelMedium)
                         Icon(
                             imageVector = Icons.Default.KeyboardArrowUp,
                             contentDescription = null,
@@ -1832,43 +1919,59 @@ private fun KeyboardSetupWizardCard(
             if (!hasMicPermission) {
                 WizardStepItem(
                     stepNumber = 0,
-                    title = "授予麦克风录音权限",
-                    subtitle = "用于键盘语音采集",
+                    title = tr("授予麦克风录音权限", "Grant Microphone Permission", "授予麥克風錄音權限"),
+                    subtitle = tr("用于键盘语音采集", "Required for voice dictation", "用於鍵盤語音擷取"),
                     isDone = false,
-                    buttonLabel = if (permissionDeniedOnce) "系统设置" else "授予权限",
+                    buttonLabel = if (permissionDeniedOnce) tr("系统设置", "Settings", "系統設定") else tr("授予权限", "Grant", "授予權限"),
                     onClick = if (permissionDeniedOnce) onOpenAppSettings else onRequestMic
                 )
             }
 
             WizardStepItem(
                 stepNumber = 1,
-                title = "在系统输入法列表中勾选「灵言 TypeFree」",
-                subtitle = if (isImeEnabled) "已在系统虚拟键盘管理中启用" else "进入系统设置开启灵言键盘开关",
+                title = tr("在系统输入法列表中勾选「灵言 TypeFree」", "Enable TypeFree in System Keyboards", "在系統輸入法清單中勾選「TypeFree」"),
+                subtitle = if (isImeEnabled) {
+                    tr("已在系统虚拟键盘管理中启用", "Enabled in Android on-screen keyboards", "已在系統虛擬鍵盤管理中啟用")
+                } else {
+                    tr("进入系统设置开启灵言键盘开关", "Open Android keyboard settings and toggle TypeFree on", "進入系統設定開啟 TypeFree 鍵盤開關")
+                },
                 isDone = isImeEnabled,
-                buttonLabel = "去启用",
+                buttonLabel = tr("去启用", "Enable", "去啟用"),
                 onClick = onOpenImeSettings
             )
 
             WizardStepItem(
                 stepNumber = 2,
-                title = "切换默认输入法为「灵言 TypeFree」",
-                subtitle = if (isImeSelected) "当前默认输入法已就绪" else "调出输入法选择器切换键盘",
+                title = tr("切换默认输入法为「灵言 TypeFree」", "Switch Active Keyboard to TypeFree", "切換預設輸入法為「TypeFree」"),
+                subtitle = if (isImeSelected) {
+                    tr("当前默认输入法已就绪", "TypeFree is your active keyboard", "目前預設輸入法已就緒")
+                } else {
+                    tr("调出输入法选择器切换键盘", "Open the input method picker and select TypeFree", "調出輸入法選擇器切換鍵盤")
+                },
                 isDone = isImeSelected,
-                buttonLabel = if (isImeSelected) "重选键盘" else "切换键盘",
+                buttonLabel = if (isImeSelected) tr("重选键盘", "Change", "重選鍵盤") else tr("切换键盘", "Select", "切換鍵盤"),
                 keepClickableWhenDone = true,
                 onClick = onShowImePicker
             )
 
             WizardStepItem(
                 stepNumber = 3,
-                title = "配置语音识别与润色引擎",
+                title = tr("配置语音识别与润色引擎", "Connect On-Device Offline AI or BYOK API", "設定語音識別與潤飾引擎"),
                 subtitle = when (readiness) {
-                    is ReadinessState.Ready -> "语音识别与润色引擎已就绪"
-                    is ReadinessState.DegradedRawOnly -> readiness.message
-                    is ReadinessState.NotReady -> "配置云端 API 密钥，或免 Key 下载开源离线语音"
+                    is ReadinessState.Ready -> tr("语音识别与润色引擎已就绪", "Voice & AI engine ready", "語音識別與潤飾引擎已就緒")
+                    is ReadinessState.DegradedRawOnly -> if (LocalAppLanguage.current == AppLang.EN) {
+                        "Local ASR ready · Add Qwen 0.8B or Cloud API for AI polish"
+                    } else {
+                        readiness.message
+                    }
+                    is ReadinessState.NotReady -> tr(
+                        "配置云端 API 密钥，或免 Key 下载开源离线语音",
+                        "Download free on-device offline models or connect Gemini / OpenAI API",
+                        "設定雲端 API 金鑰，或免 Key 下載開源離線語音"
+                    )
                 },
                 isDone = isApiReady,
-                buttonLabel = if (isApiReady) "修改配置" else "去配置",
+                buttonLabel = if (isApiReady) tr("修改配置", "Edit", "修改設定") else tr("去配置", "Configure", "去設定"),
                 keepClickableWhenDone = true,
                 onClick = onOpenApiConfig
             )
@@ -1881,7 +1984,11 @@ private fun KeyboardSetupWizardCard(
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                 ) {
                     Text(
-                        text = "📱 免 Key 体验：下载开源离线语音",
+                        text = tr(
+                            "📱 免 Key 体验：下载开源离线语音",
+                            "📱 Zero-Key Option: Download On-Device Offline Voice",
+                            "📱 免 Key 體驗：下載開源離線語音"
+                        ),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -1902,13 +2009,17 @@ private fun KeyboardSetupWizardCard(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "检测到导入配置启用了离线模型，点击前往下载恢复",
+                            text = tr(
+                                "检测到导入配置启用了离线模型，点击前往下载恢复",
+                                "Imported config uses offline models — tap to download",
+                                "偵測到匯入設定啟用了離線模型，點擊前往下載復原"
+                            ),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.weight(1f)
                         )
                         Text(
-                            text = "去恢复 ›",
+                            text = tr("去恢复 ›", "Restore ›", "去復原 ›"),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
                             color = TypeFreeAmber
@@ -1921,14 +2032,18 @@ private fun KeyboardSetupWizardCard(
 
             WizardStepItem(
                 stepNumber = 4,
-                title = "进阶可选 · 开启无障碍服务（✦ 军师读屏 / 悬浮球）",
+                title = tr(
+                    "进阶可选 · 开启无障碍服务（✦ 军师读屏 / 悬浮球）",
+                    "Optional · Accessibility (✦ Copilot Context / Floating Bubble)",
+                    "進階可選 · 開啟無障礙服務（✦ 軍師讀屏 / 懸浮球）"
+                ),
                 subtitle = if (isAccessibilityReady) {
-                    "无障碍服务已就绪，✦ 军师可按需读取当前聊天上文"
+                    tr("无障碍服务已就绪，✦ 军师可按需读取当前聊天上文", "Ready · Copilot can read redacted chat context on demand", "無障礙服務已就緒，✦ 軍師可按需讀取目前聊天上文")
                 } else {
-                    "使用「✦ 军师」读屏回复或悬浮胶囊时需要开启；纯打字与基础语音可跳过"
+                    tr("使用「✦ 军师」读屏回复或悬浮胶囊时需要开启；纯打字与基础语音可跳过", "Only needed for Jev Copilot chat context or Floating Bubble; optional for typing & dictation", "使用「✦ 軍師」讀屏回覆或懸浮膠囊時需要開啟；純打字與基礎語音可略過")
                 },
                 isDone = isAccessibilityReady,
-                buttonLabel = if (isAccessibilityReady) "已开启" else "去开启",
+                buttonLabel = if (isAccessibilityReady) tr("已开启", "Enabled", "已開啟") else tr("去开启", "Enable", "去開啟"),
                 onClick = onOpenAccessibility
             )
         }
@@ -2019,7 +2134,7 @@ private fun WizardStepItem(
             }
         } else {
             Text(
-                text = "✓ 已完成",
+                text = tr("✓ 已完成", "✓ Done", "✓ 已完成"),
                 style = MaterialTheme.typography.labelMedium,
                 color = TypeFreeEmerald,
                 fontWeight = FontWeight.SemiBold
@@ -2040,6 +2155,7 @@ private fun PersonalizationReportCard(
     onOpenStyles: () -> Unit,
     onOpenDictionary: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val interactionSource = remember { MutableInteractionSource() }
     val topDna = remember(allSnapshot.jevDnaItems) { allSnapshot.jevDnaItems.take(3) }
     val personalLinkMemoryCount = allSnapshot.personalBigramCount + allSnapshot.personalTrigramCount
@@ -2070,7 +2186,7 @@ private fun PersonalizationReportCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -2079,15 +2195,23 @@ private fun PersonalizationReportCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "✦ 越来越懂你",
+                        text = tr("✦ 越来越懂你", "✦ Learns Your Voice & Style", "✦ 越來越懂你"),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = if (expanded) {
-                            "本机沉淀你的语体习惯、纠错词库与私人连词记忆"
+                            tr(
+                                "本机沉淀你的语体习惯、纠错词库与私人连词记忆",
+                                "On-device adaptation of your phrasing style, personal vocabulary, and n-grams",
+                                "本機沉澱你的語體習慣、糾錯詞庫與私人連詞記憶"
+                            )
                         } else {
-                            "累计口述满 5 次自动展开语体与个人词库沉淀 · 点击预览"
+                            tr(
+                                "累计口述满 5 次自动展开语体与个人词库沉淀 · 点击预览",
+                                "Auto-expands after 5 inputs with on-device vocabulary & style insights · Tap to preview",
+                                "累計口述滿 5 次自動展開語體與個人詞庫沉澱 · 點擊預覽"
+                            )
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -2099,7 +2223,7 @@ private fun PersonalizationReportCard(
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
-                        text = if (expanded) "成长洞察" else "展开",
+                        text = if (expanded) tr("成长洞察", "Insights", "成長洞察") else tr("展开", "Expand", "展開"),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -2110,7 +2234,7 @@ private fun PersonalizationReportCard(
                         } else {
                             Icons.Default.KeyboardArrowDown
                         },
-                        contentDescription = "查看表达洞察",
+                        contentDescription = tr("查看表达洞察", "View Insights", "查看表達洞察"),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(16.dp)
                     )
@@ -2131,7 +2255,11 @@ private fun PersonalizationReportCard(
                                 val chipText = if (item.isActive) {
                                     "✓ ${item.title}"
                                 } else {
-                                    "${item.title} · 观察中 ${item.currentCount}/${item.requiredCount}"
+                                    tr(
+                                        "${item.title} · 观察中 ${item.currentCount}/${item.requiredCount}",
+                                        "${item.title} · Learning ${item.currentCount}/${item.requiredCount}",
+                                        "${item.title} · 觀察中 ${item.currentCount}/${item.requiredCount}"
+                                    )
                                 }
                                 Surface(
                                     shape = RoundedCornerShape(50),
@@ -2155,7 +2283,11 @@ private fun PersonalizationReportCard(
                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)
                         ) {
                             Text(
-                                text = "正在端侧观察你的表达习惯，使用 ✦ Jev 军师或日常输入后将自动提炼专属语体 DNA",
+                                text = tr(
+                                    "正在端侧观察你的表达习惯，使用 ✦ Jev 军师或日常输入后将自动提炼专属语体 DNA",
+                                    "Learning your phrasing privately on-device — use Jev Copilot or daily dictation to build your personal Style DNA",
+                                    "正在端側觀察你的表達習慣，使用 ✦ Jev 軍師或日常輸入後將自動提煉專屬語體 DNA"
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp)
@@ -2169,21 +2301,21 @@ private fun PersonalizationReportCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         HeroMiniStatBox(
-                            label = "自动纠错词条",
+                            label = tr("自动纠错词条", "Learned Words", "自動糾錯詞條"),
                             value = allSnapshot.autoLearnedDictCount.toString(),
-                            unit = "条",
+                            unit = tr("条", "terms", "條"),
                             modifier = Modifier.weight(1f)
                         )
                         HeroMiniStatBox(
-                            label = "私人连词记忆",
-                            value = SetupStatsHelper.formatCharCount(personalLinkMemoryCount),
-                            unit = "条",
+                            label = tr("私人连词记忆", "Phrase Memory", "私人連詞記憶"),
+                            value = SetupStatsHelper.formatCharCount(personalLinkMemoryCount, appLang),
+                            unit = tr("条", "links", "條"),
                             modifier = Modifier.weight(1f)
                         )
                         HeroMiniStatBox(
-                            label = "Jev 关系档案",
+                            label = tr("Jev 关系档案", "Copilot Profiles", "Jev 關係檔案"),
                             value = allSnapshot.jevSessionCount.toString(),
-                            unit = "个",
+                            unit = tr("个", "saved", "個"),
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -2207,7 +2339,7 @@ private fun PersonalizationReportCard(
                                 modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("场景风格规则 ›", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                            Text(tr("场景风格规则 ›", "App Tone Rules ›", "場景風格規則 ›"), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                         }
 
                         OutlinedButton(
@@ -2222,7 +2354,7 @@ private fun PersonalizationReportCard(
                                 modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("个人词典 ($dictionarySize) ›", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                            Text(tr("个人词典 ($dictionarySize) ›", "Dictionary ($dictionarySize) ›", "個人詞典 ($dictionarySize) ›"), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }

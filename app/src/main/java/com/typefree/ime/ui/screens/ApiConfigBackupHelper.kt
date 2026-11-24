@@ -81,6 +81,8 @@ object ApiConfigBackupHelper {
         "xiaoheNaturalContinuationLimit",
         "passiveCalculatorEnabled",
         "englishModeWordSuggestionEnabled",
+        "englishAutoCap",
+        "englishAutoCorrect",
         "phraseSuggestionL2Enabled",
         "customKeyGesturesJson",
         "keycapBadgeMode",
@@ -95,6 +97,7 @@ object ApiConfigBackupHelper {
         "jevMemoryArchive",
         "inputStatsEnabled",
         "themePreference",
+        "appLanguage",
         "appAwareToneEnabled",
         "selectedManualStyleId",
         "hapticFeedback",
@@ -1073,6 +1076,10 @@ object ApiConfigBackupHelper {
                     ?: existingSettings.passiveCalculatorEnabled,
                 englishModeWordSuggestionEnabled = rootObj.optBoolean("englishModeWordSuggestionEnabled")
                     ?: existingSettings.englishModeWordSuggestionEnabled,
+                englishAutoCap = rootObj.optBoolean("englishAutoCap")
+                    ?: existingSettings.englishAutoCap,
+                englishAutoCorrect = rootObj.optBoolean("englishAutoCorrect")
+                    ?: existingSettings.englishAutoCorrect,
                 phraseSuggestionL2Enabled = rootObj.optBoolean("phraseSuggestionL2Enabled")
                     ?: existingSettings.phraseSuggestionL2Enabled,
                 customKeyGesturesJson = rootObj.optString("customKeyGesturesJson")
@@ -1096,6 +1103,9 @@ object ApiConfigBackupHelper {
                 inputStatsEnabled = rootObj.optBoolean("inputStatsEnabled")
                     ?: existingSettings.inputStatsEnabled,
                 themePreference = themePref,
+                appLanguage = rootObj.optString("appLanguage")
+                    ?.let { com.typefree.ime.i18n.AppStrings.normalizeAppLanguage(it) }
+                    ?: existingSettings.appLanguage,
                 appAwareToneEnabled = rootObj.optBoolean("appAwareToneEnabled")
                     ?: existingSettings.appAwareToneEnabled,
                 selectedManualStyleId = rootObj.optString("selectedManualStyleId")

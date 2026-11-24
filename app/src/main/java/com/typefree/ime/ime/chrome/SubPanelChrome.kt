@@ -49,6 +49,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ime.ImeLogic
 import com.typefree.ime.ime.LocalKeyboardMetrics
 import com.typefree.ime.ime.VoicePhase
@@ -89,8 +92,13 @@ fun SubPanelHeaderBridgeBar(
                 .padding(horizontal = 8.dp),
             contentAlignment = Alignment.Center
         ) {
+            val appLang = LocalAppLanguage.current
             Text(
-                text = if (isFlypyChineseMode) "$inputSchemeShortBadge 打字" else "EN 打字",
+                text = if (isFlypyChineseMode) {
+                    if (appLang == AppLang.EN) "Keyboard" else "$inputSchemeShortBadge 打字"
+                } else {
+                    tr("EN 打字", "ABC", "EN 打字")
+                },
                 style = androidx.compose.ui.text.TextStyle(
                     color = palette.keyTextPrimary,
                     fontSize = 11.sp,
@@ -170,12 +178,12 @@ fun SubPanelModeSwitchTrack(
         ) {
             Icon(
                 imageVector = TypeFreeIcons.VoicePen,
-                contentDescription = "帮写",
+                contentDescription = tr("帮写", "Help Write", "幫寫"),
                 tint = palette.onPrimaryMic,
                 modifier = Modifier.size(11.dp)
             )
             Text(
-                text = "帮写",
+                text = tr("帮写", "Help Write", "幫寫"),
                 color = palette.onPrimaryMic,
                 fontSize = 10.5.sp,
                 fontWeight = FontWeight.Bold,
@@ -209,12 +217,12 @@ fun SubPanelModeSwitchTrack(
         ) {
             Icon(
                 imageVector = TypeFreeIcons.VoicePen,
-                contentDescription = "帮写",
+                contentDescription = tr("帮写", "Help Write", "幫寫"),
                 tint = if (writeActive) palette.onPrimaryMic else palette.keyTextMuted,
                 modifier = Modifier.size(11.dp)
             )
             Text(
-                text = "帮写",
+                text = tr("帮写", "Help Write", "幫寫"),
                 color = if (writeActive) palette.onPrimaryMic else palette.keyTextMuted,
                 fontSize = 10.5.sp,
                 fontWeight = if (writeActive) FontWeight.Bold else FontWeight.SemiBold,
@@ -235,12 +243,12 @@ fun SubPanelModeSwitchTrack(
         ) {
             Icon(
                 imageVector = TypeFreeIcons.CopilotStar,
-                contentDescription = "军师",
+                contentDescription = tr("军师", "Copilot", "軍師"),
                 tint = if (isJevActive) palette.onPrimaryMic else palette.keyTextMuted,
                 modifier = Modifier.size(11.dp)
             )
             Text(
-                text = "军师",
+                text = tr("军师", "Copilot", "軍師"),
                 color = if (isJevActive) palette.onPrimaryMic else palette.keyTextMuted,
                 fontSize = 10.5.sp,
                 fontWeight = if (isJevActive) FontWeight.Bold else FontWeight.SemiBold,
@@ -388,9 +396,9 @@ fun SubPanelVoiceTriggerRow(
             Text(
                 text = when {
                     phase is VoicePhase.Recording && phase.isHandsFree ->
-                        "Tap again to finish · 轻点完成"
-                    isRecording -> "松手立即执行 · 轻点保持免提"
-                    isProcessing -> "请稍候，正在生成..."
+                        tr("Tap again to finish · 轻点完成", "Tap again to finish", "輕點完成")
+                    isRecording -> tr("松手立即执行 · 轻点保持免提", "Release to finish · Tap for hands-free", "放開立即執行 · 輕點保持免持")
+                    isProcessing -> tr("请稍候，正在生成...", "Generating...", "請稍候，正在生成...")
                     else -> idleSubtitle
                 },
                 color = palette.keyTextMuted,
@@ -688,14 +696,14 @@ fun ErrorContextBanner(
 
         if (error.needsMicPermission) {
             BannerActionChip(
-                label = "去授权",
+                label = tr("去授权", "Grant", "去授權"),
                 color = TypeFreeAmber,
                 onClick = onOpenPermissionSetup
             )
         }
         if (error.needsApiSetup) {
             BannerActionChip(
-                label = "配置 API",
+                label = tr("配置 API", "Setup AI", "設定 API"),
                 color = palette.primaryMicSolid,
                 textColor = palette.onPrimaryMic,
                 onClick = onOpenApiSetup
@@ -703,7 +711,7 @@ fun ErrorContextBanner(
         }
         if (error.canRetryAudio) {
             BannerActionChip(
-                label = "重试",
+                label = tr("重试", "Retry", "重試"),
                 color = TypeFreeEmerald,
                 onClick = onRetry
             )

@@ -2,7 +2,10 @@
 <resources>
     <string name="app_name">TypeFree</string>
     <string name="ime_name">TypeFree (AI Voice Keyboard)</string>
-    <string name="ime_subtype_label">AI 智能语音与全键盘 (Custom API)</string>
-    <string name="accessibility_service_label">TypeFree 悬浮语音胶囊 (Voice Bubble)</string>
-    <string name="accessibility_service_description">用于在任意应用的输入框聚焦时自动显示 TypeFree 悬浮语音胶囊，并将自定义 AI 润色后的文本直接插入光标处或替换选中内容。所有语音与设置仅发往您自己配置的 API 接口。</string>
+    <string name="ime_subtype_label">AI Voice &amp; Multilingual Keyboard</string>
+    <string name="ime_subtype_label_zh_cn">Chinese (Simplified) &amp; AI Voice</string>
+    <string name="ime_subtype_label_zh_tw">Chinese (Traditional) &amp; AI Voice</string>
+    <string name="ime_subtype_label_en_us">English (US) &amp; AI Voice</string>
+    <string name="accessibility_service_label">TypeFree Voice Bubble</string>
+    <string name="accessibility_service_description">Displays the optional TypeFree floating voice capsule when a text field is focused, allowing you to insert on-device or BYOK AI-polished speech directly at the cursor. Never collects passwords or background screen content.</string>
 </resources>

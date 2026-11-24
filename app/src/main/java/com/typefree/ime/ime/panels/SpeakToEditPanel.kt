@@ -28,6 +28,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ime.ImeLogic
 import com.typefree.ime.ime.ImeUiState
 import com.typefree.ime.ime.LocalKeyboardMetrics
@@ -109,7 +113,7 @@ fun SpeakToEditPanel(
                         )
                     }
                     Text(
-                        text = "· 语音编辑",
+                        text = tr("· 语音编辑", "· Voice Edit", "· 語音編輯"),
                         color = palette.keyTextMuted,
                         fontSize = 12.5.sp,
                         fontWeight = FontWeight.Medium,
@@ -124,7 +128,7 @@ fun SpeakToEditPanel(
                     hasFreshClipboard = uiState.freshClipboardBannerItem != null,
                     onSwitchToQwerty = onSwitchToQwerty,
                     onOpenClipboard = onOpenClipboard,
-                    closeDescription = "忽略选区切回普通口述",
+                    closeDescription = tr("忽略选区切回普通口述", "Dismiss selection", "忽略選取切回一般口述"),
                     onClose = onDismissSelection
                 )
             }
@@ -173,7 +177,16 @@ fun SpeakToEditPanel(
                             .horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        val appLang = LocalAppLanguage.current
                         ImeLogic.quickEditChips.forEach { chip ->
+                            val chipDisplayLabel = when (chip.id) {
+                                "smart_polish" -> AppStrings.pick(appLang, chip.label, "✨ Polish", "✨ 智慧潤飾")
+                                "make_formal" -> AppStrings.pick(appLang, chip.label, "💼 Formal", "💼 改正式")
+                                "translate_en" -> AppStrings.pick(appLang, chip.label, "🌐 To English", "🌐 譯英文")
+                                "translate_zh" -> AppStrings.pick(appLang, chip.label, "🇨🇳 To Chinese", "🇨🇳 譯中文")
+                                "bullet_summary" -> AppStrings.pick(appLang, chip.label, "📌 Bullet Points", "📌 提煉要點")
+                                else -> chip.label
+                            }
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(12.dp))
@@ -183,7 +196,7 @@ fun SpeakToEditPanel(
                                     .padding(horizontal = 10.dp, vertical = (5f * s).dp)
                             ) {
                                 Text(
-                                    text = chip.label,
+                                    text = chipDisplayLabel,
                                     color = if (isBusy) palette.keyTextMuted else palette.keyTextPrimary,
                                     fontSize = 11.5.sp,
                                     fontWeight = FontWeight.Medium
@@ -200,9 +213,13 @@ fun SpeakToEditPanel(
                 amplitudeProvider = amplitudeProvider,
                 amplitudes = amplitudes,
                 elapsedMs = elapsedMs,
-                idleTitle = "Speak to edit · 语音编辑",
-                idleSubtitle = "轻点说出修改指令（如：改成正式语气 / 翻译成英文）",
-                recordingTitle = "Speak to edit · 正在聆听修改指令",
+                idleTitle = tr("Speak to edit · 语音编辑", "Speak to edit", "Speak to edit · 語音編輯"),
+                idleSubtitle = tr(
+                    "轻点说出修改指令（如：改成正式语气 / 翻译成英文）",
+                    "Hold or tap and say how to rewrite (e.g. make it shorter / more friendly)",
+                    "輕點說出修改指令（如：改成正式語氣 / 翻譯成英文）"
+                ),
+                recordingTitle = tr("Speak to edit · 正在聆听修改指令", "Listening for edit instruction", "正在聆聽修改指令"),
                 onStartRecording = onStartRecording,
                 onReleaseRecording = onReleaseRecording,
                 onFinishHandsFree = onFinishHandsFree,

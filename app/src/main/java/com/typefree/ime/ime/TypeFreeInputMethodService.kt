@@ -494,6 +494,10 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         if (shouldEnsureFlypyDict) {
             TypeFreeApp.instance.ensureFlypyDictionaryLoaded()
         }
+        if (!restarting) {
+            typingController.englishSmartTyper.resetSession()
+        }
+        typingController.refreshEnglishAutoCapState()
         voiceController.onEditorTargetChanged(pkg, info?.fieldId ?: 0, restarting)
     }
 
@@ -531,6 +535,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         val isFlypyComposing = _imeState.value.isFlypyComposing
         val isSystemComposing = candidatesStart >= 0 && candidatesEnd > candidatesStart
         val isComposingNow = isFlypyComposing || isSystemComposing
+        if (!isComposingNow) {
+            typingController.refreshEnglishAutoCapState()
+        }
         androidCommitExecutor?.notifyExternalCursorChange(newSelStart, newSelEnd)
         val looksClearedByHostSend = newSelStart == 0 &&
             newSelEnd == 0 &&
@@ -678,7 +685,10 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             Density(density = baseDensity.density, fontScale = 1.0f)
         }
 
-        TypeFreeTheme(themePreference = settings.themePreference) {
+        TypeFreeTheme(
+            themePreference = settings.themePreference,
+            appLanguage = settings.appLanguage
+        ) {
             CompositionLocalProvider(
                 LocalDensity provides lockedImeDensity,
                 LocalKeyboardMetrics provides keyboardMetrics

@@ -4,8 +4,20 @@
     android:supportsSwitchingToNextInputMethod="true">
 
     <subtype
-        android:label="@string/ime_subtype_label"
+        android:label="@string/ime_subtype_label_zh_cn"
         android:imeSubtypeLocale="zh_CN"
+        android:imeSubtypeMode="keyboard"
+        android:isAuxiliary="false" />
+
+    <subtype
+        android:label="@string/ime_subtype_label_zh_tw"
+        android:imeSubtypeLocale="zh_TW"
+        android:imeSubtypeMode="keyboard"
+        android:isAuxiliary="false" />
+
+    <subtype
+        android:label="@string/ime_subtype_label_en_us"
+        android:imeSubtypeLocale="en_US"
         android:imeSubtypeMode="keyboard"
         android:isAuxiliary="false" />
 

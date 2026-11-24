@@ -156,6 +156,7 @@ data class ImeUiState(
     val l2PhraseSuggestionCode: String? = null,
     val englishSuggestions: List<String> = emptyList(),
     val englishSuggestionReplaceLength: Int = 0,
+    val englishAutoCapActive: Boolean = false,
     val isRimeDeploying: Boolean = false,
     val predictionCandidates: List<FlypyCandidate> = emptyList(),
     val aiCompletionSuggestion: String? = null,
@@ -243,6 +244,10 @@ data class ImeUiState(
 
     val enterActionInfo: EnterActionInfo
         get() = ImeLogic.resolveEnterAction(currentImeOptions, currentInputType)
+
+    fun resolveEnterActionInfo(isChineseLocale: Boolean): EnterActionInfo {
+        return ImeLogic.resolveEnterAction(currentImeOptions, currentInputType, isChineseLocale)
+    }
 
     val resolvedVoiceSubPanel: VoiceSubPanel
         get() = when {
@@ -349,23 +354,34 @@ object ImeLogic {
      * Resolves the smart Enter/Action button label and optional editor action ID
      * from [EditorInfo.imeOptions].
      */
-    fun resolveEnterAction(imeOptions: Int, @Suppress("UNUSED_PARAMETER") inputType: Int = 0): EnterActionInfo {
+    fun resolveEnterAction(
+        imeOptions: Int,
+        @Suppress("UNUSED_PARAMETER") inputType: Int = 0,
+        isChineseLocale: Boolean = true
+    ): EnterActionInfo {
         val noEnterAction = (imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
         if (noEnterAction) {
-            return EnterActionInfo(label = "换行", performEditorActionId = null)
+            return EnterActionInfo(
+                label = if (isChineseLocale) "换行" else "Return",
+                performEditorActionId = null
+            )
         }
         return when (val action = imeOptions and EditorInfo.IME_MASK_ACTION) {
-            EditorInfo.IME_ACTION_SEND -> EnterActionInfo("发送", action)
-            EditorInfo.IME_ACTION_SEARCH -> EnterActionInfo("搜索", action)
-            EditorInfo.IME_ACTION_GO -> EnterActionInfo("前往", action)
-            EditorInfo.IME_ACTION_NEXT -> EnterActionInfo("下一步", action)
-            EditorInfo.IME_ACTION_DONE -> EnterActionInfo("完成", action)
-            else -> EnterActionInfo("换行", null)
+            EditorInfo.IME_ACTION_SEND -> EnterActionInfo(if (isChineseLocale) "发送" else "Send", action)
+            EditorInfo.IME_ACTION_SEARCH -> EnterActionInfo(if (isChineseLocale) "搜索" else "Search", action)
+            EditorInfo.IME_ACTION_GO -> EnterActionInfo(if (isChineseLocale) "前往" else "Go", action)
+            EditorInfo.IME_ACTION_NEXT -> EnterActionInfo(if (isChineseLocale) "下一步" else "Next", action)
+            EditorInfo.IME_ACTION_DONE -> EnterActionInfo(if (isChineseLocale) "完成" else "Done", action)
+            else -> EnterActionInfo(if (isChineseLocale) "换行" else "Return", null)
         }
     }
 
-    fun resolveEnterLabel(imeOptions: Int, inputType: Int = 0): String {
-        return resolveEnterAction(imeOptions, inputType).label
+    fun resolveEnterLabel(
+        imeOptions: Int,
+        inputType: Int = 0,
+        isChineseLocale: Boolean = true
+    ): String {
+        return resolveEnterAction(imeOptions, inputType, isChineseLocale).label
     }
 
     fun isPasswordEditorInputType(inputType: Int): Boolean {
@@ -520,10 +536,11 @@ object ImeLogic {
      * Formats the top subtitle for [VoicePhase.SuccessToast] (`✓ 已上屏 · X.Xs`), guaranteeing
      * that any positive latency never rounds down to `0.0s`.
      */
-    fun formatSuccessToastSubtitle(latencyMs: Long): String {
-        if (latencyMs <= 0L) return "✓ 已上屏"
+    fun formatSuccessToastSubtitle(latencyMs: Long, isChineseLocale: Boolean = true): String {
+        val prefix = if (isChineseLocale) "✓ 已上屏" else "✓ Inserted"
+        if (latencyMs <= 0L) return prefix
         val seconds = (latencyMs / 1000f).coerceAtLeast(0.1f)
-        return "✓ 已上屏 · ${String.format(Locale.US, "%.1fs", seconds)}"
+        return "$prefix · ${String.format(Locale.US, "%.1fs", seconds)}"
     }
 
     /**
@@ -550,7 +567,18 @@ object ImeLogic {
     /**
      * Maps [PipelineStage] to user-facing status indicator text.
      */
-    fun stageDisplayText(stage: PipelineStage, isSpeakToEdit: Boolean = false): String {
+    fun stageDisplayText(
+        stage: PipelineStage,
+        isSpeakToEdit: Boolean = false,
+        isChineseLocale: Boolean = true
+    ): String {
+        if (!isChineseLocale) {
+            return when (stage) {
+                PipelineStage.TRANSCRIBING_STT -> "1/2 Transcribing..."
+                PipelineStage.POLISHING_LLM -> if (isSpeakToEdit) "2/2 Rewriting..." else "2/2 Polishing..."
+                PipelineStage.MULTIMODAL_PROCESSING -> if (isSpeakToEdit) "Rewriting..." else "Polishing..."
+            }
+        }
         return when (stage) {
             PipelineStage.TRANSCRIBING_STT -> "1/2 语音识别中..."
             PipelineStage.POLISHING_LLM -> if (isSpeakToEdit) "2/2 AI 改写中..." else "2/2 AI 润色中..."
@@ -564,8 +592,33 @@ object ImeLogic {
     fun stageDisplayTextForIntent(
         stage: PipelineStage,
         intentMode: VoiceIntentMode,
-        targetLanguage: String = ""
+        targetLanguage: String = "",
+        isChineseLocale: Boolean = true
     ): String {
+        if (!isChineseLocale) {
+            return when (intentMode) {
+                VoiceIntentMode.DICTATE -> stageDisplayText(stage, isSpeakToEdit = false, isChineseLocale = false)
+                VoiceIntentMode.SPEAK_TO_EDIT -> stageDisplayText(stage, isSpeakToEdit = true, isChineseLocale = false)
+                VoiceIntentMode.HELP_ME_WRITE -> when (stage) {
+                    PipelineStage.TRANSCRIBING_STT -> "1/2 Hearing prompt..."
+                    PipelineStage.POLISHING_LLM -> "2/2 AI drafting..."
+                    PipelineStage.MULTIMODAL_PROCESSING -> "AI drafting..."
+                }
+                VoiceIntentMode.JEV_COPILOT -> when (stage) {
+                    PipelineStage.TRANSCRIBING_STT -> "1/2 Hearing intent..."
+                    PipelineStage.POLISHING_LLM -> "2/2 Crafting replies..."
+                    PipelineStage.MULTIMODAL_PROCESSING -> "Crafting replies..."
+                }
+                VoiceIntentMode.TRANSLATE -> {
+                    val lang = targetLanguage.ifBlank { "target language" }
+                    when (stage) {
+                        PipelineStage.TRANSCRIBING_STT -> "1/2 Transcribing..."
+                        PipelineStage.POLISHING_LLM -> "2/2 Translating to $lang..."
+                        PipelineStage.MULTIMODAL_PROCESSING -> "Translating to $lang..."
+                    }
+                }
+            }
+        }
         return when (intentMode) {
             VoiceIntentMode.DICTATE -> stageDisplayText(stage, isSpeakToEdit = false)
             VoiceIntentMode.SPEAK_TO_EDIT -> stageDisplayText(stage, isSpeakToEdit = true)

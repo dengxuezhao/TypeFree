@@ -17,6 +17,7 @@ import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.data.stats.TokenFeatureKeys
 import com.typefree.ime.data.stats.TokenUsage
+import com.typefree.ime.i18n.AppStrings
 import com.typefree.ime.ime.jev.ChatTopology
 import com.typefree.ime.ime.jev.InputConnectionDraftTarget
 import com.typefree.ime.ime.jev.JevDomainProfile
@@ -2007,13 +2008,15 @@ class VoiceController(
             else -> PipelineStage.TRANSCRIBING_STT
         }
 
+        val isZhLocale = AppStrings.isChinese(settings.appLanguage)
         host.stateFlow.update {
             it.copy(
                 voicePhase = VoicePhase.Processing(
                     stageText = ImeLogic.stageDisplayTextForIntent(
                         stage = initialStage,
                         intentMode = resolvedIntent,
-                        targetLanguage = targetTranslateLang
+                        targetLanguage = targetTranslateLang,
+                        isChineseLocale = isZhLocale
                     )
                 ),
                 isArcTranslateActive = false,
@@ -2063,7 +2066,8 @@ class VoiceController(
                             stageText = ImeLogic.stageDisplayTextForIntent(
                                 stage = stage,
                                 intentMode = resolvedIntent,
-                                targetLanguage = targetTranslateLang
+                                targetLanguage = targetTranslateLang,
+                                isChineseLocale = isZhLocale
                             )
                         )
                     )
@@ -2600,13 +2604,25 @@ class VoiceController(
                         )
                     }
                     scheduleToastReset()
-                    host.showQuickActionToast("✓ 已一键成稿 · 可点 ↶ 撤回")
+                    host.showQuickActionToast(
+                        AppStrings.pick(
+                            host.repository.settings.value.appLanguage,
+                            "✓ 已一键成稿 · 可点 ↶ 撤回",
+                            "✓ Draft inserted · Tap ↶ to undo",
+                            "✓ 已一鍵成稿 · 可點 ↶ 復原"
+                        )
+                    )
                 },
                 onFailure = { err ->
                     if (err is CancellationException) return@launch
                     host.performHaptic(strong = true)
                     val errorPhase = ImeLogic.classifyErrorFlags(
-                        errorMessage = err.message ?: "生成失败，请检查网络或 API 配置",
+                        errorMessage = err.message ?: AppStrings.pick(
+                            host.repository.settings.value.appLanguage,
+                            "生成失败，请检查网络或 API 配置",
+                            "Generation failed — check network or API settings",
+                            "產生失敗，請檢查網路或 API 設定"
+                        ),
                         hasCachedAudio = false,
                         hasMicPermission = true
                     )
@@ -2674,7 +2690,12 @@ class VoiceController(
                     host.stateFlow.update {
                         it.copy(
                             isAskAiLoading = false,
-                            askAiErrorMessage = err.message ?: "解答失败，请检查网络或 API 配置"
+                            askAiErrorMessage = err.message ?: AppStrings.pick(
+                                settings.appLanguage,
+                                "解答失败，请检查网络或 API 配置",
+                                "Failed to answer — check network or API settings",
+                                "解答失敗，請檢查網路或 API 設定"
+                            )
                         )
                     }
                 }
@@ -2723,7 +2744,14 @@ class VoiceController(
                 askAiErrorMessage = null
             )
         }
-        host.showQuickActionToast("✓ 已清空，可点 ↶ 撤回找回")
+        host.showQuickActionToast(
+            AppStrings.pick(
+                host.repository.settings.value.appLanguage,
+                "✓ 已清空，可点 ↶ 撤回找回",
+                "✓ Cleared · Tap ↶ to undo",
+                "✓ 已清空，可點 ↶ 復原找回"
+            )
+        )
     }
 
     fun copyAskAiAnswer() {
@@ -2731,7 +2759,14 @@ class VoiceController(
         if (answer.isBlank()) return
         host.performKeyFeedback(strong = false)
         host.copyTextToClipboard(answer)
-        host.showQuickActionToast("✓ 已复制 AI 解答")
+        host.showQuickActionToast(
+            AppStrings.pick(
+                host.repository.settings.value.appLanguage,
+                "✓ 已复制 AI 解答",
+                "✓ Copied AI answer",
+                "✓ 已複製 AI 解答"
+            )
+        )
     }
 
     fun commitAskAiAnswerToEditor() {
@@ -2751,7 +2786,14 @@ class VoiceController(
                 askAiErrorMessage = null
             )
         }
-        host.showQuickActionToast("✓ 已填入输入框 · 可点 ↶ 撤回")
+        host.showQuickActionToast(
+            AppStrings.pick(
+                host.repository.settings.value.appLanguage,
+                "✓ 已填入输入框 · 可点 ↶ 撤回",
+                "✓ Inserted · Tap ↶ to undo",
+                "✓ 已填入輸入框 · 可點 ↶ 復原"
+            )
+        )
     }
 
     fun scheduleToastReset() {
@@ -2772,7 +2814,14 @@ class VoiceController(
         host.performKeyFeedback(strong = true)
         val nextWhisper = !host.repository.settings.value.whisperModeEnabled
         host.repository.updateSettings { it.copy(whisperModeEnabled = nextWhisper) }
-        host.showQuickActionToast(if (nextWhisper) "🤫 已开启轻声耳语高敏收音" else "🎙️ 已恢复标准收音灵敏度")
+        val lang = host.repository.settings.value.appLanguage
+        host.showQuickActionToast(
+            if (nextWhisper) {
+                AppStrings.pick(lang, "🤫 已开启轻声耳语高敏收音", "🤫 Whisper high-gain mic ON", "🤫 已開啟輕聲耳語高敏收音")
+            } else {
+                AppStrings.pick(lang, "🎙️ 已恢复标准收音灵敏度", "🎙️ Standard mic gain restored", "🎙️ 已恢復標準收音靈敏度")
+            }
+        )
     }
 
     fun runEqualEqualAskAi(fullEditorText: String, query: String) {
@@ -2785,20 +2834,35 @@ class VoiceController(
 
         activePipelineJob = host.scope.launch {
             val settings = host.repository.settings.value
+            val isZh = AppStrings.isChinese(settings.appLanguage)
             val snapshot = host.stateFlow.value
             val targetPkg = snapshot.targetPackage
             val targetAppName = snapshot.targetAppName
             val (activeStyle, _) = host.repository.resolveActiveStyle(targetPkg, snapshot.currentInputType)
 
             host.stateFlow.update {
-                it.copy(voicePhase = VoicePhase.Processing(stageText = "🤖 AI 思考解答中..."))
+                it.copy(
+                    voicePhase = VoicePhase.Processing(
+                        stageText = AppStrings.pick(settings.appLanguage, "🤖 AI 思考解答中...", "🤖 Thinking...", "🤖 AI 思考解答中...")
+                    )
+                )
             }
             if (snapshot.tabMode != KeyboardTabMode.VOICE) {
-                host.showQuickActionToast("🤖 AI 正在解答「${query.take(10)}」…")
+                host.showQuickActionToast(
+                    AppStrings.pick(
+                        settings.appLanguage,
+                        "🤖 AI 正在解答「${query.take(10)}」…",
+                        "🤖 Answering \"${query.take(16)}\"…",
+                        "🤖 AI 正在解答「${query.take(10)}」…"
+                    )
+                )
             }
 
-            val directAskInstruction =
+            val directAskInstruction = if (isZh) {
                 "用户在输入框通过 == 向你直接提问或下达写作指令。请忽略<selected_text>的选中改写语义，直接把<selected_text>当作用户的问题或指令本身，直接输出准确、简洁、立即可发送或使用的结果正文（严禁寒暄、严禁解释前缀、严禁复述问题）。"
+            } else {
+                "The user typed an inline `==` question or writing command in the input field. Treat <selected_text> directly as the user's question or command, and output ONLY a concise, accurate, ready-to-insert answer or draft in the language of <selected_text> (no greetings, no explanations, do not repeat the prompt)."
+            }
 
             val transformResult = host.aiEngine.runTextTransform(
                 settings = settings,

@@ -66,6 +66,9 @@ import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.KeycapBadgeMode
 import com.typefree.ime.data.stats.SchemeStatsKeys
 import com.typefree.ime.data.stats.StatsTimeRange
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ime.KeyboardMetrics
 import com.typefree.ime.ime.engine.RimeDataManager
 import com.typefree.ime.ime.engine.RimeDeploymentState
@@ -115,6 +118,7 @@ fun KeyboardStudioScreen(
     onSubTabChanged: ((Int) -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val appLang = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
     val settings by repository.settings.collectAsState()
     val rimeDataManager = remember { TypeFreeApp.instance.rimeDataManager }
@@ -179,12 +183,16 @@ fun KeyboardStudioScreen(
         onSubTabChanged?.invoke(coerced)
     }
 
-    val schemeDisplayBadge = remember(settings.inputScheme, customSchemaName, activeProfile) {
-        when (settings.inputScheme) {
-            InputScheme.RIME_CUSTOM -> customSchemaName?.takeIf { it.isNotBlank() }
-                ?: activeProfile.displayName.takeIf { it.isNotBlank() }
-                ?: "自定义方案"
-            else -> settings.inputScheme.label
+    val schemeDisplayBadge = remember(settings.inputScheme, customSchemaName, activeProfile, appLang, settings.lastQwertyIsChinese) {
+        if (!settings.lastQwertyIsChinese && appLang == com.typefree.ime.i18n.AppLang.EN) {
+            "English QWERTY"
+        } else {
+            when (settings.inputScheme) {
+                InputScheme.RIME_CUSTOM -> customSchemaName?.takeIf { it.isNotBlank() }
+                    ?: activeProfile.displayName.takeIf { it.isNotBlank() }
+                    ?: AppStrings.pick(appLang, "自定义方案", "Custom Rime", "自訂方案")
+                else -> AppStrings.inputSchemeLabel(settings.inputScheme, appLang)
+            }
         }
     }
 
@@ -203,7 +211,7 @@ fun KeyboardStudioScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "键盘",
+                    text = tr("键盘", "Keyboard", "鍵盤"),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.ExtraBold
                 )
@@ -223,7 +231,11 @@ fun KeyboardStudioScreen(
             }
 
             SpringSegmentedControl(
-                options = listOf("方案与布局", "手势与短语", "词库管理"),
+                options = listOf(
+                    tr("方案与布局", "Layouts & English", "方案與佈局"),
+                    tr("手势与短语", "Gestures & Snippets", "手勢與短語"),
+                    tr("词库管理", "Dictionaries", "詞庫管理")
+                ),
                 selectedIndex = activeSubTab,
                 onSelect = ::selectSubTab,
                 modifier = Modifier.fillMaxWidth()
@@ -347,12 +359,16 @@ private fun KeyboardSchemeAndLayoutPane(
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         Text(
-                            text = "输入方案与专属设置",
+                            text = tr("输入方案与专属设置", "Bilingual / Rime Input Scheme", "輸入方案與專屬設定"),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "仅显示当前激活方案的专属开关，互不干扰",
+                            text = tr(
+                                "仅显示当前激活方案的专属开关，互不干扰",
+                                "Configure Chinese Rime / Shuangpin / Codetable schemes alongside English QWERTY",
+                                "僅顯示目前啟用方案的專屬開關，互不干擾"
+                            ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -363,9 +379,9 @@ private fun KeyboardSchemeAndLayoutPane(
                     ) {
                         Text(
                             text = when (isolationKind) {
-                                SchemeIsolationKind.XIAOHE_YINXING -> "小鹤手势速查"
-                                SchemeIsolationKind.CUSTOM_CODETABLE -> "码表手势速查"
-                                SchemeIsolationKind.PINYIN_OR_DOUBLE_PINYIN -> "拼音手势速查"
+                                SchemeIsolationKind.XIAOHE_YINXING -> tr("小鹤手势速查", "Cheat Sheet", "小鶴手勢速查")
+                                SchemeIsolationKind.CUSTOM_CODETABLE -> tr("码表手势速查", "Cheat Sheet", "碼表手勢速查")
+                                SchemeIsolationKind.PINYIN_OR_DOUBLE_PINYIN -> tr("拼音手势速查", "Cheat Sheet", "拼音手勢速查")
                             },
                             style = MaterialTheme.typography.labelLarge
                         )
@@ -379,10 +395,10 @@ private fun KeyboardSchemeAndLayoutPane(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     val builtinItems = listOf(
-                        InputScheme.RIME_PINYIN to "全拼",
-                        InputScheme.RIME_T9_PINYIN to "九键拼音",
-                        InputScheme.RIME_DOUBLE_PINYIN_FLYPY to "小鹤双拼",
-                        InputScheme.FLYPY_TABLE to "小鹤音形"
+                        InputScheme.RIME_PINYIN to tr("全拼", "Full Pinyin", "全拼"),
+                        InputScheme.RIME_T9_PINYIN to tr("九键拼音", "9-Key T9", "九鍵拼音"),
+                        InputScheme.RIME_DOUBLE_PINYIN_FLYPY to tr("小鹤双拼", "Double Pinyin", "小鶴雙拼"),
+                        InputScheme.FLYPY_TABLE to tr("小鹤音形", "Flypy 4-Code", "小鶴音形")
                     )
                     builtinItems.forEach { (scheme, label) ->
                         val selected = settings.inputScheme == scheme
@@ -746,15 +762,65 @@ private fun KeyboardSchemeAndLayoutPane(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                val cardLang = LocalAppLanguage.current
                 Text(
-                    text = "通用打字键盘",
+                    text = tr("通用打字键盘与英文智能输入", "General Typing & Smart English", "一般打字鍵盤與英文智慧輸入"),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
 
                 PreferenceSwitchRow(
-                    title = "打字面板默认开启中文",
-                    subtitle = "未开启“记忆上一次键盘模式”时默认进入中文状态（长按空格或顶栏中/英可随时切换）",
+                    title = tr("EN 英文句首与 I 自动大写", "English Smart Auto-Capitalization", "EN 英文句首與 I 自動大寫"),
+                    subtitle = tr(
+                        "在普通文本输入框首、换行后及「. / ! / ? 」后自动启用单次大写（自动跳过密码/网址/邮箱/代码框）",
+                        "Auto-enable one-shot Shift at the start of text fields, new lines, and after \". \", \"! \", or \"? \" (skips URLs, emails & code)",
+                        "在一般文字輸入框首、換行後及「. / ! / ? 」後自動啟用單次大寫（自動跳過密碼/網址/信箱/程式碼框）"
+                    ),
+                    checked = settings.englishAutoCap,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(englishAutoCap = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+
+                PreferenceSwitchRow(
+                    title = tr("EN 英文缩写与高频拼写纠错", "English Contractions & Typo Autocorrect", "EN 英文縮寫與高頻拼寫糾錯"),
+                    subtitle = tr(
+                        "空格自动补全 im→I'm、dont→don't、i→I 及 teh→the 等错词；误改后紧按一次退格立即还原",
+                        "Auto-fix contractions (im→I'm, dont→don't, i→I) & common typos (teh→the) on Space; press Backspace once to undo immediately",
+                        "空白鍵自動補全 im→I'm、dont→don't、i→I 及 teh→the 等錯詞；誤改後緊按一次退格立即還原"
+                    ),
+                    checked = settings.englishAutoCorrect,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(englishAutoCorrect = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+
+                PreferenceSwitchRow(
+                    title = tr("EN 英文模式词库联想", "English Word Suggestions", "EN 英文模式詞庫聯想"),
+                    subtitle = tr(
+                        "切换至英文模式输入 ≥2 个字母时，预测栏自动提供常用英文单词补全",
+                        "Show instant English word completions in the suggestion strip as you type",
+                        "切換至英文模式輸入 ≥2 個字母時，預測欄自動提供常用英文單字補全"
+                    ),
+                    checked = settings.englishModeWordSuggestionEnabled,
+                    onCheckedChange = { enabled ->
+                        repository.updateSettings { it.copy(englishModeWordSuggestionEnabled = enabled) }
+                    }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+
+                PreferenceSwitchRow(
+                    title = tr("打字面板默认开启中文", "Default QWERTY to Chinese Mode", "打字面板預設開啟中文"),
+                    subtitle = tr(
+                        "未开启“记忆上一次键盘模式”时默认进入中文状态（长按空格或顶栏中/英可随时切换）",
+                        "Start QWERTY in Chinese when mode memory is off (tap EN/中 or hold Space anytime to toggle)",
+                        "未開啟「記憶上一次鍵盤模式」時預設進入中文狀態（長按空白鍵或頂欄中/英可隨時切換）"
+                    ),
                     checked = settings.flypyEnabled,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(flypyEnabled = enabled) }
@@ -764,8 +830,12 @@ private fun KeyboardSchemeAndLayoutPane(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
                 PreferenceSwitchRow(
-                    title = "顶部独立数字行 (1–0)",
-                    subtitle = "默认关闭（Q–P 长按直输 1–0）；开启后在字母区上方显示独立数字行",
+                    title = tr("顶部独立数字行 (1–0)", "Dedicated Top Number Row (1–0)", "頂部獨立數字列 (1–0)"),
+                    subtitle = tr(
+                        "默认关闭（Q–P 长按直输 1–0）；开启后在字母区上方显示独立数字行",
+                        "Show a 5th row of number keys above Q–P (when off, swipe up or hold Q–P for 1–0)",
+                        "預設關閉（Q–P 長按直輸 1–0）；開啟後在字母區上方顯示獨立數字列"
+                    ),
                     checked = settings.qwertyShowNumberRow,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(qwertyShowNumberRow = enabled) }
@@ -775,8 +845,12 @@ private fun KeyboardSchemeAndLayoutPane(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
                 PreferenceSwitchRow(
-                    title = "上滑回退键清空输入框",
-                    subtitle = "默认关闭（上滑回退键为撤回上屏）；开启后在 26 键与九键回退键上滑直接清空当前输入框，清空后仍可撤回",
+                    title = tr("上滑回退键清空输入框", "Swipe Up on Backspace to Clear All", "上滑退格鍵清空輸入框"),
+                    subtitle = tr(
+                        "默认关闭（上滑回退键为撤回上屏）；开启后在 26 键与九键回退键上滑直接清空当前输入框，清空后仍可撤回",
+                        "When off, swiping up on Backspace undoes last commit; when on, clears the input box (still undoable)",
+                        "預設關閉（上滑退格鍵為復原上屏）；開啟後在退格鍵上滑直接清空輸入框"
+                    ),
                     checked = settings.backspaceSwipeUpClearEnabled,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(backspaceSwipeUpClearEnabled = enabled) }
@@ -800,12 +874,16 @@ private fun KeyboardSchemeAndLayoutPane(
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             Text(
-                                text = "底部垫高 · ${KeyboardMetrics.labelForLiftLevel(currentLiftLevel)}",
+                                text = "${tr("底部垫高", "Bottom Cushion Lift", "底部墊高")} · ${KeyboardMetrics.labelForLiftLevel(currentLiftLevel)}",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "在键盘底部增加防误触留白托起按键区，所有面板同步生效",
+                                text = tr(
+                                    "在键盘底部增加防误触留白托起按键区，所有面板同步生效",
+                                    "Raise the keyboard comfortably above your chin bezel without stretching keys",
+                                    "在鍵盤底部增加防誤觸留白托起按鍵區，所有面板同步生效"
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -820,7 +898,7 @@ private fun KeyboardSchemeAndLayoutPane(
                                         )
                                     }
                                 }
-                            ) { Text("恢复默认", fontSize = 12.sp) }
+                            ) { Text(tr("恢复默认", "Reset", "恢復預設"), fontSize = 12.sp) }
                         }
                     }
 
@@ -854,8 +932,12 @@ private fun KeyboardSchemeAndLayoutPane(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
                 PreferenceSwitchRow(
-                    title = "按键按下气泡放大预览",
-                    subtitle = "按下字母或符号键时在键帽上方浮现放大预览气泡",
+                    title = tr("按键按下气泡放大预览", "Key-Press Magnifier Popup", "按鍵按下氣泡放大預覽"),
+                    subtitle = tr(
+                        "按下字母或符号键时在键帽上方浮现放大预览气泡",
+                        "Show tactile callout bubble above keys on press",
+                        "按下字母或符號鍵時在鍵帽上方浮現放大預覽氣泡"
+                    ),
                     checked = settings.qwertyKeyPopupPreview,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(qwertyKeyPopupPreview = enabled) }
@@ -866,12 +948,16 @@ private fun KeyboardSchemeAndLayoutPane(
 
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = "键帽角标显示（${settings.keycapBadgeMode.label}）",
+                        text = "${tr("键帽角标显示", "Secondary Keycap Badges", "鍵帽角標顯示")}（${AppStrings.keycapBadgeModeLabel(settings.keycapBadgeMode, cardLang)}）",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium
                     )
                     Text(
-                        text = "自定义键帽顶部提示内容；选择「隐藏角标」后字母自动居中复原，不留顶空",
+                        text = tr(
+                            "自定义键帽顶部提示内容；选择「隐藏角标」后字母自动居中复原，不留顶空",
+                            "Choose whether secondary symbols show on keycaps or hide for ultra-clean centered letters",
+                            "自訂鍵帽頂部提示內容；選擇「隱藏角標」後字母自動置中復原"
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -886,7 +972,7 @@ private fun KeyboardSchemeAndLayoutPane(
                                 onClick = {
                                     repository.updateSettings { it.copy(keycapBadgeMode = mode) }
                                 },
-                                label = { Text(mode.label, fontSize = 12.sp, maxLines = 1) },
+                                label = { Text(AppStrings.keycapBadgeModeLabel(mode, cardLang), fontSize = 12.sp, maxLines = 1) },
                                 modifier = Modifier.weight(1f),
                                 colors = FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = MaterialTheme.colorScheme.primary,
@@ -900,22 +986,15 @@ private fun KeyboardSchemeAndLayoutPane(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
                 PreferenceSwitchRow(
-                    title = "输入框算式自动提示",
-                    subtitle = "在光标前输入如 125*8= 等合法算式时，预测栏自动浮现计算结果，点击直出",
+                    title = tr("输入框算式自动提示", "Inline Math Calculator", "輸入框算式自動提示"),
+                    subtitle = tr(
+                        "在光标前输入如 125*8= 等合法算式时，预测栏自动浮现计算结果，点击直出",
+                        "Type an expression like 125*8= to see and insert the instant math result",
+                        "在游標前輸入如 125*8= 等算式時，預測欄自動浮現計算結果，點擊直出"
+                    ),
                     checked = settings.passiveCalculatorEnabled,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(passiveCalculatorEnabled = enabled) }
-                    }
-                )
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
-
-                PreferenceSwitchRow(
-                    title = "EN 英文模式词库联想",
-                    subtitle = "切换至英文模式输入 ≥2 个字母时，预测栏自动提供常用英文单词补全",
-                    checked = settings.englishModeWordSuggestionEnabled,
-                    onCheckedChange = { enabled ->
-                        repository.updateSettings { it.copy(englishModeWordSuggestionEnabled = enabled) }
                     }
                 )
             }
@@ -1014,6 +1093,7 @@ private fun KeyboardDictionaryPane(
     rimeDeployState: RimeDeploymentState
 ) {
     val context = LocalContext.current
+    val appLang = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
     val rimeDataManager = remember { TypeFreeApp.instance.rimeDataManager }
     val flypyDict by TypeFreeApp.instance.flypyDictionary.collectAsState()

@@ -36,6 +36,18 @@ object TypeFreeBubbleController {
     private val _forcePreviewVisible = MutableStateFlow(false)
     val forcePreviewVisible: StateFlow<Boolean> = _forcePreviewVisible.asStateFlow()
 
+    private val _isHostAppInForeground = MutableStateFlow(false)
+    val isHostAppInForeground: StateFlow<Boolean> = _isHostAppInForeground.asStateFlow()
+
+    fun setAppInForeground(inForeground: Boolean) {
+        _isHostAppInForeground.value = inForeground
+        if (!inForeground) {
+            _forcePreviewVisible.value = false
+        }
+    }
+
+    fun setHostAppInForeground(inForeground: Boolean) = setAppInForeground(inForeground)
+
     internal fun setAccessibilityConnected(connected: Boolean) {
         _isAccessibilityConnected.value = connected
         if (!connected) {

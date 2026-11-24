@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import com.typefree.ime.bubble.TypeFreeBubbleController
 import com.typefree.ime.data.AppRepository
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.components.TypeFreeIcons
@@ -96,7 +97,10 @@ class MainActivity : ComponentActivity() {
             }
 
             CompositionLocalProvider(LocalDensity provides clampedAppDensity) {
-                TypeFreeTheme(themePreference = settings.themePreference) {
+                TypeFreeTheme(
+                    themePreference = settings.themePreference,
+                    appLanguage = settings.appLanguage
+                ) {
                     val currentTab by selectedTabState
                     val currentKeyboardSubTab by keyboardSubTabState
                     val currentVoiceAiSubTab by voiceAiSubTabState
@@ -169,7 +173,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        TypeFreeBubbleController.setAppInForeground(true)
         TypeFreeBubbleController.syncBubbleService(this)
+    }
+
+    override fun onPause() {
+        TypeFreeBubbleController.setAppInForeground(false)
+        super.onPause()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -250,22 +260,22 @@ private fun TypeFreeMainScaffold(
     val navItems = listOf(
         NavTabItem(
             index = AppDestinations.TAB_HOME,
-            label = "首页",
+            label = tr("首页", "Home", "首頁"),
             icon = Icons.Default.Home
         ),
         NavTabItem(
             index = AppDestinations.TAB_KEYBOARD,
-            label = "键盘",
+            label = tr("键盘", "Keyboard", "鍵盤"),
             icon = TypeFreeIcons.KeyboardGrid
         ),
         NavTabItem(
             index = AppDestinations.TAB_VOICE_AI,
-            label = "语音与 AI",
+            label = tr("语音与 AI", "Voice & AI", "語音與 AI"),
             icon = TypeFreeIcons.VoiceWaveform
         ),
         NavTabItem(
             index = AppDestinations.TAB_GENERAL,
-            label = "通用",
+            label = tr("通用", "General", "一般"),
             icon = TypeFreeIcons.Tune
         )
     )

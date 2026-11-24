@@ -17,6 +17,7 @@ import com.typefree.ime.data.stats.PredictionBackupArchive
 import com.typefree.ime.data.stats.SqliteDailyStatsBackend
 import com.typefree.ime.data.stats.StatsTimeRange
 import com.typefree.ime.data.stats.TokenUsageSnapshot
+import com.typefree.ime.i18n.AppStrings
 import com.typefree.ime.ime.jev.memory.AnchorSaltProvider
 import com.typefree.ime.ime.jev.memory.AndroidKeystoreSaltProvider
 import com.typefree.ime.ime.jev.memory.ConversationAnchorExtractor
@@ -28,6 +29,7 @@ import com.typefree.ime.ime.predict.PredictionStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.Locale
 import java.util.UUID
 import kotlin.math.roundToInt
 
@@ -116,7 +118,15 @@ class AppRepository(
             if (com.typefree.ime.BuildConfig.IS_XIAOHE_FLAVOR) {
                 publicStore.putBoolean(KEY_MIGRATED_V360_XIAOHE_SCHEME, true)
             }
-            return secretVault.hydrateSettingsWithSecrets(AppSettings())
+            val firstRunSettings = if (appContext != null) {
+                val sysLocale = appContext.resources?.configuration?.locales?.let { list ->
+                    if (!list.isEmpty) list[0] else null
+                } ?: Locale.getDefault()
+                resolveFirstRunSettings(systemLocale = sysLocale)
+            } else {
+                AppSettings()
+            }
+            return secretVault.hydrateSettingsWithSecrets(firstRunSettings)
         }
         return try {
             val parsed = gson.fromJson(raw, AppSettings::class.java) ?: AppSettings()
@@ -308,6 +318,21 @@ class AppRepository(
                 parsed.englishModeWordSuggestionEnabled
             } else {
                 true
+            }
+            val resolvedEnglishAutoCap = if (raw.contains("\"englishAutoCap\"")) {
+                parsed.englishAutoCap
+            } else {
+                true
+            }
+            val resolvedEnglishAutoCorrect = if (raw.contains("\"englishAutoCorrect\"")) {
+                parsed.englishAutoCorrect
+            } else {
+                true
+            }
+            val resolvedAppLanguage = if (raw.contains("\"appLanguage\"")) {
+                AppStrings.normalizeAppLanguage(parsed.appLanguage)
+            } else {
+                AppStrings.LANG_SYSTEM
             }
             val resolvedPhraseSuggestionL2Enabled = if (raw.contains("\"phraseSuggestionL2Enabled\"")) {
                 parsed.phraseSuggestionL2Enabled
@@ -504,6 +529,7 @@ class AppRepository(
                 jevUseDedicatedModel = resolvedJevUseDedicatedModel,
                 jevLlmConfig = safeJevLlm,
                 themePreference = parsed.themePreference ?: ThemePreference.SYSTEM,
+                appLanguage = resolvedAppLanguage,
                 flypyEnabled = resolvedFlypyEnabled,
                 flypyCommaPeriodQuickSelect = resolvedCommaPeriodQuickSelect,
                 rememberLastKeyboardMode = resolvedRememberLastKeyboard,
@@ -532,6 +558,8 @@ class AppRepository(
                 xiaoheNaturalContinuationLimit = resolvedXiaoheNaturalContinuationLimit,
                 passiveCalculatorEnabled = resolvedPassiveCalculatorEnabled,
                 englishModeWordSuggestionEnabled = resolvedEnglishModeWordSuggestionEnabled,
+                englishAutoCap = resolvedEnglishAutoCap,
+                englishAutoCorrect = resolvedEnglishAutoCorrect,
                 phraseSuggestionL2Enabled = resolvedPhraseSuggestionL2Enabled,
                 customKeyGesturesJson = resolvedCustomKeyGesturesJson,
                 keycapBadgeMode = parsed.keycapBadgeMode ?: KeycapBadgeMode.SWIPE_UP,
@@ -1038,6 +1066,20 @@ class AppRepository(
                 InputScheme.FLYPY_TABLE
             } else {
                 rawInputScheme
+            }
+        }
+
+        fun resolveFirstRunSettings(
+            systemLocale: Locale = Locale.getDefault()
+        ): AppSettings {
+            val isChineseSystem = systemLocale.language.lowercase(Locale.ROOT).startsWith("zh")
+            return if (isChineseSystem) {
+                AppSettings()
+            } else {
+                AppSettings(
+                    flypyEnabled = false,
+                    lastQwertyIsChinese = false
+                )
             }
         }
 

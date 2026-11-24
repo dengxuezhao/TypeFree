@@ -22,6 +22,7 @@ concurrency:
 jobs:
   build-and-release:
     name: QA Gate, Build Standard Release APK & Publish
+    if: github.event.repository.private != true
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -134,7 +135,10 @@ jobs:
           else
             TASKS="$TASKS testDebugUnitTest"
           fi
-          ./gradlew $TASKS --no-daemon --stacktrace
+          ./gradlew $TASKS \
+            -Dorg.gradle.jvmargs="-Xmx2560m -Dfile.encoding=UTF-8" \
+            -Dkotlin.daemon.jvmargs="-Xmx2560m" \
+            --no-daemon --max-workers=2 --stacktrace
 
       - name: Decode release keystore (if configured)
         if: steps.meta.outputs.is_signed == 'true'
@@ -154,11 +158,12 @@ jobs:
           TYPEFREE_KEY_PASSWORD: ${{ secrets.TYPEFREE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          JVM_OPTS=(-Dorg.gradle.jvmargs="-Xmx2560m -Dfile.encoding=UTF-8" -Dkotlin.daemon.jvmargs="-Xmx2560m")
           if grep -q 'create("standard")' app/build.gradle.kts; then
-            ./gradlew assembleStandardRelease --no-daemon --stacktrace
+            ./gradlew assembleStandardRelease "${JVM_OPTS[@]}" --no-daemon --max-workers=2 --stacktrace
             APK_PATH=$(find app/build/outputs/apk/standard/release -name "*.apk" | head -n 1)
           else
-            ./gradlew assembleRelease --no-daemon --stacktrace
+            ./gradlew assembleRelease "${JVM_OPTS[@]}" --no-daemon --max-workers=2 --stacktrace
             APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
           fi
           test -f "$APK_PATH"
@@ -264,7 +269,10 @@ jobs:
           highlights = load_highlights()
 
           if is_signed == "true":
-              sign_note = "本安装包使用正式发布密钥签名，支持直接覆盖升级。"
+              sign_note = (
+                  "本安装包使用正式发布密钥签名，支持后续版本直接覆盖升级。"
+                  "（注：若从 v3.8.3 或更早的 Debug 签名旧版升级提示“签名不一致”，请先在应用内「通用 → 导出备份」保存配置，卸载旧版后安装一次即可。）"
+              )
           else:
               sign_note = "⚠️ 仓库尚未配置正式签名 Secrets，本包回退为 Debug 签名（若与之前签名不同需卸载重装）。"
 

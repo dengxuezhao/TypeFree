@@ -35,6 +35,7 @@ import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.UnifiedProviderCatalog
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.data.stats.TokenUsage
+import com.typefree.ime.i18n.AppStrings
 import com.typefree.ime.ime.jev.ChatTopology
 import com.typefree.ime.ime.jev.JevCopilotResult
 import com.typefree.ime.ime.jev.JevDomainProfile
@@ -348,11 +349,12 @@ class AiPipelineEngine(
                 val client = localAiClient ?: return null
                 val modelDir = localModelRegistry?.getInstalledModelDir(asr.modelId) ?: return null
                 val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
+                val defaultLangHint = if (AppStrings.isChinese(settings.appLanguage)) "zh" else "en"
                 client.openStreamingAsrSession(
                     modelId = asr.modelId,
                     modelDirPath = modelDir,
                     hotwords = hotwords,
-                    languageHint = settings.sttConfig.language.ifBlank { "zh" },
+                    languageHint = settings.sttConfig.language.ifBlank { defaultLangHint },
                     incognito = plan.clearLocalStateAfterRun,
                     expectedGeneration = 0L
                 )
@@ -491,7 +493,8 @@ class AiPipelineEngine(
 
                         onStageChanged(PipelineStage.TRANSCRIBING_STT)
                         val sttStart = System.currentTimeMillis()
-                        val sttBias = PromptBuilder.buildSttBiasPrompt(settings.dictionary)
+                        val isZh = AppStrings.isChinese(settings.appLanguage)
+                        val sttBias = PromptBuilder.buildSttBiasPrompt(settings.dictionary, isChineseLocale = isZh)
                         val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
 
                         val transcribed = when (sttCfg.protocol) {
@@ -592,6 +595,7 @@ class AiPipelineEngine(
                         listOf(rawTranscript)
                     }
 
+                    val isZh = AppStrings.isChinese(settings.appLanguage)
                     val llmOutcome = if (chunks.size > 1 && effectiveIntent == VoiceIntentMode.DICTATE) {
                         val semaphore = Semaphore(MAX_CONCURRENT_POLISH_CHUNKS)
                         val chunkOutcomes = coroutineScope {
@@ -608,7 +612,8 @@ class AiPipelineEngine(
                                             style = activeStyle,
                                             targetAppName = targetAppName,
                                             dictionary = settings.dictionary,
-                                            surroundingBeforeCursor = chunkContext
+                                            surroundingBeforeCursor = chunkContext,
+                                            isChineseLocale = isZh
                                         )
                                         executeLlmChatWithDiagnostics(
                                             config = llmCfg,
@@ -647,12 +652,14 @@ class AiPipelineEngine(
                                 selectedText = selectedText,
                                 voiceInstruction = rawTranscript,
                                 style = activeStyle,
-                                dictionary = settings.dictionary
+                                dictionary = settings.dictionary,
+                                isChineseLocale = isZh
                             )
                             VoiceIntentMode.HELP_ME_WRITE -> PromptBuilder.buildHelpMeWritePrompts(
                                 voiceInstruction = PromptBuilder.combineAttitudeAndVoiceInstruction(
                                     attitudeInstruction = attitudeInstruction,
-                                    voiceTranscript = rawTranscript
+                                    voiceTranscript = rawTranscript,
+                                    isChineseLocale = isZh
                                 ),
                                 style = activeStyle,
                                 targetAppName = targetAppName,
@@ -660,7 +667,8 @@ class AiPipelineEngine(
                                 surroundingBeforeCursor = safeContext,
                                 chatContextMessages = chatContextMessages,
                                 hasChatScreenshot = activeImageB64.isNotBlank(),
-                                editorDraft = editorDraft
+                                editorDraft = editorDraft,
+                                isChineseLocale = isZh
                             )
                             VoiceIntentMode.JEV_COPILOT -> PromptBuilder.buildJevCopilotPrompts(
                                 domainProfile = JevDomainProfile.FORMAL_WORKFLOW,
@@ -670,20 +678,23 @@ class AiPipelineEngine(
                                 userBottomLine = rawTranscript,
                                 surroundingBeforeCursor = safeContext,
                                 style = activeStyle,
-                                dictionary = settings.dictionary
+                                dictionary = settings.dictionary,
+                                isChineseLocale = isZh
                             )
                             VoiceIntentMode.TRANSLATE -> PromptBuilder.buildTranslatePrompts(
                                 rawSpeech = rawTranscript,
                                 targetLanguage = translateTargetLanguage,
                                 style = activeStyle,
-                                dictionary = settings.dictionary
+                                dictionary = settings.dictionary,
+                                isChineseLocale = isZh
                             )
                             VoiceIntentMode.DICTATE -> PromptBuilder.buildDictationPrompts(
                                 rawSpeech = rawTranscript,
                                 style = activeStyle,
                                 targetAppName = targetAppName,
                                 dictionary = settings.dictionary,
-                                surroundingBeforeCursor = safeContext
+                                surroundingBeforeCursor = safeContext,
+                                isChineseLocale = isZh
                             )
                         }
                         executeLlmChatWithDiagnostics(
@@ -746,7 +757,8 @@ class AiPipelineEngine(
                         chatContextMessages = chatContextMessages,
                         hasChatScreenshot = activeImageB64.isNotBlank(),
                         attitudeInstruction = attitudeInstruction,
-                        editorDraft = editorDraft
+                        editorDraft = editorDraft,
+                        isChineseLocale = AppStrings.isChinese(settings.appLanguage)
                     )
                     val mmOutcome = when (mmCfg.protocol) {
                         MultimodalProtocol.GEMINI_NATIVE -> {
@@ -1126,13 +1138,14 @@ class AiPipelineEngine(
         val modelDir = localModelRegistry?.getInstalledModelDir(modelId)
             ?: return Result.failure(IllegalStateException("本机离线语音模型未安装或目录缺失 ($modelId)"))
         val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
+        val defaultLangHint = if (AppStrings.isChinese(settings.appLanguage)) "zh" else "en"
         val startRegistryGen = currentRegistrySnapshot().modelGeneration
         val rawRes = client.transcribeFile(
             wavPath = wavFile.absolutePath,
             modelId = modelId,
             modelDirPath = modelDir,
             hotwords = hotwords,
-            languageHint = settings.sttConfig.language.ifBlank { "zh" },
+            languageHint = settings.sttConfig.language.ifBlank { defaultLangHint },
             incognito = incognito,
             expectedGeneration = 0L
         )
@@ -1155,7 +1168,10 @@ class AiPipelineEngine(
         validateSttConfig(sttCfg, settings)?.let { errMsg ->
             throw IllegalStateException(errMsg)
         }
-        val sttBias = PromptBuilder.buildSttBiasPrompt(settings.dictionary)
+        val sttBias = PromptBuilder.buildSttBiasPrompt(
+            dictionary = settings.dictionary,
+            isChineseLocale = AppStrings.isChinese(settings.appLanguage)
+        )
         val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
         return when (sttCfg.protocol) {
             SttProtocol.OPENAI_HTTP -> transcribeWithOpenAiStt(
@@ -1396,7 +1412,8 @@ class AiPipelineEngine(
                                         style = activeStyle,
                                         targetAppName = targetAppName,
                                         dictionary = settings.dictionary,
-                                        surroundingBeforeCursor = chunkContext
+                                        surroundingBeforeCursor = chunkContext,
+                                        isChineseLocale = AppStrings.isChinese(settings.appLanguage)
                                     )
                                     executeLlmChatWithDiagnostics(
                                         config = llmCfg,
@@ -1468,49 +1485,58 @@ class AiPipelineEngine(
         hasChatScreenshot: Boolean,
         attitudeInstruction: String,
         editorDraft: String
-    ): Pair<String, String> = when (effectiveIntent) {
-        VoiceIntentMode.SPEAK_TO_EDIT -> PromptBuilder.buildSpeakToEditPrompts(
-            selectedText = selectedText,
-            voiceInstruction = rawTranscript,
-            style = activeStyle,
-            dictionary = settings.dictionary
-        )
-        VoiceIntentMode.HELP_ME_WRITE -> PromptBuilder.buildHelpMeWritePrompts(
-            voiceInstruction = PromptBuilder.combineAttitudeAndVoiceInstruction(
-                attitudeInstruction = attitudeInstruction,
-                voiceTranscript = rawTranscript
-            ),
-            style = activeStyle,
-            targetAppName = targetAppName,
-            dictionary = settings.dictionary,
-            surroundingBeforeCursor = safeContext,
-            chatContextMessages = chatContextMessages,
-            hasChatScreenshot = hasChatScreenshot,
-            editorDraft = editorDraft
-        )
-        VoiceIntentMode.JEV_COPILOT -> PromptBuilder.buildJevCopilotPrompts(
-            domainProfile = JevDomainProfile.FORMAL_WORKFLOW,
-            targetAppName = targetAppName,
-            chatContextMessages = chatContextMessages,
-            hasChatScreenshot = hasChatScreenshot,
-            userBottomLine = rawTranscript,
-            surroundingBeforeCursor = safeContext,
-            style = activeStyle,
-            dictionary = settings.dictionary
-        )
-        VoiceIntentMode.TRANSLATE -> PromptBuilder.buildTranslatePrompts(
-            rawSpeech = rawTranscript,
-            targetLanguage = translateTargetLanguage,
-            style = activeStyle,
-            dictionary = settings.dictionary
-        )
-        VoiceIntentMode.DICTATE -> PromptBuilder.buildDictationPrompts(
-            rawSpeech = rawTranscript,
-            style = activeStyle,
-            targetAppName = targetAppName,
-            dictionary = settings.dictionary,
-            surroundingBeforeCursor = safeContext
-        )
+    ): Pair<String, String> {
+        val isZh = AppStrings.isChinese(settings.appLanguage)
+        return when (effectiveIntent) {
+            VoiceIntentMode.SPEAK_TO_EDIT -> PromptBuilder.buildSpeakToEditPrompts(
+                selectedText = selectedText,
+                voiceInstruction = rawTranscript,
+                style = activeStyle,
+                dictionary = settings.dictionary,
+                isChineseLocale = isZh
+            )
+            VoiceIntentMode.HELP_ME_WRITE -> PromptBuilder.buildHelpMeWritePrompts(
+                voiceInstruction = PromptBuilder.combineAttitudeAndVoiceInstruction(
+                    attitudeInstruction = attitudeInstruction,
+                    voiceTranscript = rawTranscript,
+                    isChineseLocale = isZh
+                ),
+                style = activeStyle,
+                targetAppName = targetAppName,
+                dictionary = settings.dictionary,
+                surroundingBeforeCursor = safeContext,
+                chatContextMessages = chatContextMessages,
+                hasChatScreenshot = hasChatScreenshot,
+                editorDraft = editorDraft,
+                isChineseLocale = isZh
+            )
+            VoiceIntentMode.JEV_COPILOT -> PromptBuilder.buildJevCopilotPrompts(
+                domainProfile = JevDomainProfile.FORMAL_WORKFLOW,
+                targetAppName = targetAppName,
+                chatContextMessages = chatContextMessages,
+                hasChatScreenshot = hasChatScreenshot,
+                userBottomLine = rawTranscript,
+                surroundingBeforeCursor = safeContext,
+                style = activeStyle,
+                dictionary = settings.dictionary,
+                isChineseLocale = isZh
+            )
+            VoiceIntentMode.TRANSLATE -> PromptBuilder.buildTranslatePrompts(
+                rawSpeech = rawTranscript,
+                targetLanguage = translateTargetLanguage,
+                style = activeStyle,
+                dictionary = settings.dictionary,
+                isChineseLocale = isZh
+            )
+            VoiceIntentMode.DICTATE -> PromptBuilder.buildDictationPrompts(
+                rawSpeech = rawTranscript,
+                style = activeStyle,
+                targetAppName = targetAppName,
+                dictionary = settings.dictionary,
+                surroundingBeforeCursor = safeContext,
+                isChineseLocale = isZh
+            )
+        }
     }
 
     private fun executeCloudMultimodalTextFallback(
@@ -2068,6 +2094,7 @@ class AiPipelineEngine(
                 }
             }
             val effectiveScreenshotB64 = if (canSendVision) chatContextScreenshotBase64 else ""
+            val isZh = AppStrings.isChinese(settings.appLanguage)
             val (sysPrompt, usrPrompt) = if (isContextualReply) {
                 PromptBuilder.buildHelpMeWritePrompts(
                     voiceInstruction = explicitInstruction?.takeIf { it.isNotBlank() } ?: rawOrSelectedText,
@@ -2076,14 +2103,16 @@ class AiPipelineEngine(
                     dictionary = settings.dictionary,
                     surroundingBeforeCursor = "",
                     chatContextMessages = chatContextMessages,
-                    hasChatScreenshot = effectiveScreenshotB64.isNotBlank()
+                    hasChatScreenshot = effectiveScreenshotB64.isNotBlank(),
+                    isChineseLocale = isZh
                 )
             } else if (!explicitInstruction.isNullOrBlank()) {
                 PromptBuilder.buildSpeakToEditPrompts(
                     selectedText = rawOrSelectedText,
                     voiceInstruction = explicitInstruction,
                     style = activeStyle,
-                    dictionary = settings.dictionary
+                    dictionary = settings.dictionary,
+                    isChineseLocale = isZh
                 )
             } else {
                 PromptBuilder.buildDictationPrompts(
@@ -2091,7 +2120,8 @@ class AiPipelineEngine(
                     style = activeStyle,
                     targetAppName = targetAppName,
                     dictionary = settings.dictionary,
-                    surroundingBeforeCursor = ""
+                    surroundingBeforeCursor = "",
+                    isChineseLocale = isZh
                 )
             }
 
@@ -2223,7 +2253,8 @@ class AiPipelineEngine(
             val (sysPrompt, usrPrompt) = PromptBuilder.buildAskAiCardPrompts(
                 query = query,
                 targetAppName = targetAppName,
-                dictionary = settings.dictionary
+                dictionary = settings.dictionary,
+                isChineseLocale = AppStrings.isChinese(settings.appLanguage)
             )
             val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
             val output: String
@@ -2442,7 +2473,10 @@ class AiPipelineEngine(
                                 return@withContext Result.failure(IllegalStateException(errMsg))
                             }
                             val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
-                            val bias = PromptBuilder.buildSttBiasPrompt(settings.dictionary)
+                            val bias = PromptBuilder.buildSttBiasPrompt(
+                                dictionary = settings.dictionary,
+                                isChineseLocale = AppStrings.isChinese(settings.appLanguage)
+                            )
                             if (effectiveStt.protocol == SttProtocol.GEMINI_LIVE_WS) {
                                 transcribeGeminiWavWithFastFallback(wavFile, effectiveStt, hotwords)
                             } else {
@@ -2460,7 +2494,10 @@ class AiPipelineEngine(
                                 return@withContext Result.failure(IllegalStateException(errMsg))
                             }
                             val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
-                            val bias = PromptBuilder.buildSttBiasPrompt(settings.dictionary)
+                            val bias = PromptBuilder.buildSttBiasPrompt(
+                                dictionary = settings.dictionary,
+                                isChineseLocale = AppStrings.isChinese(settings.appLanguage)
+                            )
                             if (effectiveStt.protocol == SttProtocol.GEMINI_LIVE_WS) {
                                 transcribeGeminiWavWithFastFallback(wavFile, effectiveStt, hotwords)
                             } else {
@@ -2595,7 +2632,8 @@ class AiPipelineEngine(
                 dictionary = settings.dictionary,
                 chatTopology = chatTopology,
                 targetPackageName = targetPackageName,
-                memoryPayload = memoryPayload
+                memoryPayload = memoryPayload,
+                isChineseLocale = AppStrings.isChinese(settings.appLanguage)
             )
 
             var lastSubtextClosed = false
@@ -2793,7 +2831,10 @@ class AiPipelineEngine(
                         return@withContext Result.failure(IllegalStateException(errMsg))
                     }
                     val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
-                    val bias = PromptBuilder.buildSttBiasPrompt(settings.dictionary)
+                    val bias = PromptBuilder.buildSttBiasPrompt(
+                        dictionary = settings.dictionary,
+                        isChineseLocale = AppStrings.isChinese(settings.appLanguage)
+                    )
                     val text = if (effectiveStt.protocol == SttProtocol.GEMINI_LIVE_WS) {
                         transcribeGeminiWavWithFastFallback(wavFile, effectiveStt, hotwords)
                     } else {
@@ -2818,7 +2859,8 @@ class AiPipelineEngine(
                         style = activeStyle,
                         targetAppName = "",
                         dictionary = settings.dictionary,
-                        surroundingBeforeCursor = ""
+                        surroundingBeforeCursor = "",
+                        isChineseLocale = AppStrings.isChinese(settings.appLanguage)
                     )
                     val output = when (mmCfg.protocol) {
                         MultimodalProtocol.GEMINI_NATIVE -> {
@@ -2933,7 +2975,8 @@ class AiPipelineEngine(
                 contextBeforeCursor = clippedContext,
                 style = activeStyle,
                 targetAppName = targetAppName,
-                dictionary = settings.dictionary
+                dictionary = settings.dictionary,
+                isChineseLocale = AppStrings.isChinese(settings.appLanguage)
             )
             val completionOutcome: ChatCallOutcome = if (plan.text is TextRoute.CloudMultimodalTextFallback) {
                 executeCloudMultimodalTextFallback(

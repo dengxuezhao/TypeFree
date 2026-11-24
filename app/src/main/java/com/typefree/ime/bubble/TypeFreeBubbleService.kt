@@ -283,6 +283,7 @@ class TypeFreeBubbleService :
                 val focusedSnap by TypeFreeBubbleController.focusedInput.collectAsState()
                 val a11yConnected by TypeFreeBubbleController.isAccessibilityConnected.collectAsState()
                 val forcePreview by TypeFreeBubbleController.forcePreviewVisible.collectAsState()
+                val hostInForeground by TypeFreeBubbleController.isHostAppInForeground.collectAsState()
                 val currPhase by phase.collectAsState()
                 val handoffHidden by _orbHandoffHidden.collectAsState()
 
@@ -290,8 +291,8 @@ class TypeFreeBubbleService :
                     !focusedSnap.isSensitivePassword &&
                     (currPhase != BubblePhase.Idle ||
                         forcePreview ||
-                        !a11yConnected ||
-                        focusedSnap.hasEditableFocus)
+                        (!hostInForeground && !a11yConnected) ||
+                        (!hostInForeground && focusedSnap.hasEditableFocus))
                 val showOrb = baseAllowed && !handoffHidden
 
                 LaunchedEffect(showOrb) {
@@ -299,7 +300,10 @@ class TypeFreeBubbleService :
                 }
 
                 if (showOrb) {
-                    TypeFreeTheme(themePreference = currSettings.themePreference) {
+                    TypeFreeTheme(
+                        themePreference = currSettings.themePreference,
+                        appLanguage = currSettings.appLanguage
+                    ) {
                         val isDark = resolveDarkTheme(currSettings.themePreference)
                         BubbleIdleOrbWidget(
                             isDark = isDark,
@@ -337,7 +341,10 @@ class TypeFreeBubbleService :
                 }
 
                 if (showCap) {
-                    TypeFreeTheme(themePreference = currSettings.themePreference) {
+                    TypeFreeTheme(
+                        themePreference = currSettings.themePreference,
+                        appLanguage = currSettings.appLanguage
+                    ) {
                         val isDark = resolveDarkTheme(currSettings.themePreference)
                         BubbleActiveCapsuleWidget(
                             isDark = isDark,

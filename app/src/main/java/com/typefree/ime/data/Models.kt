@@ -466,6 +466,7 @@ data class AppSettings(
     val offlineConfig: OfflineModelConfig = OfflineModelConfig(),
     val pendingOfflineRestore: PendingOfflineRestore? = null,
     val themePreference: ThemePreference = ThemePreference.SYSTEM,
+    val appLanguage: String = "system", // "system" | "en" | "zh-CN" | "zh-TW"
     val appAwareToneEnabled: Boolean = true,
     val selectedManualStyleId: String = "auto", // "auto" 表示开启应用感知自动匹配，否则固定某风格
     val hapticFeedback: Boolean = true,
@@ -500,6 +501,8 @@ data class AppSettings(
     val xiaoheNaturalContinuationLimit: Int = DEFAULT_NATURAL_CONTINUATION_LIMIT,
     val passiveCalculatorEnabled: Boolean = true,
     val englishModeWordSuggestionEnabled: Boolean = true,
+    val englishAutoCap: Boolean = true,
+    val englishAutoCorrect: Boolean = true,
     val phraseSuggestionL2Enabled: Boolean = true,
     val customKeyGesturesJson: String = "",
     val keycapBadgeMode: KeycapBadgeMode = KeycapBadgeMode.SWIPE_UP,

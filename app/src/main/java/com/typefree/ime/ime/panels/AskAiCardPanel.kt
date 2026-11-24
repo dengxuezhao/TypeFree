@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ime.ImeUiAction
 import com.typefree.ime.ime.ImeUiState
 import com.typefree.ime.ime.LocalKeyboardMetrics
@@ -117,12 +118,12 @@ fun AskAiCardPanel(
                 ) {
                     Icon(
                         imageVector = TypeFreeIcons.KeyboardGrid,
-                        contentDescription = "返回键盘",
+                        contentDescription = tr("返回键盘", "Back to Keyboard", "返回鍵盤"),
                         tint = palette.keyTextPrimary,
                         modifier = Modifier.size(11.dp)
                     )
                     Text(
-                        text = "返回键盘",
+                        text = tr("返回键盘", "Keyboard", "返回鍵盤"),
                         color = palette.keyTextPrimary,
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.Medium
@@ -141,7 +142,7 @@ fun AskAiCardPanel(
                 ) {
                     Icon(
                         imageVector = TypeFreeIcons.Close,
-                        contentDescription = "关闭",
+                        contentDescription = tr("关闭", "Close", "關閉"),
                         tint = palette.keyTextMuted,
                         modifier = Modifier.size(11.dp)
                     )
@@ -172,7 +173,7 @@ fun AskAiCardPanel(
                             color = AskAiIndigo
                         )
                         Text(
-                            text = "🔍 AI 正在检索解答…",
+                            text = tr("🔍 AI 正在检索解答…", "🔍 AI is thinking…", "🔍 AI 正在檢索解答…"),
                             color = palette.keyTextMuted,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Medium
@@ -201,7 +202,7 @@ fun AskAiCardPanel(
                                 .padding(horizontal = 12.dp, vertical = 4.dp)
                         ) {
                             Text(
-                                text = "重试",
+                                text = tr("重试", "Retry", "重試"),
                                 color = palette.keyTextPrimary,
                                 fontSize = 11.5.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -217,7 +218,7 @@ fun AskAiCardPanel(
                             .verticalScroll(rememberScrollState())
                     ) {
                         Text(
-                            text = answer.ifBlank { "（无回答内容）" },
+                            text = answer.ifBlank { tr("（无回答内容）", "(No answer)", "（無回答內容）") },
                             color = palette.keyTextPrimary,
                             fontSize = 13.5.sp,
                             lineHeight = 19.5.sp,
@@ -249,7 +250,7 @@ fun AskAiCardPanel(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "✓ 知道了(清空)",
+                        text = tr("✓ 知道了(清空)", "✓ Got it (Clear)", "✓ 知道了(清空)"),
                         color = palette.keyTextPrimary,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
@@ -269,7 +270,7 @@ fun AskAiCardPanel(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "📋 复制",
+                        text = tr("📋 复制", "📋 Copy", "📋 複製"),
                         color = palette.keyTextPrimary,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
@@ -288,7 +289,7 @@ fun AskAiCardPanel(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "填入输入框 ↵",
+                        text = tr("填入输入框 ↵", "Insert ↵", "填入輸入框 ↵"),
                         color = Color.White,
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.Bold,

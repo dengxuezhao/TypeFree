@@ -37,6 +37,8 @@ import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.LocalAppLanguage
 import com.typefree.ime.ime.candidates.CandidateGridOverlay
 import com.typefree.ime.ime.candidates.CandidateStrip
 import com.typefree.ime.ime.candidates.FloatingPreeditCapsule
@@ -469,7 +471,7 @@ fun KeyboardScreen(
                                     if (uiState.activeInputScheme == InputScheme.RIME_T9_PINYIN && uiState.isFlypyChineseMode) {
                                         BuiltInT9KeyboardHost(uiState, settings.qwertyKeyPopupPreview, onAction, settings.backspaceSwipeUpClearEnabled)
                                     } else BuiltInQwertyKeyboard(
-                                        enterActionInfo = uiState.enterActionInfo,
+                                        enterActionInfo = uiState.resolveEnterActionInfo(LocalAppLanguage.current != AppLang.EN),
                                         isFlypyChineseMode = uiState.isFlypyChineseMode,
                                         flypyComposingCode = uiState.flypyComposingCode,
                                         flypyCandidateCount = uiState.flypyCandidates.size,
@@ -501,6 +503,7 @@ fun KeyboardScreen(
                                         onTriggerKeyGesture = { onAction(ImeUiAction.TriggerKeyGesture(it)) },
                                         fiveKeyBottomRow = fiveKeyBottomRowActive,
                                         keycapBadgeMode = settings.keycapBadgeMode,
+                                        autoCapShift = uiState.englishAutoCapActive,
                                         onSwipeUpPeriodSlash = { onAction(ImeUiAction.SwipeUpPeriodSlash) }
                                     )
 

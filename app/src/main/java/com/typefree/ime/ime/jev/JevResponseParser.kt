@@ -59,13 +59,40 @@ object JevResponseParser {
     )
 
     private val NUMBERED_LINE_REGEX = Regex(
-        """^\s*(?:[1-3][.、)）]|①|②|③|[-•*])\s*(?:[\[【]([^\]】]{1,10})[\]】]\s*[:：]?\s*)?(.+)$"""
+        """^\s*(?:[1-3][.、)）]|①|②|③|[-•*])\s*(?:[\[【]([^\]】]{1,28})[\]】]\s*[:：]?\s*)?(.+)$"""
     )
-    private val BRACKET_PREFIX_REGEX = Regex("""^\s*[\[【]([^\]】]{1,10})[\]】]\s*[:：]?\s*(.+)$""")
+    private val BRACKET_PREFIX_REGEX = Regex("""^\s*[\[【]([^\]】]{1,28})[\]】]\s*[:：]?\s*(.+)$""")
 
     private val DEFAULT_FALLBACK_LABELS = listOf("稳妥顺接", "温和设限", "高维反客")
+    private val DEFAULT_FALLBACK_LABELS_EN = listOf("Smooth Bridge", "Firm Boundary", "Graceful Pivot")
     private val DEFAULT_PROB_3 = listOf(56, 28, 16)
     private val DEFAULT_PROB_2 = listOf(64, 36)
+
+    private fun containsCjk(text: String): Boolean {
+        return text.any { ch ->
+            val code = ch.code
+            code in 0x4E00..0x9FFF || code in 0x3400..0x4DBF || code in 0xF900..0xFAFF
+        }
+    }
+
+    private fun isPureLatinInput(text: String): Boolean {
+        return text.isNotBlank() && !containsCjk(text) && text.any { it in 'a'..'z' || it in 'A'..'Z' }
+    }
+
+    private fun fallbackLabelsFor(text: String): List<String> =
+        if (isPureLatinInput(text)) DEFAULT_FALLBACK_LABELS_EN else DEFAULT_FALLBACK_LABELS
+
+    private fun fallbackSlotLabel(text: String, index: Int): String =
+        if (isPureLatinInput(text)) "Option ${index + 1}" else "策略 ${index + 1}"
+
+    private fun capLabelLength(label: String): String =
+        if (containsCjk(label)) label.take(8) else label.take(28)
+
+    private fun capTagLength(tag: String): String =
+        if (containsCjk(tag)) tag.take(12) else tag.take(36)
+
+    private fun capSubtextLength(subtext: String): String =
+        if (containsCjk(subtext)) subtext.take(96) else subtext.take(220)
 
     fun parse(
         rawModelOutput: String,
@@ -81,18 +108,21 @@ object JevResponseParser {
             ?: parseJsonTier2(cleaned)
             ?: parsePlainTextTier3(cleaned)
 
+        val fbLabels = fallbackLabelsFor(cleaned)
+        val isLatin = isPureLatinInput(cleaned)
         val cleanedOptions = rawResult.options.take(3).mapIndexed { index, opt ->
-            val cleanLabel = opt.label
-                .replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
-                .trim()
-                .removeSurrounding("\"")
-                .removeSurrounding("“", "”")
-                .removeSurrounding("'")
-                .trim()
-                .ifEmpty {
-                    DEFAULT_FALLBACK_LABELS.getOrElse(index) { "策略 ${index + 1}" }
-                }
-                .take(8)
+            val cleanLabel = capLabelLength(
+                opt.label
+                    .replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
+                    .trim()
+                    .removeSurrounding("\"")
+                    .removeSurrounding("“", "”")
+                    .removeSurrounding("'")
+                    .trim()
+                    .ifEmpty {
+                        fbLabels.getOrElse(index) { fallbackSlotLabel(cleaned, index) }
+                    }
+            )
             val cleanReply = cleanOptionText(opt.replyText)
             val restoredReply = if (redactionSession != null) {
                 cleanOptionText(redactionSession.restoreSafePlaceholders(cleanReply))
@@ -114,10 +144,17 @@ object JevResponseParser {
             lockVisualOrder = lockVisualOrder
         )
 
+        val defaultTag = if (isLatin) "Tactical Read" else "局势分析"
+        val defaultSubtext = if (isLatin) {
+            "Decoded conversational dynamics and drafted high-leverage replies."
+        } else {
+            "已结合当前上下文提炼高筹码回复方案"
+        }
+
         return rawResult.copy(
             level = rawResult.level.coerceIn(1, 9),
-            tag = rawResult.tag.replace(RESIDUAL_JEV_XML_TAG_REGEX, "").trim().ifEmpty { "局势分析" }.take(12),
-            subtext = rawResult.subtext.replace(RESIDUAL_JEV_XML_TAG_REGEX, "").trim().ifEmpty { "已结合当前上下文提炼高筹码回复方案" }.take(96),
+            tag = capTagLength(rawResult.tag.replace(RESIDUAL_JEV_XML_TAG_REGEX, "").trim().ifEmpty { defaultTag }),
+            subtext = capSubtextLength(rawResult.subtext.replace(RESIDUAL_JEV_XML_TAG_REGEX, "").trim().ifEmpty { defaultSubtext }),
             options = finalOptions,
             usedVision = usedVision,
             redactionCount = redactionCount
@@ -141,21 +178,25 @@ object JevResponseParser {
             return null
         }
 
+        val isLatin = isPureLatinInput(cleaned)
+        val fbLabels = fallbackLabelsFor(cleaned)
         val level = LV_TAG_REGEX.find(cleaned)?.groupValues?.getOrNull(1)?.toIntOrNull()?.coerceIn(1, 9) ?: 4
-        val tag = TAG_ELEM_REGEX.find(cleaned)?.groupValues?.getOrNull(1)
-            ?.replace("\n", " ")
-            ?.replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
-            ?.trim()
-            .orEmpty()
-            .ifEmpty { "局势分析" }
-            .take(12)
-        val subtext = SUBTEXT_ELEM_REGEX.find(cleaned)?.groupValues?.getOrNull(1)
-            ?.replace("\n", " ")
-            ?.replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
-            ?.trim()
-            .orEmpty()
-            .ifEmpty { "正在拆解对方潜台词与策略..." }
-            .take(96)
+        val tag = capTagLength(
+            TAG_ELEM_REGEX.find(cleaned)?.groupValues?.getOrNull(1)
+                ?.replace("\n", " ")
+                ?.replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
+                ?.trim()
+                .orEmpty()
+                .ifEmpty { if (isLatin) "Tactical Read" else "局势分析" }
+        )
+        val subtext = capSubtextLength(
+            SUBTEXT_ELEM_REGEX.find(cleaned)?.groupValues?.getOrNull(1)
+                ?.replace("\n", " ")
+                ?.replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
+                ?.trim()
+                .orEmpty()
+                .ifEmpty { if (isLatin) "Decoding subtext and drafting replies..." else "正在拆解对方潜台词与策略..." }
+        )
         val routeCode = extractRouteCode(cleaned)
 
         val cleanedOptions = optMatches.take(3).mapIndexedNotNull { idx, m ->
@@ -165,16 +206,17 @@ object JevResponseParser {
 
             val rawLabel = extractLabelFromAttrs(innerAttrs)
                 ?: extractLabelFromAttrs(outerAttrs)
-                ?: DEFAULT_FALLBACK_LABELS.getOrElse(idx) { "策略 ${idx + 1}" }
-            val cleanLabel = rawLabel
-                .replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
-                .trim()
-                .removeSurrounding("\"")
-                .removeSurrounding("“", "”")
-                .removeSurrounding("'")
-                .trim()
-                .ifEmpty { DEFAULT_FALLBACK_LABELS.getOrElse(idx) { "策略 ${idx + 1}" } }
-                .take(8)
+                ?: fbLabels.getOrElse(idx) { fallbackSlotLabel(cleaned, idx) }
+            val cleanLabel = capLabelLength(
+                rawLabel
+                    .replace(RESIDUAL_JEV_XML_TAG_REGEX, "")
+                    .trim()
+                    .removeSurrounding("\"")
+                    .removeSurrounding("“", "”")
+                    .removeSurrounding("'")
+                    .trim()
+                    .ifEmpty { fbLabels.getOrElse(idx) { fallbackSlotLabel(cleaned, idx) } }
+            )
             val prob = extractProbFromAttrs(innerAttrs).takeIf { it > 0 }
                 ?: extractProbFromAttrs(outerAttrs)
             val body = cleanOptionText(m.groupValues[2])

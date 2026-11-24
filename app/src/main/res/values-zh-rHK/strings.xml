@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TypeFree</string>
+    <string name="ime_name">TypeFree (AI 語音與全鍵盤)</string>
+    <string name="ime_subtype_label">AI 智慧語音與全鍵盤</string>
+    <string name="ime_subtype_label_zh_cn">簡體中文與 AI 語音</string>
+    <string name="ime_subtype_label_zh_tw">繁體中文與 AI 語音</string>
+    <string name="ime_subtype_label_en_us">英文 (US) 與 AI 語音</string>
+    <string name="accessibility_service_label">TypeFree 懸浮語音膠囊</string>
+    <string name="accessibility_service_description">用於在輸入框聚焦時按需顯示懸浮語音膠囊，將本機離線或自有 API 潤飾後的文字填入游標處，或在主動點擊軍師時擷取去識別化對話內容。絕不在背景收集螢幕隱私或讀取密碼。</string>
+</resources>

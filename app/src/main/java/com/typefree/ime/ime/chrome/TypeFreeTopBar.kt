@@ -47,6 +47,10 @@ import android.view.HapticFeedbackConstants
 import android.view.inputmethod.EditorInfo
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ToneStyle
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ime.ImeLogic
 import com.typefree.ime.ime.ImeUiState
 import com.typefree.ime.ime.KeyboardTabMode
@@ -98,14 +102,20 @@ object TopBarSlotPolicy {
         hasUndoSnapshot: Boolean,
         hasFreshClipboardBanner: Boolean,
         hasActiveSelection: Boolean,
-        jevCopilotEnabled: Boolean = true
+        jevCopilotEnabled: Boolean = true,
+        lang: AppLang = AppLang.ZH_CN
     ): TopBarLeftSlotState {
+        val penLabel = if (hasActiveSelection) {
+            AppStrings.pick(lang, "改写", "Rewrite", "改寫")
+        } else {
+            AppStrings.pick(lang, "帮写", "Help Write", "幫寫")
+        }
         if (isComposing) {
             return TopBarLeftSlotState(
                 showUndoButton = false,
                 showClipboardQuickPaste = false,
                 showVoicePenPill = false,
-                voicePenLabel = if (hasActiveSelection) "改写" else "帮写",
+                voicePenLabel = penLabel,
                 showJevCopilotPill = false,
                 showClipboardButton = false,
                 showStyleBadge = false,
@@ -120,7 +130,7 @@ object TopBarSlotPolicy {
             showUndoButton = hasUndoSnapshot,
             showClipboardQuickPaste = hasFreshClipboardBanner,
             showVoicePenPill = showVoicePen,
-            voicePenLabel = if (hasActiveSelection) "改写" else "帮写",
+            voicePenLabel = penLabel,
             showJevCopilotPill = showJevPill,
             showClipboardButton = true,
             showStyleBadge = activeTab == KeyboardTabMode.VOICE,
@@ -282,6 +292,7 @@ fun TypeFreeTopBar(
     onStopVoiceDictation: () -> Unit = {}
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val appLang = LocalAppLanguage.current
     val metrics = LocalKeyboardMetrics.current
     val density = LocalDensity.current
     val swipeThresholdPx = with(density) { 42.dp.toPx() }
@@ -299,7 +310,8 @@ fun TypeFreeTopBar(
         uiState.undoSnapshot,
         freshClip,
         uiState.rawSelectedText,
-        settings.jevCopilotEnabled
+        settings.jevCopilotEnabled,
+        appLang
     ) {
         TopBarSlotPolicy.resolveLeftSlots(
             activeTab = uiState.tabMode,
@@ -307,7 +319,8 @@ fun TypeFreeTopBar(
             hasUndoSnapshot = uiState.undoSnapshot != null,
             hasFreshClipboardBanner = freshClip != null,
             hasActiveSelection = uiState.rawSelectedText.isNotBlank(),
-            jevCopilotEnabled = settings.jevCopilotEnabled
+            jevCopilotEnabled = settings.jevCopilotEnabled,
+            lang = appLang
         )
     }
 
@@ -446,12 +459,12 @@ fun TypeFreeTopBar(
                     val incTint = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
                     Icon(
                         imageVector = TypeFreeIcons.IncognitoMask,
-                        contentDescription = "无痕模式",
+                        contentDescription = tr("无痕模式", "Incognito Mode", "無痕模式"),
                         tint = incTint,
                         modifier = Modifier.size(11.dp)
                     )
                     Text(
-                        text = "无痕",
+                        text = tr("无痕", "Incog", "無痕"),
                         color = incTint,
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.Bold,
@@ -462,9 +475,9 @@ fun TypeFreeTopBar(
 
             if (allowInlineBanner && isInPlaceQwertyVoiceActive) {
                 val statusLabel = if (uiState.voicePhase is VoicePhase.Processing) {
-                    "🎙 正在转写上屏…"
+                    tr("🎙 正在转写上屏…", "🎙 Transcribing…", "🎙 正在轉寫上屏…")
                 } else {
-                    "🎙 聆听中 · 松手上屏"
+                    tr("🎙 聆听中 · 松手上屏", "🎙 Listening · Release", "🎙 聆聽中 · 放開上屏")
                 }
                 Box(
                     modifier = Modifier
@@ -493,7 +506,11 @@ fun TypeFreeTopBar(
                         .padding(horizontal = 8.dp, vertical = 3.dp)
                 ) {
                     Text(
-                        text = "✓ 已自动收入词典「$learnedTerm」",
+                        text = tr(
+                            "✓ 已自动收入词典「$learnedTerm」",
+                            "✓ Added \"$learnedTerm\" to dictionary",
+                            "✓ 已自動收入詞典「$learnedTerm」"
+                        ),
                         color = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -581,7 +598,7 @@ fun TypeFreeTopBar(
                                 modifier = Modifier.size(10.5.dp)
                             )
                             Text(
-                                text = "全文",
+                                text = tr("全文", "Full", "全文"),
                                 color = palette.keyTextPrimary,
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.SemiBold,
@@ -631,7 +648,7 @@ fun TypeFreeTopBar(
                                 modifier = Modifier.size(11.dp)
                             )
                             Text(
-                                text = "粘贴「$previewText」",
+                                text = tr("粘贴「$previewText」", "Paste \"$previewText\"", "貼上「$previewText」"),
                                 color = clipTint,
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.Bold,
@@ -659,7 +676,8 @@ fun TypeFreeTopBar(
                 }
             } else if (slotState.showStyleBadge) {
                 // Compact Clickable Scene Style Badge (ONLY in VOICE mode, hidden in QWERTY!)
-                val badgeLabel = ImeLogic.buildCompactStyleBadgeText(activeStyle, isAutoMatched)
+                val localizedStyle = activeStyle.copy(name = AppStrings.toneStyleName(activeStyle, appLang))
+                val badgeLabel = ImeLogic.buildCompactStyleBadgeText(localizedStyle, isAutoMatched)
                 val chevron = if (uiState.isStylePickerExpanded) "▴" else "▾"
                 Row(
                     modifier = Modifier
@@ -753,7 +771,7 @@ fun TypeFreeTopBar(
                 }
 
                 val schemeBadge = if (uiState.isFlypyChineseMode) {
-                    uiState.activeInputScheme.shortBadge
+                    AppStrings.inputSchemeShortBadge(uiState.activeInputScheme, appLang)
                 } else {
                     "EN"
                 }
@@ -769,7 +787,11 @@ fun TypeFreeTopBar(
                     }
                 ) { contentColor ->
                     Text(
-                        text = "$schemeBadge 打字",
+                        text = if (appLang == AppLang.EN) {
+                            if (uiState.isFlypyChineseMode) "$schemeBadge Type" else "ABC"
+                        } else {
+                            "$schemeBadge 打字"
+                        },
                         color = contentColor,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
@@ -859,12 +881,12 @@ fun TopBarAskAiPill(
     ) {
         Icon(
             imageVector = TypeFreeIcons.Search,
-            contentDescription = "问AI",
+            contentDescription = tr("问AI", "Ask AI", "問AI"),
             tint = fgColor,
             modifier = Modifier.size(11.dp)
         )
         Text(
-            text = "问AI",
+            text = tr("问AI", "Ask AI", "問AI"),
             color = fgColor,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
@@ -895,12 +917,12 @@ private fun TopBarJevCopilotPill(
     ) {
         Icon(
             imageVector = TypeFreeIcons.CopilotStar,
-            contentDescription = "军师",
+            contentDescription = tr("军师", "Copilot", "軍師"),
             tint = palette.keyTextPrimary,
             modifier = Modifier.size(11.dp)
         )
         Text(
-            text = "军师",
+            text = tr("军师", "Copilot", "軍師"),
             color = palette.keyTextPrimary,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
@@ -974,12 +996,12 @@ private fun QwertyTopBarHoldVoiceCapsule(
     ) {
         Icon(
             imageVector = TypeFreeIcons.Mic,
-            contentDescription = "轻点切语音 / 按住说上屏",
+            contentDescription = tr("轻点切语音 / 按住说上屏", "Tap for Voice / Hold to dictate", "輕點切語音 / 按住說上屏"),
             tint = fgColor,
             modifier = Modifier.size(12.dp)
         )
         Text(
-            text = if (activeHighlight) "松手上屏" else "语音",
+            text = if (activeHighlight) tr("松手上屏", "Release", "放開上屏") else tr("语音", "Voice", "語音"),
             color = fgColor,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
@@ -1086,6 +1108,7 @@ fun InlineStyleSelectorStrip(
     onOpenStyleRules: () -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val appLang = LocalAppLanguage.current
     val isAutoSelected = settings.selectedManualStyleId == "auto"
 
     Row(
@@ -1097,7 +1120,7 @@ fun InlineStyleSelectorStrip(
         verticalAlignment = Alignment.CenterVertically
     ) {
         StyleChoicePill(
-            text = "自动场景感知",
+            text = tr("自动场景感知", "Auto App-Aware", "自動場景感知"),
             leadingIcon = TypeFreeIcons.Sparkles,
             selected = isAutoSelected,
             onClick = onSelectAutoStyle
@@ -1106,7 +1129,7 @@ fun InlineStyleSelectorStrip(
         settings.styles.forEach { style ->
             val selected = !isAutoSelected && settings.selectedManualStyleId == style.id
             StyleChoicePill(
-                text = "${style.emoji} ${style.name}",
+                text = "${style.emoji} ${AppStrings.toneStyleName(style, appLang)}",
                 selected = selected,
                 onClick = { onSelectManualStyle(style) }
             )
@@ -1123,7 +1146,7 @@ fun InlineStyleSelectorStrip(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = "管理风格 ›",
+                text = tr("管理风格 ›", "Manage Styles ›", "管理風格 ›"),
                 color = palette.keyTextMuted,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Medium

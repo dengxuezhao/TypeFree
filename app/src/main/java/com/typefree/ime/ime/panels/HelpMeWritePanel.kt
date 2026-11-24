@@ -28,6 +28,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.ime.data.AppSettings
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ime.HelpWritePromptPreset
 import com.typefree.ime.ime.ImeLogic
 import com.typefree.ime.ime.ImeUiAction
@@ -247,6 +251,23 @@ object HelpWriteChipFilter {
             base
         }
     }
+    fun presetDisplayLabel(preset: HelpWritePromptPreset, lang: AppLang): String {
+        return when (preset.id) {
+            "genre_seed_note" -> AppStrings.pick(lang, preset.label, "🌱 Social Post", "🌱 種草筆記")
+            "genre_moments" -> AppStrings.pick(lang, preset.label, "✨ Status Caption", "✨ 動態文案")
+            "genre_top_comment" -> AppStrings.pick(lang, preset.label, "💬 Witty Reply", "💬 高讚神評")
+            "genre_group_announcement" -> AppStrings.pick(lang, preset.label, "📢 Group Notice", "📢 群組公告")
+            "genre_leave_request" -> AppStrings.pick(lang, preset.label, "🙏 Polite Request", "🙏 請假/求助")
+            "genre_weekly_recap" -> AppStrings.pick(lang, preset.label, "📝 Weekly Recap", "📝 週報總結")
+            "genre_business_email" -> AppStrings.pick(lang, preset.label, "✉️ Business Email", "✉️ 商務郵件")
+            "transform_expand_note" -> AppStrings.pick(lang, preset.label, "🌱 Expand Draft ⚡", "🌱 擴成種草文 ⚡")
+            "transform_polish" -> AppStrings.pick(lang, preset.label, "✨ Polish", "✨ 潤飾得體")
+            "transform_formal" -> AppStrings.pick(lang, preset.label, "👔 Professional", "👔 職場專業")
+            "transform_concise" -> AppStrings.pick(lang, preset.label, "✂️ Make Concise", "✂️ 精簡短句")
+            "transform_catchy_title" -> AppStrings.pick(lang, preset.label, "🔥 Catchy Headlines", "🔥 生成吸睛標題")
+            else -> preset.label
+        }
+    }
 }
 
 @Composable
@@ -278,6 +299,7 @@ fun HelpMeWritePanel(
     onAction: (ImeUiAction) -> Unit = {}
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val appLang = LocalAppLanguage.current
     val s = LocalKeyboardMetrics.current.elementScale
     val phase = uiState.voicePhase
     val isBusy = phase is VoicePhase.Recording || phase is VoicePhase.Processing
@@ -336,7 +358,11 @@ fun HelpMeWritePanel(
                                 modifier = Modifier.size(11.dp)
                             )
                             Text(
-                                text = "已读草稿 · ${editorDraft.length}字",
+                                text = tr(
+                                    "已读草稿 · ${editorDraft.length}字",
+                                    "Draft · ${editorDraft.length} chars",
+                                    "已讀草稿 · ${editorDraft.length}字"
+                                ),
                                 color = badgeFg,
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.SemiBold,
@@ -358,7 +384,7 @@ fun HelpMeWritePanel(
                         ) {
                             val badgeFg = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
                             Text(
-                                text = "创作优先",
+                                text = tr("创作优先", "Creator Mode", "創作優先"),
                                 color = badgeFg,
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.SemiBold,
@@ -367,7 +393,7 @@ fun HelpMeWritePanel(
                         }
                     } else if (!settings.jevCopilotEnabled) {
                         Text(
-                            text = "Help me write · 帮我写",
+                            text = tr("Help me write · 帮我写", "Help Me Write", "Help me write · 幫我寫"),
                             color = palette.keyTextPrimary,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
@@ -383,7 +409,7 @@ fun HelpMeWritePanel(
                     hasFreshClipboard = uiState.freshClipboardBannerItem != null,
                     onSwitchToQwerty = onSwitchToQwerty,
                     onOpenClipboard = onOpenClipboard,
-                    closeDescription = "关闭帮我写",
+                    closeDescription = tr("关闭帮我写", "Close Help Me Write", "關閉幫我寫"),
                     onClose = onClose
                 )
             }
@@ -417,7 +443,11 @@ fun HelpMeWritePanel(
                             modifier = Modifier.size(12.dp)
                         )
                         Text(
-                            text = "📝 输入框草稿：「${ImeLogic.formatSelectionPreview(editorDraft, 28)}」",
+                            text = tr(
+                                "📝 输入框草稿：「${ImeLogic.formatSelectionPreview(editorDraft, 28)}」",
+                                "📝 Draft: \"${ImeLogic.formatSelectionPreview(editorDraft, 28)}\"",
+                                "📝 輸入框草稿：「${ImeLogic.formatSelectionPreview(editorDraft, 28)}」"
+                            ),
                             color = palette.keyTextPrimary,
                             fontSize = 11.5.sp,
                             maxLines = 1,
@@ -448,7 +478,7 @@ fun HelpMeWritePanel(
                                     .padding(horizontal = 11.dp, vertical = (6f * s).dp)
                             ) {
                                 Text(
-                                    text = preset.label,
+                                    text = HelpWriteChipFilter.presetDisplayLabel(preset, appLang),
                                     color = if (isBusy) palette.keyTextMuted else chipFg,
                                     fontSize = 11.5.sp,
                                     fontWeight = if (isExpand) FontWeight.Bold else FontWeight.Medium
@@ -459,12 +489,21 @@ fun HelpMeWritePanel(
                 }
             } else {
                 // 模式 A — 空框主动创作态：纯粹创作体裁芯片
+                val selectedLabel = selectedPreset?.let { HelpWriteChipFilter.presetDisplayLabel(it, appLang) }
                 Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Text(
-                        text = if (selectedPreset != null) {
-                            "已选「${selectedPreset.label}」· 按住下方麦克风说出要点即可成稿"
+                        text = if (selectedLabel != null) {
+                            tr(
+                                "已选「$selectedLabel」· 按住下方麦克风说出要点即可成稿",
+                                "Selected \"$selectedLabel\" · Hold mic to speak key points",
+                                "已選「$selectedLabel」· 按住下方麥克風說出要點即可成稿"
+                            )
                         } else {
-                            "选择体裁直接口述要点，或先回键盘敲几个关键词："
+                            tr(
+                                "选择体裁直接口述要点，或先回键盘敲几个关键词：",
+                                "Pick a format and speak key points, or type a few keywords first:",
+                                "選擇體裁直接口述要點，或先回鍵盤敲幾個關鍵詞："
+                            )
                         },
                         color = if (selectedPreset != null) {
                             if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
@@ -485,6 +524,7 @@ fun HelpMeWritePanel(
                         genres.forEach { preset ->
                             val isSelected = selectedPreset?.id == preset.id
                             val isRecommend = isSocialContent && preset.id == "genre_seed_note" && selectedPreset == null
+                            val displayLabel = HelpWriteChipFilter.presetDisplayLabel(preset, appLang)
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(14.dp))
@@ -508,7 +548,7 @@ fun HelpMeWritePanel(
                                     .padding(horizontal = 11.dp, vertical = (6f * s).dp)
                             ) {
                                 Text(
-                                    text = if (isSelected) "✓ ${preset.label}" else preset.label,
+                                    text = if (isSelected) "✓ $displayLabel" else displayLabel,
                                     color = when {
                                         isBusy -> palette.keyTextMuted
                                         isSelected -> Color.White
@@ -525,27 +565,28 @@ fun HelpMeWritePanel(
             }
 
             // Bottom-Left Pulsing Circle Button + Prompt Description + Optional `直接生成`
+            val selectedPresetLabel = selectedPreset?.let { HelpWriteChipFilter.presetDisplayLabel(it, appLang) }
             SubPanelVoiceTriggerRow(
                 phase = phase,
                 amplitudeProvider = amplitudeProvider,
                 amplitudes = amplitudes,
                 elapsedMs = elapsedMs,
                 idleTitle = when {
-                    hasDraft -> "按住口述修改要求 · 原地扩写/改写草稿"
-                    selectedPreset != null -> "已选「${selectedPreset.label}」· 按住说出要点即可成稿"
-                    else -> "Describe what to write · 按住口述你想写的内容"
+                    hasDraft -> tr("按住口述修改要求 · 原地扩写/改写草稿", "Hold to speak how to expand or rewrite draft", "按住口述修改要求 · 原地擴寫/改寫草稿")
+                    selectedPresetLabel != null -> tr("已选「$selectedPresetLabel」· 按住说出要点即可成稿", "Selected \"$selectedPresetLabel\" · Hold to speak key points", "已選「$selectedPresetLabel」· 按住說出要點即可成稿")
+                    else -> tr("Describe what to write · 按住口述你想写的内容", "Describe what you want to write", "按住口述你想寫的內容")
                 },
                 idleSubtitle = when {
-                    hasDraft -> "例如：改得更热情点 / 加上具体感谢的话，松手成稿"
-                    selectedPreset != null -> "说具体原因、要求或要点，或点右侧「直接生成」"
-                    else -> "口述你的核心要点，松手一键生成自然成稿"
+                    hasDraft -> tr("例如：改得更热情点 / 加上具体感谢的话，松手成稿", "E.g. make it warmer / add specific action items", "例如：改得更熱情點 / 加上具體感謝的話，放開成稿")
+                    selectedPresetLabel != null -> tr("说具体原因、要求或要点，或点右侧「直接生成」", "Speak details or tap \"Draft Now\" on the right", "說具體原因、要求或要點，或點右側「直接生成」")
+                    else -> tr("口述你的核心要点，松手一键生成自然成稿", "Speak your key points and release to generate clean text", "口述你的核心要點，放開一鍵生成自然成稿")
                 },
                 recordingTitle = when {
-                    hasDraft -> "正在聆听草稿修改要求…"
-                    selectedPreset != null -> "已选「${selectedPreset.label}」· 正在聆听要点"
-                    else -> "Describe what to write · 正在聆听需求"
+                    hasDraft -> tr("正在聆听草稿修改要求…", "Listening for draft instructions…", "正在聆聽草稿修改要求…")
+                    selectedPresetLabel != null -> tr("已选「$selectedPresetLabel」· 正在聆听要点", "Listening for \"$selectedPresetLabel\" points…", "已選「$selectedPresetLabel」· 正在聆聽要點")
+                    else -> tr("Describe what to write · 正在聆听需求", "Listening… Describe what to write", "正在聆聽需求")
                 },
-                directActionLabel = if (selectedPreset != null && !hasDraft) "直接生成" else null,
+                directActionLabel = if (selectedPreset != null && !hasDraft) tr("直接生成", "Draft Now", "直接生成") else null,
                 onDirectActionClick = onDirectGenerate,
                 onStartRecording = onStartRecording,
                 onReleaseRecording = onReleaseRecording,
