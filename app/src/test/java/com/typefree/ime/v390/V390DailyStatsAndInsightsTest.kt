@@ -27,14 +27,6 @@ import com.typefree.ime.ime.TypingController
 import com.typefree.ime.ime.UndoSnapshot
 import com.typefree.ime.ime.VoiceController
 import com.typefree.ime.ime.flypy.FlypyCandidate
-import com.typefree.ime.ime.jev.memory.AxisPreferenceStats
-import com.typefree.ime.ime.jev.memory.BucketStyleProfile
-import com.typefree.ime.ime.jev.memory.FeatureCounter
-import com.typefree.ime.ime.jev.memory.JevAxisGroup
-import com.typefree.ime.ime.jev.memory.RelationPragmaticMapper
-import com.typefree.ime.ime.jev.memory.SessionMemoryRecord
-import com.typefree.ime.ime.jev.memory.StyleFeatureKey
-import com.typefree.ime.ime.jev.memory.TopologyKind
 import com.typefree.ime.ime.predict.PredictionStore
 import com.typefree.ime.network.AiPipelineEngine
 import kotlinx.coroutines.CoroutineScope
@@ -45,8 +37,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -77,7 +67,7 @@ class V390DailyStatsAndInsightsTest {
     }
 
     @Test
-    fun `DailyStatsStore records voice, keyboard, snippet, prediction, Jev, backfills once, flushes, and resets`() {
+    fun `DailyStatsStore records voice, keyboard, snippet, prediction, backfills once, flushes, and resets`() {
         val backend = InMemoryDailyStatsBackend()
         val t1 = utcMillis(2026, 11, 23, hour = 9)
         val t2 = utcMillis(2026, 11, 23, hour = 14)
@@ -138,7 +128,6 @@ class V390DailyStatsAndInsightsTest {
         )
         store.recordSnippetHit(savedChars = 20, nowMs = t2)
         store.recordPredictionHit(savedKeys = 6, nowMs = t2)
-        store.recordJevAdopt(appName = "微信", nowMs = t2)
 
         assertTrue(store.revision.value > initialRev)
         assertTrue(store.flushBlocking(2_000L))
@@ -163,7 +152,6 @@ class V390DailyStatsAndInsightsTest {
         assertEquals(20, day.snippetSavedChars)
         assertEquals(1, day.predictionHits)
         assertEquals(6, day.predictionSavedKeys)
-        assertEquals(1, day.jevAdopts)
         assertEquals(12, day.hourlyKeyChars[9])
         assertTrue(day.hourlyVoiceChars[9] > 0)
         assertTrue(day.hourlyVoiceChars[14] > 0)
@@ -210,7 +198,6 @@ class V390DailyStatsAndInsightsTest {
         store.recordKeyboardCommit(10, "ENGLISH", "微信", now, enabled = false)
         store.recordSnippetHit(15, now, enabled = false)
         store.recordPredictionHit(4, now, enabled = false)
-        store.recordJevAdopt("微信", now, enabled = false)
         assertEquals(rev0, store.revision.value)
         assertTrue(store.listAllRecords().isEmpty())
 
@@ -219,7 +206,6 @@ class V390DailyStatsAndInsightsTest {
         store.recordKeyboardCommit(10, "ENGLISH", "微信", now, incognito = true)
         store.recordSnippetHit(15, now, incognito = true)
         store.recordPredictionHit(4, now, incognito = true)
-        store.recordJevAdopt("微信", now, incognito = true)
         assertEquals(rev0, store.revision.value)
         assertTrue(store.listAllRecords().isEmpty())
 
@@ -242,8 +228,6 @@ class V390DailyStatsAndInsightsTest {
             dailyRecords = emptyList(),
             history = emptyList(),
             settings = AppSettings(),
-            jevSessions = emptyList(),
-            jevBuckets = emptyList(),
             personalBigramCount = 0,
             personalTrigramCount = 0,
             topWordChains = emptyList(),
@@ -266,8 +250,7 @@ class V390DailyStatsAndInsightsTest {
         assertEquals(12, snapshot.monthlyTrend.size)
         assertFalse(snapshot.monthlyTrend[10].isFuture) // November (index 10)
         assertTrue(snapshot.monthlyTrend[11].isFuture) // December (index 11)
-        assertNull(snapshot.jevAxisTendency)
-        assertEquals(6, snapshot.milestones.size)
+        assertEquals(5, snapshot.milestones.size)
         assertTrue(snapshot.milestones.none { it.unlocked })
     }
 
@@ -344,8 +327,6 @@ class V390DailyStatsAndInsightsTest {
             dailyRecords = allDays,
             history = history,
             settings = AppSettings(),
-            jevSessions = emptyList(),
-            jevBuckets = emptyList(),
             personalBigramCount = 0,
             personalTrigramCount = 0,
             topWordChains = emptyList(),
@@ -367,8 +348,6 @@ class V390DailyStatsAndInsightsTest {
             dailyRecords = allDays,
             history = history,
             settings = AppSettings(),
-            jevSessions = emptyList(),
-            jevBuckets = emptyList(),
             personalBigramCount = 0,
             personalTrigramCount = 0,
             topWordChains = emptyList(),
@@ -383,8 +362,6 @@ class V390DailyStatsAndInsightsTest {
             dailyRecords = allDays,
             history = history,
             settings = AppSettings(),
-            jevSessions = emptyList(),
-            jevBuckets = emptyList(),
             personalBigramCount = 0,
             personalTrigramCount = 0,
             topWordChains = emptyList(),
@@ -405,8 +382,6 @@ class V390DailyStatsAndInsightsTest {
             dailyRecords = allDays,
             history = history,
             settings = AppSettings(),
-            jevSessions = emptyList(),
-            jevBuckets = emptyList(),
             personalBigramCount = 0,
             personalTrigramCount = 0,
             topWordChains = emptyList(),
@@ -422,8 +397,6 @@ class V390DailyStatsAndInsightsTest {
             dailyRecords = listOf(DailyStatsRecord(dateKey = 20261123, voiceChars = 500, voiceCount = 3, voiceDurationMs = 0L)),
             history = listOf(HistoryRecord(timestamp = now, polishedText = "x".repeat(500), durationMs = 0L)),
             settings = AppSettings(),
-            jevSessions = emptyList(),
-            jevBuckets = emptyList(),
             personalBigramCount = 0,
             personalTrigramCount = 0,
             topWordChains = emptyList(),
@@ -437,7 +410,7 @@ class V390DailyStatsAndInsightsTest {
     }
 
     @Test
-    fun `InsightsAggregator calculates streak, 56-day heatmap intensities, Jev DNA, axis tendency, and milestones`() {
+    fun `InsightsAggregator calculates streak, 56-day heatmap intensities, and milestones`() {
         val now = utcMillis(2026, 11, 23, hour = 20)
         // Active on Nov 20, 21, 22 (yesterday) — today (Nov 23) not typed yet -> streak should still be 3
         val streakDaysRecords = listOf(
@@ -482,64 +455,6 @@ class V390DailyStatsAndInsightsTest {
             )
         )
 
-        val globalBucket = BucketStyleProfile(
-            bucketKey = RelationPragmaticMapper.GLOBAL_BUCKET_KEY,
-            axisStats = mapOf(
-                JevAxisGroup.TKI_GAME to AxisPreferenceStats(
-                    probs = listOf(0.55, 0.30, 0.15),
-                    sampleCount = 12,
-                    updatedAtMs = now
-                ),
-                JevAxisGroup.GROUP_BYSTANDER to AxisPreferenceStats(
-                    probs = listOf(0.34, 0.33, 0.33),
-                    sampleCount = 3,
-                    updatedAtMs = now
-                )
-            ),
-            featureCounters = mapOf(
-                StyleFeatureKey.DROP_TRAILING_PERIOD to FeatureCounter(
-                    emaValue = 0.86,
-                    opportunityCount = 7,
-                    isActive = true,
-                    updatedAtMs = now
-                ),
-                StyleFeatureKey.STRIP_EMOJI to FeatureCounter(
-                    emaValue = 0.65,
-                    opportunityCount = 2,
-                    isActive = false,
-                    updatedAtMs = now
-                ),
-                StyleFeatureKey.COMPRESS_LENGTH to FeatureCounter(
-                    emaValue = 0.55,
-                    secondaryEma = 18.0,
-                    opportunityCount = 4,
-                    isActive = false,
-                    updatedAtMs = now
-                )
-            )
-        )
-        val privBucket = BucketStyleProfile(
-            bucketKey = "PRIV::close_friend",
-            featureCounters = mapOf(
-                StyleFeatureKey.HONORIFIC_NIN_TO_NI to FeatureCounter(
-                    emaValue = 0.90,
-                    opportunityCount = 4,
-                    isActive = true,
-                    userOverride = true,
-                    updatedAtMs = now
-                )
-            )
-        )
-        val sessions = listOf(
-            SessionMemoryRecord(
-                sessionUid = "s_1",
-                canonicalApp = "wechat",
-                topologyKind = TopologyKind.PRIV,
-                interactionCount = 8,
-                createdAtMs = now - 86_400_000L,
-                lastActiveAtMs = now
-            )
-        )
         val settings = AppSettings(
             dictionary = listOf(
                 DictionaryEntry(term = "TypeFree", source = DictionarySource.MANUAL),
@@ -553,8 +468,6 @@ class V390DailyStatsAndInsightsTest {
             dailyRecords = streakDaysRecords,
             history = emptyList(),
             settings = settings,
-            jevSessions = sessions,
-            jevBuckets = listOf(globalBucket, privBucket),
             personalBigramCount = 18,
             personalTrigramCount = 4,
             topWordChains = listOf("下午 → 开会", "收到 → 谢谢"),
@@ -571,27 +484,6 @@ class V390DailyStatsAndInsightsTest {
         assertEquals(0, nov23Cell.intensityLevel)
         assertEquals("微信", nov22Cell.topAppName)
 
-        // Jev DNA: active rules sorted BEFORE observing rules
-        assertEquals(4, snap.jevDnaItems.size)
-        assertTrue(snap.jevDnaItems[0].isActive)
-        assertTrue(snap.jevDnaItems[1].isActive)
-        assertFalse(snap.jevDnaItems[2].isActive)
-        assertFalse(snap.jevDnaItems[3].isActive)
-        val stripEmojiItem = snap.jevDnaItems.first { it.key == StyleFeatureKey.STRIP_EMOJI }
-        assertEquals(2, stripEmojiItem.currentCount)
-        assertEquals(4, stripEmojiItem.requiredCount)
-        val compressItem = snap.jevDnaItems.first { it.key == StyleFeatureKey.COMPRESS_LENGTH }
-        assertEquals(4, compressItem.currentCount)
-        assertEquals(6, compressItem.requiredCount)
-
-        // Jev Axis tendency selects highest-sample group (TKI_GAME, 12 samples)
-        val axis = snap.jevAxisTendency
-        assertNotNull(axis)
-        assertEquals(JevAxisGroup.TKI_GAME, axis!!.group)
-        assertEquals(12, axis.sampleCount)
-        assertEquals(100, axis.percents.sum())
-        assertEquals(3, axis.labels.size)
-
         // Dict & prediction assets
         assertEquals(2, snap.autoLearnedDictCount)
         assertEquals(3, snap.totalDictCount)
@@ -599,12 +491,12 @@ class V390DailyStatsAndInsightsTest {
         assertEquals(4, snap.personalTrigramCount)
         assertEquals(2, snap.topWordChains.size)
 
-        // All 6 lifetime milestones unlocked with the above totals:
+        // All 5 lifetime milestones unlocked with the above totals:
         // chars = 12300 >= 10000, voice = 102 >= 100, keyChars = 11000 >= 10000,
-        // snippetHits = 35 >= 30, offline = 14 / 18 (78% >= 50%), activeDna = 2 >= 2
-        assertEquals(6, snap.milestones.size)
+        // snippetHits = 35 >= 30, offline = 14 / 18 (78% >= 50%)
+        assertEquals(5, snap.milestones.size)
         assertTrue(
-            "Expected all 6 milestones unlocked, got: ${snap.milestones}",
+            "Expected all 5 milestones unlocked, got: ${snap.milestones}",
             snap.milestones.all { it.unlocked && it.progressPercent == 100 }
         )
     }

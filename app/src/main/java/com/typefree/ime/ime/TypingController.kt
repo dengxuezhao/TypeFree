@@ -62,10 +62,6 @@ interface ImeHostCallbacks {
     fun tryAutoLearnFromRecentEdit()
     fun onDictationCommittedForAutoLearn(fullBufferAfterCommit: String)
     fun clearAutoLearnBaseline()
-    fun onUserDeleteOrCutForJev(remainingTextLengthHint: Int = -1) {}
-    fun onUserUndoForJev() {}
-    fun onExplicitImeSendForJev(currentEditorText: String?) {}
-    fun readClipboardTextForJevNote(): String? = null
     fun currentEditorFieldId(): Int = 0
 
     fun readSelectedTextSafely(): String
@@ -74,7 +70,7 @@ interface ImeHostCallbacks {
     fun readSystemClipboardText(): String
     fun syncSystemClipboardIfNeeded(allowFreshBanner: Boolean)
     fun copyTextToClipboard(text: String) {}
-    fun openJevCopilotFromCommand() {}
+    fun openHelpMeWriteFromCommand() {}
 
     fun archiveWavForHistory(wavFile: File, retention: HistoryRetention): File
     fun getLastRecordingWavFile(): File
@@ -1141,7 +1137,6 @@ class TypingController(
                 ic.deleteSurroundingText(deleteLen, 0)
             }
             host.recordManualEditTouch()
-            host.onUserDeleteOrCutForJev()
         } catch (_: Exception) {
         }
         refreshEnglishWordSuggestions()
@@ -1191,19 +1186,10 @@ class TypingController(
         )
         val actionId = actionInfo.performEditorActionId
         if (actionId != null) {
-            val preSendText = host.stateFlow.value.currentEditorText
             val handled = try {
                 ic.performEditorAction(actionId)
             } catch (_: Exception) {
                 false
-            }
-            if (handled && actionId in setOf(
-                    EditorInfo.IME_ACTION_SEND,
-                    EditorInfo.IME_ACTION_DONE,
-                    EditorInfo.IME_ACTION_GO
-                )
-            ) {
-                host.onExplicitImeSendForJev(preSendText)
             }
             if (!handled) {
                 ic.commitText("\n", 1)
@@ -1227,7 +1213,6 @@ class TypingController(
             EditorShortcutAction.CUT -> {
                 runCatching { ic.performContextMenuAction(android.R.id.cut) }
                 host.recordManualEditTouch()
-                host.onUserDeleteOrCutForJev()
                 host.syncSystemClipboardIfNeeded(allowFreshBanner = true)
                 host.showQuickActionToast(AppStrings.pick(lang, "✓ 已剪切", "✓ Cut", "✓ 已剪下"))
             }

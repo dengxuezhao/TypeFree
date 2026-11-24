@@ -4,14 +4,6 @@ import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.DictionarySource
 import com.typefree.ime.data.HistoryRecord
 import com.typefree.ime.data.VoiceIntentMode
-import com.typefree.ime.ime.jev.memory.AxisPreferenceStats
-import com.typefree.ime.ime.jev.memory.BucketStyleProfile
-import com.typefree.ime.ime.jev.memory.FeatureCounter
-import com.typefree.ime.ime.jev.memory.JevAxisGroup
-import com.typefree.ime.ime.jev.memory.JevPreferenceLearner
-import com.typefree.ime.ime.jev.memory.RelationPragmaticMapper
-import com.typefree.ime.ime.jev.memory.SessionMemoryRecord
-import com.typefree.ime.ime.jev.memory.StyleFeatureKey
 import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
@@ -19,7 +11,7 @@ import kotlin.math.roundToInt
 
 /**
  * Pure Kotlin aggregator building an immutable [InsightsSnapshot] from zero-PII daily rollup
- * records, optional recent history records, local Jev memory summaries, and L2 prediction counts.
+ * records, optional recent history records, and L2 prediction counts.
  */
 object InsightsAggregator {
 
@@ -32,8 +24,6 @@ object InsightsAggregator {
         dailyRecords: List<DailyStatsRecord>,
         history: List<HistoryRecord>,
         settings: AppSettings,
-        jevSessions: List<SessionMemoryRecord>,
-        jevBuckets: List<BucketStyleProfile>,
         personalBigramCount: Int,
         personalTrigramCount: Int,
         topWordChains: List<String>,
@@ -83,16 +73,9 @@ object InsightsAggregator {
         val lifetimeActiveDays = dailyRecords.count { it.hasActivity }
         val activeDaysInRange = rangedDays.count { it.hasActivity }
 
-        val jevSessionCount = jevSessions.size
-        val jevTotalInteractions = maxOf(
-            jevSessions.sumOf { it.interactionCount.coerceAtLeast(0) },
-            dailyRecords.sumOf { it.jevAdopts.coerceAtLeast(0) }
-        )
-
         val isColdStart = lifetimeTotalChars == 0 &&
             lifetimeVoiceCount == 0 &&
-            lifetimeKeyCommits == 0 &&
-            jevTotalInteractions == 0
+            lifetimeKeyCommits == 0
 
         // Measured WPM: strictly from timed voice inputs >= 3s (never fake 220, never inflate with 0ms presets)
         val (hasMeasuredWpm, averageWpm, speedMultiplier) = computeMeasuredWpm(
@@ -154,16 +137,11 @@ object InsightsAggregator {
         val intentShares = buildIntentShares(rangedDays)
         val topAppScenes = buildTopAppScenes(rangedDays)
 
-        val jevDnaItems = buildJevStyleDnaItems(jevBuckets, jevSessions)
-        val jevAxisTendency = buildJevAxisTendency(jevBuckets, jevSessions)
-
         val autoLearnedDictCount = settings.dictionary.count { it.source == DictionarySource.AUTO_LEARNED }
         val totalDictCount = settings.dictionary.size
 
         val milestones = buildMilestones(
-            allDailyRecords = dailyRecords,
-            jevDnaItems = jevDnaItems,
-            jevTotalInteractions = jevTotalInteractions
+            allDailyRecords = dailyRecords
         )
 
         val metaphorLine = buildMetaphorLine(
@@ -209,10 +187,6 @@ object InsightsAggregator {
             snippetSavedChars = snippetSavedChars,
             predictionHits = predictionHits,
             predictionSavedKeys = predictionSavedKeys,
-            jevDnaItems = jevDnaItems,
-            jevAxisTendency = jevAxisTendency,
-            jevSessionCount = jevSessionCount,
-            jevTotalInteractions = jevTotalInteractions,
             autoLearnedDictCount = autoLearnedDictCount,
             totalDictCount = totalDictCount,
             personalBigramCount = personalBigramCount.coerceAtLeast(0),
@@ -641,149 +615,8 @@ object InsightsAggregator {
         }
     }
 
-    private fun buildJevStyleDnaItems(
-        buckets: List<BucketStyleProfile>,
-        sessions: List<SessionMemoryRecord>
-    ): List<JevStyleDnaItem> {
-        val globalBucket = buckets.firstOrNull { it.bucketKey == RelationPragmaticMapper.GLOBAL_BUCKET_KEY }
-        val relationBuckets = buckets.filterNot { it.bucketKey == RelationPragmaticMapper.GLOBAL_BUCKET_KEY }
-        val items = ArrayList<JevStyleDnaItem>()
-
-        for (key in StyleFeatureKey.entries) {
-            val candidates = ArrayList<FeatureCounter>()
-            if (key.allowGlobalScope) {
-                globalBucket?.featureCounters?.get(key)?.let { candidates.add(it) }
-            }
-            for (b in relationBuckets) {
-                b.featureCounters[key]?.let { candidates.add(it) }
-            }
-            for (s in sessions) {
-                s.featureCounters[key]?.let { candidates.add(it) }
-            }
-
-            if (candidates.isEmpty()) continue
-
-            val relevant = candidates.filter { it.userOverride == true || (it.userOverride != false && (it.isActive || it.opportunityCount > 0)) }
-            if (relevant.isEmpty()) continue
-
-            val best = relevant.maxWithOrNull(
-                compareBy<FeatureCounter> { it.userOverride == true }
-                    .thenBy { it.effectiveActive }
-                    .thenBy { it.opportunityCount }
-                    .thenBy {
-                        if (key == StyleFeatureKey.COMPRESS_LENGTH) {
-                            1.0 - it.emaValue
-                        } else {
-                            it.emaValue
-                        }
-                    }
-            ) ?: continue
-
-            val required = requiredOpportunitiesFor(key)
-            val isManual = best.userOverride == true
-            val isActive = best.effectiveActive
-            val emaPct = when {
-                isManual && best.opportunityCount == 0 -> 100
-                key == StyleFeatureKey.COMPRESS_LENGTH ->
-                    ((1.0 - best.emaValue).coerceIn(0.0, 1.0) * 100.0).roundToInt()
-                else -> (best.emaValue.coerceIn(0.0, 1.0) * 100.0).roundToInt()
-            }
-            val ruleText = JevPreferenceLearner.formatRuleText(key, best)
-            val explanation = when {
-                isManual ->
-                    "你已手动锁定此项语体习惯：$ruleText，Jev 军师生成回复时将始终遵循。"
-                isActive ->
-                    "已在 ${best.opportunityCount} 次真实采纳中稳定识别到你的表达偏好（置信度 $emaPct%），Jev 军师会自动应用「$ruleText」。"
-                else ->
-                    "端侧正在安静观察你的改稿倾向（已累计 ${best.opportunityCount}/$required 次样本），稳定后将自动生效。"
-            }
-
-            items.add(
-                JevStyleDnaItem(
-                    key = key,
-                    title = key.displayTitle,
-                    isActive = isActive,
-                    isManualOverride = isManual,
-                    currentCount = best.opportunityCount.coerceAtLeast(0),
-                    requiredCount = required,
-                    emaPercent = emaPct.coerceIn(0, 100),
-                    explanation = explanation
-                )
-            )
-        }
-
-        return items.sortedWith(
-            compareByDescending<JevStyleDnaItem> { it.isActive }
-                .thenByDescending { it.isManualOverride }
-                .thenByDescending { it.currentCount.toFloat() / it.requiredCount.coerceAtLeast(1).toFloat() }
-                .thenByDescending { it.currentCount }
-        )
-    }
-
-    private fun buildJevAxisTendency(
-        buckets: List<BucketStyleProfile>,
-        sessions: List<SessionMemoryRecord>
-    ): JevAxisTendencySummary? {
-        val globalBucket = buckets.firstOrNull { it.bucketKey == RelationPragmaticMapper.GLOBAL_BUCKET_KEY }
-        val globalHasSamples = globalBucket?.axisStats?.values?.any { it.sampleCount > 0 } == true
-
-        val aggregated: Map<JevAxisGroup, AxisPreferenceStats> = when {
-            globalHasSamples -> globalBucket!!.axisStats.mapValues { it.value.sanitized() }
-            buckets.any { b -> b.axisStats.values.any { it.sampleCount > 0 } } ->
-                aggregateAxisStats(buckets.map { it.axisStats })
-            else ->
-                aggregateAxisStats(sessions.map { it.axisStats })
-        }
-
-        val bestEntry = aggregated.entries
-            .filter { it.value.sampleCount > 0 }
-            .maxByOrNull { it.value.sampleCount }
-            ?: return null
-
-        val group = bestEntry.key
-        val stats = bestEntry.value.sanitized()
-        val percents = JevPreferenceLearner.normalizeToIntPercentages(stats.probs)
-        return JevAxisTendencySummary(
-            group = group,
-            groupTitle = axisGroupTitle(group),
-            sampleCount = stats.sampleCount,
-            labels = group.axisLabels,
-            percents = percents
-        )
-    }
-
-    private fun aggregateAxisStats(
-        maps: List<Map<JevAxisGroup, AxisPreferenceStats>>
-    ): Map<JevAxisGroup, AxisPreferenceStats> {
-        val result = LinkedHashMap<JevAxisGroup, AxisPreferenceStats>()
-        for (group in JevAxisGroup.entries) {
-            var totalSamples = 0
-            var latestUpdated = 0L
-            val weighted = DoubleArray(3)
-            for (m in maps) {
-                val s = m[group]?.sanitized() ?: continue
-                if (s.sampleCount <= 0) continue
-                totalSamples += s.sampleCount
-                latestUpdated = maxOf(latestUpdated, s.updatedAtMs)
-                for (i in 0..2) {
-                    weighted[i] += s.probs[i] * s.sampleCount
-                }
-            }
-            if (totalSamples > 0) {
-                result[group] = AxisPreferenceStats(
-                    probs = List(3) { i -> weighted[i] / totalSamples.toDouble() },
-                    sampleCount = totalSamples,
-                    updatedAtMs = latestUpdated
-                ).sanitized()
-            }
-        }
-        return result
-    }
-
     private fun buildMilestones(
-        allDailyRecords: List<DailyStatsRecord>,
-        jevDnaItems: List<JevStyleDnaItem>,
-        jevTotalInteractions: Int
+        allDailyRecords: List<DailyStatsRecord>
     ): List<MilestoneItem> {
         val lifetimeChars = allDailyRecords.sumOf { it.totalChars.coerceAtLeast(0) }
         val lifetimeVoiceCount = allDailyRecords.sumOf { it.voiceCount.coerceAtLeast(0) }
@@ -797,7 +630,6 @@ object InsightsAggregator {
         } else {
             0
         }
-        val activeDnaCount = jevDnaItems.count { it.isActive }
 
         val charsUnlocked = lifetimeChars >= 10_000
         val charsTitle = if (lifetimeChars >= 100_000) "十万字表达" else "万字表达"
@@ -829,16 +661,6 @@ object InsightsAggregator {
             val countPct = ((lifetimeOffline * 100) / 10).coerceIn(0, 100)
             val sharePct = if (lifetimeOffline > 0) ((lifetimeOfflinePct * 100) / 50).coerceIn(0, 100) else 0
             minOf(countPct, sharePct).coerceIn(0, 99)
-        }
-
-        val jevUnlocked = activeDnaCount >= 2 || jevTotalInteractions >= 5
-        val jevPctProgress = if (jevUnlocked) {
-            100
-        } else {
-            maxOf(
-                (activeDnaCount * 100) / 2,
-                (jevTotalInteractions * 100) / 5
-            ).coerceIn(0, 99)
         }
 
         return listOf(
@@ -894,19 +716,6 @@ object InsightsAggregator {
                 } else {
                     "$lifetimeOffline/10 次 · 占比 $lifetimeOfflinePct%"
                 }
-            ),
-            MilestoneItem(
-                id = "jev_partner",
-                glyph = "✦",
-                title = "军师默契派",
-                description = "习得 2 条语体习惯或采纳军师 5 次",
-                unlocked = jevUnlocked,
-                progressPercent = jevPctProgress,
-                progressText = if (jevUnlocked) {
-                    "已达成 · $activeDnaCount 条习惯 / $jevTotalInteractions 次采纳"
-                } else {
-                    "$activeDnaCount/2 习惯 · $jevTotalInteractions/5 采纳"
-                }
             )
         )
     }
@@ -954,28 +763,6 @@ object InsightsAggregator {
         val h1 = hour.coerceIn(0, 23)
         val h2 = (h1 + 1) % 24
         return String.format(Locale.US, "%02d:00-%02d:00", h1, h2)
-    }
-
-    internal fun requiredOpportunitiesFor(key: StyleFeatureKey): Int {
-        return when (key) {
-            StyleFeatureKey.DROP_TRAILING_PERIOD -> 5
-            StyleFeatureKey.DAMPEN_EXCLAMATION_TILDE -> 5
-            StyleFeatureKey.STRIP_EMOJI -> 4
-            StyleFeatureKey.HONORIFIC_NIN_TO_NI -> 3
-            StyleFeatureKey.HONORIFIC_NI_TO_NIN -> 3
-            StyleFeatureKey.TRIM_MODAL_PARTICLE -> 5
-            StyleFeatureKey.TRIM_POLITE_PREFIX -> 5
-            StyleFeatureKey.COMPRESS_LENGTH -> 6
-        }
-    }
-
-    private fun axisGroupTitle(group: JevAxisGroup): String {
-        return when (group) {
-            JevAxisGroup.PEER_TECH -> "技术与同频探讨"
-            JevAxisGroup.TKI_GAME -> "沟通博弈策略"
-            JevAxisGroup.GROUP_BYSTANDER -> "群聊旁观互动"
-            JevAxisGroup.BOTTOM_LINE_LOCKED -> "底牌锁定表达"
-        }
     }
 
     internal fun classifySceneCategory(appName: String): String {
@@ -1049,7 +836,6 @@ object InsightsAggregator {
             snippetSavedChars = a.snippetSavedChars + b.snippetSavedChars,
             predictionHits = a.predictionHits + b.predictionHits,
             predictionSavedKeys = a.predictionSavedKeys + b.predictionSavedKeys,
-            jevAdopts = a.jevAdopts + b.jevAdopts,
             hourlyVoiceChars = List(24) { h ->
                 a.hourlyVoiceChars.getOrElse(h) { 0 } + b.hourlyVoiceChars.getOrElse(h) { 0 }
             },

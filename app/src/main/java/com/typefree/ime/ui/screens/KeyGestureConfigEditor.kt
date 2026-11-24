@@ -59,6 +59,10 @@ import androidx.compose.ui.unit.sp
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.KeycapBadgeMode
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ime.EditorShortcutAction
 import com.typefree.ime.ime.KeyGestureActionType
 import com.typefree.ime.ime.KeyGestureBinding
@@ -73,6 +77,15 @@ enum class KeyGestureActionKind(val title: String) {
     REPEAT_LAST("重复上屏"),
     EDITOR_SHORTCUT("编辑快捷操作"),
     NONE("禁用");
+
+    fun titleFor(lang: AppLang): String = when (this) {
+        COMMIT_TEXT -> AppStrings.pick(lang, "单符号 / 文本", "Symbol / Text", "單符號 / 文字")
+        COMMIT_PAIRED -> AppStrings.pick(lang, "成对居中符号", "Paired Brackets", "成對置中符號")
+        UNDO_LAST -> AppStrings.pick(lang, "撤回上屏", "Undo Commit", "復原上屏")
+        REPEAT_LAST -> AppStrings.pick(lang, "重复上屏", "Repeat Last", "重複上屏")
+        EDITOR_SHORTCUT -> AppStrings.pick(lang, "编辑快捷操作", "Edit Shortcut", "編輯快捷操作")
+        NONE -> AppStrings.pick(lang, "禁用", "Disabled", "停用")
+    }
 
     fun toCoreType(): KeyGestureActionType = when (this) {
         COMMIT_TEXT -> KeyGestureActionType.COMMIT_TEXT
@@ -99,7 +112,14 @@ enum class EditorShortcutOption(val wireName: String, val label: String) {
     SELECT_ALL("SELECT_ALL", "全选"),
     CUT("CUT", "剪切"),
     COPY("COPY", "复制"),
-    PASTE("PASTE", "粘贴")
+    PASTE("PASTE", "粘贴");
+
+    fun labelFor(lang: AppLang): String = when (this) {
+        SELECT_ALL -> AppStrings.pick(lang, "全选", "Select All", "全選")
+        CUT -> AppStrings.pick(lang, "剪切", "Cut", "剪下")
+        COPY -> AppStrings.pick(lang, "复制", "Copy", "複製")
+        PASTE -> AppStrings.pick(lang, "粘贴", "Paste", "貼上")
+    }
 }
 
 data class KeyGestureBindingSpec(
@@ -196,6 +216,29 @@ object KeyGestureConfigCodec {
     }
 }
 
+private fun localizedPreviewKeycapBadge(spec: KeyGestureBindingSpec, lang: AppLang): String {
+    if (spec.type == KeyGestureActionKind.NONE) return "—"
+    if (spec.type == KeyGestureActionKind.EDITOR_SHORTCUT) {
+        return when (spec.editorShortcut?.uppercase()) {
+            "SELECT_ALL" -> AppStrings.pick(lang, "全", "All", "全")
+            "CUT" -> AppStrings.pick(lang, "剪", "Cut", "剪")
+            "COPY" -> AppStrings.pick(lang, "复", "Cpy", "複")
+            "PASTE" -> AppStrings.pick(lang, "粘", "Pst", "貼")
+            else -> spec.compactKeycapBadge()
+        }
+    }
+    return when (val raw = spec.compactKeycapBadge()) {
+        "全" -> AppStrings.pick(lang, "全", "All", "全")
+        "剪" -> AppStrings.pick(lang, "剪", "Cut", "剪")
+        "复" -> AppStrings.pick(lang, "复", "Cpy", "複")
+        "粘" -> AppStrings.pick(lang, "粘", "Pst", "貼")
+        "撤回" -> AppStrings.pick(lang, "撤回", "Undo", "復原")
+        "重复" -> AppStrings.pick(lang, "重复", "Redo", "重複")
+        "全角" -> AppStrings.pick(lang, "全角", "FW", "全形")
+        else -> raw
+    }
+}
+
 @Composable
 fun KeyGestureCustomizerCard(
     repository: AppRepository,
@@ -203,6 +246,7 @@ fun KeyGestureCustomizerCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val appLang = LocalAppLanguage.current
     val profile = remember(settings.customKeyGesturesJson) {
         KeyGestureConfigCodec.fromJsonOrDefault(settings.customKeyGesturesJson)
     }
@@ -238,7 +282,7 @@ fun KeyGestureCustomizerCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "26 键上滑 / 长按自定义",
+                            text = tr("26 键上滑 / 长按自定义", "26-Key Swipe-Up & Long-Press", "26 鍵上滑 / 長按自訂"),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -248,7 +292,7 @@ fun KeyGestureCustomizerCard(
                                 color = TypeFreeEmerald.copy(alpha = 0.14f)
                             ) {
                                 Text(
-                                    text = "已自定义",
+                                    text = tr("已自定义", "Custom", "已自訂"),
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = TypeFreeEmerald,
@@ -258,7 +302,11 @@ fun KeyGestureCustomizerCard(
                         }
                     }
                     Text(
-                        text = "点击下方任意键帽可分别设置「上滑动作（默认快符）」与「长按动作（默认数字/副功能/编辑）」",
+                        text = tr(
+                            "点击下方任意键帽可分别设置「上滑动作（默认快符）」与「长按动作（默认数字/副功能/编辑）」",
+                            "Tap any keycap below to customize its Swipe-Up (quick symbols) and Long-Press (digits, shortcuts, edit) actions",
+                            "點擊下方任意鍵帽可分別設定「上滑動作（預設快符）」與「長按動作（預設數字/副功能/編輯）」"
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -268,7 +316,16 @@ fun KeyGestureCustomizerCard(
                     TextButton(
                         onClick = {
                             repository.updateSettings { it.copy(customKeyGesturesJson = "") }
-                            Toast.makeText(context, "已恢复 26 键默认上滑与长按手势", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(
+                                context,
+                                AppStrings.pick(
+                                    appLang,
+                                    "已恢复 26 键默认上滑与长按手势",
+                                    "Restored default 26-key swipe & long-press gestures",
+                                    "已恢復 26 鍵預設上滑與長按手勢"
+                                ),
+                                Toast.LENGTH_SHORT
+                            ).show()
                         },
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                     ) {
@@ -278,7 +335,7 @@ fun KeyGestureCustomizerCard(
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("恢复默认", style = MaterialTheme.typography.labelMedium)
+                        Text(tr("恢复默认", "Reset", "恢復預設"), style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
@@ -286,7 +343,7 @@ fun KeyGestureCustomizerCard(
             // Keycap badge display mode selector (Swipe-up / Long-press / Hidden)
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = "键盘键帽顶部角标",
+                    text = tr("键盘键帽顶部角标", "Keycap Top Badges", "鍵盤鍵帽頂部角標"),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -302,7 +359,14 @@ fun KeyGestureCustomizerCard(
                             onClick = {
                                 repository.updateSettings { it.copy(keycapBadgeMode = mode) }
                             },
-                            label = { Text(mode.label, fontSize = 12.sp, maxLines = 1) },
+                            label = {
+                                Text(
+                                    text = AppStrings.keycapBadgeModeLabel(mode, appLang),
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
                             modifier = Modifier.weight(1f),
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = MaterialTheme.colorScheme.primary,
@@ -312,7 +376,11 @@ fun KeyGestureCustomizerCard(
                     }
                 }
                 Text(
-                    text = "选择「隐藏角标」可切换极简纯字母键帽（字母自动居中复原），所有上滑与长按手势仍可正常触发",
+                    text = tr(
+                        "选择「隐藏角标」可切换极简纯字母键帽（字母自动居中复原），所有上滑与长按手势仍可正常触发",
+                        "Choose \"Hide Badges\" for clean centered letter keycaps while keeping all swipe-up and long-press gestures active",
+                        "選擇「隱藏角標」可切換極簡純字母鍵帽（字母自動置中復原），所有上滑與長按手勢仍可正常觸發"
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -325,13 +393,13 @@ fun KeyGestureCustomizerCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "顶部：↑ 上滑",
+                    text = tr("顶部：↑ 上滑", "Top: ↑ Swipe Up", "頂部：↑ 上滑"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = "底部：⏱ 长按",
+                    text = tr("底部：⏱ 长按", "Bottom: ⏱ Long Press", "底部：⏱ 長按"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -400,7 +468,7 @@ fun KeyGestureCustomizerCard(
                                             verticalArrangement = Arrangement.SpaceBetween
                                         ) {
                                             Text(
-                                                text = swipeSpec.compactKeycapBadge(),
+                                                text = localizedPreviewKeycapBadge(swipeSpec, appLang),
                                                 fontSize = 8.sp,
                                                 lineHeight = 9.sp,
                                                 color = MaterialTheme.colorScheme.primary,
@@ -416,7 +484,7 @@ fun KeyGestureCustomizerCard(
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = longSpec.compactKeycapBadge(),
+                                                text = localizedPreviewKeycapBadge(longSpec, appLang),
                                                 fontSize = 8.sp,
                                                 lineHeight = 9.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -461,7 +529,16 @@ fun KeyGestureCustomizerCard(
                 }
                 repository.updateSettings { it.copy(customKeyGesturesJson = newJson) }
                 editingKey = null
-                Toast.makeText(context, "已保存 ${keyChar.uppercaseChar()} 键手势设置", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    AppStrings.pick(
+                        appLang,
+                        "已保存 ${keyChar.uppercaseChar()} 键手势设置",
+                        "Saved gestures for key ${keyChar.uppercaseChar()}",
+                        "已儲存 ${keyChar.uppercaseChar()} 鍵手勢設定"
+                    ),
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         )
     }
@@ -478,7 +555,8 @@ private fun KeyGestureBindingDialog(
     onDismiss: () -> Unit,
     onSave: (KeyGestureBindingSpec, KeyGestureBindingSpec) -> Unit
 ) {
-    var gestureTab by rememberSaveable(keyChar) { mutableIntStateOf(0) } // 0 = 上滑, 1 = 长按
+    val appLang = LocalAppLanguage.current
+    var gestureTab by rememberSaveable(keyChar) { mutableIntStateOf(0) } // 0 = Swipe-Up, 1 = Long-Press
 
     var swipeKind by rememberSaveable(keyChar) { mutableStateOf(initialSwipe.type) }
     var swipeText by rememberSaveable(keyChar) { mutableStateOf(initialSwipe.text) }
@@ -547,7 +625,14 @@ private fun KeyGestureBindingDialog(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("自定义 ${keyChar.uppercaseChar()} 键手势")
+                Text(
+                    text = tr(
+                        "自定义 ${keyChar.uppercaseChar()} 键手势",
+                        "Key ${keyChar.uppercaseChar()} Gestures",
+                        "自訂 ${keyChar.uppercaseChar()} 鍵手勢"
+                    ),
+                    modifier = Modifier.weight(1f, fill = false)
+                )
                 TextButton(
                     onClick = {
                         swipeKind = defaultSwipe.type
@@ -563,7 +648,10 @@ private fun KeyGestureBindingDialog(
                         longShortcut = defaultLong.editorShortcut ?: EditorShortcutOption.SELECT_ALL.wireName
                     }
                 ) {
-                    Text("恢复该键默认", style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        tr("恢复该键默认", "Reset Key", "恢復該鍵預設"),
+                        style = MaterialTheme.typography.labelMedium
+                    )
                 }
             }
         },
@@ -586,13 +674,13 @@ private fun KeyGestureBindingDialog(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         StudioSubTabPill(
-                            title = "↑ 上滑动作",
+                            title = tr("↑ 上滑动作", "↑ Swipe Up", "↑ 上滑動作"),
                             selected = gestureTab == 0,
                             onClick = { gestureTab = 0 },
                             modifier = Modifier.weight(1f)
                         )
                         StudioSubTabPill(
-                            title = "⏱ 长按动作",
+                            title = tr("⏱ 长按动作", "⏱ Long Press", "⏱ 長按動作"),
                             selected = gestureTab == 1,
                             onClick = { gestureTab = 1 },
                             modifier = Modifier.weight(1f)
@@ -623,7 +711,7 @@ private fun KeyGestureBindingDialog(
                 }
 
                 Text(
-                    text = "动作类型",
+                    text = tr("动作类型", "Action Type", "動作類型"),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -637,7 +725,7 @@ private fun KeyGestureBindingDialog(
                         FilterChip(
                             selected = activeKind == kind,
                             onClick = { setKind(kind) },
-                            label = { Text(kind.title, fontSize = 12.sp) },
+                            label = { Text(kind.titleFor(appLang), fontSize = 12.sp) },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                                 selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -656,18 +744,29 @@ private fun KeyGestureBindingDialog(
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
-                            label = { Text("输出符号或文本") },
-                            placeholder = { Text("如：：“、→、#、@") }
+                            label = { Text(tr("输出符号或文本", "Symbol or Text", "輸出符號或文字")) },
+                            placeholder = { Text(tr("如：：“、→、#、@", "e.g. ->, #, @, “…", "如：：“、→、#、@")) }
+                        )
+                        val presetChips = listOf(
+                            Triple("Tab", "\t", "Tab"),
+                            Triple(
+                                tr("全角空格", "Full-Width Space", "全形空白"),
+                                "\u3000",
+                                tr("全角", "FW", "全形")
+                            ),
+                            Triple("……", "……", "……"),
+                            Triple("——", "——", "——"),
+                            Triple("→", "→", "→")
                         )
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            listOf("Tab" to "\t", "全角空格" to "\u3000", "……" to "……", "——" to "——", "→" to "→").forEach { (presetLbl, presetVal) ->
+                            presetChips.forEach { (presetLbl, presetVal, defaultBadge) ->
                                 OutlinedButton(
                                     onClick = {
                                         setText(presetVal)
-                                        setLabel(presetLbl.take(2))
+                                        setLabel(defaultBadge.take(4))
                                     },
                                     shape = RoundedCornerShape(8.dp),
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
@@ -682,7 +781,15 @@ private fun KeyGestureBindingDialog(
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
-                            label = { Text("键帽角标（选填，最多 4 字）") }
+                            label = {
+                                Text(
+                                    tr(
+                                        "键帽角标（选填，最多 4 字）",
+                                        "Keycap Badge (optional, max 4 chars)",
+                                        "鍵帽角標（選填，最多 4 字）"
+                                    )
+                                )
+                            }
                         )
                     }
                     KeyGestureActionKind.COMMIT_PAIRED -> {
@@ -696,8 +803,8 @@ private fun KeyGestureBindingDialog(
                                 modifier = Modifier.weight(1f),
                                 singleLine = true,
                                 shape = RoundedCornerShape(10.dp),
-                                label = { Text("左符号") },
-                                placeholder = { Text("如 「") }
+                                label = { Text(tr("左符号", "Left", "左符號")) },
+                                placeholder = { Text(tr("如 「", "e.g. [", "如 「")) }
                             )
                             OutlinedTextField(
                                 value = activeRight,
@@ -705,8 +812,8 @@ private fun KeyGestureBindingDialog(
                                 modifier = Modifier.weight(1f),
                                 singleLine = true,
                                 shape = RoundedCornerShape(10.dp),
-                                label = { Text("右符号") },
-                                placeholder = { Text("如 」") }
+                                label = { Text(tr("右符号", "Right", "右符號")) },
+                                placeholder = { Text(tr("如 」", "e.g. ]", "如 」")) }
                             )
                         }
                         OutlinedTextField(
@@ -715,7 +822,7 @@ private fun KeyGestureBindingDialog(
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
-                            label = { Text("键帽角标（选填）") }
+                            label = { Text(tr("键帽角标（选填）", "Keycap Badge (optional)", "鍵帽角標（選填）")) }
                         )
                     }
                     KeyGestureActionKind.EDITOR_SHORTCUT -> {
@@ -728,30 +835,49 @@ private fun KeyGestureBindingDialog(
                                     selected = activeShortcut == opt.wireName,
                                     onClick = {
                                         setShortcut(opt.wireName)
-                                        setLabel(opt.label.take(1))
+                                        setLabel(
+                                            when (opt) {
+                                                EditorShortcutOption.SELECT_ALL -> AppStrings.pick(appLang, "全", "All", "全")
+                                                EditorShortcutOption.CUT -> AppStrings.pick(appLang, "剪", "Cut", "剪")
+                                                EditorShortcutOption.COPY -> AppStrings.pick(appLang, "复", "Cpy", "複")
+                                                EditorShortcutOption.PASTE -> AppStrings.pick(appLang, "粘", "Pst", "貼")
+                                            }
+                                        )
                                     },
-                                    label = { Text(opt.label) }
+                                    label = { Text(opt.labelFor(appLang)) }
                                 )
                             }
                         }
                     }
                     KeyGestureActionKind.UNDO_LAST -> {
                         Text(
-                            text = "触发后撤回最近一次上屏内容。",
+                            text = tr(
+                                "触发后撤回最近一次上屏内容。",
+                                "Reverts the most recently committed text when triggered.",
+                                "觸發後復原最近一次上屏內容。"
+                            ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     KeyGestureActionKind.REPEAT_LAST -> {
                         Text(
-                            text = "触发后重复输入上一次已上屏的文字。",
+                            text = tr(
+                                "触发后重复输入上一次已上屏的文字。",
+                                "Commits the previously entered text again when triggered.",
+                                "觸發後重複輸入上一次已上屏的文字。"
+                            ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     KeyGestureActionKind.NONE -> {
                         Text(
-                            text = "已禁用该按键的此手势触发。",
+                            text = tr(
+                                "已禁用该按键的此手势触发。",
+                                "This gesture is disabled for this key.",
+                                "已停用該按鍵的此手勢觸發。"
+                            ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -767,12 +893,12 @@ private fun KeyGestureBindingDialog(
                     onSave(finalSwipe, finalLong)
                 }
             ) {
-                Text("保存")
+                Text(tr("保存", "Save", "儲存"))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消")
+                Text(tr("取消", "Cancel", "取消"))
             }
         }
     )

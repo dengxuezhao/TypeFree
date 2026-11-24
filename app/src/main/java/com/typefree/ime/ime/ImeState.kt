@@ -2,7 +2,6 @@ package com.typefree.ime.ime
 
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
-import com.typefree.ime.bubble.CapturedChatContext
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ClipboardEntry
 import com.typefree.ime.data.DefaultPresets
@@ -11,10 +10,6 @@ import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.flypy.FlypyCandidate
-import com.typefree.ime.ime.jev.JevCopilotResult
-import com.typefree.ime.ime.jev.memory.GroupSceneTag
-import com.typefree.ime.ime.jev.memory.PrivateRelationTag
-import com.typefree.ime.ime.jev.memory.SessionMemoryRecord
 import com.typefree.ime.network.PipelineStage
 import java.util.Locale
 import kotlin.math.abs
@@ -54,7 +49,6 @@ enum class VoiceSubPanel {
     NONE,
     HELP_ME_WRITE,
     SPEAK_TO_EDIT,
-    JEV_COPILOT,
     ASK_AI_CARD
 }
 
@@ -164,29 +158,8 @@ data class ImeUiState(
     val activeHeightLevel: Int = KeyboardMetrics.DEFAULT_LEVEL,
     val activeHeightMode: KeyboardHeightMode = KeyboardHeightMode.LIFT,
     val activeLiftLevel: Int = KeyboardMetrics.DEFAULT_LIFT_LEVEL,
-    val capturedChatContext: CapturedChatContext = CapturedChatContext(),
-    val ignoreChatContextForThisTurn: Boolean = false,
-    val showChatContextDisclosurePrompt: Boolean = false,
     val selectedHelpWritePreset: HelpWritePromptPreset? = null,
     val bigBangClipboardItem: ClipboardEntry? = null,
-    val jevCopilotResult: JevCopilotResult? = null,
-    val isJevLoading: Boolean = false,
-    val isJevThinking: Boolean = false,
-    val jevErrorMessage: String? = null,
-    val selectedJevStrategyIndex: Int = -1,
-    val jevUserBottomLine: String = "",
-    val jevExcludedReplies: List<String> = emptyList(),
-    val isFullScreenPeekCapturing: Boolean = false,
-    val isJevContextInspectorOpen: Boolean = false,
-    val isJevRelationOverlayOpen: Boolean = false,
-    val jevActiveSessionUid: String? = null,
-    val jevIsEphemeralSession: Boolean = false,
-    val jevPrivateRelationTag: PrivateRelationTag = PrivateRelationTag.UNSET,
-    val jevGroupSceneTag: GroupSceneTag = GroupSceneTag.UNSET,
-    val jevCustomRelationNote: String = "",
-    val jevRecentReusableSessions: List<SessionMemoryRecord> = emptyList(),
-    val jevMemoryBypassedByPrivacy: Boolean = false,
-    val jevAutoRelinkedNotice: String? = null,
     val currentEditorText: String = "",
     val askAiQuery: String = "",
     val askAiAnswer: String = "",
@@ -194,14 +167,6 @@ data class ImeUiState(
     val askAiErrorMessage: String? = null,
     val askAiFromSelection: Boolean = false
 ) {
-    val hasActiveChatContext: Boolean
-        get() = capturedChatContext.hasContext && !ignoreChatContextForThisTurn && !isIncognitoMode
-
-    val effectiveChatContextMessages: List<String>
-        get() = if (hasActiveChatContext) capturedChatContext.formattedMessages else emptyList()
-
-    val effectiveChatScreenshotBase64: String
-        get() = if (hasActiveChatContext) capturedChatContext.screenshotJpegBase64 else ""
     val isFlypyComposing: Boolean
         get() = tabMode == KeyboardTabMode.QWERTY &&
             isFlypyChineseMode &&
@@ -253,7 +218,6 @@ data class ImeUiState(
 
     val resolvedVoiceSubPanel: VoiceSubPanel
         get() = when {
-            voiceSubPanel == VoiceSubPanel.JEV_COPILOT -> VoiceSubPanel.JEV_COPILOT
             voiceSubPanel == VoiceSubPanel.ASK_AI_CARD -> VoiceSubPanel.ASK_AI_CARD
             isSpeakToEditActive -> VoiceSubPanel.SPEAK_TO_EDIT
             voiceSubPanel == VoiceSubPanel.SPEAK_TO_EDIT -> VoiceSubPanel.NONE
@@ -606,11 +570,6 @@ object ImeLogic {
                     PipelineStage.POLISHING_LLM -> "2/2 AI drafting..."
                     PipelineStage.MULTIMODAL_PROCESSING -> "AI drafting..."
                 }
-                VoiceIntentMode.JEV_COPILOT -> when (stage) {
-                    PipelineStage.TRANSCRIBING_STT -> "1/2 Hearing intent..."
-                    PipelineStage.POLISHING_LLM -> "2/2 Crafting replies..."
-                    PipelineStage.MULTIMODAL_PROCESSING -> "Crafting replies..."
-                }
                 VoiceIntentMode.TRANSLATE -> {
                     val lang = targetLanguage.ifBlank { "target language" }
                     when (stage) {
@@ -628,11 +587,6 @@ object ImeLogic {
                 PipelineStage.TRANSCRIBING_STT -> "1/2 识别写作需求中..."
                 PipelineStage.POLISHING_LLM -> "2/2 AI 正在起草..."
                 PipelineStage.MULTIMODAL_PROCESSING -> "多模态起草中..."
-            }
-            VoiceIntentMode.JEV_COPILOT -> when (stage) {
-                PipelineStage.TRANSCRIBING_STT -> "1/2 识别军师底牌中..."
-                PipelineStage.POLISHING_LLM -> "2/2 军师正在推演三策..."
-                PipelineStage.MULTIMODAL_PROCESSING -> "多模态推演三策中..."
             }
             VoiceIntentMode.TRANSLATE -> {
                 val lang = targetLanguage.ifBlank { "目标语言" }

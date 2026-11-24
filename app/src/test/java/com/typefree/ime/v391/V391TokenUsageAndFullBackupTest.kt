@@ -29,7 +29,6 @@ import com.typefree.ime.data.stats.StatsTimeRange
 import com.typefree.ime.data.stats.TokenFeatureKeys
 import com.typefree.ime.data.stats.TokenUsage
 import com.typefree.ime.data.stats.TrigramBackupItem
-import com.typefree.ime.ime.jev.JevDomainProfile
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.ui.screens.ApiConfigBackupHelper
 import kotlinx.coroutines.runBlocking
@@ -228,7 +227,7 @@ class V391TokenUsageAndFullBackupTest {
                         .build()
                 } else {
                     val sse = """
-                        data: {"choices":[{"delta":{"content":"<lv>2</lv><tag>友好协商</tag><subtext>对方正常沟通</subtext><opt label=\"直接回应\">好的，下午三点见。</opt><opt label=\"温和确认\">收到，三点我准时到。</opt><opt label=\"轻松接话\">没问题，一会见！</opt>"}}]}
+                        data: {"choices":[{"delta":{"content":"好的，下午三点见。"}}]}
                         data: [DONE]
                     """.trimIndent()
                     Response.Builder()
@@ -253,23 +252,24 @@ class V391TokenUsageAndFullBackupTest {
                 thinkingMode = ThinkingMode.DISABLED
             )
         )
-        val res = engine.runJevCopilot(
+        val streamedChunks = mutableListOf<String>()
+        val res = engine.runAskAiCardQuery(
             settings = settings,
-            activeStyle = DefaultPresets.defaultStyles().first(),
+            query = "下午三点聊一下方案？",
             targetAppName = "微信",
-            domainProfile = JevDomainProfile.IM_CHAT,
-            chatContextMessages = listOf("对方: 下午三点聊一下方案？"),
-            onPartialResult = {}
+            onStreamingTextUpdate = { streamedChunks.add(it) }
         )
         assertTrue(res.isSuccess)
         assertEquals(2, capturedBodies.size)
         assertTrue(capturedBodies[0].contains("include_usage"))
         assertFalse(capturedBodies[1].contains("stream_options"))
-        val jevResult = res.getOrThrow().first
-        assertNotNull(jevResult.tokenUsage)
-        assertTrue(jevResult.tokenUsage!!.isEstimated)
-        assertTrue(jevResult.tokenUsage!!.totalTokens > 0L)
-        assertEquals("custom-proxy-chat", jevResult.modelName)
+        val askAiResult = res.getOrThrow()
+        assertEquals("好的，下午三点见。", askAiResult.finalOutput)
+        assertTrue(streamedChunks.isNotEmpty())
+        assertNotNull(askAiResult.tokenUsage)
+        assertTrue(askAiResult.tokenUsage!!.isEstimated)
+        assertTrue(askAiResult.tokenUsage!!.totalTokens > 0L)
+        assertEquals("custom-proxy-chat", askAiResult.modelName)
     }
 
     @Test
@@ -376,7 +376,7 @@ class V391TokenUsageAndFullBackupTest {
         store.recordTokenUsage(
             usage = TokenUsage(promptTokens = 500L, cachedTokens = 0L, completionTokens = 150L, reasoningTokens = 0L, isEstimated = true),
             modelName = "gemini-3.5-flash-lite",
-            featureKey = TokenFeatureKeys.JEV_COPILOT,
+            featureKey = TokenFeatureKeys.HELP_ME_WRITE,
             nowMs = nowMs
         )
         // Incognito MUST short-circuit cleanly
@@ -605,6 +605,5 @@ class V391TokenUsageAndFullBackupTest {
         assertEquals("qwen-turbo-latest", outcome.settings.llmConfig.model)
         assertEquals("sk-legacy-key", outcome.settings.llmConfig.apiKey)
         assertFalse(outcome.mergeSummary.hasExtendedData)
-        assertNull(outcome.memorySummary)
     }
 }

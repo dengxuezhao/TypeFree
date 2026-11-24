@@ -121,18 +121,18 @@ class V310UiArchitectureAndFilterTest {
     }
 
     @Test
-    fun imeUiAction_supportsUnifiedDispatchAndReservedJevCopilotAction() {
+    fun imeUiAction_supportsUnifiedDispatch() {
         val actions: List<ImeUiAction> = listOf(
             ImeUiAction.StartVoiceRecording,
             ImeUiAction.StopVoiceRecording,
             ImeUiAction.CancelVoiceRecording,
             ImeUiAction.TriggerUndo,
             ImeUiAction.OpenHelpMeWrite,
+            ImeUiAction.OpenAskAiCard,
             ImeUiAction.ToggleWhisperMode,
-            ImeUiAction.SelectTab(KeyboardTabMode.QWERTY),
-            ImeUiAction.OpenJevCopilot
+            ImeUiAction.SelectTab(KeyboardTabMode.QWERTY)
         )
-        assertTrue(actions.contains(ImeUiAction.OpenJevCopilot))
+        assertTrue(actions.contains(ImeUiAction.OpenAskAiCard))
         val selectQwerty = actions.filterIsInstance<ImeUiAction.SelectTab>().first()
         assertEquals(KeyboardTabMode.QWERTY, selectQwerty.tab)
     }

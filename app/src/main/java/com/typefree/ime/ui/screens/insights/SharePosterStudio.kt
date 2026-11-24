@@ -194,7 +194,7 @@ private fun localizedPosterPresetLabel(preset: SharePosterPreset, lang: AppLang)
         SharePosterPreset.EFFICIENCY -> AppStrings.pick(lang, "效率战报", "Efficiency", "效率戰報")
         SharePosterPreset.ANNUAL -> AppStrings.pick(lang, "年度手账", "Annual", "年度手賬")
         SharePosterPreset.KEYBOARD -> AppStrings.pick(lang, "键盘战报", "Keyboard", "鍵盤戰報")
-        SharePosterPreset.PERSONA -> AppStrings.pick(lang, "沟通人格", "Persona", "溝通人格")
+        SharePosterPreset.SCENES -> AppStrings.pick(lang, "场景分布", "Scenes", "場景分佈")
     }
 }
 
@@ -206,7 +206,6 @@ private fun localizedPosterModuleChip(module: SharePosterModule, lang: AppLang):
         SharePosterModule.HEATMAP -> AppStrings.pick(lang, "热力足迹", "Heatmap", "熱力足跡")
         SharePosterModule.MONTHLY_TREND -> AppStrings.pick(lang, "月度走势", "12M Trend", "月度走勢")
         SharePosterModule.RHYTHM_24H -> AppStrings.pick(lang, "24h 节律", "24h Rhythm", "24h 節律")
-        SharePosterModule.JEV_DNA -> AppStrings.pick(lang, "沟通 DNA", "Style DNA", "溝通 DNA")
         SharePosterModule.SCENES -> AppStrings.pick(lang, "场景分布", "Top Scenes", "場景分佈")
         SharePosterModule.MILESTONES -> AppStrings.pick(lang, "离线印记", "Milestones", "離線印記")
     }
@@ -811,7 +810,6 @@ fun SharePosterCard(
                     SharePosterModule.HEATMAP -> PosterHeatmapModule(snapshot, palette)
                     SharePosterModule.MONTHLY_TREND -> PosterMonthlyTrendModule(snapshot, palette)
                     SharePosterModule.RHYTHM_24H -> PosterRhythm24hModule(snapshot, palette)
-                    SharePosterModule.JEV_DNA -> PosterJevDnaModule(snapshot, palette)
                     SharePosterModule.SCENES -> PosterScenesModule(snapshot, palette, hideAppNames)
                     SharePosterModule.MILESTONES -> PosterMilestonesModule(snapshot, palette)
                 }
@@ -1427,126 +1425,6 @@ private fun PosterRhythm24hModule(
                         fontSize = 9.sp,
                         color = palette.textSecondary
                     )
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun PosterJevDnaModule(
-    snapshot: InsightsSnapshot,
-    palette: PosterPalette
-) {
-    val appLang = LocalAppLanguage.current
-    PosterSectionCard(palette) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = tr("✦ Jev 沟通语体 DNA", "✦ Jev Style DNA", "✦ Jev 溝通語體 DNA"),
-                    fontSize = 11.5.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = palette.textSecondary
-                )
-                if (snapshot.jevTotalInteractions > 0) {
-                    Text(
-                        text = tr(
-                            "${snapshot.jevTotalInteractions} 次互动沉淀",
-                            "${snapshot.jevTotalInteractions} interactions",
-                            "${snapshot.jevTotalInteractions} 次互動沉澱"
-                        ),
-                        fontSize = 10.5.sp,
-                        color = palette.accent
-                    )
-                }
-            }
-
-            if (snapshot.jevDnaItems.isEmpty()) {
-                Text(
-                    text = tr("端侧语体模型观察积累中", "Learning your style DNA locally…", "端側語體模型觀察累積中"),
-                    fontSize = 11.5.sp,
-                    color = palette.textSecondary
-                )
-            } else {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    snapshot.jevDnaItems.take(5).forEach { dna ->
-                        val badgeColor = if (dna.isActive) palette.accent else palette.amberAccent
-                        val dnaTitle = localizedDnaTitle(dna.key, appLang)
-                        Box(
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .background(badgeColor.copy(alpha = 0.16f))
-                                .border(0.6.dp, badgeColor.copy(alpha = 0.45f), CircleShape)
-                                .padding(horizontal = 9.dp, vertical = 4.dp)
-                        ) {
-                            Text(
-                                text = if (dna.isActive) {
-                                    "✓ $dnaTitle"
-                                } else {
-                                    tr("$dnaTitle · 观察中", "$dnaTitle · Learning", "$dnaTitle · 觀察中")
-                                },
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = palette.textPrimary
-                            )
-                        }
-                    }
-                }
-            }
-
-            snapshot.jevAxisTendency?.let { tendency ->
-                val labels = localizedAxisLabels(tendency.group, appLang)
-                val count = minOf(labels.size, tendency.percents.size)
-                if (count > 0) {
-                    val segColors = listOf(palette.accent, palette.keyBar, palette.amberAccent)
-                    val total = (0 until count).sumOf { tendency.percents[it].coerceAtLeast(0) }
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Canvas(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(7.dp)
-                        ) {
-                            val r = CornerRadius(size.height / 2f, size.height / 2f)
-                            val gap = 2.dp.toPx()
-                            val usable = (size.width - gap * (count - 1)).coerceAtLeast(1f)
-                            var x = 0f
-                            for (i in 0 until count) {
-                                val pct = tendency.percents[i].coerceAtLeast(0)
-                                val frac = if (total > 0) pct.toFloat() / total.toFloat() else 1f / count
-                                val w = if (i == count - 1) (size.width - x).coerceAtLeast(0f) else usable * frac
-                                if (w > 1f) {
-                                    drawRoundRect(
-                                        color = segColors[i % segColors.size],
-                                        topLeft = Offset(x, 0f),
-                                        size = Size(w, size.height),
-                                        cornerRadius = r
-                                    )
-                                    x += w + gap
-                                }
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            for (i in 0 until count) {
-                                Text(
-                                    text = "${labels[i]} ${tendency.percents[i]}%",
-                                    fontSize = 10.sp,
-                                    color = palette.textSecondary,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                    }
                 }
             }
         }

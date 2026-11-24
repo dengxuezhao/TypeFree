@@ -74,10 +74,15 @@ import com.typefree.core.ime.importer.SubDictToggleManager
 import com.typefree.core.ime.overlay.OverlaySymbolEntry
 import com.typefree.core.ime.overlay.SymbolTrie
 import com.typefree.core.ime.profile.SchemaProfile
+import com.typefree.ime.BuildConfig
 import com.typefree.ime.TypeFreeApp
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.InputScheme
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ime.engine.PresetSchemaCatalog
 import com.typefree.ime.ime.engine.RimeDataManager
 import com.typefree.ime.ime.engine.RimeDeploymentState
@@ -103,7 +108,7 @@ fun CodetableAdvancedManagementCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    val appLang = LocalAppLanguage.current
     val rimeDataManager = remember { TypeFreeApp.instance.rimeDataManager }
     val metadataVersion by rimeDataManager.metadataVersion.collectAsState()
     val schemaId = activeProfile.schemaId.ifBlank { "flypy" }
@@ -116,6 +121,12 @@ fun CodetableAdvancedManagementCard(
     var phrasesExpanded by rememberSaveable { mutableStateOf(true) }
     var subDictsExpanded by rememberSaveable { mutableStateOf(false) }
     var shadowExpanded by rememberSaveable { mutableStateOf(false) }
+
+    val profileTitle = localizedActiveProfileName(
+        schemaId = schemaId,
+        rawDisplayName = activeProfile.displayName,
+        lang = appLang
+    )
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -155,17 +166,21 @@ fun CodetableAdvancedManagementCard(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = "码表进阶管理",
+                                text = tr("码表进阶管理", "Advanced Codetable", "碼表進階管理"),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                             CodetableBadgePill(
-                                text = "${activeProfile.displayName} ($schemaId)",
+                                text = "$profileTitle ($schemaId)",
                                 highlight = true
                             )
                         }
                         Text(
-                            text = "方案一键安装、置顶/自造词、子词库与阴影规则",
+                            text = tr(
+                                "方案一键安装、置顶/自造词、子词库与阴影规则",
+                                "One-tap preset schemas, pinned/user phrases, sub-dicts & pin/block rules",
+                                "方案一鍵安裝、置頂/自造詞、子詞庫與陰影規則"
+                            ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -177,7 +192,11 @@ fun CodetableAdvancedManagementCard(
                     } else {
                         Icons.Default.KeyboardArrowDown
                     },
-                    contentDescription = if (cardExpanded) "收起" else "展开",
+                    contentDescription = if (cardExpanded) {
+                        tr("收起", "Collapse", "收起")
+                    } else {
+                        tr("展开", "Expand", "展開")
+                    },
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -217,7 +236,7 @@ fun CodetableAdvancedManagementCard(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Close,
-                                contentDescription = "关闭提示",
+                                contentDescription = tr("关闭提示", "Dismiss", "關閉提示"),
                                 modifier = Modifier.size(14.dp)
                             )
                         }
@@ -229,10 +248,14 @@ fun CodetableAdvancedManagementCard(
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
 
-                    // 1. 内置开源码表方案一键安装
+                    // 1. Built-in open-source codetable presets
                     ExpandableCodetableSubsection(
-                        title = "内置开源码表方案一键安装",
-                        badge = "${PresetSchemaCatalog.BUILT_IN_PRESETS.size} 套",
+                        title = tr("内置开源码表方案一键安装", "Built-in Open Schemas", "內建開源碼表方案一鍵安裝"),
+                        badge = tr(
+                            "${PresetSchemaCatalog.BUILT_IN_PRESETS.size} 套",
+                            "${PresetSchemaCatalog.BUILT_IN_PRESETS.size} packs",
+                            "${PresetSchemaCatalog.BUILT_IN_PRESETS.size} 套"
+                        ),
                         expanded = presetsExpanded,
                         onToggle = { presetsExpanded = !presetsExpanded }
                     ) {
@@ -245,9 +268,13 @@ fun CodetableAdvancedManagementCard(
                         )
                     }
 
-                    // 2. 自造词与置顶词管理 (_top / _user)
+                    // 2. User & pinned phrases (_top / _user)
                     ExpandableCodetableSubsection(
-                        title = "自造词与置顶词管理 (_top / _user)",
+                        title = tr(
+                            "自造词与置顶词管理 (_top / _user)",
+                            "Pinned & User Phrases (_top / _user)",
+                            "自造詞與置頂詞管理 (_top / _user)"
+                        ),
                         badge = schemaId,
                         expanded = phrasesExpanded,
                         onToggle = { phrasesExpanded = !phrasesExpanded }
@@ -263,9 +290,13 @@ fun CodetableAdvancedManagementCard(
                         )
                     }
 
-                    // 3. 分类子词库与扩展词库 (flypy_full / ext/)
+                    // 3. Sub-dictionaries & ext/ lexicons
                     ExpandableCodetableSubsection(
-                        title = "分类子词库与扩展词库 (ext/)",
+                        title = tr(
+                            "分类子词库与扩展词库 (ext/)",
+                            "Sub-Dictionaries & Extensions (ext/)",
+                            "分類子詞庫與擴充詞庫 (ext/)"
+                        ),
                         badge = "Layer +1",
                         expanded = subDictsExpanded,
                         onToggle = { subDictsExpanded = !subDictsExpanded }
@@ -281,10 +312,14 @@ fun CodetableAdvancedManagementCard(
                         )
                     }
 
-                    // 4. 明暗调频 / 屏蔽规则 (shadow.yaml)
+                    // 4. Shadow pin/block rules (shadow.yaml)
                     ExpandableCodetableSubsection(
-                        title = "明暗调频 / 屏蔽规则 (shadow.yaml)",
-                        badge = "置顶/屏蔽",
+                        title = tr(
+                            "明暗调频 / 屏蔽规则 (shadow.yaml)",
+                            "Pin & Block Rules (shadow.yaml)",
+                            "置頂 / 封鎖規則 (shadow.yaml)"
+                        ),
+                        badge = tr("置顶/屏蔽", "Pin/Block", "置頂/封鎖"),
                         expanded = shadowExpanded,
                         onToggle = { shadowExpanded = !shadowExpanded }
                     ) {
@@ -340,7 +375,10 @@ private fun ExpandableCodetableSubsection(
                     Text(
                         text = title,
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f, fill = false),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     CodetableBadgePill(text = badge, highlight = false)
                 }
@@ -350,7 +388,11 @@ private fun ExpandableCodetableSubsection(
                     } else {
                         Icons.Default.KeyboardArrowDown
                     },
-                    contentDescription = if (expanded) "收起" else "展开",
+                    contentDescription = if (expanded) {
+                        tr("收起", "Collapse", "收起")
+                    } else {
+                        tr("展开", "Expand", "展開")
+                    },
                     modifier = Modifier.size(18.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -425,17 +467,25 @@ fun BuiltInPresetSchemasCard(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = "内置开源码表方案一键安装",
+                                text = tr("内置开源码表方案一键安装", "Built-in Open Codetables", "內建開源碼表方案一鍵安裝"),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                             CodetableBadgePill(
-                                text = "${PresetSchemaCatalog.BUILT_IN_PRESETS.size} 套",
+                                text = tr(
+                                    "${PresetSchemaCatalog.BUILT_IN_PRESETS.size} 套",
+                                    "${PresetSchemaCatalog.BUILT_IN_PRESETS.size} packs",
+                                    "${PresetSchemaCatalog.BUILT_IN_PRESETS.size} 套"
+                                ),
                                 highlight = true
                             )
                         }
                         Text(
-                            text = "虎码 / 五笔 86 / 星空键道 6，安装后自动切换启用",
+                            text = tr(
+                                "虎码 / 五笔 86 / 星空键道 6，安装后自动切换启用",
+                                "One-tap install for Tiger Code, Wubi 86 & XKJD 6; activates automatically",
+                                "虎碼 / 五筆 86 / 星空鍵道 6，安裝後自動切換啟用"
+                            ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -447,7 +497,11 @@ fun BuiltInPresetSchemasCard(
                     } else {
                         Icons.Default.KeyboardArrowDown
                     },
-                    contentDescription = if (cardExpanded) "收起" else "展开",
+                    contentDescription = if (cardExpanded) {
+                        tr("收起", "Collapse", "收起")
+                    } else {
+                        tr("展开", "Expand", "展開")
+                    },
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -487,7 +541,7 @@ fun BuiltInPresetSchemasCard(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Close,
-                                contentDescription = "关闭提示",
+                                contentDescription = tr("关闭提示", "Dismiss", "關閉提示"),
                                 modifier = Modifier.size(14.dp)
                             )
                         }
@@ -520,6 +574,7 @@ private fun PresetSchemaInstallSection(
     isBusy: Boolean,
     onFeedback: (Boolean, String) -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
     val metadataVersion by rimeDataManager.metadataVersion.collectAsState()
     val installedIds = remember(metadataVersion) {
@@ -531,6 +586,13 @@ private fun PresetSchemaInstallSection(
         PresetSchemaCatalog.BUILT_IN_PRESETS.forEach { preset ->
             val isInstallingThis = installingId == preset.id
             val isInstalled = preset.id in installedIds
+            val (localizedTitle, localizedArchetype, localizedDesc) = localizedPresetInfo(preset, appLang)
+            val localizedLicense = if (preset.license.contains("官方码表")) {
+                AppStrings.pick(appLang, preset.license, "Official Table (2026.08)", "官方碼表 (2026.08.15)")
+            } else {
+                preset.license
+            }
+
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
@@ -559,20 +621,20 @@ private fun PresetSchemaInstallSection(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Text(
-                                    text = preset.displayName,
+                                    text = localizedTitle,
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Bold
                                 )
                                 if (isInstalled) {
-                                    CodetableBadgePill(text = "已安装", highlight = true)
+                                    CodetableBadgePill(text = tr("已安装", "Installed", "已安裝"), highlight = true)
                                 }
                             }
                             FlowRow(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                CodetableBadgePill(text = preset.license, highlight = false)
-                                CodetableBadgePill(text = preset.archetypeLabel, highlight = true)
+                                CodetableBadgePill(text = localizedLicense, highlight = false)
+                                CodetableBadgePill(text = localizedArchetype, highlight = true)
                             }
                         }
 
@@ -581,16 +643,32 @@ private fun PresetSchemaInstallSection(
                                 installingId = preset.id
                                 scope.launch {
                                     try {
-                                        val result = withContext(Dispatchers.IO) {
+                                        withContext(Dispatchers.IO) {
                                             rimeDataManager.installPresetSchema(context, preset.assetPath)
                                         }
                                         TypeFreeApp.instance.rimeInputEngine.setInputScheme(InputScheme.RIME_CUSTOM)
                                         repository.updateSettings { it.copy(inputScheme = InputScheme.RIME_CUSTOM) }
-                                        val label = result.displayName.ifBlank { preset.displayName }
-                                        onFeedback(true, "✓ 已安装并切换至「$label」")
-                                        Toast.makeText(context, "✓ 已安装并部署「$label」", Toast.LENGTH_LONG).show()
+                                        val okBanner = AppStrings.pick(
+                                            appLang,
+                                            "✓ 已安装并切换至「$localizedTitle」",
+                                            "✓ Installed & activated \"$localizedTitle\"",
+                                            "✓ 已安裝並切換至「$localizedTitle」"
+                                        )
+                                        val okToast = AppStrings.pick(
+                                            appLang,
+                                            "✓ 已安装并部署「$localizedTitle」",
+                                            "✓ Installed & deployed \"$localizedTitle\"",
+                                            "✓ 已安裝並部署「$localizedTitle」"
+                                        )
+                                        onFeedback(true, okBanner)
+                                        Toast.makeText(context, okToast, Toast.LENGTH_LONG).show()
                                     } catch (e: Exception) {
-                                        val errMsg = "安装「${preset.displayName}」失败: ${e.message ?: "未知错误"}"
+                                        val errMsg = AppStrings.pick(
+                                            appLang,
+                                            "安装「$localizedTitle」失败: ${e.message ?: "未知错误"}",
+                                            "Failed to install \"$localizedTitle\": ${e.message ?: "Unknown error"}",
+                                            "安裝「$localizedTitle」失敗: ${e.message ?: "未知錯誤"}"
+                                        )
                                         onFeedback(false, errMsg)
                                         Toast.makeText(context, errMsg, Toast.LENGTH_LONG).show()
                                     } finally {
@@ -608,10 +686,14 @@ private fun PresetSchemaInstallSection(
                                     strokeWidth = 2.dp
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("安装中", style = MaterialTheme.typography.labelMedium)
+                                Text(tr("安装中", "Installing", "安裝中"), style = MaterialTheme.typography.labelMedium)
                             } else {
                                 Text(
-                                    text = if (isInstalled) "重新安装" else "一键安装",
+                                    text = if (isInstalled) {
+                                        tr("重新安装", "Reinstall", "重新安裝")
+                                    } else {
+                                        tr("一键安装", "Install", "一鍵安裝")
+                                    },
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -620,7 +702,7 @@ private fun PresetSchemaInstallSection(
                     }
 
                     Text(
-                        text = preset.description,
+                        text = localizedDesc,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 17.sp
@@ -648,6 +730,7 @@ private fun UserPhraseEditorSection(
     isBusy: Boolean,
     onFeedback: (Boolean, String) -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
     var selectedTab by rememberSaveable { mutableIntStateOf(0) } // 0 = _top.txt, 1 = _user.txt
     val isTopPinned = selectedTab == 0
@@ -707,13 +790,13 @@ private fun UserPhraseEditorSection(
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 CodetableSegmentTab(
-                    title = "置顶词 (${schemaId}_top.txt)",
+                    title = tr("置顶词 (${schemaId}_top.txt)", "Pinned (_top.txt)", "置頂詞 (${schemaId}_top.txt)"),
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
                     modifier = Modifier.weight(1f)
                 )
                 CodetableSegmentTab(
-                    title = "自造词 (${schemaId}_user.txt)",
+                    title = tr("自造词 (${schemaId}_user.txt)", "User (_user.txt)", "自造詞 (${schemaId}_user.txt)"),
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
                     modifier = Modifier.weight(1f)
@@ -734,10 +817,18 @@ private fun UserPhraseEditorSection(
             Spacer(modifier = Modifier.width(6.dp))
             Text(
                 text = when {
-                    isTopPinned && isXiaoheSchema -> "添加置顶词条（支持自动算小鹤 4 码）"
-                    isTopPinned -> "添加置顶词条"
-                    isXiaoheSchema -> "添加自造词条（支持自动算小鹤 4 码）"
-                    else -> "添加自造词条"
+                    isTopPinned && isXiaoheSchema -> tr(
+                        "添加置顶词条（支持自动算小鹤 4 码）",
+                        "Add Pinned Phrase (Auto Flypy 4-Code)",
+                        "新增置頂詞條（支援自動算小鶴 4 碼）"
+                    )
+                    isTopPinned -> tr("添加置顶词条", "Add Pinned Phrase", "新增置頂詞條")
+                    isXiaoheSchema -> tr(
+                        "添加自造词条（支持自动算小鹤 4 码）",
+                        "Add User Phrase (Auto Flypy 4-Code)",
+                        "新增自造詞條（支援自動算小鶴 4 碼）"
+                    )
+                    else -> tr("添加自造词条", "Add User Phrase", "新增自造詞條")
                 },
                 fontWeight = FontWeight.Bold
             )
@@ -745,7 +836,11 @@ private fun UserPhraseEditorSection(
 
         if (entries.isEmpty()) {
             Text(
-                text = if (isTopPinned) "暂无置顶词记录" else "暂无自造词记录",
+                text = if (isTopPinned) {
+                    tr("暂无置顶词记录", "No pinned phrases yet", "尚無置頂詞記錄")
+                } else {
+                    tr("暂无自造词记录", "No user phrases yet", "尚無自造詞記錄")
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 4.dp)
@@ -789,7 +884,15 @@ private fun UserPhraseEditorSection(
                                         }
                                         if (removed) {
                                             reloadList()
-                                            onFeedback(true, "已删除「${item.word}」，重新部署后生效")
+                                            onFeedback(
+                                                true,
+                                                AppStrings.pick(
+                                                    appLang,
+                                                    "已删除「${item.word}」，重新部署后生效",
+                                                    "Removed \"${item.word}\" · Redeploy to apply",
+                                                    "已刪除「${item.word}」，重新部署後生效"
+                                                )
+                                            )
                                         }
                                     }
                                 },
@@ -797,7 +900,7 @@ private fun UserPhraseEditorSection(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Delete,
-                                    contentDescription = "删除词条",
+                                    contentDescription = tr("删除词条", "Delete phrase", "刪除詞條"),
                                     tint = MaterialTheme.colorScheme.error,
                                     modifier = Modifier.size(16.dp)
                                 )
@@ -817,13 +920,46 @@ private fun UserPhraseEditorSection(
                             rimeDataManager.reloadActiveEnhancedSchema(schemaId)
                         }
                         if (resultState is RimeDeploymentState.Error) {
-                            onFeedback(false, "重新部署失败: ${resultState.message}")
+                            onFeedback(
+                                false,
+                                AppStrings.pick(
+                                    appLang,
+                                    "重新部署失败: ${resultState.message}",
+                                    "Redeploy failed: ${resultState.message}",
+                                    "重新部署失敗: ${resultState.message}"
+                                )
+                            )
                         } else {
-                            onFeedback(true, "✓ 已重新部署「$schemaId」")
-                            Toast.makeText(context, "✓ 词库已重新部署生效", Toast.LENGTH_SHORT).show()
+                            onFeedback(
+                                true,
+                                AppStrings.pick(
+                                    appLang,
+                                    "✓ 已重新部署「$schemaId」",
+                                    "✓ Redeployed \"$schemaId\"",
+                                    "✓ 已重新部署「$schemaId」"
+                                )
+                            )
+                            Toast.makeText(
+                                context,
+                                AppStrings.pick(
+                                    appLang,
+                                    "✓ 词库已重新部署生效",
+                                    "✓ Lexicon redeployed",
+                                    "✓ 詞庫已重新部署生效"
+                                ),
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
                     } catch (e: Exception) {
-                        onFeedback(false, "重新部署失败: ${e.message ?: "未知错误"}")
+                        onFeedback(
+                            false,
+                            AppStrings.pick(
+                                appLang,
+                                "重新部署失败: ${e.message ?: "未知错误"}",
+                                "Redeploy failed: ${e.message ?: "Unknown error"}",
+                                "重新部署失敗: ${e.message ?: "未知錯誤"}"
+                            )
+                        )
                     } finally {
                         isReloading = false
                     }
@@ -836,11 +972,11 @@ private fun UserPhraseEditorSection(
             if (isReloading) {
                 CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("正在部署...")
+                Text(tr("正在部署...", "Deploying...", "正在部署..."))
             } else {
                 Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("重新部署生效", fontWeight = FontWeight.SemiBold)
+                Text(tr("重新部署生效", "Redeploy to Apply", "重新部署生效"), fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -860,12 +996,28 @@ private fun UserPhraseEditorSection(
                         }.exceptionOrNull()
                     }
                     if (err != null) {
-                        onFeedback(false, "添加失败: ${err.message ?: "输入不合法"}")
+                        onFeedback(
+                            false,
+                            AppStrings.pick(
+                                appLang,
+                                "添加失败: ${err.message ?: "输入不合法"}",
+                                "Failed to add: ${err.message ?: "Invalid input"}",
+                                "新增失敗: ${err.message ?: "輸入不合法"}"
+                            )
+                        )
                     } else {
                         selectedTab = if (targetTopPinned) 0 else 1
                         showAddPhraseDialog = false
                         reloadList()
-                        onFeedback(true, "✓ 已写入「$cleanWord ($cleanCode)」，点击重新部署生效")
+                        onFeedback(
+                            true,
+                            AppStrings.pick(
+                                appLang,
+                                "✓ 已写入「$cleanWord ($cleanCode)」，点击重新部署生效",
+                                "✓ Saved \"$cleanWord ($cleanCode)\" · Tap Redeploy to apply",
+                                "✓ 已寫入「$cleanWord ($cleanCode)」，點擊重新部署生效"
+                            )
+                        )
                     }
                 }
             }
@@ -893,7 +1045,15 @@ private fun AddUserPhraseDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("添加个人词条 ($schemaId)") },
+        title = {
+            Text(
+                tr(
+                    "添加个人词条 ($schemaId)",
+                    "Add Phrase ($schemaId)",
+                    "新增個人詞條 ($schemaId)"
+                )
+            )
+        },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -904,13 +1064,13 @@ private fun AddUserPhraseDialog(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     CodetableSegmentTab(
-                        title = "置顶词 (_top.txt)",
+                        title = tr("置顶词 (_top.txt)", "Pinned (_top)", "置頂詞 (_top.txt)"),
                         selected = targetTopPinned,
                         onClick = { targetTopPinned = true },
                         modifier = Modifier.weight(1f)
                     )
                     CodetableSegmentTab(
-                        title = "自造词 (_user.txt)",
+                        title = tr("自造词 (_user.txt)", "User (_user)", "自造詞 (_user.txt)"),
                         selected = !targetTopPinned,
                         onClick = { targetTopPinned = false },
                         modifier = Modifier.weight(1f)
@@ -933,8 +1093,20 @@ private fun AddUserPhraseDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp),
-                    label = { Text("词条 *") },
-                    placeholder = { Text(if (isXiaoheSchema) "输入 2~4+ 汉字，如：双拼输入" else "输入要添加的词条") }
+                    label = { Text(tr("词条 *", "Word / Phrase *", "詞條 *")) },
+                    placeholder = {
+                        Text(
+                            if (isXiaoheSchema) {
+                                tr(
+                                    "输入 2~4+ 汉字，如：双拼输入",
+                                    "2–4+ Chinese chars, e.g. 双拼输入",
+                                    "輸入 2~4+ 漢字，如：雙拼輸入"
+                                )
+                            } else {
+                                tr("输入要添加的词条", "Enter word or phrase", "輸入要新增的詞條")
+                            }
+                        )
+                    }
                 )
 
                 Row(
@@ -951,8 +1123,16 @@ private fun AddUserPhraseDialog(
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         shape = RoundedCornerShape(10.dp),
-                        label = { Text("编码 *") },
-                        placeholder = { Text(if (isXiaoheSchema) "如：uupb" else "输入当前方案对应的编码") }
+                        label = { Text(tr("编码 *", "Code *", "編碼 *")) },
+                        placeholder = {
+                            Text(
+                                if (isXiaoheSchema) {
+                                    tr("如：uupb", "e.g. uupb", "如：uupb")
+                                } else {
+                                    tr("输入当前方案对应的编码", "Enter code for this schema", "輸入目前方案對應的編碼")
+                                }
+                            )
+                        }
                     )
                     if (isXiaoheSchema) {
                         FilledTonalButton(
@@ -967,7 +1147,7 @@ private fun AddUserPhraseDialog(
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 14.dp)
                         ) {
                             Text(
-                                text = "自动算小鹤 4 码",
+                                text = tr("自动算小鹤 4 码", "Auto 4-Code", "自動算小鶴 4 碼"),
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold
                             )
@@ -978,14 +1158,22 @@ private fun AddUserPhraseDialog(
                 if (isXiaoheSchema) {
                     if (derivedCode != null) {
                         Text(
-                            text = "按单字反查表推算小鹤 4 码：$derivedCode",
+                            text = tr(
+                                "按单字反查表推算小鹤 4 码：$derivedCode",
+                                "Derived Flypy 4-code: $derivedCode",
+                                "按單字反查表推算小鶴 4 碼：$derivedCode"
+                            ),
                             style = MaterialTheme.typography.labelSmall,
                             color = TypeFreeEmerald,
                             fontWeight = FontWeight.SemiBold
                         )
                     } else if (wordInput.trim().isNotEmpty()) {
                         Text(
-                            text = "输入 2~4+ 个纯汉字可自动推导小鹤 4 码，也可手动填写自定义编码",
+                            text = tr(
+                                "输入 2~4+ 个纯汉字可自动推导小鹤 4 码，也可手动填写自定义编码",
+                                "Enter 2+ Chinese chars to auto-derive Flypy 4-code, or type any custom code",
+                                "輸入 2~4+ 個純漢字可自動推導小鶴 4 碼，也可手動填寫自訂編碼"
+                            ),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1000,12 +1188,12 @@ private fun AddUserPhraseDialog(
                     onConfirmAdd(wordInput.trim(), codeInput.trim(), targetTopPinned)
                 }
             ) {
-                Text("写入词库")
+                Text(tr("写入词库", "Save Phrase", "寫入詞庫"))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消")
+                Text(tr("取消", "Cancel", "取消"))
             }
         }
     )
@@ -1044,17 +1232,32 @@ fun QuickSymbolsEditorCard(
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
-                        text = "`;` 多码快符表 (quick_symbols.yaml)",
+                        text = tr(
+                            "`;` 多码快符表 (quick_symbols.yaml)",
+                            "`;` Quick Symbols (quick_symbols.yaml)",
+                            "`;` 多碼快符表 (quick_symbols.yaml)"
+                        ),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "供分号引导多码快符（如 `;mq -> ①`）或外接物理键盘使用",
+                        text = tr(
+                            "供分号引导多码快符（如 `;mq -> ①`）或外接物理键盘使用",
+                            "Semicolon-prefixed quick symbols (e.g. `;mq -> ①`) and hardware keyboard mappings",
+                            "供分號引導多碼快符（如 `;mq -> ①`）或外接實體鍵盤使用"
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                CodetableBadgePill(text = "${rimeDataManager.activeSymbolTrie.size} 项", highlight = true)
+                CodetableBadgePill(
+                    text = tr(
+                        "${rimeDataManager.activeSymbolTrie.size} 项",
+                        "${rimeDataManager.activeSymbolTrie.size} items",
+                        "${rimeDataManager.activeSymbolTrie.size} 項"
+                    ),
+                    highlight = true
+                )
             }
 
             feedbackMessage?.let { (ok, text) ->
@@ -1087,6 +1290,7 @@ private fun QuickSymbolsEditorSection(
     metadataVersion: Long,
     onFeedback: (Boolean, String) -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
     var currentTrie by remember(schemaId, deployState, metadataVersion) {
         mutableStateOf(rimeDataManager.activeSymbolTrie)
@@ -1125,8 +1329,8 @@ private fun QuickSymbolsEditorSection(
                 modifier = Modifier.weight(0.8f),
                 singleLine = true,
                 shape = RoundedCornerShape(10.dp),
-                label = { Text("键码") },
-                placeholder = { Text("如 q") }
+                label = { Text(tr("键码", "Key", "鍵碼")) },
+                placeholder = { Text(tr("如 q", "e.g. q", "如 q")) }
             )
             OutlinedTextField(
                 value = valueInput,
@@ -1134,14 +1338,22 @@ private fun QuickSymbolsEditorSection(
                 modifier = Modifier.weight(1.4f),
                 singleLine = true,
                 shape = RoundedCornerShape(10.dp),
-                label = { Text("上屏符号") },
-                placeholder = { Text("如 ：“ 或 →") }
+                label = { Text(tr("上屏符号", "Symbol", "上屏符號")) },
+                placeholder = { Text(tr("如 ：“ 或 →", "e.g. “” or →", "如 ：“ 或 →")) }
             )
             Button(
                 onClick = {
                     val cleanKey = keyInput.trim()
                     if (cleanKey.isEmpty() || valueInput.isEmpty()) {
-                        onFeedback(false, "请输入 1~4 位字母/数字键码和输出符号")
+                        onFeedback(
+                            false,
+                            AppStrings.pick(
+                                appLang,
+                                "请输入 1~4 位字母/数字键码和输出符号",
+                                "Enter a 1–4 char alphanumeric key and symbol",
+                                "請輸入 1~4 位字母/數字鍵碼和輸出符號"
+                            )
+                        )
                         return@Button
                     }
                     val newItem = OverlaySymbolEntry(
@@ -1158,27 +1370,43 @@ private fun QuickSymbolsEditorSection(
                     }
                     keyInput = ""
                     valueInput = ""
-                    saveUpdatedEntries(existing, "✓ 已保存快符 ;${cleanKey}")
+                    saveUpdatedEntries(
+                        existing,
+                        AppStrings.pick(
+                            appLang,
+                            "✓ 已保存快符 ;${cleanKey}",
+                            "✓ Saved quick symbol ;${cleanKey}",
+                            "✓ 已儲存快符 ;${cleanKey}"
+                        )
+                    )
                 },
                 enabled = keyInput.isNotBlank() && valueInput.isNotEmpty(),
                 shape = RoundedCornerShape(10.dp),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp)
             ) {
-                Text("保存", fontWeight = FontWeight.Bold)
+                Text(tr("保存", "Save", "儲存"), fontWeight = FontWeight.Bold)
             }
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
             currentTrie.entriesList().forEach { item ->
                 val preview = when (val act = item.action) {
-                    is CommitAction.PairedText -> "${act.left}${act.right} (成对)"
+                    is CommitAction.PairedText -> "${act.left}${act.right} (${tr("成对", "Paired", "成對")})"
                     is CommitAction.PlainText -> when (act.text) {
-                        "\u3000" -> "全角空格"
+                        "\u3000" -> tr("全角空格", "Full-Width Space", "全形空白")
                         "\t" -> "Tab"
                         else -> act.text
                     }
-                    else -> item.displayText
+                    CommitAction.UndoLastCommit -> tr("↶撤回", "↶ Undo", "↶復原")
+                    CommitAction.RepeatLastCommit -> tr("↻重复", "↻ Repeat", "↻重複")
+                    else -> when (item.displayText.trim()) {
+                        "↶撤回" -> tr("↶撤回", "↶ Undo", "↶復原")
+                        "↻重复" -> tr("↻重复", "↻ Repeat", "↻重複")
+                        "✍️ AI 帮写", "打开帮写" -> tr("✍️ AI 帮写", "✍️ Help Write", "✍️ AI 幫寫")
+                        else -> item.displayText
+                    }
                 }
+                val localizedItemLabel = localizedQuickSymbolLabel(item.label, appLang)
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
@@ -1208,9 +1436,9 @@ private fun QuickSymbolsEditorSection(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            if (item.label.isNotEmpty()) {
+                            if (localizedItemLabel.isNotEmpty()) {
                                 Text(
-                                    text = item.label,
+                                    text = localizedItemLabel,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1230,20 +1458,28 @@ private fun QuickSymbolsEditorSection(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Edit,
-                                    contentDescription = "编辑快符",
+                                    contentDescription = tr("编辑快符", "Edit symbol", "編輯快符"),
                                     modifier = Modifier.size(15.dp)
                                 )
                             }
                             IconButton(
                                 onClick = {
                                     val remaining = currentTrie.entriesList().filterNot { it.key == item.key }
-                                    saveUpdatedEntries(remaining, "已移除快符 ${currentTrie.guideKey}${item.key}")
+                                    saveUpdatedEntries(
+                                        remaining,
+                                        AppStrings.pick(
+                                            appLang,
+                                            "已移除快符 ${currentTrie.guideKey}${item.key}",
+                                            "Removed quick symbol ${currentTrie.guideKey}${item.key}",
+                                            "已移除快符 ${currentTrie.guideKey}${item.key}"
+                                        )
+                                    )
                                 },
                                 modifier = Modifier.size(28.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Delete,
-                                    contentDescription = "删除快符",
+                                    contentDescription = tr("删除快符", "Delete symbol", "刪除快符"),
                                     tint = MaterialTheme.colorScheme.error,
                                     modifier = Modifier.size(15.dp)
                                 )
@@ -1263,14 +1499,34 @@ private fun QuickSymbolsEditorSection(
                     currentTrie = resetTrie
                     keyInput = ""
                     valueInput = ""
-                    onFeedback(true, "✓ 快符映射已恢复默认 (${resetTrie.size} 项)")
-                    Toast.makeText(context, "✓ 快符映射已恢复默认", Toast.LENGTH_SHORT).show()
+                    onFeedback(
+                        true,
+                        AppStrings.pick(
+                            appLang,
+                            "✓ 快符映射已恢复默认 (${resetTrie.size} 项)",
+                            "✓ Restored default quick symbols (${resetTrie.size} items)",
+                            "✓ 快符映射已恢復預設 (${resetTrie.size} 項)"
+                        )
+                    )
+                    Toast.makeText(
+                        context,
+                        AppStrings.pick(
+                            appLang,
+                            "✓ 快符映射已恢复默认",
+                            "✓ Quick symbols reset to default",
+                            "✓ 快符映射已恢復預設"
+                        ),
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             },
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(10.dp)
         ) {
-            Text("恢复默认快符映射", fontWeight = FontWeight.SemiBold)
+            Text(
+                tr("恢复默认快符映射", "Reset Default Quick Symbols", "恢復預設快符映射"),
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }
@@ -1285,6 +1541,7 @@ private fun SubDictManagerSection(
     isBusy: Boolean,
     onFeedback: (Boolean, String) -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
     var subDicts by remember { mutableStateOf<List<SubDictToggleManager.SubDictDescriptor>>(emptyList()) }
     var isImportingExt by remember { mutableStateOf(false) }
@@ -1316,13 +1573,46 @@ private fun SubDictManagerSection(
                     val descriptor = withContext(Dispatchers.IO) {
                         context.contentResolver.openInputStream(uri)?.use { stream ->
                             rimeDataManager.importExtSubDictionary(fileName, stream, schemaId)
-                        } ?: throw IllegalArgumentException("无法读取所选词库文件")
+                        } ?: throw IllegalArgumentException(
+                            AppStrings.pick(
+                                appLang,
+                                "无法读取所选词库文件",
+                                "Cannot read selected lexicon file",
+                                "無法讀取所選詞庫檔案"
+                            )
+                        )
                     }
                     refreshSubDicts()
-                    onFeedback(true, "✓ 已导入扩展词库「${descriptor.displayName}」，点击重新部署生效")
-                    Toast.makeText(context, "✓ 已导入扩展词库「${descriptor.displayName}」", Toast.LENGTH_SHORT).show()
+                    val dictTitle = localizedSubDictDisplayName(descriptor, appLang)
+                    onFeedback(
+                        true,
+                        AppStrings.pick(
+                            appLang,
+                            "✓ 已导入扩展词库「$dictTitle」，点击重新部署生效",
+                            "✓ Imported \"$dictTitle\" · Tap Redeploy to apply",
+                            "✓ 已匯入擴充詞庫「$dictTitle」，點擊重新部署生效"
+                        )
+                    )
+                    Toast.makeText(
+                        context,
+                        AppStrings.pick(
+                            appLang,
+                            "✓ 已导入扩展词库「$dictTitle」",
+                            "✓ Imported \"$dictTitle\"",
+                            "✓ 已匯入擴充詞庫「$dictTitle」"
+                        ),
+                        Toast.LENGTH_SHORT
+                    ).show()
                 } catch (e: Exception) {
-                    onFeedback(false, "导入扩展词库失败: ${e.message ?: "格式错误"}")
+                    onFeedback(
+                        false,
+                        AppStrings.pick(
+                            appLang,
+                            "导入扩展词库失败: ${e.message ?: "格式错误"}",
+                            "Failed to import ext dict: ${e.message ?: "Invalid format"}",
+                            "匯入擴充詞庫失敗: ${e.message ?: "格式錯誤"}"
+                        )
+                    )
                 } finally {
                     isImportingExt = false
                 }
@@ -1333,12 +1623,17 @@ private fun SubDictManagerSection(
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (subDicts.isEmpty()) {
             Text(
-                text = "未发现可用子词库或 ext/ 扩展词库，可点击下方导入 .dict.yaml / .tsv 词库。",
+                text = tr(
+                    "未发现可用子词库或 ext/ 扩展词库，可点击下方导入 .dict.yaml / .tsv 词库。",
+                    "No sub-dictionaries or ext/ files yet. Import a .dict.yaml or .tsv lexicon below.",
+                    "未發現可用子詞庫或 ext/ 擴充詞庫，可點擊下方匯入 .dict.yaml / .tsv 詞庫。"
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
             subDicts.forEach { desc ->
+                val dictTitle = localizedSubDictDisplayName(desc, appLang)
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
@@ -1363,12 +1658,16 @@ private fun SubDictManagerSection(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Text(
-                                    text = desc.displayName,
+                                    text = dictTitle,
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 CodetableBadgePill(
-                                    text = if (desc.isBuiltIn) "内置" else "扩展",
+                                    text = if (desc.isBuiltIn) {
+                                        tr("内置", "Built-in", "內建")
+                                    } else {
+                                        tr("扩展", "Ext", "擴充")
+                                    },
                                     highlight = !desc.isBuiltIn
                                 )
                             }
@@ -1387,7 +1686,15 @@ private fun SubDictManagerSection(
                                             .setSubDictEnabled(schemaId, desc.name, checked)
                                     }
                                     refreshSubDicts()
-                                    onFeedback(true, "${desc.displayName} 已${if (checked) "启用" else "停用"}，重新部署后生效")
+                                    onFeedback(
+                                        true,
+                                        AppStrings.pick(
+                                            appLang,
+                                            "$dictTitle 已${if (checked) "启用" else "停用"}，重新部署后生效",
+                                            "$dictTitle ${if (checked) "enabled" else "disabled"} · Redeploy to apply",
+                                            "$dictTitle 已${if (checked) "啟用" else "停用"}，重新部署後生效"
+                                        )
+                                    )
                                 }
                             }
                         )
@@ -1410,7 +1717,15 @@ private fun SubDictManagerSection(
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
             ) {
                 Text(
-                    text = if (isImportingExt) "导入中..." else "导入扩展词库 (.dict.yaml / .tsv)",
+                    text = if (isImportingExt) {
+                        tr("导入中...", "Importing...", "匯入中...")
+                    } else {
+                        tr(
+                            "导入扩展词库 (.dict.yaml / .tsv)",
+                            "Import Ext (.dict.yaml / .tsv)",
+                            "匯入擴充詞庫 (.dict.yaml / .tsv)"
+                        )
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -1427,12 +1742,36 @@ private fun SubDictManagerSection(
                                 rimeDataManager.reloadActiveEnhancedSchema(schemaId)
                             }
                             if (resultState is RimeDeploymentState.Error) {
-                                onFeedback(false, "重新部署失败: ${resultState.message}")
+                                onFeedback(
+                                    false,
+                                    AppStrings.pick(
+                                        appLang,
+                                        "重新部署失败: ${resultState.message}",
+                                        "Redeploy failed: ${resultState.message}",
+                                        "重新部署失敗: ${resultState.message}"
+                                    )
+                                )
                             } else {
-                                onFeedback(true, "✓ 子词库配置已重新部署生效")
+                                onFeedback(
+                                    true,
+                                    AppStrings.pick(
+                                        appLang,
+                                        "✓ 子词库配置已重新部署生效",
+                                        "✓ Sub-dictionaries redeployed",
+                                        "✓ 子詞庫設定已重新部署生效"
+                                    )
+                                )
                             }
                         } catch (e: Exception) {
-                            onFeedback(false, "重新部署失败: ${e.message ?: "未知错误"}")
+                            onFeedback(
+                                false,
+                                AppStrings.pick(
+                                    appLang,
+                                    "重新部署失败: ${e.message ?: "未知错误"}",
+                                    "Redeploy failed: ${e.message ?: "Unknown error"}",
+                                    "重新部署失敗: ${e.message ?: "未知錯誤"}"
+                                )
+                            )
                         } finally {
                             isReloading = false
                         }
@@ -1444,9 +1783,14 @@ private fun SubDictManagerSection(
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
             ) {
                 Text(
-                    text = if (isReloading) "部署中..." else "重新部署",
+                    text = if (isReloading) {
+                        tr("部署中...", "Deploying...", "部署中...")
+                    } else {
+                        tr("重新部署", "Redeploy", "重新部署")
+                    },
                     style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1
                 )
             }
         }
@@ -1462,6 +1806,7 @@ private fun ShadowRulesSection(
     metadataVersion: Long,
     onFeedback: (Boolean, String) -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
     var rules by remember { mutableStateOf(ShadowDictManager.ShadowRuleState()) }
 
@@ -1493,6 +1838,9 @@ private fun ShadowRulesSection(
         }
     }
 
+    val pinnedCount = rules.pinnedByCode.values.sumOf { it.size }
+    val blockedCount = rules.blockedWords.size
+
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1500,7 +1848,11 @@ private fun ShadowRulesSection(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "置顶 ${rules.pinnedByCode.values.sumOf { it.size }} 条 · 屏蔽 ${rules.blockedWords.size} 词",
+                text = tr(
+                    "置顶 $pinnedCount 条 · 屏蔽 $blockedCount 词",
+                    "Pinned: $pinnedCount · Blocked: $blockedCount",
+                    "置頂 $pinnedCount 條 · 封鎖 $blockedCount 詞"
+                ),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1509,17 +1861,37 @@ private fun ShadowRulesSection(
                     onClick = { refreshRules() },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                 ) {
-                    Text("刷新", style = MaterialTheme.typography.labelMedium)
+                    Text(tr("刷新", "Refresh", "重新整理"), style = MaterialTheme.typography.labelMedium)
                 }
                 if (rules.pinnedByCode.isNotEmpty() || rules.blockedWords.isNotEmpty()) {
                     TextButton(
                         onClick = {
-                            applyShadowMutation("✓ 已清空全部置顶与屏蔽规则") { it.clearAll() }
-                            Toast.makeText(context, "✓ 已清空全部阴影规则", Toast.LENGTH_SHORT).show()
+                            applyShadowMutation(
+                                AppStrings.pick(
+                                    appLang,
+                                    "✓ 已清空全部置顶与屏蔽规则",
+                                    "✓ Cleared all pin & block rules",
+                                    "✓ 已清空全部置頂與封鎖規則"
+                                )
+                            ) { it.clearAll() }
+                            Toast.makeText(
+                                context,
+                                AppStrings.pick(
+                                    appLang,
+                                    "✓ 已清空全部阴影规则",
+                                    "✓ All shadow rules cleared",
+                                    "✓ 已清空全部陰影規則"
+                                ),
+                                Toast.LENGTH_SHORT
+                            ).show()
                         },
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                     ) {
-                        Text("清空全部", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            tr("清空全部", "Clear All", "清空全部"),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.labelMedium
+                        )
                     }
                 }
             }
@@ -1527,7 +1899,11 @@ private fun ShadowRulesSection(
 
         if (rules.pinnedByCode.isEmpty() && rules.blockedWords.isEmpty()) {
             Text(
-                text = "暂无置顶或屏蔽规则。打字时长按候选词即可快速置顶首选或屏蔽词条。",
+                text = tr(
+                    "暂无置顶或屏蔽规则。打字时长按候选词即可快速置顶首选或屏蔽词条。",
+                    "No pinned or blocked rules yet. Long-press any candidate while typing to pin it to 1st or block it.",
+                    "尚無置頂或封鎖規則。打字時長按候選詞即可快速置頂首選或封鎖詞條。"
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1538,9 +1914,16 @@ private fun ShadowRulesSection(
                         tag = code,
                         tagHighlight = true,
                         word = word,
-                        actionLabel = "取消置顶",
+                        actionLabel = tr("取消置顶", "Unpin", "取消置頂"),
                         onAction = {
-                            applyShadowMutation("已取消置顶「$word ($code)」") {
+                            applyShadowMutation(
+                                AppStrings.pick(
+                                    appLang,
+                                    "已取消置顶「$word ($code)」",
+                                    "Unpinned \"$word ($code)\"",
+                                    "已取消置頂「$word ($code)」"
+                                )
+                            ) {
                                 it.unpinWord(code, word)
                             }
                         }
@@ -1549,18 +1932,116 @@ private fun ShadowRulesSection(
             }
             rules.blockedWords.forEach { word ->
                 ShadowRuleRow(
-                    tag = "已屏蔽",
+                    tag = tr("已屏蔽", "Blocked", "已封鎖"),
                     tagHighlight = false,
                     word = word,
-                    actionLabel = "取消屏蔽",
+                    actionLabel = tr("取消屏蔽", "Unblock", "取消封鎖"),
                     onAction = {
-                        applyShadowMutation("已取消屏蔽「$word」") {
+                        applyShadowMutation(
+                            AppStrings.pick(
+                                appLang,
+                                "已取消屏蔽「$word」",
+                                "Unblocked \"$word\"",
+                                "已取消封鎖「$word」"
+                            )
+                        ) {
                             it.unblockWord(word)
                         }
                     }
                 )
             }
         }
+    }
+}
+
+private fun localizedActiveProfileName(
+    schemaId: String,
+    rawDisplayName: String,
+    lang: AppLang
+): String {
+    return when (schemaId.lowercase()) {
+        "flypy" -> AppStrings.pick(lang, "小鹤音形", "Flypy 4-Code", "小鶴音形")
+        "xkjd6" -> AppStrings.pick(lang, "星空键道 6", "XKJD 6 (KeyTao)", "星空鍵道 6")
+        "wubi86" -> AppStrings.pick(lang, "五笔 86", "Wubi 86", "五筆 86")
+        "tigress" -> AppStrings.pick(lang, "虎码官方字词", "Tiger Code (Words)", "虎碼官方字詞")
+        "tiger" -> AppStrings.pick(lang, "虎码官方单字", "Tiger Code (Chars)", "虎碼官方單字")
+        "rime_ice" -> AppStrings.pick(lang, "雾凇拼音", "Rime Ice Pinyin", "霧凇拼音")
+        "double_pinyin_flypy" -> AppStrings.pick(lang, "小鹤双拼", "Flypy Double Pinyin", "小鶴雙拼")
+        else -> rawDisplayName.ifBlank { schemaId }
+    }
+}
+
+private fun localizedPresetInfo(
+    preset: PresetSchemaCatalog.PresetSchemaInfo,
+    lang: AppLang
+): Triple<String, String, String> {
+    return when (preset.id) {
+        "xkjd6" -> Triple(
+            AppStrings.pick(lang, preset.displayName, "XKJD 6 (KeyTao)", "星空鍵道 6"),
+            AppStrings.pick(lang, preset.archetypeLabel, "Push-Commit (PUSH_TOPUP)", "頂功碼表 (PUSH_TOPUP_CODE)"),
+            AppStrings.pick(
+                lang,
+                preset.description,
+                "Open-source sound-shape push-commit scheme (xkinput/KeyTao) with native librime-lua top-up processor.",
+                "開源音形頂功方案（xkinput/KeyTao），聲韻雙拼 + a/e/i/o/u/v 頂功筆畫分離，內建 librime-lua topup_processor 原生頂屏。"
+            )
+        )
+        "wubi86" -> Triple(
+            AppStrings.pick(lang, preset.displayName, "Wubi 86", "五筆 86"),
+            AppStrings.pick(lang, preset.archetypeLabel, "4-Code Shape (FIXED_SHAPECODE)", "純形定長 (FIXED_SHAPECODE)"),
+            AppStrings.pick(
+                lang,
+                preset.description,
+                "Classic 86 Wubi shape-code table (rime/rime-wubi) with strict 4-code length and 5th-key auto-commit.",
+                "經典 86 版五筆字型碼表（rime/rime-wubi），四碼定長空碼不亂切分，第 5 碼自動頂首選上屏。"
+            )
+        )
+        "tigress" -> Triple(
+            AppStrings.pick(lang, preset.displayName, "Tiger Code (Words & Phrases)", "虎碼官方字詞"),
+            AppStrings.pick(lang, preset.archetypeLabel, "4-Code Shape (FIXED_SHAPECODE)", "純形定長 (FIXED_SHAPECODE)"),
+            AppStrings.pick(
+                lang,
+                preset.description,
+                "Official Tiger Code phrase edition (117k chars + 130k words), unique 4-code auto-commit & 5th-key push.",
+                "虎碼官方字詞版（11.7 萬單字 + 13 萬全碼詞 + 3 千簡詞），四碼唯一自動上屏、五碼頂、預設常用字集過濾。"
+            )
+        )
+        "tiger" -> Triple(
+            AppStrings.pick(lang, preset.displayName, "Tiger Code (Single-Char)", "虎碼官方單字"),
+            AppStrings.pick(lang, preset.archetypeLabel, "4-Code Shape (FIXED_SHAPECODE)", "純形定長 (FIXED_SHAPECODE)"),
+            AppStrings.pick(
+                lang,
+                preset.description,
+                "Official Tiger Code single-character edition (117k chars, zero phrase collisions), ideal for single-char masters.",
+                "虎碼官方單字全集版（11.7 萬單字，零詞組干擾），四碼唯一自動上屏、五碼頂、預設常用字集過濾，適合單字流。"
+            )
+        )
+        else -> Triple(preset.displayName, preset.archetypeLabel, preset.description)
+    }
+}
+
+private fun localizedSubDictDisplayName(
+    desc: SubDictToggleManager.SubDictDescriptor,
+    lang: AppLang
+): String {
+    return when (desc.name) {
+        "flypy_full" -> AppStrings.pick(
+            lang,
+            "全码字词库 (flypy_full)",
+            "Full-Code Chars (flypy_full)",
+            "全碼字詞庫 (flypy_full)"
+        )
+        else -> desc.displayName
+    }
+}
+
+private fun localizedQuickSymbolLabel(rawLabel: String, lang: AppLang): String {
+    return when (rawLabel.trim()) {
+        "撤回上屏", "撤回" -> AppStrings.pick(lang, rawLabel, "Undo Commit", "復原上屏")
+        "重复上屏", "重复" -> AppStrings.pick(lang, rawLabel, "Repeat Last", "重複上屏")
+        "全角空格", "全角" -> AppStrings.pick(lang, rawLabel, "Full-Width Space", "全形空白")
+        "打开帮写", "AI 帮写" -> AppStrings.pick(lang, rawLabel, "Help Me Write", "AI 幫寫")
+        else -> rawLabel
     }
 }
 

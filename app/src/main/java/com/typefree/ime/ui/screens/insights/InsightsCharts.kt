@@ -50,20 +50,47 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.ime.data.stats.HeatmapDayCell
-import com.typefree.ime.data.stats.JevAxisTendencySummary
 import com.typefree.ime.data.stats.MonthlyTrendPoint
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ui.theme.LocalTypeFreeKeyboardPalette
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import com.typefree.ime.ui.theme.TypeFreeEmeraldLight
 import java.util.Locale
 
-internal fun formatChartCompactChars(chars: Int): String {
+internal fun formatChartCompactChars(chars: Int, lang: AppLang = AppLang.ZH_CN): String {
     val safe = chars.coerceAtLeast(0)
-    return if (safe >= 10_000) {
-        String.format(Locale.US, "%.1fw", safe / 10_000.0)
+    return if (lang == AppLang.EN) {
+        if (safe >= 10_000) {
+            String.format(Locale.US, "%.1fk", safe / 1_000.0)
+        } else {
+            String.format(Locale.US, "%,d", safe)
+        }
     } else {
-        String.format(Locale.US, "%,d", safe)
+        if (safe >= 10_000) {
+            String.format(Locale.US, "%.1fw", safe / 10_000.0)
+        } else {
+            String.format(Locale.US, "%,d", safe)
+        }
+    }
+}
+
+private val EN_SHORT_MONTHS = arrayOf(
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+)
+
+private fun localizeHeatmapCellDate(cell: HeatmapDayCell, lang: AppLang): String {
+    if (lang != AppLang.EN) return cell.dateLabel
+    val month = (cell.dateKey % 10000) / 100
+    val day = cell.dateKey % 100
+    return if (month in 1..12 && day in 1..31) {
+        "${EN_SHORT_MONTHS[month - 1]} $day"
+    } else {
+        cell.dateLabel
     }
 }
 
@@ -161,10 +188,13 @@ fun DualTrackRatioBar(
         label = "dualTrackVoiceFraction"
     )
 
+    val appLang = LocalAppLanguage.current
     val isDark = LocalTypeFreeKeyboardPalette.current.isDark
     val voiceColor = if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald
     val keyColor = MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.72f else 0.78f)
     val emptyTrackColor = MaterialTheme.colorScheme.surfaceVariant
+    val voiceCompact = formatChartCompactChars(safeVoice, appLang)
+    val keyCompact = formatChartCompactChars(safeKey, appLang)
 
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -186,13 +216,13 @@ fun DualTrackRatioBar(
                         .background(voiceColor)
                 )
                 Text(
-                    text = "语音口述 $voicePercent%",
+                    text = tr("语音口述 $voicePercent%", "Voice $voicePercent%", "語音口述 $voicePercent%"),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "${formatChartCompactChars(safeVoice)} 字",
+                    text = tr("$voiceCompact 字", "$voiceCompact chars", "$voiceCompact 字"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -203,12 +233,12 @@ fun DualTrackRatioBar(
                 horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 Text(
-                    text = "${formatChartCompactChars(safeKey)} 字",
+                    text = tr("$keyCompact 字", "$keyCompact chars", "$keyCompact 字"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "键盘 $keyPercent%",
+                    text = tr("键盘 $keyPercent%", "Keyboard $keyPercent%", "鍵盤 $keyPercent%"),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -289,7 +319,7 @@ fun CalendarHeatmapGrid(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = "暂无热力足迹数据",
+                text = tr("暂无热力足迹数据", "No activity heatmap data yet", "暫無熱力足跡資料"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -297,6 +327,7 @@ fun CalendarHeatmapGrid(
         return
     }
 
+    val appLang = LocalAppLanguage.current
     val isDark = LocalTypeFreeKeyboardPalette.current.isDark
     val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
     val primaryColor = MaterialTheme.colorScheme.primary
@@ -371,7 +402,7 @@ fun CalendarHeatmapGrid(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "${days.first().dateLabel} – ${days.last().dateLabel}",
+                text = "${localizeHeatmapCellDate(days.first(), appLang)} – ${localizeHeatmapCellDate(days.last(), appLang)}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 10.5.sp
@@ -381,7 +412,7 @@ fun CalendarHeatmapGrid(
                 horizontalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 Text(
-                    text = "轻",
+                    text = tr("轻", "Less", "輕"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 10.sp
@@ -395,7 +426,7 @@ fun CalendarHeatmapGrid(
                     )
                 }
                 Text(
-                    text = "高产",
+                    text = tr("高产", "More", "高產"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 10.sp
@@ -423,7 +454,7 @@ fun MonthlyStackedTrendChart(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = "暂无月度成长记录",
+                text = tr("暂无月度成长记录", "No monthly trend data yet", "暫無月度成長記錄"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -605,7 +636,7 @@ fun MonthlyStackedTrendChart(
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
-                text = "语音",
+                text = tr("语音", "Voice", "語音"),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 10.5.sp
@@ -619,7 +650,7 @@ fun MonthlyStackedTrendChart(
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
-                text = "键盘",
+                text = tr("键盘", "Keyboard", "鍵盤"),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 10.5.sp
@@ -805,128 +836,6 @@ fun DualTrack24hWaveform(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum")
                 )
-            }
-        }
-    }
-}
-
-/**
- * 3-segment proportional strategy balance bar for Jev communication axis tendency.
- */
-@Composable
-fun JevAxisBalanceBar(
-    tendency: JevAxisTendencySummary,
-    modifier: Modifier = Modifier
-) {
-    val count = minOf(tendency.labels.size, tendency.percents.size)
-    if (count == 0) return
-
-    val safePercents = remember(tendency) {
-        (0 until count).map { tendency.percents[it].coerceAtLeast(0) }
-    }
-    val sum = remember(safePercents) { safePercents.sum() }
-    val fractions = safePercents.mapIndexed { idx, pct ->
-        val target = if (sum > 0) pct.toFloat() / sum.toFloat() else 1f / count.toFloat()
-        val animated by animateFloatAsState(
-            targetValue = target,
-            animationSpec = spring(dampingRatio = 0.80f, stiffness = Spring.StiffnessMediumLow),
-            label = "jevAxisSeg_$idx"
-        )
-        animated
-    }
-
-    val isDark = LocalTypeFreeKeyboardPalette.current.isDark
-    val segmentColors = listOf(
-        if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald,
-        MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.76f else 0.82f),
-        TypeFreeAmber,
-        MaterialTheme.colorScheme.outline
-    )
-
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(7.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = tendency.groupTitle,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = "${tendency.sampleCount} 次参考",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(9.dp)
-        ) {
-            val nonZeroIndices = (0 until count).filter { fractions[it] > 0.005f }
-            val radius = CornerRadius(size.height / 2f, size.height / 2f)
-            if (nonZeroIndices.isEmpty()) {
-                drawRoundRect(
-                    color = segmentColors.last().copy(alpha = 0.3f),
-                    size = size,
-                    cornerRadius = radius
-                )
-                return@Canvas
-            }
-
-            val gap = 2.5.dp.toPx()
-            val totalGap = gap * (nonZeroIndices.size - 1)
-            val usableW = (size.width - totalGap).coerceAtLeast(1f)
-            val activeSum = nonZeroIndices.sumOf { fractions[it].toDouble() }.toFloat().coerceAtLeast(0.001f)
-            var cursorX = 0f
-
-            nonZeroIndices.forEachIndexed { pos, segIdx ->
-                val segW = if (pos == nonZeroIndices.lastIndex) {
-                    (size.width - cursorX).coerceAtLeast(0f)
-                } else {
-                    (usableW * (fractions[segIdx] / activeSum)).coerceAtLeast(4.dp.toPx())
-                }
-                drawRoundRect(
-                    color = segmentColors[segIdx % segmentColors.size],
-                    topLeft = Offset(cursorX, 0f),
-                    size = Size(segW, size.height),
-                    cornerRadius = radius
-                )
-                cursorX += segW + gap
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            for (i in 0 until count) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(7.dp)
-                            .clip(CircleShape)
-                            .background(segmentColors[i % segmentColors.size])
-                    )
-                    Text(
-                        text = "${tendency.labels[i]} ${safePercents[i]}%",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
             }
         }
     }

@@ -7,5 +7,5 @@
     <string name="ime_subtype_label_zh_tw">繁体中文与 AI 语音</string>
     <string name="ime_subtype_label_en_us">英文 (US) 与 AI 语音</string>
     <string name="accessibility_service_label">TypeFree 悬浮语音胶囊</string>
-    <string name="accessibility_service_description">用于在输入框聚焦时按需展示悬浮语音胶囊，将本机离线或自有 API 净写后的文字填入光标处，或在主动点击军师时提取脱敏对话上下文。绝不后台收集屏幕隐私或读取密码。</string>
+    <string name="accessibility_service_description">用于在输入框聚焦时按需展示悬浮语音胶囊，将本机离线或自有 API 净写后的文字填入光标处。绝不后台收集屏幕隐私或读取密码。</string>
 </resources>

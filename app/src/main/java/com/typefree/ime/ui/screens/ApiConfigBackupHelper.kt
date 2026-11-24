@@ -39,10 +39,6 @@ import com.typefree.ime.data.stats.FullBackupMergeSummary
 import com.typefree.ime.data.stats.FullBackupOptions
 import com.typefree.ime.data.stats.PredictionBackupArchive
 import com.typefree.ime.data.stats.TrigramBackupItem
-import com.typefree.ime.ime.jev.memory.AndroidKeystoreSaltProvider
-import com.typefree.ime.ime.jev.memory.EncryptedJevMemoryArchive
-import com.typefree.ime.ime.jev.memory.JevMemoryImportSummary
-import com.typefree.ime.ime.jev.memory.JevMemoryRepository
 import com.typefree.ime.network.EndpointResolver
 import com.typefree.ime.network.asr.VolcengineSaucAsrClient
 
@@ -88,13 +84,6 @@ object ApiConfigBackupHelper {
         "keycapBadgeMode",
         "predictionEnabled",
         "aiCompletionEnabled",
-        "jevCopilotEnabled",
-        "jevUseDedicatedModel",
-        "jevLlmConfig",
-        "chatContextSendScreenshot",
-        "jevMemoryEnabled",
-        "jevMaskTitleHintEnabled",
-        "jevMemoryArchive",
         "inputStatsEnabled",
         "themePreference",
         "appLanguage",
@@ -383,9 +372,6 @@ object ApiConfigBackupHelper {
                 multimodalConfig = settings.multimodalConfig.copy(
                     apiKey = if (settings.multimodalConfig.apiKey.isNotBlank()) REDACTED_SECRET else ""
                 ),
-                jevLlmConfig = settings.jevLlmConfig.copy(
-                    apiKey = if (settings.jevLlmConfig.apiKey.isNotBlank()) REDACTED_SECRET else ""
-                ),
                 providerVault = redactedVault
             )
         }
@@ -394,88 +380,12 @@ object ApiConfigBackupHelper {
 
     data class FullBackupImportOutcome(
         val settings: AppSettings,
-        val memorySummary: JevMemoryImportSummary? = null,
         val mergeSummary: FullBackupMergeSummary = FullBackupMergeSummary()
     )
 
-    fun hasEncryptedJevMemoryArchive(rawJson: String): Boolean {
-        val cleaned = unwrapCodeFence(rawJson)
-        if (cleaned.isBlank()) return false
-        return runCatching {
-            val el = JsonParser.parseString(cleaned)
-            if (!el.isJsonObject) return@runCatching false
-            val archive = el.asJsonObject.get("jevMemoryArchive")
-            archive != null && archive.isJsonObject
-        }.getOrDefault(false)
-    }
-
-    fun exportBackupWithJevMemory(
-        settings: AppSettings,
-        includeSecrets: Boolean = true,
-        memoryRepository: JevMemoryRepository? = null,
-        memoryPassphrase: CharArray? = null,
-        wipePassphraseAfterUse: Boolean = true
-    ): String {
-        val baseJson = exportSettingsJson(settings, includeSecrets = includeSecrets)
-        if (!includeSecrets || memoryRepository == null || memoryPassphrase == null || memoryPassphrase.isEmpty()) {
-            return baseJson
-        }
-        val rootObj = JsonParser.parseString(baseJson).asJsonObject
-        val encrypted = memoryRepository.exportEncryptedArchive(
-            passphrase = memoryPassphrase,
-            wipePassphraseAfterUse = wipePassphraseAfterUse
-        )
-        rootObj.add("jevMemoryArchive", prettyGson.toJsonTree(encrypted))
-        return prettyGson.toJson(rootObj)
-    }
-
-    fun importBackupWithJevMemory(
-        rawJson: String,
-        existingSettings: AppSettings = AppSettings(),
-        memoryRepository: JevMemoryRepository? = null,
-        memoryPassphrase: CharArray? = null,
-        adoptSaltProvider: AndroidKeystoreSaltProvider? = null,
-        skipMemoryIfNoPassphrase: Boolean = false,
-        wipePassphraseAfterUse: Boolean = true
-    ): Result<FullBackupImportOutcome> {
-        val mergedSettings = parseAndMergeConfigJson(rawJson, existingSettings)
-            .getOrElse { return Result.failure(it) }
-        val cleaned = unwrapCodeFence(rawJson)
-        val rootObj = JsonParser.parseString(cleaned).asJsonObject
-        val archiveEl = rootObj.get("jevMemoryArchive")
-        if (archiveEl == null || archiveEl.isJsonNull || !archiveEl.isJsonObject || memoryRepository == null) {
-            return Result.success(FullBackupImportOutcome(settings = mergedSettings, memorySummary = null))
-        }
-        if (memoryPassphrase == null || memoryPassphrase.isEmpty()) {
-            return if (skipMemoryIfNoPassphrase) {
-                Result.success(FullBackupImportOutcome(settings = mergedSettings, memorySummary = null))
-            } else {
-                Result.failure(IllegalArgumentException("该备份包含加密的军师记忆，请输入备份密码解锁导入"))
-            }
-        }
-        val archive = runCatching {
-            prettyGson.fromJson(archiveEl, EncryptedJevMemoryArchive::class.java)
-        }.getOrNull() ?: return Result.failure(IllegalArgumentException("军师记忆载荷格式无效"))
-
-        val memRes = memoryRepository.importEncryptedArchive(
-            archive = archive,
-            passphrase = memoryPassphrase,
-            adoptDeviceSaltCallback = adoptSaltProvider?.let { provider ->
-                { newSalt -> provider.adoptSalt(newSalt) }
-            },
-            wipePassphraseAfterUse = wipePassphraseAfterUse
-        )
-        return memRes.fold(
-            onSuccess = { summary ->
-                Result.success(FullBackupImportOutcome(settings = mergedSettings, memorySummary = summary))
-            },
-            onFailure = { err -> Result.failure(err) }
-        )
-    }
-
     /**
      * Full lossless user-data backup exporter (v2):
-     * Exports [AppSettings] plus optional encrypted Jev memory, history records (with local `audioFilePath` stripped),
+     * Exports [AppSettings] plus history records (with local `audioFilePath` stripped),
      * zero-PII daily stats + token usage records, L2 personal bigram/trigram prediction archive,
      * and pinned clipboard items.
      *
@@ -487,10 +397,7 @@ object ApiConfigBackupHelper {
         history: List<HistoryRecord> = emptyList(),
         dailyStats: List<DailyStatsRecord> = emptyList(),
         predictions: PredictionBackupArchive = PredictionBackupArchive(),
-        pinnedClipboard: List<ClipboardEntry> = emptyList(),
-        memoryRepository: JevMemoryRepository? = null,
-        memoryPassphrase: CharArray? = null,
-        wipePassphraseAfterUse: Boolean = true
+        pinnedClipboard: List<ClipboardEntry> = emptyList()
     ): String {
         val baseJson = exportSettingsJson(settings, includeSecrets = options.includeSecrets)
         val rootObj = JsonParser.parseString(baseJson).asJsonObject
@@ -498,14 +405,6 @@ object ApiConfigBackupHelper {
 
         if (!options.includeSecrets) {
             return prettyGson.toJson(rootObj)
-        }
-
-        if (options.includeJevMemory && memoryRepository != null && memoryPassphrase != null && memoryPassphrase.isNotEmpty()) {
-            val encrypted = memoryRepository.exportEncryptedArchive(
-                passphrase = memoryPassphrase,
-                wipePassphraseAfterUse = wipePassphraseAfterUse
-            )
-            rootObj.add("jevMemoryArchive", prettyGson.toJsonTree(encrypted))
         }
 
         if (options.includeHistory && history.isNotEmpty()) {
@@ -532,30 +431,18 @@ object ApiConfigBackupHelper {
     }
 
     /**
-     * Full lossless user-data backup importer (v2 + 100% backward compatible with v1 config/Jev JSON):
-     * Restores settings, optional encrypted Jev memory, and losslessly merges/deduplicates
+     * Full lossless user-data backup importer (v2 + 100% backward compatible with v1 config JSON):
+     * Restores settings and losslessly merges/deduplicates
      * daily stats (incl. v2 token counters), history records, L2 prediction archive, and pinned clipboard items.
      */
     fun importFullBackupJson(
         rawJson: String,
         existingSettings: AppSettings = AppSettings(),
-        repository: AppRepository? = null,
-        memoryRepository: JevMemoryRepository? = repository?.jevMemoryRepository,
-        memoryPassphrase: CharArray? = null,
-        adoptSaltProvider: AndroidKeystoreSaltProvider? = repository?.jevMemorySaltProvider as? AndroidKeystoreSaltProvider,
-        skipMemoryIfNoPassphrase: Boolean = false,
-        wipePassphraseAfterUse: Boolean = true
+        repository: AppRepository? = null
     ): Result<FullBackupImportOutcome> {
-        val baseRes = importBackupWithJevMemory(
-            rawJson = rawJson,
-            existingSettings = existingSettings,
-            memoryRepository = memoryRepository,
-            memoryPassphrase = memoryPassphrase,
-            adoptSaltProvider = adoptSaltProvider,
-            skipMemoryIfNoPassphrase = skipMemoryIfNoPassphrase,
-            wipePassphraseAfterUse = wipePassphraseAfterUse
-        )
-        val baseOutcome = baseRes.getOrElse { return Result.failure(it) }
+        val mergedSettings = parseAndMergeConfigJson(rawJson, existingSettings)
+            .getOrElse { return Result.failure(it) }
+        val baseOutcome = FullBackupImportOutcome(settings = mergedSettings)
 
         val cleaned = unwrapCodeFence(rawJson)
         val rootObj = runCatching { JsonParser.parseString(cleaned).asJsonObject }.getOrNull()
@@ -664,7 +551,6 @@ object ApiConfigBackupHelper {
                 snippetSavedChars = (obj.optLong("snippetSavedChars") ?: 0L).toInt().coerceAtLeast(0),
                 predictionHits = (obj.optLong("predictionHits") ?: 0L).toInt().coerceAtLeast(0),
                 predictionSavedKeys = (obj.optLong("predictionSavedKeys") ?: 0L).toInt().coerceAtLeast(0),
-                jevAdopts = (obj.optLong("jevAdopts") ?: 0L).toInt().coerceAtLeast(0),
                 hourlyVoiceChars = obj.optIntList24("hourlyVoiceChars"),
                 hourlyKeyChars = obj.optIntList24("hourlyKeyChars"),
                 schemeChars = obj.optIntMap("schemeChars"),
@@ -858,26 +744,6 @@ object ApiConfigBackupHelper {
                 )
             } else {
                 existingSettings.multimodalConfig
-            }
-
-            val jevLlmObj = rootObj.optObject("jevLlmConfig")
-            val mergedJevLlm = if (jevLlmObj != null) {
-                val importedKey = jevLlmObj.optString("apiKey")
-                val importedThinking = jevLlmObj.optString("thinkingMode")?.let { raw ->
-                    ThinkingMode.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
-                }
-                existingSettings.jevLlmConfig.copy(
-                    enabled = jevLlmObj.optBoolean("enabled") ?: existingSettings.jevLlmConfig.enabled,
-                    presetId = jevLlmObj.optString("presetId") ?: existingSettings.jevLlmConfig.presetId,
-                    baseUrl = jevLlmObj.optString("baseUrl")?.trim() ?: existingSettings.jevLlmConfig.baseUrl,
-                    apiKey = resolveImportedSecret(importedKey, existingSettings.jevLlmConfig.apiKey),
-                    model = jevLlmObj.optString("model")?.trim() ?: existingSettings.jevLlmConfig.model,
-                    temperature = (jevLlmObj.optFloat("temperature") ?: existingSettings.jevLlmConfig.temperature)
-                        .coerceIn(0.0f, 1.0f),
-                    thinkingMode = importedThinking ?: existingSettings.jevLlmConfig.thinkingMode
-                )
-            } else {
-                existingSettings.jevLlmConfig
             }
 
             val mergedVault = rootObj.optObject("providerVault")?.let { vaultObj ->
@@ -1089,17 +955,6 @@ object ApiConfigBackupHelper {
                     ?: existingSettings.predictionEnabled,
                 aiCompletionEnabled = rootObj.optBoolean("aiCompletionEnabled")
                     ?: existingSettings.aiCompletionEnabled,
-                jevCopilotEnabled = rootObj.optBoolean("jevCopilotEnabled")
-                    ?: existingSettings.jevCopilotEnabled,
-                jevUseDedicatedModel = rootObj.optBoolean("jevUseDedicatedModel")
-                    ?: existingSettings.jevUseDedicatedModel,
-                jevLlmConfig = mergedJevLlm,
-                chatContextSendScreenshot = rootObj.optBoolean("chatContextSendScreenshot")
-                    ?: existingSettings.chatContextSendScreenshot,
-                jevMemoryEnabled = rootObj.optBoolean("jevMemoryEnabled")
-                    ?: existingSettings.jevMemoryEnabled,
-                jevMaskTitleHintEnabled = rootObj.optBoolean("jevMaskTitleHintEnabled")
-                    ?: existingSettings.jevMaskTitleHintEnabled,
                 inputStatsEnabled = rootObj.optBoolean("inputStatsEnabled")
                     ?: existingSettings.inputStatsEnabled,
                 themePreference = themePref,

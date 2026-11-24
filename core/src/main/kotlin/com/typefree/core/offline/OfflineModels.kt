@@ -56,12 +56,10 @@ enum class AiTask {
     SPEAK_TO_EDIT,
     HELP_ME_WRITE,
     TRANSLATE,
-    JEV_COPILOT,
     ASK_AI_CARD,
     TEXT_TRANSFORM,
     NOTE_TRANSCRIBE,
-    SENTENCE_COMPLETION,
-    BUBBLE_COPILOT
+    SENTENCE_COMPLETION
 }
 
 enum class ExecutionSource {
@@ -348,7 +346,7 @@ object OfflineModelCatalog {
             id = ID_SLM_PRO_4B,
             slot = LocalModelSlot.SLM,
             displayName = "旗舰全能版（4B）",
-            subtitle = "Qwen3.5-4B Q4_K_M：全能离线大脑，断网兜底翻译/帮写/离线军师（纯 OCR 文本）",
+            subtitle = "Qwen3.5-4B Q4_K_M：全能离线大脑，断网兜底翻译、帮写与长文润色",
             sizeBytes = 2673L * MB,
             approxRamMb = 3100,
             minRamMb = 10500,
@@ -361,9 +359,7 @@ object OfflineModelCatalog {
             ),
             fallbackTasks = setOf(
                 AiTask.TRANSLATE,
-                AiTask.HELP_ME_WRITE,
-                AiTask.JEV_COPILOT,
-                AiTask.BUBBLE_COPILOT
+                AiTask.HELP_ME_WRITE
             ),
             promptTemplateVersion = CURRENT_PROMPT_TEMPLATE_VERSION,
             minEngineVersion = CURRENT_ENGINE_VERSION

@@ -33,7 +33,6 @@ import com.typefree.ime.data.SttProtocol
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.StreamingComposer
-import com.typefree.ime.ime.jev.JevDomainProfile
 import com.typefree.ime.ime.predict.AiSentenceCompleter
 import com.typefree.ime.localai.AsrParams
 import com.typefree.ime.localai.GenRequest
@@ -178,15 +177,14 @@ class OfflineRoutingIntegrationTest {
     }
 
     @Test
-    fun offlineRouteBridge_hybrid4BWithDedicatedJevCloud_preservesCloudVisionOnlineAndFallsBackOffline() {
+    fun offlineRouteBridge_hybrid4BWithCloudLlm_usesCloudForHelpMeWriteOnlineAndFallsBackOffline() {
         val settings = AppSettings(
-            jevUseDedicatedModel = true,
-            jevLlmConfig = LlmConfig(
+            llmConfig = LlmConfig(
+                enabled = true,
                 baseUrl = "https://generativelanguage.googleapis.com/v1beta",
-                apiKey = "AIza-test-jev",
-                model = "gemini-3.8-flash"
+                apiKey = "AIza-test-llm",
+                model = "gemini-2.5-flash"
             ),
-            chatContextSendScreenshot = true,
             offlineConfig = OfflineModelConfig(
                 mode = OfflineMode.HYBRID,
                 asrSlotOn = true,
@@ -202,22 +200,20 @@ class OfflineRoutingIntegrationTest {
         )
 
         val onlinePlan = OfflineRouteBridge.resolvePlan(
-            task = AiTask.JEV_COPILOT,
+            task = AiTask.HELP_ME_WRITE,
             settings = settings,
             registrySnapshot = snap,
             isNetworkAvailable = true
         )
         assertEquals(TextRoute.Cloud, onlinePlan.text)
-        assertTrue(onlinePlan.jevVisionAllowed)
 
         val offlinePlan = OfflineRouteBridge.resolvePlan(
-            task = AiTask.JEV_COPILOT,
+            task = AiTask.HELP_ME_WRITE,
             settings = settings,
             registrySnapshot = snap,
             isNetworkAvailable = false
         )
         assertEquals(TextRoute.Local(OfflineModelCatalog.ID_SLM_PRO_4B, isFallbackTier = true), offlinePlan.text)
-        assertFalse(offlinePlan.jevVisionAllowed)
     }
 
     // =========================================================================
@@ -505,14 +501,6 @@ class OfflineRoutingIntegrationTest {
         engine.prewarmLiveStreamingIfNeeded(settings)
         val askRes = engine.runAskAiCardQuery(settings, "1+1等于几")
         assertTrue(askRes.isFailure)
-        val jevRes = engine.runJevCopilot(
-            settings = settings,
-            activeStyle = defaultStyle,
-            domainProfile = JevDomainProfile.FORMAL_WORKFLOW,
-            chatContextMessages = listOf("对方：明天开会")
-        )
-        assertTrue(jevRes.isFailure)
-        assertFalse(engine.canJevUseVisionScreenshot(settings))
 
         // Strictly ZERO HTTP requests made
         assertEquals(0, networkCalls.get())

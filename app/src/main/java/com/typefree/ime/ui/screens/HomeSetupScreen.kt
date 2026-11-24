@@ -358,11 +358,10 @@ fun HomeSetupScreen(
         }
     }
     var historyFilterDateKey by rememberSaveable { mutableStateOf<Int?>(null) }
-    var showJevMemoryDialog by remember { mutableStateOf(false) }
-    val weekSnapshot = remember(settings, history, statsRev, showInsightsPage, showJevMemoryDialog) {
+    val weekSnapshot = remember(settings, history, statsRev, showInsightsPage) {
         repository.computeInsightsSnapshot(StatsTimeRange.DAYS_7)
     }
-    val allSnapshot = remember(settings, history, statsRev, showInsightsPage, showJevMemoryDialog) {
+    val allSnapshot = remember(settings, history, statsRev, showInsightsPage) {
         repository.computeInsightsSnapshot(StatsTimeRange.ALL)
     }
 
@@ -415,18 +414,11 @@ fun HomeSetupScreen(
                 showInsightsPage = false
                 isPlaygroundSheetOpen = true
             },
-            onOpenJevMemory = { showJevMemoryDialog = true },
             onOpenApiUsage = {
                 showInsightsPage = false
                 onNavigateToVoiceAiSubTab(AppDestinations.SUBTAB_VOICE_API)
             }
         )
-        if (showJevMemoryDialog) {
-            JevMemoryManagementDialog(
-                repository = repository,
-                onDismiss = { showJevMemoryDialog = false }
-            )
-        }
         return
     }
 
@@ -631,7 +623,6 @@ fun HomeSetupScreen(
             readiness = readiness,
             hasPendingOfflineRestore = settings.pendingOfflineRestore != null,
             isAccessibilityReady = isA11yReady,
-            jevCopilotEnabled = settings.jevCopilotEnabled,
             onRequestMic = {
                 permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             },
@@ -759,7 +750,12 @@ fun HomeSetupScreen(
                     val learned = repository.learnCorrectionFromDiff(baseline, updatedValue.text)
                     if (learned != null) {
                         lastDictatedBaseline = updatedValue.text
-                        autoLearnedBanner = "已自动学习改错词条：「${learned.term}」已加入个人词典！"
+                        autoLearnedBanner = AppStrings.pick(
+                            appLang,
+                            "已自动学习改错词条：「${learned.term}」已加入个人词典！",
+                            "Auto-learned correction: \"${learned.term}\" added to personal dictionary!",
+                            "已自動學習改錯詞條：「${learned.term}」已加入個人詞典！"
+                        )
                     }
                 }
             },
@@ -767,7 +763,8 @@ fun HomeSetupScreen(
             manualIntent = sandboxManualIntent,
             onSelectManualIntent = { mode -> sandboxManualIntent = mode },
             translateTarget = settings.activeTranslateTarget,
-            activeStyleLabel = "${activeStyle.emoji} ${activeStyle.name}" + if (isAutoStyle) " · 自动" else "",
+            activeStyleLabel = "${activeStyle.emoji} ${AppStrings.toneStyleName(activeStyle, appLang)}" +
+                if (isAutoStyle) tr(" · 自动", " · Auto", " · 自動") else "",
             selectedLength = selectedText.length,
             undoAvailable = undoSnapshot != null,
             copyFeedback = copyFeedback,
@@ -793,8 +790,12 @@ fun HomeSetupScreen(
             },
             onSelectSamplePhrase = {
                 undoSnapshot = sandboxValue
-                val text = sandboxValue.text.ifBlank { SAMPLE_PLAYGROUND_TEXT }
-                val targetSpan = "明天下午三点那个项目评审会我可能赶不过去了"
+                val text = sandboxValue.text.ifBlank { defaultSampleText }
+                val targetSpan = if (appLang == AppLang.EN) {
+                    "I might not make tomorrow's 3 PM design review"
+                } else {
+                    "明天下午三点那个项目评审会我可能赶不过去了"
+                }
                 val idx = text.indexOf(targetSpan)
                 sandboxValue = if (idx >= 0) {
                     TextFieldValue(
@@ -803,8 +804,8 @@ fun HomeSetupScreen(
                     )
                 } else {
                     TextFieldValue(
-                        text = SAMPLE_PLAYGROUND_TEXT,
-                        selection = TextRange(0, SAMPLE_PLAYGROUND_TEXT.length)
+                        text = defaultSampleText,
+                        selection = TextRange(0, defaultSampleText.length)
                     )
                 }
                 lastDictatedBaseline = sandboxValue.text
@@ -813,10 +814,10 @@ fun HomeSetupScreen(
             onResetSample = {
                 undoSnapshot = sandboxValue
                 sandboxValue = TextFieldValue(
-                    text = SAMPLE_PLAYGROUND_TEXT,
-                    selection = TextRange(SAMPLE_PLAYGROUND_TEXT.length)
+                    text = defaultSampleText,
+                    selection = TextRange(defaultSampleText.length)
                 )
-                lastDictatedBaseline = SAMPLE_PLAYGROUND_TEXT
+                lastDictatedBaseline = defaultSampleText
                 autoLearnedBanner = null
                 sandboxError = null
             },
@@ -845,11 +846,21 @@ fun HomeSetupScreen(
                 sandboxError = null
                 if (!recorder.hasRecordPermission()) {
                     permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    sandboxError = "请先授予麦克风录音权限后再试"
+                    sandboxError = AppStrings.pick(
+                        appLang,
+                        "请先授予麦克风录音权限后再试",
+                        "Please grant microphone permission first",
+                        "請先授予麥克風錄音權限後再試"
+                    )
                     return@PlaygroundBottomSheet
                 }
                 if (!SetupStatsHelper.isApiConfigured(settings, registrySnapshot)) {
-                    sandboxError = "尚未配置云端 API 或启用本机离线模型，请前往「模型与 API」完成配置"
+                    sandboxError = AppStrings.pick(
+                        appLang,
+                        "尚未配置云端 API 或启用本机离线模型，请前往「模型与 API」完成配置",
+                        "No cloud API or offline model configured yet — open Models & API to set up",
+                        "尚未設定雲端 API 或啟用本機離線模型，請前往「模型與 API」完成設定"
+                    )
                     return@PlaygroundBottomSheet
                 }
                 sandboxStreamSession?.cancel()
@@ -873,7 +884,12 @@ fun HomeSetupScreen(
                     }
                     .onFailure { err ->
                         liveSession?.cancel()
-                        sandboxError = err.message ?: "无法启动麦克风录音"
+                        sandboxError = err.message ?: AppStrings.pick(
+                            appLang,
+                            "无法启动麦克风录音",
+                            "Unable to start microphone recording",
+                            "無法啟動麥克風錄音"
+                        )
                     }
             },
             onCancelRecording = {
@@ -909,7 +925,12 @@ fun HomeSetupScreen(
                     isRecording = false
                     val recorded = recorder.stopRecording().getOrElse { err ->
                         liveSession?.cancel()
-                        sandboxError = err.message ?: "录音时间过短或未采集到声音"
+                        sandboxError = err.message ?: AppStrings.pick(
+                            appLang,
+                            "录音时间过短或未采集到声音",
+                            "Recording too short or no audio captured",
+                            "錄音時間過短或未擷取到聲音"
+                        )
                         return@launch
                     }
 
@@ -929,7 +950,12 @@ fun HomeSetupScreen(
                     if (preTranscribed == null && !recorded.hasValidSpeech) {
                         liveSession?.cancel()
                         processingStage = null
-                        sandboxError = "未检测到清晰说话声，请靠近麦克风重试"
+                        sandboxError = AppStrings.pick(
+                            appLang,
+                            "未检测到清晰说话声，请靠近麦克风重试",
+                            "No clear speech detected — please speak closer to the mic",
+                            "未偵測到清晰說話聲，請靠近麥克風重試"
+                        )
                         return@launch
                     }
 
@@ -1798,7 +1824,6 @@ private fun KeyboardSetupWizardCard(
     readiness: ReadinessState,
     hasPendingOfflineRestore: Boolean = false,
     isAccessibilityReady: Boolean = false,
-    jevCopilotEnabled: Boolean = true,
     onRequestMic: () -> Unit,
     onOpenAppSettings: () -> Unit,
     onOpenImeSettings: () -> Unit,
@@ -2045,14 +2070,14 @@ private fun KeyboardSetupWizardCard(
             WizardStepItem(
                 stepNumber = 4,
                 title = tr(
-                    "进阶可选 · 开启无障碍服务（✦ 军师读屏 / 悬浮球）",
-                    "Optional · Accessibility (✦ Copilot Context / Floating Bubble)",
-                    "進階可選 · 開啟無障礙服務（✦ 軍師讀屏 / 懸浮球）"
+                    "进阶可选 · 开启无障碍服务（悬浮球直插文本）",
+                    "Optional · Accessibility (Floating Voice Bubble)",
+                    "進階可選 · 開啟無障礙服務（懸浮球直插文字）"
                 ),
                 subtitle = if (isAccessibilityReady) {
-                    tr("无障碍服务已就绪，✦ 军师可按需读取当前聊天上文", "Ready · Copilot can read redacted chat context on demand", "無障礙服務已就緒，✦ 軍師可按需讀取目前聊天上文")
+                    tr("无障碍服务已就绪，悬浮球可将语音识别结果直接插入光标处", "Ready · Floating Voice Bubble can insert text directly at the cursor", "無障礙服務已就緒，懸浮球可將語音識別結果直接插入游標處")
                 } else {
-                    tr("使用「✦ 军师」读屏回复或悬浮胶囊时需要开启；纯打字与基础语音可跳过", "Only needed for Jev Copilot chat context or Floating Bubble; optional for typing & dictation", "使用「✦ 軍師」讀屏回覆或懸浮膠囊時需要開啟；純打字與基礎語音可略過")
+                    tr("仅在使用悬浮语音胶囊直插文本时需要开启；使用内置键盘与基础语音可跳过", "Only needed for Floating Voice Bubble direct insertion; optional for keyboard typing & voice dictation", "僅在使用懸浮語音膠囊直插文字時需要開啟；使用內建鍵盤與基礎語音可略過")
                 },
                 isDone = isAccessibilityReady,
                 buttonLabel = if (isAccessibilityReady) tr("已开启", "Enabled", "已開啟") else tr("去开启", "Enable", "去開啟"),
@@ -2169,12 +2194,10 @@ private fun PersonalizationReportCard(
 ) {
     val appLang = LocalAppLanguage.current
     val interactionSource = remember { MutableInteractionSource() }
-    val topDna = remember(allSnapshot.jevDnaItems) { allSnapshot.jevDnaItems.take(3) }
     val personalLinkMemoryCount = allSnapshot.personalBigramCount + allSnapshot.personalTrigramCount
     val hasEnoughUsageToAutoExpand = (allSnapshot.voiceCount + allSnapshot.keyCommits) >= 5 ||
         allSnapshot.autoLearnedDictCount > 0 ||
-        personalLinkMemoryCount > 0 ||
-        allSnapshot.jevSessionCount > 0
+        personalLinkMemoryCount > 0
     var manualExpanded by rememberSaveable { mutableStateOf(false) }
     val expanded = hasEnoughUsageToAutoExpand || manualExpanded
 
@@ -2255,58 +2278,6 @@ private fun PersonalizationReportCard(
 
             SmoothDisclosure(expanded = expanded) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    // Top 3 Jev Style DNA Chips (Active emerald / Observing amber)
-                    if (topDna.isNotEmpty()) {
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            topDna.forEach { item ->
-                                val accent = if (item.isActive) TypeFreeEmerald else TypeFreeAmber
-                                val chipText = if (item.isActive) {
-                                    "✓ ${item.title}"
-                                } else {
-                                    tr(
-                                        "${item.title} · 观察中 ${item.currentCount}/${item.requiredCount}",
-                                        "${item.title} · Learning ${item.currentCount}/${item.requiredCount}",
-                                        "${item.title} · 觀察中 ${item.currentCount}/${item.requiredCount}"
-                                    )
-                                }
-                                Surface(
-                                    shape = RoundedCornerShape(50),
-                                    color = accent.copy(alpha = 0.12f),
-                                    border = BorderStroke(1.dp, accent.copy(alpha = 0.36f))
-                                ) {
-                                    Text(
-                                        text = chipText,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = accent,
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(11.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)
-                        ) {
-                            Text(
-                                text = tr(
-                                    "正在端侧观察你的表达习惯，使用 ✦ Jev 军师或日常输入后将自动提炼专属语体 DNA",
-                                    "Learning your phrasing privately on-device — use Jev Copilot or daily dictation to build your personal Style DNA",
-                                    "正在端側觀察你的表達習慣，使用 ✦ Jev 軍師或日常輸入後將自動提煉專屬語體 DNA"
-                                ),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp)
-                            )
-                        }
-                    }
-
                     // 3 Real End-Side Asset Counters
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -2325,9 +2296,9 @@ private fun PersonalizationReportCard(
                             modifier = Modifier.weight(1f)
                         )
                         HeroMiniStatBox(
-                            label = tr("Jev 关系档案", "Copilot Profiles", "Jev 關係檔案"),
-                            value = allSnapshot.jevSessionCount.toString(),
-                            unit = tr("个", "saved", "個"),
+                            label = tr("个人词典总量", "Dictionary", "個人詞典總量"),
+                            value = dictionarySize.toString(),
+                            unit = tr("条", "terms", "條"),
                             modifier = Modifier.weight(1f)
                         )
                     }

@@ -41,8 +41,8 @@ import com.typefree.ime.ime.VoicePhase
 import com.typefree.ime.ime.chrome.BottomCornerUtilityIcons
 import com.typefree.ime.ime.chrome.ErrorContextBanner
 import com.typefree.ime.ime.chrome.SubPanelHeaderBridgeBar
-import com.typefree.ime.ime.chrome.SubPanelModeSwitchTrack
 import com.typefree.ime.ime.chrome.SubPanelVoiceTriggerRow
+import com.typefree.ime.ime.chrome.SubPanelWriteModeBadge
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.LocalTypeFreeKeyboardPalette
@@ -278,10 +278,6 @@ fun HelpMeWritePanel(
     amplitudes: List<Float> = emptyList(),
     elapsedMs: Long,
     onClose: () -> Unit,
-    onOpenJevCopilot: () -> Unit = {},
-    onAcceptChatContextDisclosure: () -> Unit = {},
-    onDeclineChatContextDisclosure: () -> Unit = {},
-    onToggleIgnoreChatContext: () -> Unit = {},
     onSwitchToQwerty: () -> Unit,
     onOpenClipboard: () -> Unit,
     onPresetClick: (HelpWritePromptPreset) -> Unit,
@@ -331,12 +327,7 @@ fun HelpMeWritePanel(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
-                    SubPanelModeSwitchTrack(
-                        isJevActive = false,
-                        jevEnabled = settings.jevCopilotEnabled,
-                        onSelectHelpMeWrite = {},
-                        onSelectJevCopilot = onOpenJevCopilot
-                    )
+                    SubPanelWriteModeBadge()
 
                     if (hasDraft) {
                         // 当有草稿时显示翡翠绿微标「已读草稿 · N字」
@@ -391,15 +382,6 @@ fun HelpMeWritePanel(
                                 maxLines = 1
                             )
                         }
-                    } else if (!settings.jevCopilotEnabled) {
-                        Text(
-                            text = tr("Help me write · 帮我写", "Help Me Write", "Help me write · 幫我寫"),
-                            color = palette.keyTextPrimary,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
                     }
                 }
 

@@ -2,8 +2,6 @@ package com.typefree.ime.data.stats
 
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.VoiceIntentMode
-import com.typefree.ime.ime.jev.memory.JevAxisGroup
-import com.typefree.ime.ime.jev.memory.StyleFeatureKey
 
 enum class StatsTimeRange(val label: String, val posterBadge: String) {
     DAYS_7("近 7 天", "近 7 天"),
@@ -98,7 +96,6 @@ object TokenFeatureKeys {
     const val SPEAK_TO_EDIT = "SPEAK_TO_EDIT"
     const val HELP_ME_WRITE = "HELP_ME_WRITE"
     const val TRANSLATE = "TRANSLATE"
-    const val JEV_COPILOT = "JEV_COPILOT"
     const val ASK_AI = "ASK_AI"
     const val SENTENCE_COMPLETION = "SENTENCE_COMPLETION"
     const val MULTIMODAL_AUDIO = "MULTIMODAL_AUDIO"
@@ -109,7 +106,6 @@ object TokenFeatureKeys {
         SPEAK_TO_EDIT -> "语音/快捷改写"
         HELP_ME_WRITE -> "帮我写 / 灵感成稿"
         TRANSLATE -> "实时语音翻译"
-        JEV_COPILOT -> "✦ Jev 军师"
         ASK_AI -> "问 AI / == 直问"
         SENTENCE_COMPLETION -> "AI 整句续写"
         MULTIMODAL_AUDIO -> "多模态音频直出"
@@ -124,7 +120,6 @@ object TokenFeatureKeys {
             VoiceIntentMode.SPEAK_TO_EDIT -> SPEAK_TO_EDIT
             VoiceIntentMode.HELP_ME_WRITE -> HELP_ME_WRITE
             VoiceIntentMode.TRANSLATE -> TRANSLATE
-            VoiceIntentMode.JEV_COPILOT -> JEV_COPILOT
         }
     }
 }
@@ -151,7 +146,6 @@ data class DailyStatsRecord(
     val snippetSavedChars: Int = 0,
     val predictionHits: Int = 0,
     val predictionSavedKeys: Int = 0,
-    val jevAdopts: Int = 0,
     val hourlyVoiceChars: List<Int> = List(24) { 0 },
     val hourlyKeyChars: List<Int> = List(24) { 0 },
     val schemeChars: Map<String, Int> = emptyMap(), // key: InputScheme.name or "ENGLISH"
@@ -170,7 +164,7 @@ data class DailyStatsRecord(
     val tokenByFeature: Map<String, Long> = emptyMap()
 ) {
     val totalChars: Int get() = voiceChars + keyChars
-    val hasActivity: Boolean get() = totalChars > 0 || voiceCount > 0 || keyCommits > 0 || jevAdopts > 0
+    val hasActivity: Boolean get() = totalChars > 0 || voiceCount > 0 || keyCommits > 0
     val totalCloudTokens: Long
         get() = cloudPromptTokens.coerceAtLeast(0L) +
             cloudCompletionTokens.coerceAtLeast(0L) +
@@ -221,25 +215,6 @@ data class AppSceneShareItem(
     val percent: Int
 )
 
-data class JevStyleDnaItem(
-    val key: StyleFeatureKey,
-    val title: String,
-    val isActive: Boolean,
-    val isManualOverride: Boolean,
-    val currentCount: Int,
-    val requiredCount: Int,
-    val emaPercent: Int,
-    val explanation: String
-)
-
-data class JevAxisTendencySummary(
-    val group: JevAxisGroup,
-    val groupTitle: String,
-    val sampleCount: Int,
-    val labels: List<String>,
-    val percents: List<Int>
-)
-
 data class MilestoneItem(
     val id: String,
     val glyph: String,
@@ -284,10 +259,6 @@ data class InsightsSnapshot(
     val snippetSavedChars: Int,
     val predictionHits: Int,
     val predictionSavedKeys: Int,
-    val jevDnaItems: List<JevStyleDnaItem>,
-    val jevAxisTendency: JevAxisTendencySummary?,
-    val jevSessionCount: Int,
-    val jevTotalInteractions: Int,
     val autoLearnedDictCount: Int,
     val totalDictCount: Int,
     val personalBigramCount: Int,
@@ -305,7 +276,6 @@ enum class SharePosterModule(val title: String, val chipLabel: String) {
     HEATMAP("陪伴热力足迹", "热力足迹"),
     MONTHLY_TREND("12 月成长走势", "月度走势"),
     RHYTHM_24H("24h 双色作息节律", "24h 节律"),
-    JEV_DNA("✦ Jev 沟通 DNA", "沟通 DNA"),
     SCENES("主要表达场景", "场景分布"),
     MILESTONES("离线护航与印记", "离线印记")
 }
@@ -342,9 +312,9 @@ enum class SharePosterPreset(
             SharePosterModule.RHYTHM_24H
         )
     ),
-    PERSONA(
-        label = "沟通人格",
-        modules = listOf(SharePosterModule.JEV_DNA, SharePosterModule.RHYTHM_24H, SharePosterModule.MILESTONES)
+    SCENES(
+        label = "场景足迹",
+        modules = listOf(SharePosterModule.SCENES, SharePosterModule.RHYTHM_24H, SharePosterModule.MILESTONES)
     )
 }
 
@@ -420,7 +390,6 @@ data class PredictionBackupArchive(
 
 data class FullBackupOptions(
     val includeSecrets: Boolean = true,
-    val includeJevMemory: Boolean = false,
     val includeHistory: Boolean = true,
     val includeDailyStats: Boolean = true,
     val includePredictions: Boolean = true,

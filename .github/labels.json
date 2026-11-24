@@ -40,9 +40,9 @@
     "description": "小鹤音形、双拼、Rime 方案、快符与词库"
   },
   {
-    "name": "area: voice-jev",
+    "name": "area: voice-ai",
     "color": "0052cc",
-    "description": "语音识别、Jev 军师与 AI 帮写/翻译"
+    "description": "语音识别、问 AI 与 AI 帮写/改写/翻译"
   },
   {
     "name": "area: ui-settings",

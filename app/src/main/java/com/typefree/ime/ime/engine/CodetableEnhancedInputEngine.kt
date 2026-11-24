@@ -110,7 +110,7 @@ class CodetableEnhancedInputEngine(
     private val clipboardReader: () -> String = { "" },
     private val commitExecutor: AndroidCommitExecutor? = null,
     private val onToast: (String) -> Unit = {},
-    private val onOpenJevCopilot: () -> Unit = {},
+    private val onOpenHelpMeWrite: () -> Unit = {},
     private val onAsyncReloadSchema: ((String) -> Unit)? = null,
     var isActiveEnginePredicate: () -> Boolean = { true },
     var isIncognitoPredicate: () -> Boolean = { false },
@@ -792,8 +792,8 @@ class CodetableEnhancedInputEngine(
                 rimeClient.setOption("simplification", next)
                 onToast(if (next) "繁體中文模式" else "简体中文模式")
             }
-            DirectCommandType.OPEN_JEV_COPILOT -> {
-                onOpenJevCopilot()
+            DirectCommandType.OPEN_HELP_ME_WRITE -> {
+                onOpenHelpMeWrite()
             }
             DirectCommandType.TOGGLE_SINGLE_CHAR_MODE -> {
                 val enabled = coordinator.singleCharMode

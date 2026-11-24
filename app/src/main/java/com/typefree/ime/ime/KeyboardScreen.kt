@@ -49,7 +49,6 @@ import com.typefree.ime.ime.chrome.TypeFreeTopBar
 import com.typefree.ime.ime.panels.ArcTranslateFullPanel
 import com.typefree.ime.ime.panels.AskAiCardPanel
 import com.typefree.ime.ime.panels.HelpMeWritePanel
-import com.typefree.ime.ime.panels.JevCopilotPanel
 import com.typefree.ime.ime.panels.RealtimeTranslatePanel
 import com.typefree.ime.ime.panels.SpeakToEditPanel
 import com.typefree.ime.ime.panels.VoiceMainPanel
@@ -81,9 +80,6 @@ fun KeyboardScreen(
     onSelectTabMode: (KeyboardTabMode) -> Unit = { onAction(ImeUiAction.SelectTab(it)) },
     onOpenHelpMeWrite: () -> Unit = { onAction(ImeUiAction.OpenHelpMeWrite) },
     onCloseSubPanel: () -> Unit = { onAction(ImeUiAction.CloseSubPanel) },
-    onAcceptChatContextDisclosure: () -> Unit = { onAction(ImeUiAction.AcceptChatContextDisclosure) },
-    onDeclineChatContextDisclosure: () -> Unit = { onAction(ImeUiAction.DeclineChatContextDisclosure) },
-    onToggleIgnoreChatContext: () -> Unit = { onAction(ImeUiAction.ToggleIgnoreChatContext) },
     onDismissSpeakToEdit: () -> Unit = { onAction(ImeUiAction.DismissSpeakToEdit) },
     onSelectTranslateLanguage: (String) -> Unit = { onAction(ImeUiAction.SelectTranslateLanguage(it)) },
     onTogglePunctuationStrip: () -> Unit = { onAction(ImeUiAction.TogglePunctuationStrip) },
@@ -175,9 +171,7 @@ fun KeyboardScreen(
     )
 
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .alpha(if (uiState.isFullScreenPeekCapturing) 0f else 1f)
+        modifier = Modifier.fillMaxWidth()
     ) {
         // Transparent 28.dp Floating Preedit Overhang above the 1.dp keyboard top divider
         // (`onComputeInsets` offsets `contentTopInsets` by 28.dp so host app keeps full 252.dp viewport)
@@ -188,7 +182,7 @@ fun KeyboardScreen(
                 .padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
             contentAlignment = androidx.compose.ui.Alignment.BottomStart
         ) {
-            if (!uiState.isFullScreenPeekCapturing && isActiveQwertyGrid && uiState.isFlypyComposing) {
+            if (isActiveQwertyGrid && uiState.isFlypyComposing) {
                 FloatingPreeditCapsule(
                     composingCode = uiState.flypyComposingCode,
                     preeditDisplay = uiState.preeditDisplay,
@@ -200,7 +194,7 @@ fun KeyboardScreen(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(if (uiState.isFullScreenPeekCapturing) androidx.compose.ui.graphics.Color.Transparent else palette.keyboardCanvas)
+                .background(palette.keyboardCanvas)
                 .navigationBarsPadding()
                 .height(metrics.frameHeight)
         ) {
@@ -245,15 +239,6 @@ fun KeyboardScreen(
                     }
 
                     uiState.tabMode == KeyboardTabMode.VOICE &&
-                        resolvedSubPanel == VoiceSubPanel.JEV_COPILOT -> {
-                        JevCopilotPanel(
-                            uiState = uiState,
-                            settings = settings,
-                            onAction = onAction
-                        )
-                    }
-
-                    uiState.tabMode == KeyboardTabMode.VOICE &&
                         resolvedSubPanel == VoiceSubPanel.ASK_AI_CARD -> {
                         AskAiCardPanel(
                             uiState = uiState,
@@ -270,10 +255,6 @@ fun KeyboardScreen(
                             amplitudes = amplitudes,
                             elapsedMs = elapsedMs,
                             onClose = onCloseSubPanel,
-                            onOpenJevCopilot = { onAction(ImeUiAction.OpenJevCopilot) },
-                            onAcceptChatContextDisclosure = onAcceptChatContextDisclosure,
-                            onDeclineChatContextDisclosure = onDeclineChatContextDisclosure,
-                            onToggleIgnoreChatContext = onToggleIgnoreChatContext,
                             onSwitchToQwerty = { onSelectTabMode(KeyboardTabMode.QWERTY) },
                             onOpenClipboard = onOpenClipboard,
                             onPresetClick = onHelpWritePresetClick,
@@ -383,7 +364,6 @@ fun KeyboardScreen(
                                         onPasteClipboardText = onPasteClipboardText,
                                         onDismissFreshClipboardBanner = { onAction(ImeUiAction.DismissFreshClipboardBanner) },
                                         onToggleManualIncognito = onToggleManualIncognito,
-                                        onOpenJevCopilot = { onAction(ImeUiAction.OpenJevCopilot) },
                                         onToggleClipboard = {
                                             if (uiState.isClipboardOpen) onCloseClipboard() else onOpenClipboard()
                                         },
@@ -426,7 +406,6 @@ fun KeyboardScreen(
                                         onToggleLiveWrite = onToggleLiveWrite,
                                         onToggleWhisperMode = onToggleWhisperMode,
                                         onOpenHelpMeWrite = onOpenHelpMeWrite,
-                                        onOpenJevCopilot = { onAction(ImeUiAction.OpenJevCopilot) },
                                         onToggleManualIncognito = onToggleManualIncognito,
                                         onToggleSingleCharMode = { onAction(ImeUiAction.ToggleSingleCharMode) },
                                         onOpenDictionary = { onOpenHostApp(AppDestinations.TAB_KEYBOARD) },
@@ -448,7 +427,6 @@ fun KeyboardScreen(
                                         didPauseMedia = didPauseMedia,
                                         onSwipeToTab = onSelectTabMode,
                                         onVoicePenClick = onOpenHelpMeWrite,
-                                        onOpenJevCopilot = { onAction(ImeUiAction.OpenJevCopilot) },
                                         onMicPressDown = { onMicPressDown(VoiceIntentMode.DICTATE) },
                                         onMicPressUp = onMicPressUp,
                                         onEnterArcTranslate = onEnterArcTranslate,

@@ -136,32 +136,4 @@ class LocalPromptTemplatesGoldenTest {
         assertEquals(expectedSystem, pair.systemPrompt)
         assertEquals(expectedUser, pair.userPrompt)
     }
-
-    @Test
-    fun jevCopilotPromptGoldenSnapshot() {
-        val pair = LocalPromptTemplates.buildJevCopilotPrompt(
-            chatContext = "[对方] 这个报价太高了，再便宜一半行不行？联系电话 [手机号_1]",
-            userBottomLine = "最多让利 10%，不接受腰斩",
-            domainHint = "商务谈判"
-        )
-
-        val expectedSystem = "TypeFree端侧引擎 | 任务:jev_copilot | 仅输出合规<jev>XML，含3策与求和100权重。"
-
-        val expectedUser =
-            "<domain_profile>\n战术域：商务谈判\n</domain_profile>\n" +
-                "<chat_context>\n[对方] 这个报价太高了，再便宜一半行不行？联系电话 [手机号_1]\n</chat_context>\n" +
-                "<user_bottom_line>\n最多让利 10%，不接受腰斩\n</user_bottom_line>\n\n" +
-                "请严格按以下 <jev> XML 结构输出：\n" +
-                "<jev>\n<lv>1-9</lv>\n<tag>4-8字定性</tag>\n<subtext>38字内潜台词</subtext>\n" +
-                "<opt label=\"4字鲜活战术词1\">策略1纯文本回复正文</opt>\n" +
-                "<opt label=\"4字鲜活战术词2\">策略2纯文本回复正文</opt>\n" +
-                "<opt label=\"4字鲜活战术词3\">策略3纯文本回复正文</opt>\n" +
-                "<weights>W1,W2,W3</weights>\n</jev>"
-
-        assertEquals(1, pair.templateVersion)
-        assertEquals(320, pair.maxTokens)
-        assertEquals(expectedSystem, pair.systemPrompt)
-        assertEquals(expectedUser, pair.userPrompt)
-        assertTrue(pair.systemPrompt.contains("<jev>"))
-    }
 }

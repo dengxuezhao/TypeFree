@@ -3,10 +3,8 @@ package com.typefree.ime.v301
 import android.view.accessibility.AccessibilityEvent
 import com.google.gson.Gson
 import com.typefree.ime.audio.WavAudioRecorder
-import com.typefree.ime.bubble.ChatScreenContextExtractor
 import com.typefree.ime.bubble.TypeFreeAccessibilityService
 import com.typefree.ime.data.AppSettings
-import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InMemoryKeyValueStore
 import com.typefree.ime.data.InputScheme
@@ -16,7 +14,6 @@ import com.typefree.ime.data.MultimodalConfig
 import com.typefree.ime.data.ProviderCredential
 import com.typefree.ime.data.SecretVault
 import com.typefree.ime.data.SttConfig
-import com.typefree.ime.data.ThinkingMode
 import com.typefree.ime.ime.ImeLogic
 import com.typefree.ime.ime.ImeUiState
 import com.typefree.ime.ime.engine.RimeDataManager
@@ -26,7 +23,6 @@ import com.typefree.ime.ime.predict.PredictionCoordinator
 import com.typefree.ime.ime.predict.PredictionStore
 import com.typefree.ime.ime.predict.SentenceCompletionExecutor
 import com.typefree.ime.network.AiPipelineEngine
-import com.typefree.ime.network.PromptBuilder
 import com.typefree.rime.RimeBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,13 +31,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
-import okhttp3.Interceptor
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Protocol
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
-import okio.Buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -108,7 +97,7 @@ class V301BugfixAndSecurityTest {
     }
 
     @Test
-    fun m1_canRouteVisionScreenshot_blocksPureTextWithoutGeminiFallback_andStripsVisionGuide() {
+    fun m1_canRouteVisionScreenshot_blocksPureTextWithoutGeminiFallback() {
         assertFalse(
             AiPipelineEngine.canRouteVisionScreenshot(
                 primaryBaseUrl = "https://api.deepseek.com/v1",
@@ -126,108 +115,6 @@ class V301BugfixAndSecurityTest {
                     model = "gemini-2.5-flash"
                 )
             )
-        )
-
-        val style = DefaultPresets.defaultStyles().first()
-        val (_, promptWithVision) = PromptBuilder.buildHelpMeWritePrompts(
-            voiceInstruction = "礼貌答应",
-            style = style,
-            targetAppName = "微信",
-            dictionary = emptyList(),
-            surroundingBeforeCursor = "",
-            chatContextMessages = listOf("[对方] 今晚有空吗？"),
-            hasChatScreenshot = true
-        )
-        assertTrue(promptWithVision.contains("<chat_screen_vision_guide>"))
-
-        val stripped = PromptBuilder.stripChatScreenVisionGuide(promptWithVision)
-        assertFalse(stripped.contains("<chat_screen_vision_guide>"))
-        assertTrue(stripped.contains("<chat_context>"))
-    }
-
-    @Test
-    fun m1_visionHttp400ShortCircuit_doesNotPolluteThinkingHintCache_andFallsBackCleanly() = runBlocking {
-        val capturedBodies = mutableListOf<String>()
-        val mockClient = OkHttpClient.Builder()
-            .addInterceptor(Interceptor { chain ->
-                val req = chain.request()
-                val buf = Buffer()
-                req.body?.writeTo(buf)
-                val bodyStr = buf.readUtf8()
-                synchronized(capturedBodies) {
-                    capturedBodies.add(bodyStr)
-                }
-                if (bodyStr.contains("image_url")) {
-                    // Simulate HTTP 400 rejecting image_url array content on an unknown custom model name
-                    Response.Builder()
-                        .request(req)
-                        .protocol(Protocol.HTTP_1_1)
-                        .code(400)
-                        .message("Bad Request")
-                        .body(
-                            """{"error":{"message":"Invalid value: 'image_url'. Content must be a string."}}"""
-                                .toResponseBody("application/json".toMediaType())
-                        )
-                        .build()
-                } else {
-                    Response.Builder()
-                        .request(req)
-                        .protocol(Protocol.HTTP_1_1)
-                        .code(200)
-                        .message("OK")
-                        .body(
-                            """{"choices":[{"message":{"role":"assistant","content":"今晚八点见！"}}]}"""
-                                .toResponseBody("application/json".toMediaType())
-                        )
-                        .build()
-                }
-            })
-            .build()
-
-        val baseUrl = "https://custom-gateway.example.com/v1"
-        val customModel = "custom-gateway-text-only-v1"
-        val settings = AppSettings(
-            llmConfig = LlmConfig(
-                baseUrl = baseUrl,
-                apiKey = "sk-test-123",
-                model = customModel,
-                thinkingMode = ThinkingMode.DISABLED
-            ),
-            multimodalConfig = MultimodalConfig(
-                baseUrl = "",
-                apiKey = "",
-                model = ""
-            )
-        )
-        val style = DefaultPresets.defaultStyles().first()
-        val engine = AiPipelineEngine(httpClient = mockClient)
-
-        val res = engine.runTextTransform(
-            settings = settings,
-            activeStyle = style,
-            rawOrSelectedText = "礼貌答应",
-            explicitInstruction = "根据聊天上下文回复",
-            targetAppName = "微信",
-            chatContextMessages = listOf("[对方] 今晚八点有空吗？"),
-            chatContextScreenshotBase64 = "aGVsbG8="
-        )
-
-        assertTrue("Expected text-only fallback to succeed", res.isSuccess)
-        assertEquals("今晚八点见！", res.getOrThrow().finalOutput)
-        // Must be exactly 2 requests: 1st with image_url (400 short-circuit, NO altSyntax thinking retry), 2nd text-only fallback
-        assertEquals(2, capturedBodies.size)
-        assertFalse(
-            "Vision HTTP 400 must NOT mark thinking hint as unsupported",
-            AiPipelineEngine.isThinkingHintMarkedUnsupported(baseUrl, customModel, ThinkingMode.DISABLED)
-        )
-
-        val firstReqBody = capturedBodies[0]
-        val secondReqBody = capturedBodies[1]
-        assertTrue(firstReqBody.contains("image_url"))
-        assertFalse(secondReqBody.contains("image_url"))
-        assertFalse(
-            "Text-only fallback request must strip <chat_screen_vision_guide>",
-            secondReqBody.contains("chat_screen_vision_guide")
         )
     }
 
@@ -398,39 +285,6 @@ class V301BugfixAndSecurityTest {
         )
         assertTrue(stateChangedShouldHandle)
         assertTrue(stateChangedMultiWin)
-    }
-
-    // =========================================================================
-    // M5: Viewport Screenshot Crop Safe Upper Bound & Package-Scoped InputBox Top
-    // =========================================================================
-
-    @Test
-    fun m5_viewportCropAndInputBoxHint_enforcesMaxSafeBottomRatio_andIsolatesByPackage() {
-        TypeFreeAccessibilityService.clearInputBoxTopHint()
-        TypeFreeAccessibilityService.recordInputBoxTopHint("com.tencent.mm", 1380)
-        assertEquals(1380, TypeFreeAccessibilityService.resolveInputBoxTopHintForPackage("com.tencent.mm"))
-        // Querying a different package returns -1 (does not leak stale coordinate across apps)
-        assertEquals(-1, TypeFreeAccessibilityService.resolveInputBoxTopHintForPackage("com.tencent.mobileqq"))
-
-        // When adjustResize hasn't finished yet and inputBoxTop is near the bottom of the screen (e.g. 2260 on 2400px screen),
-        // computeChatRegionCropRect rejects it (> maxSafeBottom = 1824) and falls back to defaultBottom (1392)
-        // so the soft keyboard is never captured into the chat screenshot.
-        val cropStaleBottom = ChatScreenContextExtractor.computeChatRegionCropRect(
-            bitmapWidth = 1080,
-            bitmapHeight = 2400,
-            inputBoxTop = 2260
-        )
-        val cropBottomStale = cropStaleBottom[1] + cropStaleBottom[3]
-        val maxSafeBottom = (2400 * ChatScreenContextExtractor.MAX_SAFE_VIEWPORT_BOTTOM_RATIO).toInt()
-        assertTrue("Crop bottom ($cropBottomStale) must not exceed maxSafeBottom ($maxSafeBottom)", cropBottomStale <= maxSafeBottom)
-
-        // When inputBoxTop is within the safe viewport region (e.g. 1500 <= 1824), it is honored
-        val cropValid = ChatScreenContextExtractor.computeChatRegionCropRect(
-            bitmapWidth = 1080,
-            bitmapHeight = 2400,
-            inputBoxTop = 1500
-        )
-        assertEquals(1500, cropValid[1] + cropValid[3])
     }
 
     // =========================================================================

@@ -7,7 +7,7 @@ import java.io.File
 
 /**
  * Process identity helper used in [com.typefree.ime.TypeFreeApp.onCreate] to guard against
- * re-initializing main-process singletons (AppRepository, Rime, Flypy, Jev DB, BubbleService)
+ * re-initializing main-process singletons (AppRepository, Rime, Flypy, BubbleService)
  * inside the isolated `:local_ai` inference process.
  */
 object ProcessUtil {

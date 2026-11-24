@@ -32,8 +32,7 @@ enum class VoiceIntentMode(val label: String) {
     DICTATE("口述净写"),
     HELP_ME_WRITE("帮我写"),
     SPEAK_TO_EDIT("语音编辑"),
-    TRANSLATE("实时快译"),
-    JEV_COPILOT("Jev 军师")
+    TRANSLATE("实时快译")
 }
 
 enum class HistoryRetention(val label: String, val maxAgeMs: Long?) {
@@ -58,8 +57,7 @@ enum class KeycapBadgeMode(val label: String) {
 enum class ModelCapabilitySlot(val label: String) {
     STT("STT 语音识别"),
     LLM("LLM 语义润色"),
-    MULTIMODAL("多模态音频直出"),
-    JEV_COPILOT("Jev 军师专用")
+    MULTIMODAL("多模态音频直出")
 }
 
 enum class ThinkingMode(val label: String, val description: String) {
@@ -304,7 +302,7 @@ object ApiPresets {
         ApiPreset(
             id = "deepseek",
             name = "DeepSeek (可与官方 ASR 共用单 Key)",
-            subtitle = "单 Key 跑通语音识别 + 中文去口癖润色 + 军师/帮写",
+            subtitle = "单 Key 跑通语音识别 + 中文去口癖润色 + AI 帮写",
             baseUrl = "https://api.deepseek.com/v1",
             defaultModel = "deepseek-chat"
         ),
@@ -508,25 +506,7 @@ data class AppSettings(
     val keycapBadgeMode: KeycapBadgeMode = KeycapBadgeMode.SWIPE_UP,
     val predictionEnabled: Boolean = true,
     val aiCompletionEnabled: Boolean = false,
-    val chatContextReplyEnabled: Boolean = false, // 读屏上下文「AI 帮回」（默认关闭，需首次披露同意后开启）
-    val chatContextDisclosureAccepted: Boolean = false, // 是否已阅读并同意「AI 帮回」首次显著披露
-    val chatContextDisclosureDismissed: Boolean = false, // 是否已在键盘首次披露卡点过「暂不开启」（避免反复打扰，但不代表已同意披露）
-    val jevCopilotEnabled: Boolean = true, // 启用「✦ Jev 军师」模式（默认开启）
-    val jevUseDedicatedModel: Boolean = false, // 是否为「✦ Jev 军师」启用独立模型覆盖（false = 跟随默认模型）
-    val jevLlmConfig: LlmConfig = LlmConfig(
-        enabled = true,
-        presetId = "gemini_llm",
-        baseUrl = "https://generativelanguage.googleapis.com/v1beta",
-        apiKey = "",
-        model = "gemini-3.8-flash",
-        temperature = 0.35f,
-        thinkingMode = ThinkingMode.AUTO
-    ),
-    val chatContextSendScreenshot: Boolean = true, // 读屏时允许附带脱敏视口截图（关闭或遇高危机密时仅传脱敏纯文本）
-    val jevLanguageMode: String = "system", // "system" (分析与策略标签跟随系统/界面，回复匹配聊天) | "chat" (全跟随聊天语境) | "strict_system" (分析与回复全跟随系统/界面)
-    val jevMemoryEnabled: Boolean = true, // 启用「✦ Jev 军师」端侧关系记忆与语体习惯自学习
-    val jevMaskTitleHintEnabled: Boolean = true, // 本机设置页展示脱敏会话缩写提示（如 大*群）
-    val manualIncognitoMode: Boolean = false, // 手动无痕模式开关（开启后强制阻断个人词库/预测/剪贴板/历史音频/AI读屏）
+    val manualIncognitoMode: Boolean = false, // 手动无痕模式开关（开启后强制阻断个人词库/预测/剪贴板/历史音频）
     val inputStatsEnabled: Boolean = true, // 端侧纯数字表达统计开关（仅按日累计纯数字，0正文；无痕/密码框自动跳过）
     val onboardingCompleted: Boolean = false, // 首次安装 4 步引导完成标记（老版本升级自动置 true）
     val replyAttitudePresets: List<ReplyAttitudePreset> = DefaultPresets.defaultReplyAttitudes(),

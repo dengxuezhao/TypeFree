@@ -18,13 +18,6 @@ import com.typefree.ime.data.stats.SqliteDailyStatsBackend
 import com.typefree.ime.data.stats.StatsTimeRange
 import com.typefree.ime.data.stats.TokenUsageSnapshot
 import com.typefree.ime.i18n.AppStrings
-import com.typefree.ime.ime.jev.memory.AnchorSaltProvider
-import com.typefree.ime.ime.jev.memory.AndroidKeystoreSaltProvider
-import com.typefree.ime.ime.jev.memory.ConversationAnchorExtractor
-import com.typefree.ime.ime.jev.memory.InMemoryAnchorSaltProvider
-import com.typefree.ime.ime.jev.memory.InMemoryJevMemoryBackend
-import com.typefree.ime.ime.jev.memory.JevMemoryRepository
-import com.typefree.ime.ime.jev.memory.SqliteJevMemoryBackend
 import com.typefree.ime.ime.predict.PredictionStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -48,29 +41,6 @@ class AppRepository(
     )
 
     private val gson: Gson = GsonBuilder().setPrettyPrinting().create()
-
-    internal val jevMemorySaltProvider: AnchorSaltProvider = if (appContext != null) {
-        AndroidKeystoreSaltProvider(appContext, secretVault)
-    } else {
-        InMemoryAnchorSaltProvider()
-    }
-
-    val jevMemoryRepository: JevMemoryRepository = JevMemoryRepository(
-        backend = if (appContext != null) {
-            SqliteJevMemoryBackend(appContext)
-        } else {
-            InMemoryJevMemoryBackend()
-        },
-        saltProvider = jevMemorySaltProvider
-    ).also { repo ->
-        if (appContext != null) {
-            repo.warmUpAsync()
-        }
-    }
-
-    val jevAnchorExtractor: ConversationAnchorExtractor = ConversationAnchorExtractor(
-        saltProvider = jevMemorySaltProvider
-    )
 
     private val _settings = MutableStateFlow(loadSettingsInternal())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
@@ -350,46 +320,6 @@ class AppRepository(
             } else {
                 false
             }
-            val resolvedChatContextReplyEnabled = if (raw.contains("\"chatContextReplyEnabled\"")) {
-                parsed.chatContextReplyEnabled
-            } else {
-                false
-            }
-            val resolvedChatContextDisclosureAccepted = if (raw.contains("\"chatContextDisclosureAccepted\"")) {
-                parsed.chatContextDisclosureAccepted
-            } else {
-                false
-            }
-            val resolvedChatContextDisclosureDismissed = if (raw.contains("\"chatContextDisclosureDismissed\"")) {
-                parsed.chatContextDisclosureDismissed
-            } else {
-                false
-            }
-            val resolvedJevCopilotEnabled = if (raw.contains("\"jevCopilotEnabled\"")) {
-                parsed.jevCopilotEnabled
-            } else {
-                true
-            }
-            val resolvedJevUseDedicatedModel = if (raw.contains("\"jevUseDedicatedModel\"")) {
-                parsed.jevUseDedicatedModel
-            } else {
-                false
-            }
-            val resolvedChatContextSendScreenshot = if (raw.contains("\"chatContextSendScreenshot\"")) {
-                parsed.chatContextSendScreenshot
-            } else {
-                true
-            }
-            val resolvedJevMemoryEnabled = if (raw.contains("\"jevMemoryEnabled\"")) {
-                parsed.jevMemoryEnabled
-            } else {
-                true
-            }
-            val resolvedJevMaskTitleHintEnabled = if (raw.contains("\"jevMaskTitleHintEnabled\"")) {
-                parsed.jevMaskTitleHintEnabled
-            } else {
-                true
-            }
             val resolvedManualIncognitoMode = if (raw.contains("\"manualIncognitoMode\"")) {
                 parsed.manualIncognitoMode
             } else {
@@ -475,20 +405,6 @@ class AppRepository(
                 model = rawMm.model ?: "gemini-3.5-flash-lite",
                 thinkingMode = rawMm.thinkingMode ?: ThinkingMode.DISABLED
             )
-            val defaultJevLlm = AppSettings().jevLlmConfig
-            val rawJevLlm = parsed.jevLlmConfig ?: defaultJevLlm
-            val safeJevLlm = rawJevLlm.copy(
-                presetId = (rawJevLlm.presetId ?: "").ifBlank { defaultJevLlm.presetId },
-                baseUrl = (rawJevLlm.baseUrl ?: "").ifBlank { defaultJevLlm.baseUrl },
-                apiKey = rawJevLlm.apiKey ?: "",
-                model = (rawJevLlm.model ?: "").ifBlank { defaultJevLlm.model },
-                temperature = if (raw.contains("\"jevLlmConfig\"")) {
-                    rawJevLlm.temperature.coerceIn(0.0f, 1.0f)
-                } else {
-                    defaultJevLlm.temperature
-                },
-                thinkingMode = rawJevLlm.thinkingMode ?: defaultJevLlm.thinkingMode
-            )
             val rawOffline = parsed.offlineConfig
             val safeOfflineConfig = if (rawOffline == null) {
                 OfflineModelConfig()
@@ -526,8 +442,6 @@ class AppRepository(
                 multimodalConfig = safeMm,
                 offlineConfig = safeOfflineConfig,
                 pendingOfflineRestore = safePendingOfflineRestore,
-                jevUseDedicatedModel = resolvedJevUseDedicatedModel,
-                jevLlmConfig = safeJevLlm,
                 themePreference = parsed.themePreference ?: ThemePreference.SYSTEM,
                 appLanguage = resolvedAppLanguage,
                 flypyEnabled = resolvedFlypyEnabled,
@@ -565,22 +479,6 @@ class AppRepository(
                 keycapBadgeMode = parsed.keycapBadgeMode ?: KeycapBadgeMode.SWIPE_UP,
                 predictionEnabled = resolvedPredictionEnabled,
                 aiCompletionEnabled = resolvedAiCompletionEnabled,
-                chatContextReplyEnabled = resolvedChatContextReplyEnabled,
-                chatContextDisclosureAccepted = resolvedChatContextDisclosureAccepted,
-                chatContextDisclosureDismissed = resolvedChatContextDisclosureDismissed,
-                jevCopilotEnabled = resolvedJevCopilotEnabled,
-                chatContextSendScreenshot = resolvedChatContextSendScreenshot,
-                jevLanguageMode = if (raw.contains("\"jevLanguageMode\"")) {
-                    when (parsed.jevLanguageMode?.trim()?.lowercase()) {
-                        "chat" -> "chat"
-                        "strict_system" -> "strict_system"
-                        else -> "system"
-                    }
-                } else {
-                    "system"
-                },
-                jevMemoryEnabled = resolvedJevMemoryEnabled,
-                jevMaskTitleHintEnabled = resolvedJevMaskTitleHintEnabled,
                 manualIncognitoMode = resolvedManualIncognitoMode,
                 inputStatsEnabled = resolvedInputStatsEnabled,
                 onboardingCompleted = if (raw.contains("\"onboardingCompleted\"")) {
@@ -749,8 +647,6 @@ class AppRepository(
         val settingsSnap = _settings.value
         val historySnap = _history.value
         val dailyRecords = dailyStatsStore.listAllRecords()
-        val jevSessions = runCatching { jevMemoryRepository.listAllSessionsSorted() }.getOrDefault(emptyList())
-        val jevBuckets = runCatching { jevMemoryRepository.listAllBuckets() }.getOrDefault(emptyList())
         val (bigramCount, trigramCount, topChains) = appContext?.let { ctx ->
             PredictionStore.readTopWordChainsSummary(ctx, limit = 8)
         } ?: Triple(
@@ -763,8 +659,6 @@ class AppRepository(
             dailyRecords = dailyRecords,
             history = historySnap,
             settings = settingsSnap,
-            jevSessions = jevSessions,
-            jevBuckets = jevBuckets,
             personalBigramCount = bigramCount,
             personalTrigramCount = trigramCount,
             topWordChains = topChains,

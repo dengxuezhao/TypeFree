@@ -135,7 +135,6 @@ object AppStrings {
             VoiceIntentMode.HELP_ME_WRITE -> pick(lang, "帮我写", "Help Write", "幫我寫")
             VoiceIntentMode.SPEAK_TO_EDIT -> pick(lang, "语音编辑", "Voice Edit", "語音編輯")
             VoiceIntentMode.TRANSLATE -> pick(lang, "实时快译", "Translate", "即時快譯")
-            VoiceIntentMode.JEV_COPILOT -> pick(lang, "Jev 军师", "Jev Copilot", "Jev 軍師")
         }
     }
 

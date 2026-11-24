@@ -75,7 +75,6 @@ fun KeyboardToolPanel(
     onToggleLiveWrite: () -> Unit,
     onToggleWhisperMode: () -> Unit = {},
     onOpenHelpMeWrite: () -> Unit = {},
-    onOpenJevCopilot: () -> Unit = {},
     onToggleManualIncognito: () -> Unit = {},
     onToggleSingleCharMode: () -> Unit = {},
     onOpenDictionary: () -> Unit,
@@ -241,36 +240,7 @@ fun KeyboardToolPanel(
                     )
                 }
 
-                // 4. Direct Jev Copilot Pill (`TypeFreeIcons.CopilotStar`)
-                if (settings.jevCopilotEnabled) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .clip(RoundedCornerShape(9.dp))
-                            .background(palette.capsuleTrackBg)
-                            .border(1.dp, palette.keyBorder, RoundedCornerShape(9.dp))
-                            .clickable(onClick = onOpenJevCopilot)
-                            .padding(horizontal = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
-                    ) {
-                        Icon(
-                            imageVector = TypeFreeIcons.CopilotStar,
-                            contentDescription = tr("Jev 军师", "Jev Copilot", "Jev 軍師"),
-                            tint = palette.keyTextPrimary,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Text(
-                            text = tr("军师", "Copilot", "軍師"),
-                            color = palette.keyTextPrimary,
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1
-                        )
-                    }
-                }
-
-                // 5. Codetable Single-Char Mode Toggle Pill (`单字`)
+                // 4. Codetable Single-Char Mode Toggle Pill (`单字`)
                 if (uiState.codetableEnhancerActive) {
                     val singleCharEnabled = uiState.singleCharModeEnabled
                     Row(

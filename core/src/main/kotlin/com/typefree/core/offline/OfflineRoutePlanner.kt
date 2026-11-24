@@ -12,9 +12,7 @@ data class CloudAvailability(
     val cloudSttSupportsLiveWrite: Boolean = false,
     val hasCloudLlm: Boolean = false,
     val llmPolishEnabled: Boolean = true,
-    val hasCloudMultimodal: Boolean = false,
-    val hasDedicatedJevCloud: Boolean = false,
-    val jevCanUseVision: Boolean = false
+    val hasCloudMultimodal: Boolean = false
 )
 
 data class RouteInput(
@@ -63,7 +61,6 @@ data class RoutePlan(
     val text: TextRoute,
     val egressAllowed: Boolean,
     val liveWriteCapable: Boolean,
-    val jevVisionAllowed: Boolean,
     val clearLocalStateAfterRun: Boolean,
     val badge: RouteBadge
 )
@@ -82,11 +79,6 @@ object OfflineRoutePlanner {
         AiTask.HELP_ME_WRITE,
         AiTask.TRANSLATE,
         AiTask.NOTE_TRANSCRIBE
-    )
-
-    private val JEV_TASKS: Set<AiTask> = setOf(
-        AiTask.JEV_COPILOT,
-        AiTask.BUBBLE_COPILOT
     )
 
     fun isModelEffective(
@@ -125,7 +117,6 @@ object OfflineRoutePlanner {
                 text = TextRoute.Blocked(RouteBlockReason.SECURE_FIELD),
                 egressAllowed = false,
                 liveWriteCapable = false,
-                jevVisionAllowed = false,
                 clearLocalStateAfterRun = input.isIncognito,
                 badge = RouteBadge(
                     shortLabel = "安全输入域禁用",
@@ -186,12 +177,6 @@ object OfflineRoutePlanner {
 
         val text = resolveCloudOnlyTextRoute(input.task, asr, input.cloud, cloudReachable)
         val liveWriteCapable = computeLiveWriteCapable(input, asr, text)
-        val jevVisionAllowed = computeJevVisionAllowed(
-            task = input.task,
-            egressAllowed = true,
-            text = text,
-            cloud = input.cloud
-        )
         val badge = buildBadge(input, asr, text, egressAllowed = true)
 
         return RoutePlan(
@@ -199,7 +184,6 @@ object OfflineRoutePlanner {
             text = text,
             egressAllowed = true,
             liveWriteCapable = liveWriteCapable,
-            jevVisionAllowed = jevVisionAllowed,
             clearLocalStateAfterRun = clearLocalStateAfterRun,
             badge = badge
         )
@@ -261,12 +245,6 @@ object OfflineRoutePlanner {
         }
 
         val liveWriteCapable = computeLiveWriteCapable(input, asr, text)
-        val jevVisionAllowed = computeJevVisionAllowed(
-            task = input.task,
-            egressAllowed = true,
-            text = text,
-            cloud = input.cloud
-        )
         val badge = buildBadge(input, asr, text, egressAllowed = true)
 
         return RoutePlan(
@@ -274,7 +252,6 @@ object OfflineRoutePlanner {
             text = text,
             egressAllowed = true,
             liveWriteCapable = liveWriteCapable,
-            jevVisionAllowed = jevVisionAllowed,
             clearLocalStateAfterRun = clearLocalStateAfterRun,
             badge = badge
         )
@@ -377,7 +354,6 @@ object OfflineRoutePlanner {
             text = text,
             egressAllowed = false,
             liveWriteCapable = liveWriteCapable,
-            jevVisionAllowed = false,
             clearLocalStateAfterRun = clearLocalStateAfterRun,
             badge = badge
         )
@@ -428,17 +404,6 @@ object OfflineRoutePlanner {
         asrIsLocal: Boolean
     ): TextRoute? {
         if (!cloudReachable) return null
-        if (task in JEV_TASKS) {
-            return when {
-                cloud.hasDedicatedJevCloud -> TextRoute.Cloud
-                cloud.hasCloudLlm -> TextRoute.Cloud
-                cloud.hasCloudMultimodal &&
-                    (cloud.pipelineHint == CloudPipelineHint.MULTIMODAL_OPENAI_AUDIO || asrIsLocal) ->
-                    TextRoute.CloudMultimodalTextFallback
-                cloud.hasCloudMultimodal -> TextRoute.Cloud
-                else -> null
-            }
-        }
         return when {
             cloud.hasCloudLlm -> TextRoute.Cloud
             cloud.hasCloudMultimodal &&
@@ -510,18 +475,6 @@ object OfflineRoutePlanner {
         }
     }
 
-    private fun computeJevVisionAllowed(
-        task: AiTask,
-        egressAllowed: Boolean,
-        text: TextRoute,
-        cloud: CloudAvailability
-    ): Boolean {
-        if (!egressAllowed) return false
-        if (task !in JEV_TASKS) return false
-        if (text !is TextRoute.Cloud && text !is TextRoute.CloudMultimodalTextFallback) return false
-        return cloud.jevCanUseVision
-    }
-
     private fun buildBadge(
         input: RouteInput,
         asr: AsrRoute,
@@ -575,8 +528,7 @@ object OfflineRoutePlanner {
                 )
             } else {
                 val hasCloud = input.cloud.hasCloudLlm ||
-                    input.cloud.hasCloudMultimodal ||
-                    input.cloud.hasDedicatedJevCloud
+                    input.cloud.hasCloudMultimodal
                 if (hasCloud) {
                     RouteBadge(
                         shortLabel = "⚡ 混合 · 本机净写 + 云端进阶",

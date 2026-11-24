@@ -13,7 +13,6 @@ import com.typefree.ime.data.SecretVault
 import com.typefree.ime.data.SttConfig
 import com.typefree.ime.data.SttProtocol
 import com.typefree.ime.data.UnifiedProviderCatalog
-import com.typefree.ime.ime.jev.JevDomainProfile
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.EndpointResolver
 import com.typefree.ime.ui.screens.ApiConfigBackupHelper
@@ -156,7 +155,7 @@ class V351DeepSeekAsrSingleKeyTest {
     }
 
     @Test
-    fun singleDeepSeekKey_drivesFullLoop_asrPolishAskAiAndJevCopilot_andSupportsThirdPartySttRetention() = runBlocking {
+    fun singleDeepSeekKey_drivesFullLoop_asrPolishAndAskAi_andSupportsThirdPartySttRetention() = runBlocking {
         // 1. User enters 1 DeepSeek Key and clicks 1-tap activate -> full loop ready
         val initialWithKey = UnifiedProviderCatalog.updateProviderCredential(
             AppSettings(),
@@ -181,7 +180,7 @@ class V351DeepSeekAsrSingleKeyTest {
         assertTrue(SetupStatsHelper.isApiConfigured(fullLoopSettings))
         assertTrue(SetupStatsHelper.formatActivePipelineBadge(fullLoopSettings).contains("DeepSeek ASR"))
 
-        // 2. Verify full voice pipeline (Stage 1 /v1/tools/asr + Stage 2 /v1/chat/completions), Ask AI, and Jev Copilot
+        // 2. Verify full voice pipeline (Stage 1 /v1/tools/asr + Stage 2 /v1/chat/completions) and Ask AI
         val visitedPaths = mutableListOf<String>()
         val mockClient = OkHttpClient.Builder()
             .addInterceptor { chain ->
@@ -199,20 +198,7 @@ class V351DeepSeekAsrSingleKeyTest {
                         """{"request_id":"req_asr_1","text":"嗯那个帮我跟王总确认明天下午三点的评审会","duration_ms":2800}"""
                     }
                     else -> {
-                        val buf = Buffer()
-                        req.body?.writeTo(buf)
-                        val reqText = buf.readUtf8()
-                        val content = if (reqText.contains("<subtext>")) {
-                            """
-                            <subtext>对方在确认会议时间，需干脆敲定。</subtext>
-                            <opt tag="稳妥推进" risk="low">王总，明天下午三点的评审会我这边没问题，准时参会。</opt>
-                            <opt tag="确认议程" risk="low">好的王总，明天下午三点见，相关材料我会提前发群里。</opt>
-                            <opt tag="改期协商" risk="mid">王总，明天下午三点略微冲突，看能否顺延半小时到三点半？</opt>
-                            <weights>0.5,0.35,0.15</weights>
-                            """.trimIndent()
-                        } else {
-                            "王总，跟您确认一下明天下午三点的评审会。"
-                        }
+                        val content = "王总，跟您确认一下明天下午三点的评审会。"
                         val escaped = content.replace("\n", "\\n").replace("\"", "\\\"")
                         """{"choices":[{"message":{"role":"assistant","content":"$escaped"}}]}"""
                     }
@@ -254,17 +240,6 @@ class V351DeepSeekAsrSingleKeyTest {
             targetAppName = "飞书"
         ).getOrThrow()
         assertEquals("王总，跟您确认一下明天下午三点的评审会。", askAiResult.finalOutput)
-
-        val jevResult = engine.runJevCopilot(
-            settings = fullLoopSettings,
-            activeStyle = DefaultPresets.defaultStyles().first(),
-            domainProfile = JevDomainProfile.FORMAL_WORKFLOW,
-            targetAppName = "飞书",
-            chatContextMessages = listOf("对方: 明天下午三点评审会能参加吗？"),
-            wavFile = tempWav
-        ).getOrThrow()
-        assertEquals(3, jevResult.first.options.size)
-        assertEquals("嗯那个帮我跟王总确认明天下午三点的评审会", jevResult.second)
 
         // 3. Verify switching between third-party streaming STT retention and DeepSeek single-Key full loop
         val withGeminiLiveStt = UnifiedProviderCatalog.selectSttProvider(

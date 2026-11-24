@@ -4,7 +4,7 @@ enum class DirectCommandType {
     TOGGLE_FULL_CODE_DICT, // oqm: 热切换 flypy_full 全码字分类词库开关
     TOGGLE_ASCII_PUNCT,    // ovy: 中英标点切换
     TOGGLE_SIMPLIFICATION, // ojf: 简繁切换 (s2tw.json)
-    OPEN_JEV_COPILOT,      // oai: 一键联动 ✦ Jev 军师润色
+    OPEN_HELP_ME_WRITE,    // oai: 一键联动 ✍️ AI 帮写
     TOGGLE_SINGLE_CHAR_MODE // odz: 单字模式开关
 }
 

@@ -1422,9 +1422,9 @@ private fun OnboardingStep3VoiceAndAiRoute(
                         tag = tr("局限", "Note", "注意"),
                         tagColor = MaterialTheme.colorScheme.onSurfaceVariant,
                         text = tr(
-                            "需下载约 163MB~680MB 模型包；长难句改写、外语互译与 ✦ 军师深度分析弱于云端大模型",
-                            "Downloads ~163MB–680MB once (more models like Moonshine & Whisper available in Model Hub); cloud LLMs remain stronger for deep rewrites & Copilot.",
-                            "需下載約 163MB~680MB 模型包；長難句改寫、外語互譯與 ✦ 軍師深度分析弱於雲端大模型"
+                            "需下载约 163MB~680MB 模型包；长难句改写、外语互译与问 AI 深度推理弱于云端大模型",
+                            "Downloads ~163MB–680MB once (more models like Moonshine & Whisper available in Model Hub); cloud LLMs remain stronger for deep rewrites & Ask AI.",
+                            "需下載約 163MB~680MB 模型包；長難句改寫、外語互譯與問 AI 深度推理弱於雲端大模型"
                         )
                     )
                 }
@@ -1542,9 +1542,9 @@ private fun OnboardingStep3VoiceAndAiRoute(
                         tag = tr("优势", "Pros", "優勢"),
                         tagColor = TypeFreeEmerald,
                         text = tr(
-                            "约 0.5 秒流式极速出稿，完整支持帮写、选中改写、弧形快译与 ✦ Jev 军师聊天拆招",
-                            "~0.5s streaming polish via Gemini / OpenAI-compatible / DeepSeek, unlocking Help Write, Voice Edit, Arc Translate & ✦ Jev Copilot.",
-                            "約 0.5 秒串流極速出稿，完整支援幫寫、選取改寫、弧形快譯與 ✦ Jev 軍師聊天拆招"
+                            "约 0.5 秒流式极速出稿，完整支持帮我写、选中改写、弧形快译与 🔍 问 AI 知识卡片",
+                            "~0.5s streaming polish via Gemini / OpenAI-compatible / DeepSeek, unlocking Help Write, Voice Edit, Arc Translate & 🔍 Ask AI.",
+                            "約 0.5 秒串流極速出稿，完整支援幫我寫、選取改寫、弧形快譯與 🔍 問 AI 知識卡片"
                         )
                     )
                     ProsConsLine(
@@ -1896,7 +1896,7 @@ private fun ApiKeyQuickGuideDialog(
     val appLang = LocalAppLanguage.current
     val items = if (preferDomestic) {
         listOf(
-            Triple("DeepSeek 开放平台", "注册实名后创建 sk- 密钥，单 Key 同时支持语音转写、润色与军师", "https://platform.deepseek.com/api_keys"),
+            Triple("DeepSeek 开放平台", "注册实名后创建 sk- 密钥，单 Key 同时支持语音润色、帮我写与问 AI", "https://platform.deepseek.com/api_keys"),
             Triple("阿里云百炼", "新用户赠送免费体验额度，支持实时流式识别与千问润色", "https://bailian.console.aliyun.com/"),
             Triple("硅基流动 SiliconFlow", "SenseVoiceSmall 语音识别免费调用，注册即送体验金", "https://cloud.siliconflow.cn/")
         )
@@ -1916,9 +1916,9 @@ private fun ApiKeyQuickGuideDialog(
                 "OpenAI / Groq / DeepSeek",
                 AppStrings.pick(
                     appLang,
-                    "支持任意 OpenAI 兼容密钥，单 Key 驱动语音与军师",
-                    "Bring any OpenAI, Groq Whisper, or DeepSeek API key for ultra-low-latency voice & Copilot",
-                    "支援任意 OpenAI 相容金鑰，單 Key 驅動語音與軍師"
+                    "支持任意 OpenAI 兼容密钥，单 Key 驱动语音润色与问 AI",
+                    "Bring any OpenAI, Groq Whisper, or DeepSeek API key for ultra-low-latency voice & Ask AI",
+                    "支援任意 OpenAI 相容金鑰，單 Key 驅動語音潤飾與問 AI"
                 ),
                 "https://platform.openai.com/api-keys"
             )

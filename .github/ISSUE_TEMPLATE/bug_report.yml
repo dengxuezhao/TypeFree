@@ -35,7 +35,7 @@ body:
         - 小鹤双拼
         - 全拼
         - 导入的第三方码表（星空键道 / 五笔等）
-        - 语音输入 / Jev 军师 / 帮写
+        - 语音输入 / AI 帮写 / 问 AI
         - 其它 / 通用界面
     validations:
       required: true

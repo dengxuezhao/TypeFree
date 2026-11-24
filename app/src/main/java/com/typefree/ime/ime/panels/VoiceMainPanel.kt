@@ -82,7 +82,6 @@ fun VoiceMainPanel(
     didPauseMedia: Boolean,
     onSwipeToTab: (KeyboardTabMode) -> Unit,
     onVoicePenClick: () -> Unit,
-    onOpenJevCopilot: () -> Unit = {},
     onMicPressDown: () -> Unit,
     onMicPressUp: () -> Unit,
     onEnterArcTranslate: (Boolean) -> Unit,
@@ -445,7 +444,7 @@ fun VoiceMainPanel(
                 )
             }
 
-            // Bottom-Left Single Circular White Key (`44.dp`, `VoicePen` — top bar already hosts `[✦ 军师]`)
+            // Bottom-Left Single Circular White Key (`44.dp`, `VoicePen`)
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)

@@ -116,29 +116,13 @@ object OfflineRouteBridge {
         val hasCloudMultimodal = mmCfg.baseUrl.isNotBlank() &&
             (mmCfg.apiKey.isNotBlank() || AiPipelineEngine.isLocalEndpoint(mmCfg.baseUrl))
 
-        val effectiveJev = resolveEffectiveJevLlmConfig(settings)
-        val hasDedicatedJevCloud = effectiveJev != null &&
-            effectiveJev.baseUrl.isNotBlank() &&
-            (effectiveJev.apiKey.isNotBlank() || AiPipelineEngine.isLocalEndpoint(effectiveJev.baseUrl))
-
-        val jevCanUseVision = computeCloudJevVisionCapable(
-            settings = settings,
-            effectiveLlm = effectiveLlm,
-            effectiveJev = effectiveJev,
-            hasCloudLlm = hasCloudLlm,
-            hasCloudMultimodal = hasCloudMultimodal,
-            hasDedicatedJevCloud = hasDedicatedJevCloud
-        )
-
         return CloudAvailability(
             pipelineHint = pipelineHint,
             hasCloudStt = hasCloudStt,
             cloudSttSupportsLiveWrite = cloudSttSupportsLiveWrite,
             hasCloudLlm = hasCloudLlm,
             llmPolishEnabled = settings.llmConfig.enabled,
-            hasCloudMultimodal = hasCloudMultimodal,
-            hasDedicatedJevCloud = hasDedicatedJevCloud,
-            jevCanUseVision = jevCanUseVision
+            hasCloudMultimodal = hasCloudMultimodal
         )
     }
 
@@ -218,76 +202,6 @@ object OfflineRouteBridge {
             )
         }
         return primary
-    }
-
-    private fun resolveEffectiveJevLlmConfig(settings: AppSettings): LlmConfig? {
-        if (!settings.jevUseDedicatedModel) return null
-        val cfg = settings.jevLlmConfig
-        if (cfg.apiKey.isNotBlank() || AiPipelineEngine.isLocalEndpoint(cfg.baseUrl)) {
-            return cfg
-        }
-        val providerId = UnifiedProviderCatalog.inferLlmProviderId(cfg)
-        val vault = UnifiedProviderCatalog.hydrateVaultFromSettings(settings)
-        val cred = vault[providerId]
-        val fallbackKey = when (providerId) {
-            UnifiedProviderCatalog.ID_VOLCENGINE -> cred?.apiKey?.ifBlank { cred.sttApiKey }.orEmpty()
-            UnifiedProviderCatalog.ID_GOOGLE ->
-                cred?.apiKey?.ifBlank { resolveGeminiKeyForVision(settings) }.orEmpty()
-            else -> cred?.apiKey.orEmpty()
-        }
-        val fallbackBaseUrl = cfg.baseUrl.ifBlank {
-            cred?.customBaseUrl?.ifBlank { null }
-                ?: UnifiedProviderCatalog.specFor(providerId).defaultBaseUrl
-        }
-        return cfg.copy(
-            baseUrl = fallbackBaseUrl,
-            apiKey = fallbackKey
-        )
-    }
-
-    private fun resolveGeminiKeyForVision(settings: AppSettings): String {
-        val googleVaultKey = settings.providerVault[UnifiedProviderCatalog.ID_GOOGLE]?.apiKey.orEmpty()
-        return when {
-            settings.multimodalConfig.protocol == MultimodalProtocol.GEMINI_NATIVE &&
-                settings.multimodalConfig.apiKey.isNotBlank() -> settings.multimodalConfig.apiKey
-            settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS &&
-                settings.sttConfig.apiKey.isNotBlank() -> settings.sttConfig.apiKey
-            googleVaultKey.isNotBlank() -> googleVaultKey
-            else -> ""
-        }
-    }
-
-    private fun computeCloudJevVisionCapable(
-        settings: AppSettings,
-        effectiveLlm: LlmConfig,
-        effectiveJev: LlmConfig?,
-        hasCloudLlm: Boolean,
-        hasCloudMultimodal: Boolean,
-        hasDedicatedJevCloud: Boolean
-    ): Boolean {
-        if (!settings.chatContextSendScreenshot) return false
-        val hasGeminiFallback = resolveGeminiKeyForVision(settings).isNotBlank()
-        if (effectiveJev != null) {
-            if (!hasDedicatedJevCloud) return false
-            return EndpointResolver.isGeminiNativeHttpUrl(effectiveJev.baseUrl) ||
-                !AiPipelineEngine.isKnownPureTextModel(effectiveJev.model)
-        }
-        return when (settings.pipelineMode) {
-            PipelineMode.DUAL_STAGE -> {
-                if (!hasCloudLlm && !hasGeminiFallback) return false
-                EndpointResolver.isGeminiNativeHttpUrl(effectiveLlm.baseUrl) ||
-                    hasGeminiFallback ||
-                    !AiPipelineEngine.isKnownPureTextModel(effectiveLlm.model)
-            }
-            PipelineMode.MULTIMODAL_DIRECT -> {
-                if (!hasCloudMultimodal && !hasGeminiFallback) return false
-                when (settings.multimodalConfig.protocol) {
-                    MultimodalProtocol.GEMINI_NATIVE -> hasCloudMultimodal
-                    MultimodalProtocol.OPENAI_AUDIO_CHAT ->
-                        hasGeminiFallback || !AiPipelineEngine.isKnownPureTextModel(settings.multimodalConfig.model)
-                }
-            }
-        }
     }
 }
 

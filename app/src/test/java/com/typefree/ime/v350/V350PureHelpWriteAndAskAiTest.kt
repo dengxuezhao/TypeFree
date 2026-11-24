@@ -3,8 +3,6 @@ package com.typefree.ime.v350
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
-import com.typefree.ime.bubble.TypeFreeAccessibilityService
-import com.typefree.ime.bubble.ViewportOcrExtractor
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.DefaultPresets
@@ -12,19 +10,13 @@ import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InMemoryKeyValueStore
 import com.typefree.ime.data.JvmAesGcmCipher
 import com.typefree.ime.data.SecretVault
-import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.ime.ImeHostCallbacks
-import com.typefree.ime.ime.ImeLogic
-import com.typefree.ime.ime.ImeUiAction
 import com.typefree.ime.ime.ImeUiState
 import com.typefree.ime.ime.KeyboardTabMode
 import com.typefree.ime.ime.UndoSnapshot
 import com.typefree.ime.ime.VoiceController
 import com.typefree.ime.ime.VoiceSubPanel
 import com.typefree.ime.ime.chrome.TopBarSlotPolicy
-import com.typefree.ime.ime.jev.ChatTopology
-import com.typefree.ime.ime.jev.JevDomainProfile
-import com.typefree.ime.ime.jev.JevRoleMode
 import com.typefree.ime.ime.panels.HelpWriteChipFilter
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PromptBuilder
@@ -33,11 +25,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -51,13 +40,6 @@ class V350PureHelpWriteAndAskAiTest {
         } else {
             cwd.parentFile ?: cwd
         }
-    }
-
-    @After
-    fun tearDown() {
-        TypeFreeAccessibilityService.debugSimulatedNodesForTest = null
-        TypeFreeAccessibilityService.debugSimulatedScreenshotBase64ForTest = null
-        ViewportOcrExtractor.debugSimulatedOcrNodesForTest = null
     }
 
     private class FakeImeHost(
@@ -195,8 +177,6 @@ class V350PureHelpWriteAndAskAiTest {
         val state = host.stateFlow.value
         assertEquals(KeyboardTabMode.VOICE, state.tabMode)
         assertEquals(VoiceSubPanel.HELP_ME_WRITE, state.voiceSubPanel)
-        assertFalse("Must never capture chat context in pure help write", state.capturedChatContext.hasContext)
-        assertFalse("Must not prompt chat disclosure in pure help write", state.showChatContextDisclosurePrompt)
         assertEquals("富士新机真香，直出色彩绝了", state.currentEditorText)
 
         host.dispose()
@@ -366,14 +346,12 @@ class V350PureHelpWriteAndAskAiTest {
             hasPriorityBanner = true,
             isClipboardBannerActive = true,
             wantAskAi = true,
-            wantJevCopilot = true,
             wantVoicePen = true
         )
         assertTrue(clipPlan.bannerTakesOverMiddle)
         assertTrue(clipPlan.showLeftInlineBanner)
         assertFalse(clipPlan.showClipboardIconButton)
         assertFalse(clipPlan.showRightAskAi)
-        assertFalse(clipPlan.showRightJevCopilot)
         assertFalse(clipPlan.showRightVoicePen)
 
         // 2. 极端窄分屏（仅 170dp）：剩余宽度不足 72dp 时隐藏内联横幅并保留剪贴板图标绿点，杜绝压成 `[·]`
@@ -385,13 +363,12 @@ class V350PureHelpWriteAndAskAiTest {
             hasPriorityBanner = true,
             isClipboardBannerActive = true,
             wantAskAi = false,
-            wantJevCopilot = true,
             wantVoicePen = true
         )
         assertFalse(ultraNarrowClip.showLeftInlineBanner)
         assertTrue(ultraNarrowClip.showClipboardIconButton)
 
-        // 3. 常态 352dp（无搜索框误弹，仅军师 + 帮写 + 语音）：完整展示右侧 3 胶囊 + 左侧全图标
+        // 3. 常态 352dp（仅帮写 + 语音）：完整展示右侧胶囊 + 左侧全图标
         val steadyPlan = TopBarSlotPolicy.resolveQwertyBarLayout(
             availableWidthDp = 352f,
             showUndoButton = true,
@@ -400,29 +377,28 @@ class V350PureHelpWriteAndAskAiTest {
             hasPriorityBanner = false,
             isClipboardBannerActive = false,
             wantAskAi = false,
-            wantJevCopilot = true,
             wantVoicePen = true
         )
         assertFalse(steadyPlan.bannerTakesOverMiddle)
         assertTrue(steadyPlan.showClipboardIconButton)
-        assertTrue(steadyPlan.showRightJevCopilot)
         assertTrue(steadyPlan.showRightVoicePen)
+        assertFalse(steadyPlan.compactVoicePenIconOnly)
 
-        // 4. 常态窄屏叠加无痕 + 4 个右侧胶囊时，采用自适应纯图标折叠（不隐藏入口，AskAI 自动折叠为 28dp 圆形图标）
+        // 4. 常态窄屏叠加无痕 + Ask AI + 帮写 + 语音时，采用自适应纯图标折叠（不隐藏入口，AskAI 自动折叠为 28dp 圆形图标）
         val crowdedSteady = TopBarSlotPolicy.resolveQwertyBarLayout(
-            availableWidthDp = 340f,
+            availableWidthDp = 300f,
             showUndoButton = true,
             showClipboardButton = true,
             isIncognito = true,
             hasPriorityBanner = false,
             isClipboardBannerActive = false,
             wantAskAi = true,
-            wantJevCopilot = true,
             wantVoicePen = true
         )
         assertTrue(crowdedSteady.showRightAskAi)
         assertTrue(crowdedSteady.compactAskAiIconOnly)
         assertTrue(crowdedSteady.showRightVoicePen)
+        assertFalse(crowdedSteady.compactVoicePenIconOnly)
     }
 
     @Test
@@ -482,57 +458,6 @@ class V350PureHelpWriteAndAskAiTest {
         assertTrue(sysPrompt.contains("严禁输出 `**`、`###`"))
         assertTrue(userPrompt.contains("<user_query>"))
         assertTrue(userPrompt.contains("中国空间站最新进展"))
-    }
-
-    // =========================================================================
-    // 升级 3 验证：Jev 军师五层决策树 + Layer 3 事实筛子与认知平视
-    // =========================================================================
-
-    @Test
-    fun upgrade3_jevCopilotSystemPrompt_enforcesEpistemicSieve_andRetainsAllAnchors() {
-        val prompt = PromptBuilder.JEV_COPILOT_SYSTEM_PROMPT
-
-        // 1. 事实专业度筛子与二元分流核心规则
-        assertTrue("Must declare Layer 3 Epistemic Sieve", prompt.contains("议题性质二元分流与事实专业度筛子"))
-        assertTrue("Must include Path E epistemic discussion", prompt.contains("路径 E：认知/技术/观点探讨局"))
-        assertTrue("Must include Path P interpersonal dynamics", prompt.contains("路径 P：人际/利益/情绪社交局"))
-        assertTrue("Must mention fact sieve", prompt.contains("事实与专业度筛子"))
-        assertTrue("Must forbid playing dumb", prompt.contains("封杀“装蠢捧哏提问”与“陈年谐音烂梗”"))
-
-        // 2. 内行认知平视三轴
-        assertTrue("Must include Strategy 1 Elevate & Ground", prompt.contains("同频升维 · 补齐本质"))
-        assertTrue("Must include Strategy 2 Gentle Erratum", prompt.contains("温和勘误 · 反例破局"))
-        assertTrue("Must include Strategy 3 Geek Extrapolation", prompt.contains("极客外推 · 逻辑冷幽默"))
-
-        // 3. 完整保留所有既有单测锚点短语（确保 V331/V343/V330 绿灯）
-        assertTrue(prompt.contains("三态角色拓扑路由铁律"))
-        assertTrue(prompt.contains("态势 A【1v1私聊对象】"))
-        assertTrue(prompt.contains("态势 B【群聊当事人】"))
-        assertTrue(prompt.contains("态势 C【群聊第三方旁观者】"))
-        assertTrue(prompt.contains("再菜也是你爹"))
-        assertTrue(prompt.contains("场外吃瓜/扇风递梗"))
-        assertTrue(prompt.contains("<weights>W1,W2,W3</weights>"))
-        assertTrue(prompt.contains("[@群友X]"))
-        assertTrue(prompt.contains("协同破局"))
-        assertTrue(prompt.contains("温和设限"))
-        assertTrue(prompt.contains("升维重构"))
-        assertTrue(prompt.contains("周全给面"))
-        assertTrue(prompt.contains("松弛直给"))
-        assertTrue(prompt.contains("锚定闭环"))
-
-        // 4. Conversation topology Bystander mode dual-branch instruction
-        val (_, bystanderUserPrompt) = PromptBuilder.buildJevCopilotPrompts(
-            domainProfile = JevDomainProfile.IM_CHAT,
-            targetAppName = "微信",
-            chatContextMessages = listOf("[群友A] 大模型词距原理其实很简单"),
-            chatTopology = ChatTopology(
-                isGroupChat = true,
-                groupMemberCount = 5,
-                roleMode = JevRoleMode.GROUP_BYSTANDER
-            )
-        )
-        assertTrue(bystanderUserPrompt.contains("机主当前角色定位：群聊第三方旁观者"))
-        assertTrue(bystanderUserPrompt.contains("内行认知平视三轴【同频升维、温和勘误、极客外推】"))
     }
 
     // =========================================================================

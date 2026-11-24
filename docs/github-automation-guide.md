@@ -69,8 +69,8 @@
   > 2. 清空整个输入框内容（配合可撤回机制）。
 
 ### Issue #2：[希望增加九键拼音键盘](https://github.com/dengxuezhao/TypeFree/issues/2)
-- **现状核查**：`docs/plan-01-macos-companion-and-core-decoupling.md` 已在架构职责中预留九宫格 Compose 软键盘定位，当前实现仍以 26 键（及双拼/码表/语音面板）为主，尚未实现 T9 九键候选切分与键盘布局。
-- **建议标签**：`enhancement`、`area: keyboard`、`under-consideration`
+- **现状核查**：已在 v3.8.0 起原生落地九键拼音（T9 九宫格，共享雾凇开源词库，内置左侧音节筛选栏与 3×4 大键数字盘）。
+- **建议标签**：`enhancement`、`area: keyboard`
 - **回复草稿**：
   > 感谢认可与建议！目前 TypeFree 优先打磨了 26 键、双拼/音形码表和语音输入体验，拼音九宫格（T9）目前尚未排期落地，架构上已留出扩展位置。
   > 

@@ -1950,9 +1950,9 @@ fun OfflineModelsScreen(
                                 Text(
                                     text = if (offlineConfig.slmSlotOn) {
                                         tr(
-                                            "按主接管 / 断网兜底能力矩阵路由，不静默降级你已配好的云端专用军师",
-                                            "Routes by Primary / Offline Fallback capability matrix without silently downgrading your dedicated Cloud Copilot",
-                                            "按主接管 / 斷網兜底能力矩陣路由，不靜默降級你已配好的雲端專用軍師"
+                                            "按主接管 / 断网兜底能力矩阵路由，兼顾端侧隐私速度与云端深度能力",
+                                            "Routes by Primary / Offline Fallback capability matrix, balancing local privacy speed with cloud reasoning",
+                                            "按主接管 / 斷網兜底能力矩陣路由，兼顧本機隱私速度與雲端深度能力"
                                         )
                                     } else {
                                         tr(
@@ -2716,9 +2716,9 @@ private fun offlineModelSubtitle(model: LocalModelDescriptor, lang: AppLang): St
         )
         OfflineModelCatalog.ID_SLM_PRO_4B -> AppStrings.pick(
             lang,
-            "Qwen3.5-4B Q4_K_M：全能离线大脑，断网兜底翻译/帮写/离线军师（纯 OCR 文本）",
-            "Qwen3.5-4B Q4_K_M: Full-power local brain with offline fallback for translate, help write & Offline Copilot (OCR text)",
-            "Qwen3.5-4B Q4_K_M：全能離線大腦，斷網兜底翻譯/幫寫/離線軍師（純 OCR 文字）"
+            "Qwen3.5-4B Q4_K_M：全能离线大脑，断网兜底翻译、帮我写与问 AI",
+            "Qwen3.5-4B Q4_K_M: Full-power local brain with offline fallback for translate, help write & Ask AI",
+            "Qwen3.5-4B Q4_K_M：全能離線大腦，斷網兜底翻譯、幫我寫與問 AI"
         )
         else -> model.subtitle
     }
@@ -2737,8 +2737,6 @@ private fun taskShortName(task: AiTask, lang: AppLang): String = when (task) {
     AiTask.TEXT_TRANSFORM -> AppStrings.pick(lang, "文本润色", "Polish", "文本潤飾")
     AiTask.TRANSLATE -> AppStrings.pick(lang, "翻译", "Translate", "翻譯")
     AiTask.HELP_ME_WRITE -> AppStrings.pick(lang, "帮我写", "Help Write", "幫我寫")
-    AiTask.JEV_COPILOT -> AppStrings.pick(lang, "离线军师(纯文本)", "Offline Copilot (Text)", "離線軍師(純文字)")
-    AiTask.BUBBLE_COPILOT -> AppStrings.pick(lang, "悬浮军师", "Bubble Copilot", "懸浮軍師")
     AiTask.ASK_AI_CARD -> AppStrings.pick(lang, "问AI", "Ask AI", "問AI")
     AiTask.NOTE_TRANSCRIBE -> AppStrings.pick(lang, "笔记转写", "Note ASR", "筆記轉寫")
 }

@@ -265,8 +265,7 @@ class V340UxAndCompactKeyboardTest {
             isComposing = false,
             hasUndoSnapshot = true,
             hasFreshClipboardBanner = true,
-            hasActiveSelection = false,
-            jevCopilotEnabled = true
+            hasActiveSelection = false
         )
         assertTrue(qwertySlots.showUndoButton)
         assertTrue(qwertySlots.showClipboardButton)
@@ -280,8 +279,7 @@ class V340UxAndCompactKeyboardTest {
             isComposing = false,
             hasUndoSnapshot = false,
             hasFreshClipboardBanner = false,
-            hasActiveSelection = false,
-            jevCopilotEnabled = true
+            hasActiveSelection = false
         )
         assertTrue(voiceSlots.showClipboardButton)
         assertTrue("VOICE mode must show the AI Tone Style badge", voiceSlots.showStyleBadge)
@@ -295,38 +293,18 @@ class V340UxAndCompactKeyboardTest {
     }
 
     @Test
-    fun v340SourceArchitectureGuards_jevZeroEllipsis_voiceNoDuplicateJev_andKeyboardScreenUnder650Lines() {
+    fun v340SourceArchitectureGuards_qwertyCursorSlideAndKeyboardScreenUnder650Lines() {
         val root = resolveProjectRoot()
 
-        // 1. JevCopilotPanel.kt must not truncate replyText with TextOverflow.Ellipsis or render BottomCornerUtilityIcons
-        val jevFile = File(root, "app/src/main/java/com/typefree/ime/ime/panels/JevCopilotPanel.kt")
-        val jevSource = jevFile.readText()
-        assertFalse(
-            "JevCopilotPanel.kt must not contain TextOverflow.Ellipsis",
-            jevSource.contains("TextOverflow.Ellipsis")
-        )
-        assertFalse(
-            "JevCopilotPanel.kt must not contain BottomCornerUtilityIcons",
-            jevSource.contains("BottomCornerUtilityIcons")
-        )
-        assertTrue(
-            "JevCopilotPanel.kt must use InlineTextContent for first-line inline strategy pill wrapping",
-            jevSource.contains("InlineTextContent")
-        )
-        assertTrue(
-            "JevCopilotPanel.kt must wrap strategy cards in verticalScroll",
-            jevSource.contains("verticalScroll(rememberScrollState())")
-        )
-
-        // 2. VoiceMainPanel.kt must not duplicate the Jev Copilot pill in the bottom-left cluster
+        // 1. VoiceMainPanel.kt must not render CopilotStar pill
         val voiceFile = File(root, "app/src/main/java/com/typefree/ime/ime/panels/VoiceMainPanel.kt")
         val voiceSource = voiceFile.readText()
         assertFalse(
-            "VoiceMainPanel.kt must not render duplicate CopilotStar pill in bottom-left key cluster",
+            "VoiceMainPanel.kt must not render CopilotStar pill in bottom-left key cluster",
             voiceSource.contains("TypeFreeIcons.CopilotStar")
         )
 
-        // 3. BuiltInQwertyKeyboard.kt must have cursor sliding hint and no 44.dp fake bottom tray
+        // 2. BuiltInQwertyKeyboard.kt must have cursor sliding hint and no 44.dp fake bottom tray
         val qwertyFile = File(root, "app/src/main/java/com/typefree/ime/ime/BuiltInQwertyKeyboard.kt")
         val qwertySource = qwertyFile.readText()
         assertTrue(
@@ -338,7 +316,7 @@ class V340UxAndCompactKeyboardTest {
             qwertySource.contains("height(44.dp)")
         )
 
-        // 4. KeyboardScreen.kt must stay <= 650 lines
+        // 3. KeyboardScreen.kt must stay <= 650 lines
         val keyboardScreenFile = File(root, "app/src/main/java/com/typefree/ime/ime/KeyboardScreen.kt")
         val lineCount = keyboardScreenFile.readLines().size
         assertTrue(

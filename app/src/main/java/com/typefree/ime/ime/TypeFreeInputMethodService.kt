@@ -23,7 +23,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import com.typefree.ime.TypeFreeApp
 import com.typefree.ime.audio.WavAudioRecorder
-import com.typefree.ime.bubble.CapturedChatContext
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InputScheme
@@ -298,7 +297,6 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         val latestHeightMode = repository.settings.value.keyboardHeightMode
         val latestLiftLevel = repository.settings.value.keyboardLiftLevel
         if (!restarting) {
-            voiceController.finalizeJevDraftAndClearMemory(clearContext = true)
             typingController.resetComposing()
             _imeState.update {
                 it.copy(
@@ -306,17 +304,6 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     isToolPanelOpen = false,
                     isToolPanelHeightExpanded = false,
                     voiceSubPanel = VoiceSubPanel.NONE,
-                    capturedChatContext = CapturedChatContext(),
-                    ignoreChatContextForThisTurn = false,
-                    showChatContextDisclosurePrompt = false,
-                    jevCopilotResult = null,
-                    selectedJevStrategyIndex = -1,
-                    isJevLoading = false,
-                    jevErrorMessage = null,
-                    jevUserBottomLine = "",
-                    jevExcludedReplies = emptyList(),
-                    isFullScreenPeekCapturing = false,
-                    isJevContextInspectorOpen = false,
                     isPunctuationStripOpen = false,
                     isStylePickerExpanded = false,
                     flypyComposingCode = "",
@@ -368,23 +355,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
 
     override fun onFinishInputView(finishingInput: Boolean) {
         tryAutoLearnFromRecentEdit()
-        voiceController.finalizeJevDraftAndClearMemory(clearContext = true)
         repository.setImeWindowVisible(false)
-        _imeState.update {
-            it.copy(
-                capturedChatContext = CapturedChatContext(),
-                ignoreChatContextForThisTurn = false,
-                showChatContextDisclosurePrompt = false,
-                jevCopilotResult = null,
-                selectedJevStrategyIndex = -1,
-                isJevLoading = false,
-                jevErrorMessage = null,
-                jevUserBottomLine = "",
-                jevExcludedReplies = emptyList(),
-                isFullScreenPeekCapturing = false,
-                isJevContextInspectorOpen = false
-            )
-        }
         super.onFinishInputView(finishingInput)
     }
 
@@ -392,15 +363,6 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         super.onComputeInsets(outInsets)
         if (outInsets == null) return
         val decorHeight = window?.window?.decorView?.height ?: 0
-        if (_imeState.value.isFullScreenPeekCapturing) {
-            if (decorHeight > 0) {
-                outInsets.contentTopInsets = decorHeight
-                outInsets.visibleTopInsets = decorHeight
-                outInsets.touchableInsets = Insets.TOUCHABLE_INSETS_FRAME
-                outInsets.touchableRegion.setEmpty()
-            }
-            return
-        }
         val floatingOverhangPx = (KeyboardMetrics.FLOATING_PREEDIT_OVERHANG_DP * resources.displayMetrics.density).toInt()
         if (floatingOverhangPx > 0 && decorHeight > floatingOverhangPx) {
             val adjustedTop = KeyboardMetrics.computeFloatingOverhangContentTopInset(
@@ -544,22 +506,13 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             candidatesStart == -1 &&
             candidatesEnd == -1
         val nowMs = System.currentTimeMillis()
-        val jevActive = voiceController.isJevFeedbackActive()
         val shouldSyncEditorText = when {
             isComposingNow -> false
             looksClearedByHostSend -> true
-            jevActive -> voiceController.shouldPollEditorTextForJev(isComposing = false)
             else -> (nowMs - lastEditorTextSyncMs) >= 180L
         }
         if (shouldSyncEditorText) {
             syncCurrentEditorText()
-        }
-        val editorSnapshotForJev = when {
-            isComposingNow -> null
-            shouldSyncEditorText -> _imeState.value.currentEditorText
-            jevActive && (nowMs - lastEditorTextSyncMs) <= 120L && _imeState.value.currentEditorText.isNotEmpty() ->
-                _imeState.value.currentEditorText
-            else -> null
         }
         voiceController.onSelectionUpdated(
             oldSelStart = oldSelStart,
@@ -567,9 +520,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             newSelStart = newSelStart,
             newSelEnd = newSelEnd,
             candidatesStart = candidatesStart,
-            candidatesEnd = candidatesEnd,
-            isComposing = isComposingNow,
-            editorTextSnapshot = editorSnapshotForJev
+            candidatesEnd = candidatesEnd
         )
     }
 
@@ -579,7 +530,6 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         repository.setImeWindowVisible(false)
         super.onWindowHidden()
         voiceController.stopRecordingOnTabSwitchOrWindowHidden()
-        repository.jevAnchorExtractor.sessionPin.clear()
         typingController.resetComposing()
         val hiddenBaseMode = ImeLogic.resolveInitialKeyboardMode(
             settings = repository.settings.value,
@@ -592,9 +542,6 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 inputSessionToken = prev.inputSessionToken + 1,
                 voicePhase = if (prev.voicePhase is VoicePhase.Recording) VoicePhase.Idle else prev.voicePhase,
                 voiceSubPanel = VoiceSubPanel.NONE,
-                capturedChatContext = CapturedChatContext(),
-                ignoreChatContextForThisTurn = false,
-                showChatContextDisclosurePrompt = false,
                 isArcTranslateActive = false,
                 arcStartedFromHandsFree = false,
                 isArcCancelHovered = false,
@@ -723,19 +670,6 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             ImeUiAction.OpenStylePickerFromToolPanel -> openStylePickerFromToolPanel()
             ImeUiAction.TogglePunctuationStrip -> voiceController.togglePunctuationStrip()
             is ImeUiAction.OpenHostApp -> openHostApp(action.tabIndex, action.subTabIndex)
-            ImeUiAction.OpenJevCopilot -> voiceController.openJevCopilotPanel()
-            is ImeUiAction.SelectJevStrategyCard -> voiceController.selectJevStrategyCard(action.index)
-            ImeUiAction.RefreshJevStrategies -> voiceController.refreshJevStrategies()
-            ImeUiAction.TriggerFullScreenPeekCapture ->
-                voiceController.triggerFullScreenPeekCapture(::requestRefreshImeInsets)
-            ImeUiAction.ToggleJevContextInspector -> voiceController.toggleJevContextInspector()
-            ImeUiAction.ToggleJevRelationOverlay -> voiceController.toggleJevRelationOverlay()
-            is ImeUiAction.SelectJevPrivateRelation -> voiceController.selectJevPrivateRelation(action.tag)
-            is ImeUiAction.SelectJevGroupScene -> voiceController.selectJevGroupScene(action.scene)
-            is ImeUiAction.AppendJevNoteQuickChip -> voiceController.appendJevNoteQuickChip(action.chipText)
-            ImeUiAction.PasteJevNoteFromClipboard -> voiceController.pasteJevNoteFromClipboard()
-            ImeUiAction.ClearJevRelationNote -> voiceController.clearJevRelationNote()
-            is ImeUiAction.RebindJevSessionAlias -> voiceController.rebindJevSessionAlias(action.targetSessionUid)
 
             ImeUiAction.StartVoiceRecording -> voiceController.handleMicPressDown(VoiceIntentMode.DICTATE)
             ImeUiAction.StopVoiceRecording -> voiceController.handleMicPressUp()
@@ -761,9 +695,6 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             ImeUiAction.CopyAskAiAnswer -> voiceController.copyAskAiAnswer()
             ImeUiAction.CommitAskAiAnswerToEditor -> voiceController.commitAskAiAnswerToEditor()
             ImeUiAction.DirectGenerateHelpWrite -> voiceController.runSelectedHelpWritePresetDirect()
-            ImeUiAction.AcceptChatContextDisclosure -> voiceController.acceptChatContextDisclosure()
-            ImeUiAction.DeclineChatContextDisclosure -> voiceController.declineChatContextDisclosure()
-            ImeUiAction.ToggleIgnoreChatContext -> voiceController.toggleIgnoreChatContextForTurn()
 
             ImeUiAction.SelectAutoStyle -> selectAutoStyle()
             is ImeUiAction.SelectManualStyle -> selectManualStyle(action.style)
@@ -856,9 +787,6 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 tabMode = mode,
                 voicePhase = if (prev.voicePhase is VoicePhase.Recording) VoicePhase.Idle else prev.voicePhase,
                 voiceSubPanel = VoiceSubPanel.NONE,
-                capturedChatContext = CapturedChatContext(),
-                ignoreChatContextForThisTurn = false,
-                showChatContextDisclosurePrompt = false,
                 isArcTranslateActive = false,
                 arcStartedFromHandsFree = false,
                 isArcCancelHovered = false,
@@ -990,33 +918,6 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         hasManualEditSinceDictation = false
     }
 
-    override fun onUserDeleteOrCutForJev(remainingTextLengthHint: Int) {
-        voiceController.onUserDeleteOrCutForJev(remainingTextLengthHint)
-    }
-
-    override fun onUserUndoForJev() {
-        voiceController.onUserUndoForJev()
-    }
-
-    override fun onExplicitImeSendForJev(currentEditorText: String?) {
-        voiceController.onExplicitImeSendForJev(currentEditorText)
-    }
-
-    override fun readClipboardTextForJevNote(): String? {
-        val cm = clipboardManager
-            ?: (getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager).also {
-                clipboardManager = it
-            }
-            ?: return null
-        val clip = runCatching { cm.primaryClip }.getOrNull() ?: return null
-        if (clip.itemCount <= 0) return null
-        val isSensitive = runCatching {
-            clip.description?.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) ?: false
-        }.getOrDefault(false)
-        if (isSensitive) return null
-        return runCatching { clip.getItemAt(0)?.coerceToText(this)?.toString() }.getOrNull()
-    }
-
     override fun recordManualEditTouch() {
         val baseline = lastDictatedFullText ?: return
         if (baseline.isBlank()) return
@@ -1085,7 +986,6 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         performKeyFeedback(strong = true)
 
         clearAutoLearnBaseline()
-        voiceController.onUserUndoForJev()
 
         ic.beginBatchEdit()
         val currentlySelected = readSelectedTextSafely()
@@ -1512,12 +1412,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         _imeState.update {
             it.copy(
                 isIncognitoMode = effectiveIncognito,
-                capturedChatContext = if (effectiveIncognito) CapturedChatContext() else it.capturedChatContext,
                 aiCompletionSuggestion = if (effectiveIncognito) null else it.aiCompletionSuggestion
             )
         }
         showQuickActionToast(
-            if (nextManual) "🕵️ 已开启手动无痕模式（暂停历史、词频与读屏）" else "✓ 已关闭手动无痕模式"
+            if (nextManual) "🕵️ 已开启手动无痕模式（暂停历史与词频学习）" else "✓ 已关闭手动无痕模式"
         )
     }
 
@@ -1583,8 +1482,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         }
     }
 
-    override fun openJevCopilotFromCommand() {
-        voiceController.openJevCopilotPanel()
+    override fun openHelpMeWriteFromCommand() {
+        voiceController.openOrRestoreVoicePenPanel()
     }
 
     private fun applyCodetableV362Settings(
@@ -1655,8 +1554,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             },
             onDirectCommand = { cmd ->
                 when (cmd) {
-                    DirectCommandType.OPEN_JEV_COPILOT ->
-                        openJevCopilotFromCommand()
+                    DirectCommandType.OPEN_HELP_ME_WRITE ->
+                        openHelpMeWriteFromCommand()
                     DirectCommandType.TOGGLE_FULL_CODE_DICT -> {
                         val next = typingController.codetableEnhancedEngine
                             ?.subDictToggleManager
@@ -1699,7 +1598,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             clipboardReader = { readSystemClipboardText() },
             commitExecutor = executor,
             onToast = { msg -> showQuickActionToast(msg) },
-            onOpenJevCopilot = { openJevCopilotFromCommand() },
+            onOpenHelpMeWrite = { openHelpMeWriteFromCommand() },
             onAsyncReloadSchema = { schemaId ->
                 serviceScope.launch(Dispatchers.IO) {
                     dm.rimeBridge.deploy(schemaId)
@@ -1824,7 +1723,6 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     private fun onEnhancedEngineUndo() {
         undoStack.removeFirstOrNull()
         _imeState.update { it.copy(undoSnapshot = undoStack.firstOrNull()) }
-        onUserUndoForJev()
         syncCurrentEditorText()
     }
 

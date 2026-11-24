@@ -5,7 +5,6 @@ import android.os.Build
 import android.view.textclassifier.TextClassificationManager
 import android.view.textclassifier.TextClassifier
 import android.view.textclassifier.TextLinks
-import com.typefree.ime.bubble.RawScreenTextNode
 
 /**
  * Categories of sensitive Personal Identifiable Information (PII) and credentials.
@@ -255,10 +254,9 @@ object LocalPiiRedactor {
      */
     fun redactText(
         rawText: String,
-        context: Context? = null,
-        sourceNodes: List<RawScreenTextNode> = emptyList()
+        context: Context? = null
     ): RedactionSession {
-        if (rawText.isBlank() && sourceNodes.isEmpty()) {
+        if (rawText.isBlank()) {
             return RedactionSession.EMPTY.copy(redactedText = rawText)
         }
 
@@ -296,60 +294,30 @@ object LocalPiiRedactor {
             sb.append(rawText, cursor, rawText.length)
         }
 
-        // Also scan sourceNodes so any visible node containing PII contributes its screen bounds
-        // for screenshot blackout, and any high-risk node triggers screenshot drop even if outside bubble list.
-        // Pass context = null here because full-text TextClassifier already ran on rawText above,
-        // avoiding 40-100 synchronous cross-process TextClassifier Binder IPC calls on the main thread.
-        val redactedBounds = mutableListOf<IntArray>()
-        if (sourceNodes.isNotEmpty()) {
-            for (node in sourceNodes) {
-                if (!node.isVisibleToUser || node.text.isBlank()) continue
-                val nodeMatches = resolveNonOverlappingMatches(collectCandidates(node.text, context = null))
-                if (nodeMatches.isNotEmpty()) {
-                    if (nodeMatches.any { !it.category.restorable }) {
-                        hasHighRisk = true
-                    }
-                    if (node.boundsRight > node.boundsLeft && node.boundsBottom > node.boundsTop) {
-                        redactedBounds.add(
-                            intArrayOf(
-                                node.boundsLeft,
-                                node.boundsTop,
-                                node.boundsRight,
-                                node.boundsBottom
-                            )
-                        )
-                    }
-                }
-            }
-        }
-
         return RedactionSession(
             redactedText = sb.toString(),
             placeholderToOriginal = placeholderToOriginal,
             hasHighRiskCredentials = hasHighRisk,
             redactionCount = totalRedactions,
-            redactedNodeBounds = redactedBounds
+            redactedNodeBounds = emptyList()
         )
     }
 
     /**
-     * Redacts a list of formatted or plain chat messages along with combined accessibility + OCR
-     * [sourceNodes], returning `(redactedMessages, redactionSession)`.
+     * Redacts a list of messages, returning `(redactedMessages, redactionSession)`.
      */
     fun redactMessages(
         messages: List<String>,
-        context: Context? = null,
-        sourceNodes: List<RawScreenTextNode> = emptyList()
+        context: Context? = null
     ): Pair<List<String>, RedactionSession> {
         if (messages.isEmpty()) {
-            val session = redactText("", context = context, sourceNodes = sourceNodes)
+            val session = redactText("", context = context)
             return emptyList<String>() to session
         }
         val joined = messages.joinToString("\n")
         val session = redactText(
             rawText = joined,
-            context = context,
-            sourceNodes = sourceNodes
+            context = context
         )
         val redactedLines = if (session.redactionCount > 0) {
             val split = session.redactedText.split("\n")
@@ -361,7 +329,7 @@ object LocalPiiRedactor {
     }
 
     /**
-     * Sanitizes and redacts a short user-entered relation note (max 40 Unicode code points)
+     * Sanitizes and redacts a short user-entered note (max 40 Unicode code points)
      * before local persistence and prompt injection: strips control characters and XML angle
      * brackets, redacts phones, ID cards, bank cards, passwords, OTPs, emails, and addresses.
      */
@@ -375,7 +343,7 @@ object LocalPiiRedactor {
             .replace(Regex("""\s+"""), " ")
             .trim()
         if (cleaned.isEmpty()) return ""
-        val redacted = redactText(cleaned, context = null, sourceNodes = emptyList()).redactedText.trim()
+        val redacted = redactText(cleaned, context = null).redactedText.trim()
         val limit = maxCodePoints.coerceAtLeast(1)
         val cpCount = redacted.codePointCount(0, redacted.length)
         return if (cpCount <= limit) {

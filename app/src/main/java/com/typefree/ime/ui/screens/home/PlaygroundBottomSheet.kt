@@ -60,6 +60,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
 import com.typefree.ime.i18n.tr
 import com.typefree.ime.network.PipelineStage
 import com.typefree.ime.ui.components.TypeFreeIcons
@@ -76,15 +79,29 @@ data class SandboxPreviewDiff(
     val modeSummary: String
 )
 
+private fun localizeStyleBadgeText(raw: String, lang: AppLang): String {
+    if (lang == AppLang.ZH_CN) return raw
+    return raw
+        .replace("通用灵动", AppStrings.pick(lang, "通用灵动", "Smart Default", "通用靈動"))
+        .replace("社交聊天", AppStrings.pick(lang, "社交聊天", "Casual Chat", "社交聊天"))
+        .replace("职场干练", AppStrings.pick(lang, "职场干练", "Work & Slack", "職場幹練"))
+        .replace("正式邮件", AppStrings.pick(lang, "正式邮件", "Formal Email", "正式郵件"))
+        .replace("编程与 Prompt", AppStrings.pick(lang, "编程与 Prompt", "Code & Prompt", "程式與 Prompt"))
+        .replace("直出地道英文", AppStrings.pick(lang, "直出地道英文", "Native English Output", "直出地道英文"))
+}
+
 /**
  * Compact launch card on `HomeSetupScreen` that opens [PlaygroundBottomSheet] on demand,
  * keeping `HomeSetupScreen` lightweight and preventing nested keyboard occlusion.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PlaygroundEntryCard(
     activeStyleLabel: String,
     onOpenPlayground: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
+    val dispStyle = localizeStyleBadgeText(activeStyleLabel, appLang)
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -120,34 +137,41 @@ fun PlaygroundEntryCard(
                     )
                 }
 
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
                             text = tr("全功能实测沙盒 (Playground)", "Voice & AI Playground", "全功能實測沙盒 (Playground)"),
                             style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.align(Alignment.CenterVertically)
                         )
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = TypeFreeEmerald.copy(alpha = 0.14f)
+                            color = TypeFreeEmerald.copy(alpha = 0.14f),
+                            modifier = Modifier.align(Alignment.CenterVertically)
                         ) {
                             Text(
                                 text = tr("弹层试玩", "Live Demo", "彈層試玩"),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = TypeFreeEmerald,
+                                maxLines = 1,
+                                softWrap = false,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
                     }
                     Text(
                         text = tr(
-                            "当前风格：$activeStyleLabel · 点击打开独立试玩抽屉体验听写、改写与快译",
-                            "Active tone: $activeStyleLabel · Tap to test dictation, voice edit & live translation",
-                            "目前風格：$activeStyleLabel · 點擊開啟獨立試玩抽屜體驗聽寫、改寫與快譯"
+                            "当前风格：$dispStyle · 点击打开独立试玩抽屉体验听写、改写与快译",
+                            "Active tone: $dispStyle · Dictate, edit & translate",
+                            "目前風格：$dispStyle · 點擊開啟獨立試玩抽屜體驗聽寫、改寫與快譯"
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -167,7 +191,9 @@ fun PlaygroundEntryCard(
                 Text(
                     text = tr("立即体验", "Try Now", "立即體驗"),
                     style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
         }
@@ -293,6 +319,8 @@ fun PlaygroundCard(
     onCancelRecording: () -> Unit,
     onStopAndProcess: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
+    val dispStyle = localizeStyleBadgeText(activeStyleLabel, appLang)
     val isSpeakToEdit = effectiveIntent == VoiceIntentMode.SPEAK_TO_EDIT
 
     Card(
@@ -314,16 +342,22 @@ fun PlaygroundCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "全功能实测沙盒 (Playground)",
+                        text = tr("全功能实测沙盒 (Playground)", "Voice & AI Playground", "全功能實測沙盒 (Playground)"),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "预置真实文本，一站体验五大核心语音交互黑科技",
+                        text = tr(
+                            "预置真实文本，一站体验五大核心语音交互黑科技",
+                            "Hands-on sandbox for dictation, voice editing, writing, and live translation",
+                            "預置真實文字，一站體驗五大核心語音互動能力"
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
 
                 Surface(
                     onClick = onOpenStyles,
@@ -331,10 +365,12 @@ fun PlaygroundCard(
                     color = MaterialTheme.colorScheme.surfaceVariant
                 ) {
                     Text(
-                        text = activeStyleLabel,
+                        text = dispStyle,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        softWrap = false,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                     )
                 }
@@ -350,13 +386,21 @@ fun PlaygroundCard(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = "推荐直接点击下方输入框依次体验：",
+                        text = tr(
+                            "推荐直接点击下方输入框依次体验：",
+                            "Tap the editor below to try each workflow:",
+                            "推薦直接點選下方輸入框依序體驗："
+                        ),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "① 口述净写（去口癖与改口自纠） · ② 顶栏 [帮写] · ③ 选中文字 Speak to edit · ④ 长按上滑弧形快译 · ⑤ 键盘改错自动入词典",
+                        text = tr(
+                            "① 口述净写（去口癖与改口自纠） · ② 顶栏 [帮写] · ③ 选中文字 Speak to edit · ④ 长按上滑弧形快译 · ⑤ 键盘改错自动入词典",
+                            "① Smart Dictation (removes fillers & self-corrections) · ② [Help Write] · ③ Select text for Speak-to-Edit · ④ Hold & swipe up for Arc Translate · ⑤ Auto-learn typing fixes",
+                            "① 口述淨寫（去口頭禪與改口自糾） · ② 頂欄 [幫寫] · ③ 選取文字 Speak to edit · ④ 長按上滑弧形快譯 · ⑤ 鍵盤改錯自動入詞典"
+                        ),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 17.sp
@@ -376,19 +420,19 @@ fun PlaygroundCard(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         PlaygroundIntentPill(
-                            label = "口述净写",
+                            label = tr("口述净写", "Dictate", "口述淨寫"),
                             selected = manualIntent == VoiceIntentMode.DICTATE,
                             onClick = { onSelectManualIntent(VoiceIntentMode.DICTATE) },
                             modifier = Modifier.weight(1f)
                         )
                         PlaygroundIntentPill(
-                            label = "帮我写",
+                            label = tr("帮我写", "Help Write", "幫我寫"),
                             selected = manualIntent == VoiceIntentMode.HELP_ME_WRITE,
                             onClick = { onSelectManualIntent(VoiceIntentMode.HELP_ME_WRITE) },
                             modifier = Modifier.weight(1f)
                         )
                         PlaygroundIntentPill(
-                            label = "快译 ($translateTarget)",
+                            label = tr("快译 ($translateTarget)", "Translate ($translateTarget)", "快譯 ($translateTarget)"),
                             selected = manualIntent == VoiceIntentMode.TRANSLATE,
                             onClick = { onSelectManualIntent(VoiceIntentMode.TRANSLATE) },
                             modifier = Modifier.weight(1.25f)
@@ -407,7 +451,11 @@ fun PlaygroundCard(
                     border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.45f))
                 ) {
                     Text(
-                        text = "已激活「选中文字 Speak to edit」（已选 $selectedLength 字）：点击下方录音说出修改指令，如「改成更礼貌简短的商务语气」或「翻译成日文」！",
+                        text = tr(
+                            "已激活「选中文字 Speak to edit」（已选 $selectedLength 字）：点击下方录音说出修改指令，如「改成更礼貌简短的商务语气」或「翻译成日文」！",
+                            "Speak-to-Edit active ($selectedLength chars selected): Tap Record below and speak an instruction, e.g. \"Make this more concise and polite\" or \"Translate to Japanese\".",
+                            "已啟用「選取文字 Speak to edit」（已選 $selectedLength 字）：點選下方錄音說出修改指令，如「改成更禮貌簡短的商務語氣」或「翻譯成日文」！"
+                        ),
                         style = MaterialTheme.typography.labelMedium,
                         color = TypeFreeEmerald,
                         fontWeight = FontWeight.SemiBold,
@@ -425,12 +473,17 @@ fun PlaygroundCard(
             ) {
                 AssistChip(
                     onClick = onSelectSamplePhrase,
-                    label = { Text("一键选中句子测 Speak to edit", style = MaterialTheme.typography.labelMedium) }
+                    label = {
+                        Text(
+                            tr("一键选中句子测 Speak to edit", "Select Sentence for Speak-to-Edit", "一鍵選取句子測 Speak to edit"),
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
                 )
 
                 AssistChip(
                     onClick = onResetSample,
-                    label = { Text("恢复示例文本", style = MaterialTheme.typography.labelMedium) }
+                    label = { Text(tr("恢复示例文本", "Reset Sample", "恢復範例文字"), style = MaterialTheme.typography.labelMedium) }
                 )
 
                 if (undoAvailable) {
@@ -443,7 +496,7 @@ fun PlaygroundCard(
                                 modifier = Modifier.size(14.dp)
                             )
                         },
-                        label = { Text("撤销", style = MaterialTheme.typography.labelMedium) }
+                        label = { Text(tr("撤销", "Undo", "復原"), style = MaterialTheme.typography.labelMedium) }
                     )
                 }
 
@@ -459,7 +512,7 @@ fun PlaygroundCard(
                         },
                         label = {
                             Text(
-                                if (copyFeedback) "已复制" else "复制",
+                                if (copyFeedback) tr("已复制", "Copied", "已複製") else tr("复制", "Copy", "複製"),
                                 style = MaterialTheme.typography.labelMedium
                             )
                         }
@@ -467,7 +520,7 @@ fun PlaygroundCard(
 
                     AssistChip(
                         onClick = onClear,
-                        label = { Text("清空", style = MaterialTheme.typography.labelMedium) }
+                        label = { Text(tr("清空", "Clear", "清空"), style = MaterialTheme.typography.labelMedium) }
                     )
                 }
             }
@@ -481,7 +534,11 @@ fun PlaygroundCard(
                 shape = RoundedCornerShape(14.dp),
                 placeholder = {
                     Text(
-                        text = "点击此处唤起灵言语音键盘或悬浮声波球，也可直接点击下方内置录音按钮实测...",
+                        text = tr(
+                            "点击此处唤起灵言语音键盘或悬浮声波球，也可直接点击下方内置录音按钮实测...",
+                            "Tap here to open the TypeFree keyboard, or use the built-in record button below to test...",
+                            "點選此處喚起靈言語音鍵盤或懸浮聲波球，也可直接點選下方內建錄音按鈕實測..."
+                        ),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
                     )
@@ -511,10 +568,13 @@ fun PlaygroundCard(
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.weight(1f)
                             )
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "查看词典 ›",
+                                text = tr("查看词典 ›", "Dictionary ›", "查看詞典 ›"),
                                 style = MaterialTheme.typography.labelSmall,
-                                color = TypeFreeEmerald
+                                color = TypeFreeEmerald,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }
@@ -553,12 +613,12 @@ fun PlaygroundCard(
                                 color = TypeFreeRose,
                                 modifier = Modifier.weight(1f)
                             )
-                            if (!isApiReady || errMsg.contains("API")) {
+                            if (!isApiReady || errMsg.contains("API", ignoreCase = true)) {
                                 TextButton(
                                     onClick = onOpenApiConfig,
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                                 ) {
-                                    Text("去配置 ›", style = MaterialTheme.typography.labelMedium)
+                                    Text(tr("去配置 ›", "Configure ›", "去設定 ›"), style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
                                 }
                             }
                         }
@@ -622,14 +682,28 @@ private fun SandboxVoiceCapsule(
     onCancelRecording: () -> Unit,
     onStopAndProcess: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val isSpeakToEdit = effectiveIntent == VoiceIntentMode.SPEAK_TO_EDIT
+    val intentLabel = AppStrings.voiceIntentLabel(effectiveIntent, appLang)
 
     when {
         processingStage != null -> {
             val stageLabel = when (processingStage) {
-                PipelineStage.TRANSCRIBING_STT -> "正在通过 STT 接口识别语音初稿..."
-                PipelineStage.POLISHING_LLM -> "正在调用大模型执行${effectiveIntent.label}..."
-                PipelineStage.MULTIMODAL_PROCESSING -> "多模态大模型正在听音理解直出..."
+                PipelineStage.TRANSCRIBING_STT -> tr(
+                    "正在通过 STT 接口识别语音初稿...",
+                    "Transcribing speech via STT...",
+                    "正在透過 STT 介面識別語音初稿..."
+                )
+                PipelineStage.POLISHING_LLM -> tr(
+                    "正在调用大模型执行${intentLabel}...",
+                    "Running $intentLabel with LLM...",
+                    "正在呼叫大模型執行${intentLabel}..."
+                )
+                PipelineStage.MULTIMODAL_PROCESSING -> tr(
+                    "多模态大模型正在听音理解直出...",
+                    "Multimodal model processing audio directly...",
+                    "多模態大模型正在聽音理解直出..."
+                )
             }
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -678,7 +752,10 @@ private fun SandboxVoiceCapsule(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
                             Box(
                                 modifier = Modifier
                                     .size(9.dp)
@@ -688,16 +765,18 @@ private fun SandboxVoiceCapsule(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 text = when (effectiveIntent) {
-                                    VoiceIntentMode.SPEAK_TO_EDIT -> "正在聆听选区改写指令..."
-                                    VoiceIntentMode.HELP_ME_WRITE -> "正在聆听写作需求..."
-                                    VoiceIntentMode.JEV_COPILOT -> "正在聆听军师底牌..."
-                                    VoiceIntentMode.TRANSLATE -> "正在聆听并准备译为 $translateTarget..."
-                                    VoiceIntentMode.DICTATE -> "正在聆听口述语音..."
+                                    VoiceIntentMode.SPEAK_TO_EDIT -> tr("正在聆听选区改写指令...", "Listening for edit instruction...", "正在聆聽選區改寫指令...")
+                                    VoiceIntentMode.HELP_ME_WRITE -> tr("正在聆听写作需求...", "Listening for writing prompt...", "正在聆聽寫作需求...")
+                                    VoiceIntentMode.TRANSLATE -> tr("正在聆听并准备译为 $translateTarget...", "Listening to translate into $translateTarget...", "正在聆聽並準備譯為 $translateTarget...")
+                                    VoiceIntentMode.DICTATE -> tr("正在聆听口述语音...", "Listening for dictation...", "正在聆聽口述語音...")
                                 },
                                 style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = formatDurationSec(elapsedMs),
                             style = MaterialTheme.typography.labelMedium.copy(
@@ -743,7 +822,7 @@ private fun SandboxVoiceCapsule(
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Text("取消")
+                            Text(tr("取消", "Cancel", "取消"), maxLines = 1, softWrap = false)
                         }
                         Button(
                             onClick = onStopAndProcess,
@@ -769,8 +848,10 @@ private fun SandboxVoiceCapsule(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "说完了 · 立即生成",
-                                fontWeight = FontWeight.Bold
+                                text = tr("说完了 · 立即生成", "Done · Generate", "說完了 · 立即生成"),
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }
@@ -801,7 +882,6 @@ private fun SandboxVoiceCapsule(
                 Icon(
                     imageVector = when (effectiveIntent) {
                         VoiceIntentMode.HELP_ME_WRITE, VoiceIntentMode.SPEAK_TO_EDIT -> TypeFreeIcons.VoicePen
-                        VoiceIntentMode.JEV_COPILOT -> TypeFreeIcons.CopilotStar
                         VoiceIntentMode.TRANSLATE -> TypeFreeIcons.Translate
                         VoiceIntentMode.DICTATE -> TypeFreeIcons.VoiceWaveform
                     },
@@ -811,14 +891,15 @@ private fun SandboxVoiceCapsule(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = when (effectiveIntent) {
-                        VoiceIntentMode.SPEAK_TO_EDIT -> "点击录音 · 对选中文字下达语音编辑指令"
-                        VoiceIntentMode.HELP_ME_WRITE -> "点击录音 · 说出写作主题直接生成草稿"
-                        VoiceIntentMode.JEV_COPILOT -> "点击录音 · 补充军师底牌生成策略"
-                        VoiceIntentMode.TRANSLATE -> "点击录音 · 说中文直接快译为 $translateTarget"
-                        VoiceIntentMode.DICTATE -> "点击内置麦克风实测口述净写"
+                        VoiceIntentMode.SPEAK_TO_EDIT -> tr("点击录音 · 对选中文字下达语音编辑指令", "Tap to Record · Speak Edit Instruction", "點選錄音 · 對選取文字下達語音編輯指令")
+                        VoiceIntentMode.HELP_ME_WRITE -> tr("点击录音 · 说出写作主题直接生成草稿", "Tap to Record · Speak Topic to Draft", "點選錄音 · 說出寫作主題直接產生草稿")
+                        VoiceIntentMode.TRANSLATE -> tr("点击录音 · 说中文直接快译为 $translateTarget", "Tap to Record · Translate into $translateTarget", "點選錄音 · 說話直接快譯為 $translateTarget")
+                        VoiceIntentMode.DICTATE -> tr("点击内置麦克风实测口述净写", "Tap Built-in Mic to Test Smart Dictation", "點選內建麥克風實測口述淨寫")
                     },
                     style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -828,6 +909,7 @@ private fun SandboxVoiceCapsule(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SandboxDiffPreviewCard(diff: SandboxPreviewDiff) {
+    val intentLabel = AppStrings.voiceIntentLabel(diff.intentMode, LocalAppLanguage.current)
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
@@ -846,7 +928,7 @@ private fun SandboxDiffPreviewCard(diff: SandboxPreviewDiff) {
                 verticalArrangement = Arrangement.Center
             ) {
                 Text(
-                    text = "✓ ${diff.intentMode.label}完成对比",
+                    text = tr("✓ ${intentLabel}完成对比", "✓ $intentLabel Before & After", "✓ ${intentLabel}完成對比"),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Bold,
                     color = TypeFreeEmerald
@@ -860,20 +942,20 @@ private fun SandboxDiffPreviewCard(diff: SandboxPreviewDiff) {
 
             if (diff.originalSelection.isNotBlank()) {
                 Text(
-                    text = "选区原文：${diff.originalSelection}",
+                    text = tr("选区原文：${diff.originalSelection}", "Selected text: ${diff.originalSelection}", "選區原文：${diff.originalSelection}"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             Text(
-                text = "语音初稿：${diff.rawTranscript}",
+                text = tr("语音初稿：${diff.rawTranscript}", "Raw transcript: ${diff.rawTranscript}", "語音初稿：${diff.rawTranscript}"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             Text(
-                text = "上屏结果：${diff.polishedOutput}",
+                text = tr("上屏结果：${diff.polishedOutput}", "Final output: ${diff.polishedOutput}", "上屏結果：${diff.polishedOutput}"),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface

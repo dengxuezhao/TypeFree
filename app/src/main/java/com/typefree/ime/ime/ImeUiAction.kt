@@ -3,13 +3,10 @@ package com.typefree.ime.ime
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
-import com.typefree.ime.ime.jev.memory.GroupSceneTag
-import com.typefree.ime.ime.jev.memory.PrivateRelationTag
 
 /**
- * Unidirectional UI action bus for TypeFree v3.1.0+ keyboard panels.
- * Replaces 60+ scattered lambda parameters across [KeyboardScreen] and sub-panels,
- * and reserves [OpenJevCopilot] for the v3.2.0 Jev Copilot mode.
+ * Unidirectional UI action bus for TypeFree keyboard panels.
+ * Replaces scattered lambda parameters across [KeyboardScreen] and sub-panels.
  */
 sealed interface ImeUiAction {
     // Top-level navigation & overlays
@@ -25,22 +22,6 @@ sealed interface ImeUiAction {
     data object OpenStylePickerFromToolPanel : ImeUiAction
     data object TogglePunctuationStrip : ImeUiAction
     data class OpenHostApp(val tabIndex: Int, val subTabIndex: Int? = null) : ImeUiAction
-
-    // v3.2.0 Jev Copilot mode actions
-    data object OpenJevCopilot : ImeUiAction
-    data class SelectJevStrategyCard(val index: Int) : ImeUiAction
-    data object RefreshJevStrategies : ImeUiAction
-    data object TriggerFullScreenPeekCapture : ImeUiAction
-    data object ToggleJevContextInspector : ImeUiAction
-
-    // v3.6.0 Jev Relationship Memory actions
-    data object ToggleJevRelationOverlay : ImeUiAction
-    data class SelectJevPrivateRelation(val tag: PrivateRelationTag) : ImeUiAction
-    data class SelectJevGroupScene(val scene: GroupSceneTag) : ImeUiAction
-    data class AppendJevNoteQuickChip(val chipText: String) : ImeUiAction
-    data object PasteJevNoteFromClipboard : ImeUiAction
-    data object ClearJevRelationNote : ImeUiAction
-    data class RebindJevSessionAlias(val targetSessionUid: String) : ImeUiAction
 
     // Voice recording & Arc Translate
     data object StartVoiceRecording : ImeUiAction
@@ -61,9 +42,6 @@ sealed interface ImeUiAction {
     data class SelectHelpWritePreset(val preset: HelpWritePromptPreset) : ImeUiAction
     data class RunHelpWriteDraftTransform(val preset: HelpWritePromptPreset) : ImeUiAction
     data object DirectGenerateHelpWrite : ImeUiAction
-    data object AcceptChatContextDisclosure : ImeUiAction
-    data object DeclineChatContextDisclosure : ImeUiAction
-    data object ToggleIgnoreChatContext : ImeUiAction
 
     // v3.5.0 Ask AI Card panel actions
     data object OpenAskAiCard : ImeUiAction

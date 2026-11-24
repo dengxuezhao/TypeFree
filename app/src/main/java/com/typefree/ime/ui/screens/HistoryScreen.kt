@@ -87,6 +87,10 @@ import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.data.stats.TokenFeatureKeys
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PipelineExecutionResult
 import com.typefree.ime.network.PipelineStage
@@ -113,6 +117,41 @@ private data class HistoryDateGroup(
     val records: List<HistoryRecord>
 )
 
+private val HISTORY_FACTORY_STYLES: Map<String, ToneStyle> by lazy {
+    DefaultPresets.defaultStyles().associateBy { it.id }
+}
+
+private fun localizedHistoryStyleName(style: ToneStyle, lang: AppLang): String {
+    if (!style.isBuiltIn) return style.name
+    val factory = HISTORY_FACTORY_STYLES[style.id]
+    if (factory != null && style.name != factory.name) return style.name
+    return AppStrings.toneStyleName(style, lang)
+}
+
+private fun localizeHistoryTargetAppName(raw: String, lang: AppLang): String {
+    return when (raw.trim()) {
+        "历史录音重跑" -> AppStrings.pick(lang, "历史录音重跑", "Audio Retry", "歷史錄音重跑")
+        "历史重跑" -> AppStrings.pick(lang, "历史重跑", "History Repolish", "歷史重跑")
+        "微信" -> AppStrings.pick(lang, "微信", "WeChat", "微信")
+        "飞书" -> AppStrings.pick(lang, "飞书", "Feishu / Lark", "飛書")
+        "钉钉" -> AppStrings.pick(lang, "钉钉", "DingTalk", "釘釘")
+        "企业微信" -> AppStrings.pick(lang, "企业微信", "WeCom", "企業微信")
+        "小红书" -> AppStrings.pick(lang, "小红书", "Xiaohongshu", "小紅書")
+        "系统短信" -> AppStrings.pick(lang, "系统短信", "Messages", "系統簡訊")
+        else -> raw
+    }
+}
+
+private fun formatHistoryChars(chars: Int, lang: AppLang): String {
+    val safe = chars.coerceAtLeast(0)
+    return if (lang == AppLang.EN) {
+        if (safe >= 10_000) String.format(Locale.US, "%.1fk", safe / 1_000.0)
+        else String.format(Locale.US, "%,d", safe)
+    } else {
+        SetupStatsHelper.formatCharCount(safe)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun HistoryScreen(
@@ -121,6 +160,7 @@ fun HistoryScreen(
     initialDateKey: Int? = null
 ) {
     val context = LocalContext.current
+    val appLang = LocalAppLanguage.current
     val coroutineScope = rememberCoroutineScope()
 
     val history by repository.history.collectAsState()
@@ -187,9 +227,11 @@ fun HistoryScreen(
         SetupStatsHelper.computeProductivityStats(filteredHistory)
     }
 
-    val groupedHistory = remember(filteredHistory) {
-        groupRecordsByDate(filteredHistory)
+    val groupedHistory = remember(filteredHistory, appLang) {
+        groupRecordsByDate(filteredHistory, appLang)
     }
+
+    val multimodalPrefixZh = AppStrings.pick(AppLang.ZH_CN, "[多模态", "[Multimodal", "[多模態")
 
     fun triggerTextRepolish(record: HistoryRecord, overrideStyle: ToneStyle? = null) {
         if (activeBusyRecordId != null) return
@@ -198,7 +240,7 @@ fun HistoryScreen(
         ).first
 
         activeBusyRecordId = record.id
-        activeBusyLabel = "重新润色中…"
+        activeBusyLabel = AppStrings.pick(appLang, "重新润色中…", "Repolishing…", "重新潤飾中…")
         coroutineScope.launch {
             val mode = resolveRecordIntent(record)
             val isEditMode = mode == VoiceIntentMode.SPEAK_TO_EDIT && record.originalSelectedText.isNotBlank()
@@ -206,16 +248,26 @@ fun HistoryScreen(
                 record.originalSelectedText
             } else {
                 record.rawTranscript
-                    .takeIf { it.isNotBlank() && !it.startsWith("[多模态") }
+                    .takeIf { it.isNotBlank() && !it.startsWith(multimodalPrefixZh) && !it.startsWith("[Multimodal") }
                     ?: record.polishedText
             }
             val explicitInstruction = when {
                 isEditMode -> record.rawTranscript
-                    .takeIf { it.isNotBlank() && !it.startsWith("[多模态") }
-                    ?: "请按当前语气风格优化改写这段文本"
+                    .takeIf { it.isNotBlank() && !it.startsWith(multimodalPrefixZh) && !it.startsWith("[Multimodal") }
+                    ?: AppStrings.pick(
+                        appLang,
+                        "请按当前语气风格优化改写这段文本",
+                        "Please polish and rewrite this text in the active tone style",
+                        "請依目前語氣風格最佳化改寫這段文字"
+                    )
                 mode == VoiceIntentMode.TRANSLATE -> {
                     val targetLang = record.translateTargetLanguage.ifBlank { settings.activeTranslateTarget }
-                    "请将内容准确地道地翻译为 $targetLang，只输出译文"
+                    AppStrings.pick(
+                        appLang,
+                        "请将内容准确地道地翻译为 $targetLang，只输出译文",
+                        "Translate the content accurately and naturally into $targetLang. Output only the translation.",
+                        "請將內容準確道地翻譯為 $targetLang，僅輸出譯文"
+                    )
                 }
                 else -> null
             }
@@ -251,7 +303,12 @@ fun HistoryScreen(
                 onFailure = { err ->
                     Toast.makeText(
                         context,
-                        err.message ?: "重新润色失败，请检查自定义 API 设置",
+                        err.message ?: AppStrings.pick(
+                            appLang,
+                            "重新润色失败，请检查自定义 API 设置",
+                            "Repolish failed. Please check your API settings.",
+                            "重新潤飾失敗，請檢查 API 設定"
+                        ),
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -268,22 +325,24 @@ fun HistoryScreen(
         val targetLang = record.translateTargetLanguage.ifBlank { settings.activeTranslateTarget }
 
         activeBusyRecordId = record.id
-        activeBusyLabel = "读取本地录音…"
+        activeBusyLabel = AppStrings.pick(appLang, "读取本地录音…", "Reading local audio…", "讀取本機錄音…")
         coroutineScope.launch {
             val result = aiEngine.processVoiceAudio(
                 wavFile = wavFile,
                 settings = settings,
                 activeStyle = styleToUse,
-                targetAppName = record.targetAppName.ifBlank { "历史录音重跑" },
+                targetAppName = record.targetAppName.ifBlank {
+                    AppStrings.pick(appLang, "历史录音重跑", "Audio Retry", "歷史錄音重跑")
+                },
                 selectedText = record.originalSelectedText,
                 surroundingBeforeCursor = "",
                 intentMode = mode,
                 translateTargetLanguage = targetLang,
                 onStageChanged = { stage ->
                     activeBusyLabel = when (stage) {
-                        PipelineStage.TRANSCRIBING_STT -> "STT 识别中…"
-                        PipelineStage.POLISHING_LLM -> "LLM 润色中…"
-                        PipelineStage.MULTIMODAL_PROCESSING -> "多模态听音中…"
+                        PipelineStage.TRANSCRIBING_STT -> AppStrings.pick(appLang, "STT 识别中…", "STT transcribing…", "STT 識別中…")
+                        PipelineStage.POLISHING_LLM -> AppStrings.pick(appLang, "LLM 润色中…", "LLM polishing…", "LLM 潤飾中…")
+                        PipelineStage.MULTIMODAL_PROCESSING -> AppStrings.pick(appLang, "多模态听音中…", "Multimodal audio…", "多模態聽音中…")
                     }
                 }
             )
@@ -314,7 +373,12 @@ fun HistoryScreen(
                 onFailure = { err ->
                     Toast.makeText(
                         context,
-                        err.message ?: "本地录音重试失败，请检查 API 配置",
+                        err.message ?: AppStrings.pick(
+                            appLang,
+                            "本地录音重试失败，请检查 API 配置",
+                            "Local audio retry failed. Please check your API settings.",
+                            "本機錄音重試失敗，請檢查 API 設定"
+                        ),
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -335,7 +399,7 @@ fun HistoryScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "历史记录",
+                    text = tr("历史记录", "History", "歷史記錄"),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.ExtraBold
                 )
@@ -357,7 +421,7 @@ fun HistoryScreen(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "清空历史",
+                            text = tr("清空历史", "Clear All", "清空歷史"),
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold
@@ -406,13 +470,17 @@ fun HistoryScreen(
                                     modifier = Modifier.size(17.dp)
                                 )
                                 Text(
-                                    text = "保留周期",
+                                    text = tr("保留周期", "History Retention", "保留週期"),
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
                             Text(
-                                text = "口述与润色历史在当前设备上保留多长时间？",
+                                text = tr(
+                                    "口述与润色历史在当前设备上保留多长时间？",
+                                    "How long should dictation and polish history stay on this device?",
+                                    "口述與潤飾歷史在目前裝置上保留多長時間？"
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -434,14 +502,14 @@ fun HistoryScreen(
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     Text(
-                                        text = settings.historyRetention.label,
+                                        text = AppStrings.historyRetentionLabel(settings.historyRetention, appLang),
                                         style = MaterialTheme.typography.labelLarge,
                                         fontWeight = FontWeight.SemiBold,
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Icon(
                                         imageVector = Icons.Default.KeyboardArrowDown,
-                                        contentDescription = "选择保留周期",
+                                        contentDescription = tr("选择保留周期", "Select retention period", "選擇保留週期"),
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(16.dp)
                                     )
@@ -454,10 +522,11 @@ fun HistoryScreen(
                             ) {
                                 HistoryRetention.entries.forEach { option ->
                                     val selected = settings.historyRetention == option
+                                    val optLabel = AppStrings.historyRetentionLabel(option, appLang)
                                     DropdownMenuItem(
                                         text = {
                                             Text(
-                                                text = option.label,
+                                                text = optLabel,
                                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
                                             )
                                         },
@@ -478,7 +547,12 @@ fun HistoryScreen(
                                             }
                                             Toast.makeText(
                                                 context,
-                                                "历史保留策略已设为：${option.label}",
+                                                AppStrings.pick(
+                                                    appLang,
+                                                    "历史保留策略已设为：$optLabel",
+                                                    "History retention set to: $optLabel",
+                                                    "歷史保留策略已設為：$optLabel"
+                                                ),
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                         }
@@ -515,13 +589,17 @@ fun HistoryScreen(
                             verticalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             Text(
-                                text = "历史只保存在本机 · 自有接口直连",
+                                text = tr("历史只保存在本机 · 自有接口直连", "Stored On-Device Only · Direct API", "歷史僅儲存在本機 · 自有介面直連"),
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "历史只保存在本机；语音与文本仅发送给你配置的服务商。",
+                                text = tr(
+                                    "历史只保存在本机；语音与文本仅发送给你配置的服务商。",
+                                    "History stays strictly on this device; audio and text are sent only to your configured provider.",
+                                    "歷史僅儲存在本機；語音與文字僅傳送給你設定的服務商。"
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 lineHeight = 18.sp
@@ -542,7 +620,15 @@ fun HistoryScreen(
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         shape = RoundedCornerShape(12.dp),
-                        placeholder = { Text("搜索上屏文本、语音原稿、宿主应用或目标语言...") },
+                        placeholder = {
+                            Text(
+                                tr(
+                                    "搜索上屏文本、语音原稿、宿主应用或目标语言...",
+                                    "Search output text, transcript, host app, or language...",
+                                    "搜尋上屏文字、語音原稿、宿主應用或目標語言..."
+                                )
+                            )
+                        },
                         leadingIcon = {
                             Icon(
                                 imageVector = Icons.Default.Search,
@@ -554,7 +640,7 @@ fun HistoryScreen(
                                 IconButton(onClick = { searchQuery = "" }) {
                                     Icon(
                                         imageVector = Icons.Default.Close,
-                                        contentDescription = "清除搜索"
+                                        contentDescription = tr("清除搜索", "Clear search", "清除搜尋")
                                     )
                                 }
                             }
@@ -575,22 +661,22 @@ fun HistoryScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         HistoryCategoryPill(
-                            label = "全部 (${history.size})",
+                            label = tr("全部 (${history.size})", "All (${history.size})", "全部 (${history.size})"),
                             selected = selectedFilter == 0,
                             onClick = { selectedFilter = 0 }
                         )
                         HistoryCategoryPill(
-                            label = "口述净写 ($dictateCount)",
+                            label = tr("口述净写 ($dictateCount)", "Dictate ($dictateCount)", "口述淨寫 ($dictateCount)"),
                             selected = selectedFilter == 1,
                             onClick = { selectedFilter = 1 }
                         )
                         HistoryCategoryPill(
-                            label = "帮我写与编辑 ($writeAndEditCount)",
+                            label = tr("帮我写与编辑 ($writeAndEditCount)", "Write & Edit ($writeAndEditCount)", "幫我寫與編輯 ($writeAndEditCount)"),
                             selected = selectedFilter == 2,
                             onClick = { selectedFilter = 2 }
                         )
                         HistoryCategoryPill(
-                            label = "实时快译 ($translateCount)",
+                            label = tr("实时快译 ($translateCount)", "Translate ($translateCount)", "即時快譯 ($translateCount)"),
                             selected = selectedFilter == 3,
                             onClick = { selectedFilter = 3 }
                         )
@@ -598,6 +684,7 @@ fun HistoryScreen(
                 }
 
                 activeDateFilterKey?.let { dateKey ->
+                    val formattedDate = formatDateKeyLabel(dateKey, appLang)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
@@ -614,7 +701,7 @@ fun HistoryScreen(
                                 horizontalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
                                 Text(
-                                    text = "筛选日期：${formatDateKeyLabel(dateKey)} ×",
+                                    text = tr("筛选日期：$formattedDate ×", "Date: $formattedDate ×", "篩選日期：$formattedDate ×"),
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -625,7 +712,7 @@ fun HistoryScreen(
                 }
 
                 if (filteredHistory.isNotEmpty()) {
-                    val formatChars = SetupStatsHelper.formatCharCount(filteredStats.totalPolishedChars)
+                    val formatChars = formatHistoryChars(filteredStats.totalPolishedChars, appLang)
                     val savedMin = SetupStatsHelper.formatSavedMinutes(filteredStats.savedMinutes)
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
@@ -633,7 +720,11 @@ fun HistoryScreen(
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)
                     ) {
                         Text(
-                            text = "当前筛选 ${filteredHistory.size} 条 · 共 $formatChars 字 · 约省 $savedMin 分钟",
+                            text = tr(
+                                "当前筛选 ${filteredHistory.size} 条 · 共 $formatChars 字 · 约省 $savedMin 分钟",
+                                "${filteredHistory.size} items · $formatChars chars · ~$savedMin min saved",
+                                "目前篩選 ${filteredHistory.size} 條 · 共 $formatChars 字 · 約省 $savedMin 分鐘"
+                            ),
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -672,7 +763,7 @@ fun HistoryScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = "未找到匹配当前筛选条件的历史记录",
+                                text = tr("未找到匹配当前筛选条件的历史记录", "No history items match the current filters", "未找到符合目前篩選條件的歷史記錄"),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
@@ -683,7 +774,7 @@ fun HistoryScreen(
                                     activeDateFilterKey = null
                                 }
                             ) {
-                                Text("重置搜索与分类筛选")
+                                Text(tr("重置搜索与分类筛选", "Reset Search & Filters", "重設搜尋與分類篩選"))
                             }
                         }
                     }
@@ -714,7 +805,7 @@ fun HistoryScreen(
                                     context = context,
                                     label = "TypeFree Polished",
                                     text = record.polishedText,
-                                    toastMessage = "已复制上屏文本"
+                                    toastMessage = AppStrings.pick(appLang, "已复制上屏文本", "Copied final text", "已複製上屏文字")
                                 )
                             },
                             onCopyRaw = {
@@ -723,14 +814,18 @@ fun HistoryScreen(
                                     context = context,
                                     label = "TypeFree Raw",
                                     text = rawText,
-                                    toastMessage = "已复制原始转写稿"
+                                    toastMessage = AppStrings.pick(appLang, "已复制原始转写稿", "Copied raw transcript", "已複製原始轉寫稿")
                                 )
                             },
                             onRepolish = { triggerTextRepolish(record) },
                             onRetryAudio = { wavFile -> triggerAudioRetry(record, wavFile) },
                             onDelete = {
                                 repository.deleteHistoryItem(record.id)
-                                Toast.makeText(context, "已删除记录", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(
+                                    context,
+                                    AppStrings.pick(appLang, "已删除记录", "Record deleted", "已刪除記錄"),
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             }
                         )
                     }
@@ -750,11 +845,15 @@ fun HistoryScreen(
                 showClearAllConfirm = false
                 alsoResetStats = false
             },
-            title = { Text("清空全部历史记录") },
+            title = { Text(tr("清空全部历史记录", "Clear All History", "清空全部歷史記錄")) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = "确定要从本机永久清空全部 ${history.size} 条历史记录吗？此操作无法撤销。",
+                        text = tr(
+                            "确定要从本机永久清空全部 ${history.size} 条历史记录吗？此操作无法撤销。",
+                            "Permanently delete all ${history.size} history records from this device? This cannot be undone.",
+                            "確定要從本機永久清空全部 ${history.size} 條歷史記錄嗎？此操作無法復原。"
+                        ),
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Surface(
@@ -787,13 +886,17 @@ fun HistoryScreen(
                             )
                             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 Text(
-                                    text = "同时清零累计纯数字统计与里程碑",
+                                    text = tr("同时清零累计纯数字统计与里程碑", "Also reset cumulative stats & milestones", "同時清零累計純數字統計與里程碑"),
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "按日累计的纯数字统计不包含任何正文内容，默认保留以便继续追踪长期效率与成就。",
+                                    text = tr(
+                                        "按日累计的纯数字统计不包含任何正文内容，默认保留以便继续追踪长期效率与成就。",
+                                        "Daily numeric totals contain zero text content and are kept by default to preserve your long-term insights and milestones.",
+                                        "按日累計的純數字統計不包含任何內文，預設保留以便繼續追蹤長期效率與成就。"
+                                    ),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     lineHeight = 17.sp
@@ -812,7 +915,11 @@ fun HistoryScreen(
                         alsoResetStats = false
                         Toast.makeText(
                             context,
-                            if (resetStats) "已清空全部历史记录并清零累计统计" else "已清空全部历史记录（已保留纯数字统计）",
+                            if (resetStats) {
+                                AppStrings.pick(appLang, "已清空全部历史记录并清零累计统计", "Cleared all history and reset cumulative stats", "已清空全部歷史記錄並清零累計統計")
+                            } else {
+                                AppStrings.pick(appLang, "已清空全部历史记录（已保留纯数字统计）", "Cleared all history (numeric stats preserved)", "已清空全部歷史記錄（已保留純數字統計）")
+                            },
                             Toast.LENGTH_SHORT
                         ).show()
                     },
@@ -821,7 +928,7 @@ fun HistoryScreen(
                         contentColor = Color.White
                     )
                 ) {
-                    Text("确认清空")
+                    Text(tr("确认清空", "Clear All", "確認清空"))
                 }
             },
             dismissButton = {
@@ -831,7 +938,7 @@ fun HistoryScreen(
                         alsoResetStats = false
                     }
                 ) {
-                    Text("取消")
+                    Text(tr("取消", "Cancel", "取消"))
                 }
             }
         )
@@ -851,14 +958,16 @@ fun HistoryScreen(
                     context = context,
                     label = "TypeFree Repolished",
                     text = dialogState.executionResult.finalOutput,
-                    toastMessage = "已复制新结果"
+                    toastMessage = AppStrings.pick(appLang, "已复制新结果", "Copied new result", "已複製新結果")
                 )
             },
             onSaveAndCopy = {
                 val src = dialogState.sourceRecord
                 val resolvedMode = resolveRecordIntent(src)
                 val newRecord = HistoryRecord(
-                    targetAppName = src.targetAppName.ifBlank { "历史重跑" },
+                    targetAppName = src.targetAppName.ifBlank {
+                        AppStrings.pick(appLang, "历史重跑", "History Repolish", "歷史重跑")
+                    },
                     targetPackage = src.targetPackage,
                     styleName = "${dialogState.styleUsed.emoji} ${dialogState.styleUsed.name}",
                     isSpeakToEdit = resolvedMode == VoiceIntentMode.SPEAK_TO_EDIT,
@@ -874,9 +983,19 @@ fun HistoryScreen(
                     durationMs = src.durationMs,
                     latencyMs = dialogState.executionResult.latencyMs,
                     modeLabel = if (dialogState.fromAudioRetry) {
-                        "录音重跑 (${dialogState.executionResult.modeSummary})"
+                        AppStrings.pick(
+                            appLang,
+                            "录音重跑 (${dialogState.executionResult.modeSummary})",
+                            "Audio Retry (${dialogState.executionResult.modeSummary})",
+                            "錄音重跑 (${dialogState.executionResult.modeSummary})"
+                        )
                     } else {
-                        "重润色 (${dialogState.executionResult.modeSummary})"
+                        AppStrings.pick(
+                            appLang,
+                            "重润色 (${dialogState.executionResult.modeSummary})",
+                            "Repolished (${dialogState.executionResult.modeSummary})",
+                            "重潤飾 (${dialogState.executionResult.modeSummary})"
+                        )
                     },
                     audioFilePath = src.audioFilePath
                 )
@@ -885,7 +1004,7 @@ fun HistoryScreen(
                     context = context,
                     label = "TypeFree Repolished",
                     text = dialogState.executionResult.finalOutput,
-                    toastMessage = "已保存至最新历史并复制"
+                    toastMessage = AppStrings.pick(appLang, "已保存至最新历史并复制", "Saved to history and copied", "已儲存至最新歷史並複製")
                 )
                 repolishDialogState = null
             },
@@ -957,16 +1076,29 @@ private fun EmptyHistoryIllustration(isNeverRetention: Boolean) {
             }
 
             Text(
-                text = if (isNeverRetention) "当前已开启「从不保留」隐私无痕模式" else "暂无语音与改写记录",
+                text = if (isNeverRetention) {
+                    tr("当前已开启「从不保留」隐私无痕模式", "\"Never Save\" Privacy Mode Is Active", "目前已開啟「從不保留」隱私無痕模式")
+                } else {
+                    tr("暂无语音与改写记录", "No Voice or Edit History Yet", "暫無語音與改寫記錄")
+                },
                 style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
             )
 
             Text(
                 text = if (isNeverRetention) {
-                    "在此模式下，所有语音口述、改写与翻译上屏后立即销毁，不在本机写入任何历史记录。如需回溯历史，可在上方切换保留周期。"
+                    tr(
+                        "在此模式下，所有语音口述、改写与翻译上屏后立即销毁，不在本机写入任何历史记录。如需回溯历史，可在上方切换保留周期。",
+                        "All dictations, edits, and translations are discarded immediately after insertion and never written to disk. Change History Retention above to keep records.",
+                        "在此模式下，所有語音口述、改寫與翻譯上屏後立即銷毀，不在本機寫入任何歷史記錄。如需回溯歷史，可在上方切換保留週期。"
+                    )
                 } else {
-                    "在任意应用通过灵言键盘、悬浮语音胶囊或首页实测沙盒完成口述净写、帮我写、语音编辑与实时快译后，将按日期在此展示时间线。"
+                    tr(
+                        "在任意应用通过灵言键盘、悬浮语音胶囊或首页实测沙盒完成口述净写、帮我写、语音编辑与实时快译后，将按日期在此展示时间线。",
+                        "Dictations, Help Write drafts, voice edits, and live translations from the keyboard or Playground will appear here by date.",
+                        "在任意應用透過靈言鍵盤、懸浮語音膠囊或首頁實測沙盒完成口述淨寫、幫我寫、語音編輯與即時快譯後，將依日期在此顯示時間軸。"
+                    )
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -991,31 +1123,31 @@ private fun HistoryTimelineCard(
     onRetryAudio: (File) -> Unit,
     onDelete: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     var rawExpanded by rememberSaveable(record.id) { mutableStateOf(false) }
 
     val resolvedIntent = remember(record.intentMode, record.isSpeakToEdit) {
         resolveRecordIntent(record)
     }
-    val modeBadgeText = remember(resolvedIntent, record.translateTargetLanguage, fallbackTranslateLang) {
+    val modeBadgeText = remember(resolvedIntent, record.translateTargetLanguage, fallbackTranslateLang, appLang) {
         when (resolvedIntent) {
-            VoiceIntentMode.DICTATE -> "口述净写"
-            VoiceIntentMode.HELP_ME_WRITE -> "✍️ 帮我写"
-            VoiceIntentMode.SPEAK_TO_EDIT -> "✨ 语音编辑"
-            VoiceIntentMode.JEV_COPILOT -> "✦ Jev 军师"
+            VoiceIntentMode.DICTATE -> AppStrings.pick(appLang, "口述净写", "Dictate", "口述淨寫")
+            VoiceIntentMode.HELP_ME_WRITE -> AppStrings.pick(appLang, "✍️ 帮我写", "✍️ Help Write", "✍️ 幫我寫")
+            VoiceIntentMode.SPEAK_TO_EDIT -> AppStrings.pick(appLang, "✨ 语音编辑", "✨ Voice Edit", "✨ 語音編輯")
             VoiceIntentMode.TRANSLATE -> {
                 val lang = record.translateTargetLanguage.ifBlank { fallbackTranslateLang }
-                "🌐 快译 → $lang"
+                AppStrings.pick(appLang, "🌐 快译 → $lang", "🌐 Translate → $lang", "🌐 快譯 → $lang")
             }
         }
     }
-    val formattedStyleLabel = remember(record.styleName, styles) {
-        resolveStyleDisplayLabel(record.styleName, styles)
+    val formattedStyleLabel = remember(record.styleName, styles, appLang) {
+        resolveStyleDisplayLabel(record.styleName, styles, appLang)
     }
     val timeOnlyText = remember(record.timestamp) {
         formatClockTime(record.timestamp)
     }
-    val metricsText = remember(record.durationMs, record.latencyMs, record.modeLabel) {
-        formatMetricsLabel(record.durationMs, record.latencyMs, record.modeLabel)
+    val metricsText = remember(record.durationMs, record.latencyMs, record.modeLabel, appLang) {
+        formatMetricsLabel(record.durationMs, record.latencyMs, record.modeLabel, appLang)
     }
     val localWavFile = remember(record.audioFilePath) {
         record.audioFilePath
@@ -1063,7 +1195,7 @@ private fun HistoryTimelineCard(
                         color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Text(
-                            text = record.targetAppName.ifBlank { "TypeFree" },
+                            text = localizeHistoryTargetAppName(record.targetAppName, appLang).ifBlank { "TypeFree" },
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface,
@@ -1115,7 +1247,7 @@ private fun HistoryTimelineCard(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Delete,
-                        contentDescription = "删除记录",
+                        contentDescription = tr("删除记录", "Delete record", "刪除記錄"),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
                         modifier = Modifier.size(16.dp)
                     )
@@ -1156,11 +1288,10 @@ private fun HistoryTimelineCard(
                         ) {
                             Text(
                                 text = when (resolvedIntent) {
-                                    VoiceIntentMode.SPEAK_TO_EDIT -> "选区原文 & 语音改写指令"
-                                    VoiceIntentMode.HELP_ME_WRITE -> "语音写作指令原稿"
-                                    VoiceIntentMode.JEV_COPILOT -> "军师底牌指令原稿"
-                                    VoiceIntentMode.TRANSLATE -> "翻译前原始语音识别"
-                                    VoiceIntentMode.DICTATE -> "原始转写初稿对比"
+                                    VoiceIntentMode.SPEAK_TO_EDIT -> tr("选区原文 & 语音改写指令", "Selected Text & Voice Prompt", "選區原文 & 語音改寫指令")
+                                    VoiceIntentMode.HELP_ME_WRITE -> tr("语音写作指令原稿", "Original Writing Prompt", "語音寫作指令原稿")
+                                    VoiceIntentMode.TRANSLATE -> tr("翻译前原始语音识别", "Original Speech Transcript", "翻譯前原始語音識別")
+                                    VoiceIntentMode.DICTATE -> tr("原始转写初稿对比", "Raw Transcript Comparison", "原始轉寫初稿對比")
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
@@ -1197,7 +1328,7 @@ private fun HistoryTimelineCard(
                                     } else {
                                         Icons.Default.KeyboardArrowDown
                                     },
-                                    contentDescription = if (rawExpanded) "收起" else "展开",
+                                    contentDescription = if (rawExpanded) tr("收起", "Collapse", "收起") else tr("展开", "Expand", "展開"),
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(16.dp)
                                 )
@@ -1207,7 +1338,7 @@ private fun HistoryTimelineCard(
                         if (rawExpanded) {
                             if (record.originalSelectedText.isNotBlank()) {
                                 Text(
-                                    text = "选区原文：${record.originalSelectedText}",
+                                    text = tr("选区原文：${record.originalSelectedText}", "Selected text: ${record.originalSelectedText}", "選區原文：${record.originalSelectedText}"),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1217,9 +1348,9 @@ private fun HistoryTimelineCard(
                                     text = if (resolvedIntent == VoiceIntentMode.SPEAK_TO_EDIT ||
                                         resolvedIntent == VoiceIntentMode.HELP_ME_WRITE
                                     ) {
-                                        "口述指令：${record.rawTranscript}"
+                                        tr("口述指令：${record.rawTranscript}", "Spoken instruction: ${record.rawTranscript}", "口述指令：${record.rawTranscript}")
                                     } else {
-                                        "原始转写：${record.rawTranscript}"
+                                        tr("原始转写：${record.rawTranscript}", "Raw transcript: ${record.rawTranscript}", "原始轉寫：${record.rawTranscript}")
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1230,7 +1361,7 @@ private fun HistoryTimelineCard(
                                     onClick = onCopyRaw,
                                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
                                 ) {
-                                    Text("复制原稿文本", style = MaterialTheme.typography.labelSmall)
+                                    Text(tr("复制原稿文本", "Copy Raw Text", "複製原稿文字"), style = MaterialTheme.typography.labelSmall)
                                 }
                             }
                         } else if (record.rawTranscript.isNotBlank()) {
@@ -1265,7 +1396,7 @@ private fun HistoryTimelineCard(
                         modifier = Modifier.size(14.dp)
                     )
                     Spacer(modifier = Modifier.width(5.dp))
-                    Text("复制", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Text(tr("复制", "Copy", "複製"), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                 }
 
                 OutlinedButton(
@@ -1288,7 +1419,7 @@ private fun HistoryTimelineCard(
                     }
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = if (busyLabel != null && localWavFile == null) busyLabel else "重新润色",
+                        text = if (busyLabel != null && localWavFile == null) busyLabel else tr("重新润色", "Repolish", "重新潤飾"),
                         style = MaterialTheme.typography.labelMedium
                     )
                 }
@@ -1314,7 +1445,7 @@ private fun HistoryTimelineCard(
                         }
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = busyLabel ?: "本地录音重试",
+                            text = busyLabel ?: tr("本地录音重试", "Retry Audio", "本機錄音重試"),
                             style = MaterialTheme.typography.labelMedium
                         )
                     }
@@ -1335,10 +1466,18 @@ private fun RepolishResultDialog(
     onSaveAndCopy: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
+    val dispStyleUsed = localizedHistoryStyleName(state.styleUsed, appLang)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text(if (state.fromAudioRetry) "本地录音重新识别与润色结果" else "当前 API 重新润色结果")
+            Text(
+                if (state.fromAudioRetry) {
+                    tr("本地录音重新识别与润色结果", "Local Audio Retry Result", "本機錄音重新識別與潤飾結果")
+                } else {
+                    tr("当前 API 重新润色结果", "Repolish Result", "目前 API 重新潤飾結果")
+                }
+            )
         },
         text = {
             Column(
@@ -1348,7 +1487,11 @@ private fun RepolishResultDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "应用风格：${state.styleUsed.emoji} ${state.styleUsed.name} · ${state.executionResult.modeSummary} · ${state.executionResult.latencyMs}ms",
+                    text = tr(
+                        "应用风格：${state.styleUsed.emoji} $dispStyleUsed · ${state.executionResult.modeSummary} · ${state.executionResult.latencyMs}ms",
+                        "Style: ${state.styleUsed.emoji} $dispStyleUsed · ${state.executionResult.modeSummary} · ${state.executionResult.latencyMs}ms",
+                        "套用風格：${state.styleUsed.emoji} $dispStyleUsed · ${state.executionResult.modeSummary} · ${state.executionResult.latencyMs}ms"
+                    ),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1372,14 +1515,18 @@ private fun RepolishResultDialog(
 
                 if (state.fromAudioRetry && state.executionResult.rawTranscript.isNotBlank()) {
                     Text(
-                        text = "新识别初稿：${state.executionResult.rawTranscript}",
+                        text = tr(
+                            "新识别初稿：${state.executionResult.rawTranscript}",
+                            "New raw transcript: ${state.executionResult.rawTranscript}",
+                            "新識別初稿：${state.executionResult.rawTranscript}"
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
                 Text(
-                    text = "切换其他语气风格立即对比：",
+                    text = tr("切换其他语气风格立即对比：", "Try another tone style immediately:", "切換其他語氣風格立即對比："),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1393,7 +1540,7 @@ private fun RepolishResultDialog(
                             selected = style.id == state.styleUsed.id,
                             enabled = !isLoading,
                             onClick = { onTryStyle(style) },
-                            label = { Text("${style.emoji} ${style.name}") }
+                            label = { Text("${style.emoji} ${localizedHistoryStyleName(style, appLang)}") }
                         )
                     }
                 }
@@ -1402,7 +1549,7 @@ private fun RepolishResultDialog(
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onCopyOnly) {
-                    Text("仅复制")
+                    Text(tr("仅复制", "Copy Only", "僅複製"))
                 }
                 Button(
                     onClick = onSaveAndCopy,
@@ -1411,13 +1558,13 @@ private fun RepolishResultDialog(
                         contentColor = MaterialTheme.colorScheme.onPrimary
                     )
                 ) {
-                    Text("保存并复制")
+                    Text(tr("保存并复制", "Save & Copy", "儲存並複製"))
                 }
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("关闭")
+                Text(tr("关闭", "Close", "關閉"))
             }
         }
     )
@@ -1431,12 +1578,20 @@ private fun resolveRecordIntent(record: HistoryRecord): VoiceIntentMode {
     }
 }
 
-private fun groupRecordsByDate(records: List<HistoryRecord>): List<HistoryDateGroup> {
+private fun groupRecordsByDate(records: List<HistoryRecord>, lang: AppLang): List<HistoryDateGroup> {
     if (records.isEmpty()) return emptyList()
     val zone = ZoneId.systemDefault()
     val today = LocalDate.now(zone)
-    val sameYearFmt = DateTimeFormatter.ofPattern("M月d日", Locale.CHINA)
-    val fullDateFmt = DateTimeFormatter.ofPattern("yyyy年M月d日", Locale.CHINA)
+    val sameYearFmt = if (lang == AppLang.EN) {
+        DateTimeFormatter.ofPattern("MMM d", Locale.US)
+    } else {
+        DateTimeFormatter.ofPattern("M月d日", Locale.CHINA)
+    }
+    val fullDateFmt = if (lang == AppLang.EN) {
+        DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US)
+    } else {
+        DateTimeFormatter.ofPattern("yyyy年M月d日", Locale.CHINA)
+    }
 
     val map = LinkedHashMap<LocalDate, MutableList<HistoryRecord>>()
     for (record in records) {
@@ -1446,8 +1601,8 @@ private fun groupRecordsByDate(records: List<HistoryRecord>): List<HistoryDateGr
 
     return map.entries.map { (date, list) ->
         val header = when {
-            date == today -> "今天"
-            date == today.minusDays(1) -> "昨天"
+            date == today -> AppStrings.pick(lang, "今天", "Today", "今天")
+            date == today.minusDays(1) -> AppStrings.pick(lang, "昨天", "Yesterday", "昨天")
             date.year == today.year -> date.format(sameYearFmt)
             else -> date.format(fullDateFmt)
         }
@@ -1462,7 +1617,7 @@ private fun groupRecordsByDate(records: List<HistoryRecord>): List<HistoryDateGr
 private fun formatClockTime(epochMs: Long): String {
     val zone = ZoneId.systemDefault()
     val dt = Instant.ofEpochMilli(epochMs).atZone(zone)
-    return dt.format(DateTimeFormatter.ofPattern("HH:mm", Locale.CHINA))
+    return dt.format(DateTimeFormatter.ofPattern("HH:mm", Locale.US))
 }
 
 private fun epochMsToDateKey(epochMs: Long): Int {
@@ -1470,16 +1625,24 @@ private fun epochMsToDateKey(epochMs: Long): Int {
     return date.year * 10000 + date.monthValue * 100 + date.dayOfMonth
 }
 
-private fun formatDateKeyLabel(dateKey: Int): String {
+private fun formatDateKeyLabel(dateKey: Int, lang: AppLang): String {
     val year = dateKey / 10000
     val month = (dateKey % 10000) / 100
     val day = dateKey % 100
     if (month !in 1..12 || day !in 1..31) return dateKey.toString()
     val today = LocalDate.now(ZoneId.systemDefault())
+    val parsed = runCatching { LocalDate.of(year, month, day) }.getOrNull()
+    if (lang == AppLang.EN && parsed != null) {
+        return if (year == today.year) {
+            parsed.format(DateTimeFormatter.ofPattern("MMM d", Locale.US))
+        } else {
+            parsed.format(DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US))
+        }
+    }
     return if (year == today.year) {
-        "${month}月${day}日"
+        AppStrings.pick(lang, "${month}月${day}日", "$month/$day", "${month}月${day}日")
     } else {
-        "${year}年${month}月${day}日"
+        AppStrings.pick(lang, "${year}年${month}月${day}日", "$year-$month-$day", "${year}年${month}月${day}日")
     }
 }
 
@@ -1494,18 +1657,24 @@ private fun copyTextToClipboard(
     Toast.makeText(context, toastMessage, Toast.LENGTH_SHORT).show()
 }
 
-private fun resolveStyleDisplayLabel(styleName: String, styles: List<ToneStyle>): String {
+private fun resolveStyleDisplayLabel(styleName: String, styles: List<ToneStyle>, lang: AppLang): String {
     val clean = styleName.trim()
     if (clean.isEmpty()) return ""
     val matched = styles.firstOrNull { it.name == clean || "${it.emoji} ${it.name}" == clean }
-    return if (matched != null) {
-        "${matched.emoji} ${matched.name}"
-    } else {
-        clean
+    if (matched != null) {
+        return "${matched.emoji} ${localizedHistoryStyleName(matched, lang)}"
     }
+    if (lang == AppLang.ZH_CN) return clean
+    return clean
+        .replace("通用灵动", AppStrings.pick(lang, "通用灵动", "Smart Default", "通用靈動"))
+        .replace("社交聊天", AppStrings.pick(lang, "社交聊天", "Casual Chat", "社交聊天"))
+        .replace("职场干练", AppStrings.pick(lang, "职场干练", "Work & Slack", "職場幹練"))
+        .replace("正式邮件", AppStrings.pick(lang, "正式邮件", "Formal Email", "正式郵件"))
+        .replace("编程与 Prompt", AppStrings.pick(lang, "编程与 Prompt", "Code & Prompt", "程式與 Prompt"))
+        .replace("直出地道英文", AppStrings.pick(lang, "直出地道英文", "Native English Output", "直出地道英文"))
 }
 
-private fun formatMetricsLabel(durationMs: Long, latencyMs: Long, modeLabel: String): String {
+private fun formatMetricsLabel(durationMs: Long, latencyMs: Long, modeLabel: String, lang: AppLang): String {
     val parts = mutableListOf<String>()
     if (durationMs > 0L) {
         parts += String.format(Locale.US, "%.1fs", durationMs / 1000.0)
@@ -1514,7 +1683,14 @@ private fun formatMetricsLabel(durationMs: Long, latencyMs: Long, modeLabel: Str
         parts += "${latencyMs}ms"
     }
     if (modeLabel.isNotBlank()) {
-        parts += modeLabel
+        val localizedMode = if (lang == AppLang.ZH_CN) {
+            modeLabel
+        } else {
+            modeLabel
+                .replace("录音重跑 (", AppStrings.pick(lang, "录音重跑 (", "Audio Retry (", "錄音重跑 ("))
+                .replace("重润色 (", AppStrings.pick(lang, "重润色 (", "Repolished (", "重潤飾 ("))
+        }
+        parts += localizedMode
     }
     return parts.joinToString(" · ")
 }

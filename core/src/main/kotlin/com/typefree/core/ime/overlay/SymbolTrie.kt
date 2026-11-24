@@ -103,8 +103,8 @@ class SymbolTrie(
                         "type: \"undo_last_commit\"$labelPart"
                     CommitAction.RepeatLastCommit ->
                         "type: \"repeat_last_commit\"$labelPart"
-                    is CommitAction.Command -> if (act.commandType == DirectCommandType.OPEN_JEV_COPILOT) {
-                        "type: \"open_jev_copilot\"$labelPart"
+                    is CommitAction.Command -> if (act.commandType == DirectCommandType.OPEN_HELP_ME_WRITE) {
+                        "type: \"open_help_me_write\"$labelPart"
                     } else {
                         "type: \"plain\", text: ${quoteYaml(item.displayText)}$labelPart"
                     }
@@ -247,11 +247,11 @@ class SymbolTrie(
                                     label = label.ifEmpty { "重复上屏" },
                                     action = CommitAction.RepeatLastCommit
                                 )
-                                "open_jev_copilot" -> OverlaySymbolEntry(
+                                "open_help_me_write" -> OverlaySymbolEntry(
                                     key = key,
-                                    displayText = "✦军师",
-                                    label = label.ifEmpty { "Jev军师" },
-                                    action = CommitAction.Command(DirectCommandType.OPEN_JEV_COPILOT)
+                                    displayText = "✍️帮写",
+                                    label = label.ifEmpty { "AI帮写" },
+                                    action = CommitAction.Command(DirectCommandType.OPEN_HELP_ME_WRITE)
                                 )
                                 else -> {
                                     val text = props["text"].orEmpty()

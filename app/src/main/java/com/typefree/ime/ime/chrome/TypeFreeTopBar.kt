@@ -72,7 +72,6 @@ data class TopBarLeftSlotState(
     val showClipboardQuickPaste: Boolean,
     val showVoicePenPill: Boolean,
     val voicePenLabel: String,
-    val showJevCopilotPill: Boolean = false,
     val showClipboardButton: Boolean = true,
     val showStyleBadge: Boolean = false,
     val showQwertyHoldVoiceCapsule: Boolean = false
@@ -82,23 +81,22 @@ data class QwertyTopBarLayoutPlan(
     val bannerTakesOverMiddle: Boolean,
     val showClipboardIconButton: Boolean,
     val showRightAskAi: Boolean,
-    val showRightJevCopilot: Boolean,
     val showRightVoicePen: Boolean,
     val showLeftInlineBanner: Boolean,
     val compactAskAiIconOnly: Boolean = false,
-    val compactJevIconOnly: Boolean = false,
     val compactVoicePenIconOnly: Boolean = false
 )
 
 /**
- * Pure policy for TypeFree v3.4.0 Top Bar slot priority & intent convergence:
+ * Pure policy for TypeFree Top Bar slot priority & intent convergence:
  * 1. When [hasUndoSnapshot] is true, [TopBarUndoIconButton] is ALWAYS kept visible so a fresh
  *    clipboard banner never swallows the 1-tap Undo safety net.
  * 2. A permanent 26.dp [TopBarClipboardIconButton] (`[📋]`) is always exposed when not composing
  *    for 1-tap clipboard access, with a green notification dot when [hasFreshClipboardBanner] is true.
  * 3. The AI Tone Style badge (`💼 职场▾`) is ONLY shown in [KeyboardTabMode.VOICE] (hidden in QWERTY).
- * 4. In [KeyboardTabMode.QWERTY] idle state, the right cluster converges to `[✦ 军师]` + `[✍️ 帮写/改写]`
- *    + dark primary `[🎤 语音]` capsule (tap `< 220ms` switches to Voice panel; hold `>= 220ms` dictates in-place).
+ * 4. In [KeyboardTabMode.QWERTY] idle state, the right cluster converges to `[🔍 问AI]` (contextual)
+ *    + `[✍️ 帮写/改写]` + dark primary `[🎤 语音]` capsule (tap `< 220ms` switches to Voice panel;
+ *    hold `>= 220ms` dictates in-place).
  */
 object TopBarSlotPolicy {
     fun resolveLeftSlots(
@@ -107,7 +105,6 @@ object TopBarSlotPolicy {
         hasUndoSnapshot: Boolean,
         hasFreshClipboardBanner: Boolean,
         hasActiveSelection: Boolean,
-        jevCopilotEnabled: Boolean = true,
         lang: AppLang = AppLang.ZH_CN
     ): TopBarLeftSlotState {
         val penLabel = if (hasActiveSelection) {
@@ -121,7 +118,6 @@ object TopBarSlotPolicy {
                 showClipboardQuickPaste = false,
                 showVoicePenPill = false,
                 voicePenLabel = penLabel,
-                showJevCopilotPill = false,
                 showClipboardButton = false,
                 showStyleBadge = false,
                 showQwertyHoldVoiceCapsule = false
@@ -129,14 +125,11 @@ object TopBarSlotPolicy {
         }
         val showVoicePen = activeTab == KeyboardTabMode.QWERTY ||
             (activeTab != KeyboardTabMode.VOICE && hasActiveSelection)
-        val showJevPill = jevCopilotEnabled &&
-            (activeTab == KeyboardTabMode.QWERTY || activeTab == KeyboardTabMode.VOICE)
         return TopBarLeftSlotState(
             showUndoButton = hasUndoSnapshot,
             showClipboardQuickPaste = hasFreshClipboardBanner,
             showVoicePenPill = showVoicePen,
             voicePenLabel = penLabel,
-            showJevCopilotPill = showJevPill,
             showClipboardButton = true,
             showStyleBadge = activeTab == KeyboardTabMode.VOICE,
             showQwertyHoldVoiceCapsule = activeTab == KeyboardTabMode.QWERTY
@@ -201,12 +194,10 @@ object TopBarSlotPolicy {
         hasPriorityBanner: Boolean,
         isClipboardBannerActive: Boolean,
         wantAskAi: Boolean,
-        wantJevCopilot: Boolean,
         wantVoicePen: Boolean,
         lang: AppLang = AppLang.ZH_CN,
         hasActiveSelection: Boolean = false,
         measuredAskAiFullDp: Float? = null,
-        measuredJevFullDp: Float? = null,
         measuredPenFullDp: Float? = null,
         measuredVoiceFullDp: Float? = null
     ): QwertyTopBarLayoutPlan {
@@ -217,9 +208,8 @@ object TopBarSlotPolicy {
         val pillGap = 4f
         val compactIconSlot = 28f + pillGap // 28dp circular icon button + 4dp gap
 
-        val voiceWidth = measuredVoiceFullDp ?: if (isEn) 58f else 58f
+        val voiceWidth = measuredVoiceFullDp ?: 58f
         val fullPenSlot = (measuredPenFullDp ?: if (isEn) 52f else 50f) + pillGap
-        val fullJevSlot = (measuredJevFullDp ?: if (isEn) 61f else 50f) + pillGap
         val fullAskAiSlot = (measuredAskAiFullDp ?: if (isEn) 56f else 52f) + pillGap
         val smallIconSlot = 30f
 
@@ -236,57 +226,34 @@ object TopBarSlotPolicy {
                 bannerTakesOverMiddle = canShowBanner,
                 showClipboardIconButton = if (canShowBanner) effectiveClipboardIcon else showClipboardButton,
                 showRightAskAi = false,
-                showRightJevCopilot = false,
                 showRightVoicePen = false,
                 showLeftInlineBanner = canShowBanner
             )
         }
 
         var showAskAi = wantAskAi
-        var showJev = wantJevCopilot
         var showPen = wantVoicePen
         var compactAskAi = false
-        var compactJev = false
         var compactPen = false
 
         fun rightClusterWidth(): Float {
             var w = voiceWidth
             if (showPen) w += if (compactPen) compactIconSlot else fullPenSlot
-            if (showJev) w += if (compactJev) compactIconSlot else fullJevSlot
             if (showAskAi) w += if (compactAskAi) compactIconSlot else fullAskAiSlot
             return w
         }
 
         // Phase 1: Collapse secondary pills from [icon + text] -> [28dp icon] one by one without dropping any entry!
-        // When text is selected, keep Ask AI and Edit labels longest by collapsing Copilot first.
-        if (hasActiveSelection) {
-            if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showJev && !compactJev) {
-                compactJev = true
-            }
-            if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showAskAi && !compactAskAi) {
-                compactAskAi = true
-            }
-            if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showPen && !compactPen) {
-                compactPen = true
-            }
-        } else {
-            if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showAskAi && !compactAskAi) {
-                compactAskAi = true
-            }
-            if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showJev && !compactJev) {
-                compactJev = true
-            }
-            if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showPen && !compactPen) {
-                compactPen = true
-            }
+        if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showAskAi && !compactAskAi) {
+            compactAskAi = true
+        }
+        if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showPen && !compactPen) {
+            compactPen = true
         }
 
         // Phase 2: Extreme microscopic fallback (< ~200dp floating pip) — only drop if even 28dp icons cannot fit
         if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showAskAi && !hasActiveSelection) {
             showAskAi = false
-        }
-        if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showJev) {
-            showJev = false
         }
         if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showAskAi) {
             showAskAi = false
@@ -299,11 +266,9 @@ object TopBarSlotPolicy {
             bannerTakesOverMiddle = false,
             showClipboardIconButton = showClipboardButton,
             showRightAskAi = showAskAi,
-            showRightJevCopilot = showJev,
             showRightVoicePen = showPen,
             showLeftInlineBanner = false,
             compactAskAiIconOnly = compactAskAi,
-            compactJevIconOnly = compactJev,
             compactVoicePenIconOnly = compactPen
         )
     }
@@ -352,7 +317,6 @@ fun TypeFreeTopBar(
     onPasteClipboardText: (String) -> Unit,
     onDismissFreshClipboardBanner: () -> Unit = {},
     onToggleManualIncognito: () -> Unit = {},
-    onOpenJevCopilot: () -> Unit = {},
     onOpenAskAiCard: () -> Unit = {},
     onToggleClipboard: () -> Unit = {},
     onStartVoiceDictation: () -> Unit = {},
@@ -377,7 +341,6 @@ fun TypeFreeTopBar(
         uiState.undoSnapshot,
         freshClip,
         uiState.rawSelectedText,
-        settings.jevCopilotEnabled,
         appLang
     ) {
         TopBarSlotPolicy.resolveLeftSlots(
@@ -386,7 +349,6 @@ fun TypeFreeTopBar(
             hasUndoSnapshot = uiState.undoSnapshot != null,
             hasFreshClipboardBanner = freshClip != null,
             hasActiveSelection = uiState.rawSelectedText.isNotBlank(),
-            jevCopilotEnabled = settings.jevCopilotEnabled,
             lang = appLang
         )
     }
@@ -426,15 +388,13 @@ fun TypeFreeTopBar(
     val isEnUi = appLang == AppLang.EN
     val pillFontSp = if (isEnUi) 10.5.sp else 11.sp
     val askAiText = AppStrings.pick(appLang, "问AI", "Ask AI", "問AI")
-    val jevText = AppStrings.pick(appLang, "军师", "Copilot", "軍師")
     val voiceIdleText = AppStrings.pick(appLang, "语音", "Voice", "語音")
 
-    val (measuredAskAiDp, measuredJevDp, measuredPenDp, measuredVoiceDp) = remember(
+    val (measuredAskAiDp, measuredPenDp, measuredVoiceDp) = remember(
         textMeasurer,
         density,
         isEnUi,
         askAiText,
-        jevText,
         slotState.voicePenLabel,
         voiceIdleText
     ) {
@@ -448,9 +408,8 @@ fun TypeFreeTopBar(
         val hPad = if (isEnUi) 6.5f else 8f
         val gap = if (isEnUi) 2.5f else 3f
         val voicePad = if (isEnUi) 7f else 8.5f
-        listOf(
+        Triple(
             measurePillDp(askAiText, hPad, 11f, gap),
-            measurePillDp(jevText, hPad, 11f, gap),
             measurePillDp(slotState.voicePenLabel, hPad, 11f, gap),
             measurePillDp(voiceIdleText, voicePad, 11.5f, 3f)
         )
@@ -470,12 +429,10 @@ fun TypeFreeTopBar(
                 hasPriorityBanner = hasPriorityBanner,
                 isClipboardBannerActive = isClipboardBannerActive,
                 wantAskAi = wantAskAi,
-                wantJevCopilot = slotState.showJevCopilotPill,
                 wantVoicePen = slotState.showVoicePenPill,
                 lang = appLang,
                 hasActiveSelection = uiState.rawSelectedText.isNotBlank(),
                 measuredAskAiFullDp = measuredAskAiDp,
-                measuredJevFullDp = measuredJevDp,
                 measuredPenFullDp = measuredPenDp,
                 measuredVoiceFullDp = measuredVoiceDp
             )
@@ -539,11 +496,7 @@ fun TypeFreeTopBar(
                 )
             }
 
-            // In VOICE / TRANSLATE / ToolPanel mode, render [✦ 军师] and [✍️ 帮写/改写] on the left
-            if (!isQwertyRightCluster && slotState.showJevCopilotPill) {
-                TopBarJevCopilotPill(onClick = onOpenJevCopilot)
-            }
-
+            // In VOICE / TRANSLATE / ToolPanel mode, render [✍️ 帮写/改写] on the left
             if (!isQwertyRightCluster && slotState.showVoicePenPill) {
                 TopBarVoicePenPill(
                     label = slotState.voicePenLabel,
@@ -824,7 +777,7 @@ fun TypeFreeTopBar(
         Spacer(modifier = Modifier.width(4.dp))
 
         // Right Cluster:
-        // - In QWERTY mode: [✦ 军师] + [✍️ 帮写/改写] + Dark Primary [🎤 语音] (tap <220ms switches to VOICE; hold >=220ms dictates in-place)
+        // - In QWERTY mode: [🔍 问AI] (contextual) + [✍️ 帮写/改写] + Dark Primary [🎤 语音] (tap <220ms switches to VOICE; hold >=220ms dictates in-place)
         //   When a transient banner (clipboard paste / toast / voice listening) takes over the middle, secondary AI pills yield cleanly.
         // - In VOICE / TRANSLATE mode: Compact 2-Segment Track [鹤 打字 | 文A]
         if (isQwertyRightCluster && qwertyPlan != null) {
@@ -837,12 +790,6 @@ fun TypeFreeTopBar(
                         isSelectionActive = uiState.rawSelectedText.isNotBlank(),
                         compactIconOnly = qwertyPlan.compactAskAiIconOnly,
                         onClick = onOpenAskAiCard
-                    )
-                }
-                if (qwertyPlan.showRightJevCopilot) {
-                    TopBarJevCopilotPill(
-                        compactIconOnly = qwertyPlan.compactJevIconOnly,
-                        onClick = onOpenJevCopilot
                     )
                 }
                 if (qwertyPlan.showRightVoicePen) {
@@ -1057,67 +1004,6 @@ fun TopBarAskAiPill(
         Text(
             text = tr("问AI", "Ask AI", "問AI"),
             color = fgColor,
-            fontSize = if (isEn) 10.5.sp else 11.sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1
-        )
-    }
-}
-
-@Composable
-private fun TopBarJevCopilotPill(
-    compactIconOnly: Boolean = false,
-    onClick: () -> Unit
-) {
-    val palette = LocalTypeFreeKeyboardPalette.current
-    val isEn = LocalAppLanguage.current == AppLang.EN
-    if (compactIconOnly) {
-        Box(
-            modifier = Modifier
-                .size(28.dp)
-                .clip(CircleShape)
-                .background(palette.keyCapBg)
-                .border(
-                    width = 1.dp,
-                    color = palette.keyBorder,
-                    shape = CircleShape
-                )
-                .clickable(onClick = onClick),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = TypeFreeIcons.CopilotStar,
-                contentDescription = tr("军师", "Copilot", "軍師"),
-                tint = palette.keyTextPrimary,
-                modifier = Modifier.size(12.5.dp)
-            )
-        }
-        return
-    }
-    Row(
-        modifier = Modifier
-            .height(28.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(palette.keyCapBg)
-            .border(
-                width = 1.dp,
-                color = palette.keyBorder,
-                shape = RoundedCornerShape(14.dp)
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = if (isEn) 6.5.dp else 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(if (isEn) 2.5.dp else 3.dp)
-    ) {
-        Icon(
-            imageVector = TypeFreeIcons.CopilotStar,
-            contentDescription = tr("军师", "Copilot", "軍師"),
-            tint = palette.keyTextPrimary,
-            modifier = Modifier.size(11.dp)
-        )
-        Text(
-            text = tr("军师", "Copilot", "軍師"),
-            color = palette.keyTextPrimary,
             fontSize = if (isEn) 10.5.sp else 11.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1

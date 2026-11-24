@@ -297,8 +297,7 @@ class XiaoheCodetableAcceptanceTest {
         var currentSettings: AppSettings = initialSettings
         val undoStack = ArrayDeque<UndoSnapshot>()
         val toasts = ArrayList<String>()
-        var jevUndoCount = 0
-        var jevOpenCount = 0
+        var helpMeWriteOpenCount = 0
 
         override fun currentInputConnection(): InputConnection? = null
         override fun performKeyFeedback(strong: Boolean) {}
@@ -336,13 +335,12 @@ class XiaoheCodetableAcceptanceTest {
         override fun tryAutoLearnFromRecentEdit() {}
         override fun onDictationCommittedForAutoLearn(fullBufferAfterCommit: String) {}
         override fun clearAutoLearnBaseline() {}
-        override fun onUserUndoForJev() { jevUndoCount++ }
         override fun readSelectedTextSafely(): String = ""
         override fun readSurroundingBeforeCursor(maxChars: Int): String = mockIc.buffer.toString().takeLast(maxChars)
         override fun readFullEditorTextSafely(): String = mockIc.buffer.toString()
         override fun readSystemClipboardText(): String = ""
         override fun syncSystemClipboardIfNeeded(allowFreshBanner: Boolean) {}
-        override fun openJevCopilotFromCommand() { jevOpenCount++ }
+        override fun openHelpMeWriteFromCommand() { helpMeWriteOpenCount++ }
         override fun archiveWavForHistory(wavFile: File, retention: HistoryRetention): File = wavFile
         override fun getLastRecordingWavFile(): File = File("dummy.wav")
         override fun hasRetryWavFile(): Boolean = false
@@ -476,7 +474,7 @@ class XiaoheCodetableAcceptanceTest {
     }
 
     @Test
-    fun `TypingController + CodetableEnhancedInputEngine + AndroidCommitExecutor syncs v360 Jev text, undo, and pagination`() {
+    fun `TypingController + CodetableEnhancedInputEngine + AndroidCommitExecutor syncs v360 editor text, undo, and pagination`() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {
             val mockIc = MockBufferInputConnection()
@@ -487,6 +485,7 @@ class XiaoheCodetableAcceptanceTest {
                 gt4GuardTwoPrefixes = setOf("ok", "os")
             )
             lateinit var controller: TypingController
+            var undoCallbackCount = 0
             val executor = AndroidCommitExecutor(
                 connectionProvider = { mockIc },
                 onTextCommitted = { text, _ ->
@@ -501,7 +500,7 @@ class XiaoheCodetableAcceptanceTest {
                 onUndoExecuted = {
                     host.undoStack.removeFirstOrNull()
                     host.stateFlow.update { it.copy(undoSnapshot = host.undoStack.firstOrNull()) }
-                    host.onUserUndoForJev()
+                    undoCallbackCount++
                     host.syncEditorTextFromMock()
                 }
             )
@@ -511,7 +510,7 @@ class XiaoheCodetableAcceptanceTest {
                 symbolTrie = SymbolTrie.defaultXiaohe(),
                 briefIndex = briefIdx,
                 commitExecutor = executor,
-                onOpenJevCopilot = { host.openJevCopilotFromCommand() }
+                onOpenHelpMeWrite = { host.openHelpMeWriteFromCommand() }
             )
             controller = TypingController(
                 host = host,
@@ -533,14 +532,14 @@ class XiaoheCodetableAcceptanceTest {
             assertFalse(controller.isComposing)
             assertEquals("", host.stateFlow.value.flypyComposingCode)
 
-            // 2) P0-4 & v3.6.0 Jev sync: reverse-split `hfkn` commit syncs buffer, undoStack, and currentEditorText
+            // 2) P0-4: reverse-split `hfkn` commit syncs buffer, undoStack, and currentEditorText
             for (c in listOf("h", "f", "k", "n")) controller.commitQwertyChar(c)
             controller.selectFlypyCandidate(0)
             assertEquals("很可能", mockIc.buffer.toString())
             assertEquals("很可能", host.stateFlow.value.currentEditorText)
             assertEquals(1, host.undoStack.size)
 
-            // 3) `;o` paired bracket + `;i` atomic undo updates Jev undo count & editor text
+            // 3) `;o` paired bracket + `;i` atomic undo updates undo count & editor text
             controller.commitQwertyChar(";")
             controller.commitQwertyChar("o")
             assertEquals("很可能「」", mockIc.buffer.toString())
@@ -551,7 +550,7 @@ class XiaoheCodetableAcceptanceTest {
             controller.commitQwertyChar("i")
             assertEquals("很可能", mockIc.buffer.toString())
             assertEquals("很可能", host.stateFlow.value.currentEditorText)
-            assertEquals(1, host.jevUndoCount)
+            assertEquals(1, undoCallbackCount)
 
             // 4) P2-1: requestMoreCandidates expands >24 candidates
             controller.commitQwertyChar("a")

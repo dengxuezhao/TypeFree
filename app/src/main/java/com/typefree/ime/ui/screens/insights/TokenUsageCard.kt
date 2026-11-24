@@ -49,8 +49,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.stats.StatsTimeRange
+import com.typefree.ime.data.stats.TokenFeatureKeys
 import com.typefree.ime.data.stats.TokenShareItem
 import com.typefree.ime.data.stats.TokenUsageSnapshot
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
 import com.typefree.ime.ui.components.RollingDigitCounter
 import com.typefree.ime.ui.components.SpringSegmentedControl
@@ -66,6 +71,36 @@ private val TOKEN_USAGE_RANGES = listOf(
     StatsTimeRange.ALL
 )
 
+private fun localizeStatsTimeRangeLabel(range: StatsTimeRange, lang: AppLang): String {
+    return when (range) {
+        StatsTimeRange.DAYS_7 -> AppStrings.pick(lang, "近 7 天", "7 Days", "近 7 天")
+        StatsTimeRange.THIS_MONTH -> AppStrings.pick(lang, "本月", "Month", "本月")
+        StatsTimeRange.THIS_YEAR -> AppStrings.pick(lang, "本年", "Year", "本年")
+        StatsTimeRange.ALL -> AppStrings.pick(lang, "全部", "All", "全部")
+    }
+}
+
+private fun localizeTokenShareLabel(item: TokenShareItem, isModelTab: Boolean, lang: AppLang): String {
+    if (isModelTab) {
+        return if (item.key == "其他模型" || item.label == "其他模型") {
+            AppStrings.pick(lang, "其他模型", "Other Models", "其他模型")
+        } else {
+            item.label
+        }
+    }
+    return when (item.key) {
+        TokenFeatureKeys.VOICE_POLISH -> AppStrings.pick(lang, "语音口述润色", "Voice Dictation & Polish", "語音口述潤飾")
+        TokenFeatureKeys.SPEAK_TO_EDIT -> AppStrings.pick(lang, "语音/快捷改写", "Speak-to-Edit & Rewrite", "語音/快捷改寫")
+        TokenFeatureKeys.HELP_ME_WRITE -> AppStrings.pick(lang, "帮我写 / 灵感成稿", "Help Write / Drafting", "幫我寫 / 靈感成稿")
+        TokenFeatureKeys.TRANSLATE -> AppStrings.pick(lang, "实时语音翻译", "Live Voice Translation", "即時語音翻譯")
+        TokenFeatureKeys.ASK_AI -> AppStrings.pick(lang, "问 AI / == 直问", "Ask AI / == Query", "問 AI / == 直問")
+        TokenFeatureKeys.SENTENCE_COMPLETION -> AppStrings.pick(lang, "AI 整句续写", "AI Sentence Completion", "AI 整句續寫")
+        TokenFeatureKeys.MULTIMODAL_AUDIO -> AppStrings.pick(lang, "多模态音频直出", "Multimodal Audio Direct", "多模態音訊直出")
+        TokenFeatureKeys.API_TEST -> AppStrings.pick(lang, "连通性实测", "API Connectivity Test", "連通性實測")
+        else -> item.label
+    }
+}
+
 /**
  * Pure Token & Cloud/Offline Voice Duration Observability Card.
  * When [externalRange] is provided (inside [InsightsScreen]), follows the parent range without
@@ -78,6 +113,7 @@ fun TokenUsageObservabilityCard(
     modifier: Modifier = Modifier,
     externalRange: StatsTimeRange? = null
 ) {
+    val appLang = LocalAppLanguage.current
     val statsRevision by repository.dailyStatsRevision.collectAsState()
     var rangeIndex by rememberSaveable { mutableIntStateOf(0) }
     var breakdownTab by rememberSaveable { mutableIntStateOf(0) } // 0 = 按功能, 1 = 按模型
@@ -117,29 +153,36 @@ fun TokenUsageObservabilityCard(
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
-                        text = "模型 Token 与语音时长用量",
+                        text = tr("模型 Token 与语音时长用量", "Model Token & Voice Duration Usage", "模型 Token 與語音時長用量"),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "纯用量观测 · 不做费用估算 · 无痕自动零计数",
+                        text = tr(
+                            "纯用量观测 · 不做费用估算 · 无痕自动零计数",
+                            "Pure usage telemetry · No cost estimates · Zero tracking in incognito",
+                            "純用量觀測 · 不做費用估算 · 無痕自動零計數"
+                        ),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
                 if (snapshot.estimatedCallCount > 0) {
+                    Spacer(modifier = Modifier.width(8.dp))
                     Surface(
                         shape = CircleShape,
                         color = TypeFreeAmber.copy(alpha = 0.14f),
                         border = BorderStroke(0.6.dp, TypeFreeAmber.copy(alpha = 0.45f))
                     ) {
                         Text(
-                            text = "含估算",
+                            text = tr("含估算", "Includes Est.", "含估算"),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = TypeFreeAmber,
+                            maxLines = 1,
+                            softWrap = false,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
                     }
@@ -149,7 +192,7 @@ fun TokenUsageObservabilityCard(
             // Range Segmented Control (only shown when standalone without parent range)
             if (externalRange == null) {
                 SpringSegmentedControl(
-                    options = TOKEN_USAGE_RANGES.map { it.label },
+                    options = TOKEN_USAGE_RANGES.map { localizeStatsTimeRangeLabel(it, appLang) },
                     selectedIndex = rangeIndex,
                     onSelect = { rangeIndex = it },
                     compact = true,
@@ -164,7 +207,11 @@ fun TokenUsageObservabilityCard(
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
                 ) {
                     Text(
-                        text = "当前时间范围暂无模型 Token 或语音转写记录。发起语音润色、帮我写、军师、问 AI 或下方连通性实测后，这里会自动统计真实用量。",
+                        text = tr(
+                            "当前时间范围暂无模型 Token 或语音转写记录。发起语音润色、帮我写、问 AI 或下方连通性实测后，这里会自动统计真实用量。",
+                            "No model token or voice transcription usage in this range yet. Usage is recorded automatically when you run dictation, Help Write, Ask AI, or connectivity tests.",
+                            "目前時間範圍暫無模型 Token 或語音轉寫記錄。發起語音潤飾、幫我寫、問 AI 或連通性實測後，這裡會自動統計真實用量。"
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 19.sp,
@@ -172,6 +219,7 @@ fun TokenUsageObservabilityCard(
                     )
                 }
             } else {
+                val rangeLabel = localizeStatsTimeRangeLabel(selectedRange, appLang)
                 // Hero Total Token Metric
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -180,7 +228,7 @@ fun TokenUsageObservabilityCard(
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            text = "${selectedRange.label}云端模型消耗",
+                            text = tr("${rangeLabel}云端模型消耗", "$rangeLabel Cloud Token Usage", "${rangeLabel}雲端模型消耗"),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -204,7 +252,11 @@ fun TokenUsageObservabilityCard(
                         }
                         if (snapshot.totalTokens >= 1_000_000L) {
                             Text(
-                                text = "精确累计 ${formatExactNumber(snapshot.totalTokens)} Tokens",
+                                text = tr(
+                                    "精确累计 ${formatExactNumber(snapshot.totalTokens)} Tokens",
+                                    "Exact total: ${formatExactNumber(snapshot.totalTokens)} Tokens",
+                                    "精確累計 ${formatExactNumber(snapshot.totalTokens)} Tokens"
+                                ),
                                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -218,10 +270,12 @@ fun TokenUsageObservabilityCard(
                             border = BorderStroke(0.6.dp, emerald.copy(alpha = 0.40f))
                         ) {
                             Text(
-                                text = "缓存命中 ${snapshot.cacheHitPercent}%",
+                                text = tr("缓存命中 ${snapshot.cacheHitPercent}%", "Cache Hit ${snapshot.cacheHitPercent}%", "快取命中 ${snapshot.cacheHitPercent}%"),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = emerald,
+                                maxLines = 1,
+                                softWrap = false,
                                 modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
                             )
                         }
@@ -245,25 +299,25 @@ fun TokenUsageObservabilityCard(
                     ) {
                         TokenLegendChip(
                             dotColor = promptColor,
-                            label = "输入",
+                            label = tr("输入", "Input", "輸入"),
                             value = formatCompactTokens(snapshot.uncachedPromptTokens)
                         )
                         if (snapshot.cachedTokens > 0L) {
                             TokenLegendChip(
                                 dotColor = cachedColor,
-                                label = "缓存命中",
+                                label = tr("缓存命中", "Cached", "快取命中"),
                                 value = formatCompactTokens(snapshot.cachedTokens)
                             )
                         }
                         TokenLegendChip(
                             dotColor = outputColor,
-                            label = "输出",
+                            label = tr("输出", "Output", "輸出"),
                             value = formatCompactTokens(snapshot.visibleOutputTokens)
                         )
                         if (snapshot.reasoningTokens > 0L) {
                             TokenLegendChip(
                                 dotColor = reasoningColor,
-                                label = "思考推理",
+                                label = tr("思考推理", "Reasoning", "思考推理"),
                                 value = formatCompactTokens(snapshot.reasoningTokens)
                             )
                         }
@@ -278,7 +332,10 @@ fun TokenUsageObservabilityCard(
                     )
 
                     SpringSegmentedControl(
-                        options = listOf("按功能分布", "按模型分布"),
+                        options = listOf(
+                            tr("按功能分布", "By Feature", "依功能分佈"),
+                            tr("按模型分布", "By Model", "依模型分佈")
+                        ),
                         selectedIndex = breakdownTab,
                         onSelect = { breakdownTab = it },
                         compact = true,
@@ -289,7 +346,11 @@ fun TokenUsageObservabilityCard(
                     val barTint = if (breakdownTab == 0) promptColor else outputColor
                     if (activeList.isEmpty()) {
                         Text(
-                            text = if (breakdownTab == 0) "暂无功能明细" else "暂无模型明细",
+                            text = if (breakdownTab == 0) {
+                                tr("暂无功能明细", "No feature breakdown yet", "暫無功能明細")
+                            } else {
+                                tr("暂无模型明细", "No model breakdown yet", "暫無模型明細")
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -298,6 +359,7 @@ fun TokenUsageObservabilityCard(
                             activeList.forEach { item ->
                                 TokenBreakdownRow(
                                     item = item,
+                                    displayLabel = localizeTokenShareLabel(item, breakdownTab == 1, appLang),
                                     isMonospaceLabel = breakdownTab == 1,
                                     barColor = barTint
                                 )
@@ -324,7 +386,11 @@ fun TokenUsageObservabilityCard(
             }
 
             Text(
-                text = "注：仅统计接口返回的 usage 实测值；若第三方反代未回传 usage，会按字符数估算并标记「含估算」。数据仅存于本机。",
+                text = tr(
+                    "注：仅统计接口返回的 usage 实测值；若第三方反代未回传 usage，会按字符数估算并标记「含估算」。数据仅存于本机。",
+                    "Note: Counts exact API `usage` values when returned; gateways omitting `usage` are estimated from character length and marked \"Includes Est.\". Stored on-device only.",
+                    "註：僅統計介面回傳的 usage 實測值；若第三方閘道未回傳 usage，會依字元數估算並標記「含估算」。資料僅存於本機。"
+                ),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
                 lineHeight = 16.sp
@@ -413,6 +479,7 @@ private fun TokenLegendChip(
 @Composable
 private fun TokenBreakdownRow(
     item: TokenShareItem,
+    displayLabel: String,
     isMonospaceLabel: Boolean,
     barColor: Color
 ) {
@@ -428,7 +495,7 @@ private fun TokenBreakdownRow(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = item.label,
+                text = displayLabel,
                 style = if (isMonospaceLabel) {
                     MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
                 } else {
@@ -477,6 +544,7 @@ private fun VoiceDurationSplitSection(
     cloudColor: Color,
     offlineColor: Color
 ) {
+    val appLang = LocalAppLanguage.current
     val totalMs = (cloudDurationMs + offlineDurationMs).coerceAtLeast(1L)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
@@ -485,7 +553,7 @@ private fun VoiceDurationSplitSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "语音转写时长分布",
+                text = tr("语音转写时长分布", "Voice Transcription Duration", "語音轉寫時長分佈"),
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -499,10 +567,16 @@ private fun VoiceDurationSplitSection(
                         .padding(horizontal = 8.dp, vertical = 2.dp)
                 ) {
                     Text(
-                        text = "本机离线免去 $offlineSavedCloudCalls 次云端调用",
+                        text = tr(
+                            "本机离线免去 $offlineSavedCloudCalls 次云端调用",
+                            "$offlineSavedCloudCalls cloud calls saved on-device",
+                            "本機離線免去 $offlineSavedCloudCalls 次雲端呼叫"
+                        ),
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
-                        color = offlineColor
+                        color = offlineColor,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }
@@ -541,13 +615,13 @@ private fun VoiceDurationSplitSection(
             ) {
                 TokenLegendChip(
                     dotColor = cloudColor,
-                    label = "云端转写",
-                    value = formatVoiceDuration(cloudDurationMs)
+                    label = tr("云端转写", "Cloud STT", "雲端轉寫"),
+                    value = formatVoiceDuration(cloudDurationMs, appLang)
                 )
                 TokenLegendChip(
                     dotColor = offlineColor,
-                    label = "本机离线",
-                    value = formatVoiceDuration(offlineDurationMs)
+                    label = tr("本机离线", "On-Device", "本機離線"),
+                    value = formatVoiceDuration(offlineDurationMs, appLang)
                 )
             }
         }
@@ -564,25 +638,46 @@ fun TokenUsageSummaryJumpStrip(
     onOpenInsights: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val appLang = LocalAppLanguage.current
     val statsRevision by repository.dailyStatsRevision.collectAsState()
     val weekSnapshot = remember(statsRevision) {
         repository.computeTokenUsageSnapshot(StatsTimeRange.DAYS_7)
     }
-    val summarySubtitle = remember(weekSnapshot) {
+    val summarySubtitle = remember(weekSnapshot, appLang) {
         when {
             weekSnapshot.totalTokens > 0L -> {
                 val cacheSuffix = if (weekSnapshot.cacheHitPercent > 0) {
-                    " · 缓存命中 ${weekSnapshot.cacheHitPercent}%"
+                    AppStrings.pick(
+                        appLang,
+                        " · 缓存命中 ${weekSnapshot.cacheHitPercent}%",
+                        " · ${weekSnapshot.cacheHitPercent}% cached",
+                        " · 快取命中 ${weekSnapshot.cacheHitPercent}%"
+                    )
                 } else {
                     ""
                 }
-                "近 7 天云端消耗 ${formatCompactTokens(weekSnapshot.totalTokens)} Tokens$cacheSuffix"
+                AppStrings.pick(
+                    appLang,
+                    "近 7 天云端消耗 ${formatCompactTokens(weekSnapshot.totalTokens)} Tokens$cacheSuffix",
+                    "Last 7d cloud usage: ${formatCompactTokens(weekSnapshot.totalTokens)} Tokens$cacheSuffix",
+                    "近 7 天雲端消耗 ${formatCompactTokens(weekSnapshot.totalTokens)} Tokens$cacheSuffix"
+                )
             }
             weekSnapshot.offlineVoiceDurationMs > 0L || weekSnapshot.cloudVoiceDurationMs > 0L -> {
                 val totalVoice = weekSnapshot.offlineVoiceDurationMs + weekSnapshot.cloudVoiceDurationMs
-                "近 7 天语音转写 ${formatVoiceDuration(totalVoice)}"
+                AppStrings.pick(
+                    appLang,
+                    "近 7 天语音转写 ${formatVoiceDuration(totalVoice, appLang)}",
+                    "Last 7d voice transcription: ${formatVoiceDuration(totalVoice, appLang)}",
+                    "近 7 天語音轉寫 ${formatVoiceDuration(totalVoice, appLang)}"
+                )
             }
-            else -> "按功能与模型统计真实 Token 与转写时长，已统一归入表达洞察"
+            else -> AppStrings.pick(
+                appLang,
+                "按功能与模型统计真实 Token 与转写时长，已统一归入表达洞察",
+                "Real token & voice duration breakdown by feature and model in Insights",
+                "依功能與模型統計真實 Token 與轉寫時長，已統一歸入表達洞察"
+            )
         }
     }
 
@@ -609,7 +704,7 @@ fun TokenUsageSummaryJumpStrip(
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Text(
-                    text = "📊 模型 Token 与语音时长统计",
+                    text = tr("📊 模型 Token 与语音时长统计", "📊 Model Token & Voice Duration Stats", "📊 模型 Token 與語音時長統計"),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -627,14 +722,16 @@ fun TokenUsageSummaryJumpStrip(
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Text(
-                    text = "查看统计",
+                    text = tr("查看统计", "View Stats", "查看統計"),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    softWrap = false
                 )
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = "查看表达洞察",
+                    contentDescription = tr("查看表达洞察", "Open Expression Insights", "查看表達洞察"),
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(16.dp)
                 )
@@ -657,15 +754,15 @@ private fun formatExactNumber(value: Long): String {
     return String.format(Locale.US, "%,d", value.coerceAtLeast(0L))
 }
 
-internal fun formatVoiceDuration(durationMs: Long): String {
+internal fun formatVoiceDuration(durationMs: Long, lang: AppLang = AppLang.ZH_CN): String {
     val totalSec = (durationMs.coerceAtLeast(0L) + 500L) / 1000L
-    if (totalSec <= 0L) return "0 秒"
+    if (totalSec <= 0L) return AppStrings.pick(lang, "0 秒", "0s", "0 秒")
     val hours = totalSec / 3600L
     val mins = (totalSec % 3600L) / 60L
     val secs = totalSec % 60L
     return when {
-        hours > 0L -> "${hours}小时${mins}分"
-        mins > 0L -> "${mins}分${secs}秒"
-        else -> "${secs}秒"
+        hours > 0L -> AppStrings.pick(lang, "${hours}小时${mins}分", "${hours}h ${mins}m", "${hours}小時${mins}分")
+        mins > 0L -> AppStrings.pick(lang, "${mins}分${secs}秒", "${mins}m ${secs}s", "${mins}分${secs}秒")
+        else -> AppStrings.pick(lang, "${secs}秒", "${secs}s", "${secs}秒")
     }
 }

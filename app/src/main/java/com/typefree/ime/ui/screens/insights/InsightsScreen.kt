@@ -80,8 +80,6 @@ import com.typefree.ime.data.stats.AppSceneShareItem
 import com.typefree.ime.data.stats.HeatmapDayCell
 import com.typefree.ime.data.stats.InsightsSnapshot
 import com.typefree.ime.data.stats.IntentShareItem
-import com.typefree.ime.data.stats.JevAxisTendencySummary
-import com.typefree.ime.data.stats.JevStyleDnaItem
 import com.typefree.ime.data.stats.MilestoneItem
 import com.typefree.ime.data.stats.MonthlyTrendPoint
 import com.typefree.ime.data.stats.SchemeShareItem
@@ -94,8 +92,6 @@ import com.typefree.ime.i18n.AppLang
 import com.typefree.ime.i18n.AppStrings
 import com.typefree.ime.i18n.LocalAppLanguage
 import com.typefree.ime.i18n.tr
-import com.typefree.ime.ime.jev.memory.JevAxisGroup
-import com.typefree.ime.ime.jev.memory.StyleFeatureKey
 import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
 import com.typefree.ime.ui.components.RollingDigitCounter
 import com.typefree.ime.ui.components.SmoothDisclosure
@@ -262,91 +258,6 @@ internal fun localizedRhythmHeadline(snapshot: InsightsSnapshot, lang: AppLang):
     }
 }
 
-internal fun localizedDnaTitle(key: StyleFeatureKey, lang: AppLang): String {
-    return when (key) {
-        StyleFeatureKey.DROP_TRAILING_PERIOD -> AppStrings.pick(lang, "句末不加句号", "No Trailing Period", "句末不加句號")
-        StyleFeatureKey.DAMPEN_EXCLAMATION_TILDE -> AppStrings.pick(lang, "禁用感叹号与波浪号", "No '!' or '~' Marks", "停用驚嘆號與波浪號")
-        StyleFeatureKey.STRIP_EMOJI -> AppStrings.pick(lang, "禁用表情与 Emoji", "No Emoji", "停用表情與 Emoji")
-        StyleFeatureKey.HONORIFIC_NIN_TO_NI -> AppStrings.pick(lang, "称呼用“你”禁用“您”", "Casual 'You' (你)", "稱呼用「你」停用「您」")
-        StyleFeatureKey.HONORIFIC_NI_TO_NIN -> AppStrings.pick(lang, "称呼强制使用敬称“您”", "Polite 'You' (您)", "稱呼強制使用敬稱「您」")
-        StyleFeatureKey.TRIM_MODAL_PARTICLE -> AppStrings.pick(lang, "禁用句末软化语气词", "No Filler Particles", "停用句末軟化語氣詞")
-        StyleFeatureKey.TRIM_POLITE_PREFIX -> AppStrings.pick(lang, "省去前置客套寒暄", "Skip Small Talk", "省去前置客套寒暄")
-        StyleFeatureKey.COMPRESS_LENGTH -> AppStrings.pick(lang, "偏好极简短句", "Concise Short Replies", "偏好極簡短句")
-    }
-}
-
-private fun localizedDnaRuleDescription(key: StyleFeatureKey, lang: AppLang): String {
-    return when (key) {
-        StyleFeatureKey.DROP_TRAILING_PERIOD -> AppStrings.pick(lang, "句尾直接收束，不加句号", "omit sentence-ending periods", "句尾直接收束，不加句號")
-        StyleFeatureKey.DAMPEN_EXCLAMATION_TILDE -> AppStrings.pick(lang, "禁用感叹号与波浪号，保持克制语气", "avoid '!' and '~' for a calm tone", "停用驚嘆號與波浪號，保持克制語氣")
-        StyleFeatureKey.STRIP_EMOJI -> AppStrings.pick(lang, "不输出任何 Emoji 或表情符号", "strip all emojis from drafts", "不輸出任何 Emoji 或表情符號")
-        StyleFeatureKey.HONORIFIC_NIN_TO_NI -> AppStrings.pick(lang, "第二人称统一使用“你”", "use casual phrasing over formal honorifics", "第二人稱統一使用「你」")
-        StyleFeatureKey.HONORIFIC_NI_TO_NIN -> AppStrings.pick(lang, "第二人称使用敬称“您”", "use respectful honorific phrasing", "第二人稱使用敬稱「您」")
-        StyleFeatureKey.TRIM_MODAL_PARTICLE -> AppStrings.pick(lang, "省去句末软化语气词", "trim trailing modal filler particles", "省去句末軟化語氣詞")
-        StyleFeatureKey.TRIM_POLITE_PREFIX -> AppStrings.pick(lang, "省去前置客套寒暄，开门见山", "skip polite preambles and get straight to the point", "省去前置客套寒暄，開門見山")
-        StyleFeatureKey.COMPRESS_LENGTH -> AppStrings.pick(lang, "保持短句精炼表达", "keep reply drafts crisp and under 25 words", "保持短句精煉表達")
-    }
-}
-
-internal fun localizedDnaExplanation(item: JevStyleDnaItem, lang: AppLang): String {
-    if (lang == AppLang.ZH_CN) return item.explanation
-    val ruleDesc = localizedDnaRuleDescription(item.key, lang)
-    return when {
-        item.isManualOverride -> AppStrings.pick(
-            lang,
-            item.explanation,
-            "Manually pinned preference ($ruleDesc). Jev Copilot will always follow this rule.",
-            "你已手動鎖定此項語體習慣（$ruleDesc），Jev 軍師產生回覆時將始終遵循。"
-        )
-        item.isActive -> AppStrings.pick(
-            lang,
-            item.explanation,
-            "Learned across ${item.currentCount} real edits (${item.emaPercent}% confidence). Jev automatically applies: $ruleDesc.",
-            "已在 ${item.currentCount} 次真實採納中穩定識別你的表達偏好（信心度 ${item.emaPercent}%），Jev 軍師會自動套用：$ruleDesc。"
-        )
-        else -> AppStrings.pick(
-            lang,
-            item.explanation,
-            "Quietly observing your edits on-device (${item.currentCount}/${item.requiredCount} samples); activates once consistent.",
-            "端側正在安靜觀察你的改稿傾向（已累計 ${item.currentCount}/${item.requiredCount} 次樣本），穩定後將自動生效。"
-        )
-    }
-}
-
-internal fun localizedAxisGroupTitle(group: JevAxisGroup, lang: AppLang): String {
-    return when (group) {
-        JevAxisGroup.PEER_TECH -> AppStrings.pick(lang, "技术与同频探讨", "Tech & Peer Dialogue", "技術與同頻探討")
-        JevAxisGroup.TKI_GAME -> AppStrings.pick(lang, "沟通博弈策略", "Pragmatic Strategy", "溝通博弈策略")
-        JevAxisGroup.GROUP_BYSTANDER -> AppStrings.pick(lang, "群聊旁观互动", "Group Chat Dynamics", "群聊旁觀互動")
-        JevAxisGroup.BOTTOM_LINE_LOCKED -> AppStrings.pick(lang, "底牌锁定表达", "Bottom-Line Stance", "底牌鎖定表達")
-    }
-}
-
-internal fun localizedAxisLabels(group: JevAxisGroup, lang: AppLang): List<String> {
-    return when (group) {
-        JevAxisGroup.PEER_TECH -> listOf(
-            AppStrings.pick(lang, "同频升维", "Elevate", "同頻升維"),
-            AppStrings.pick(lang, "温和勘误", "Gentle Fix", "溫和勘誤"),
-            AppStrings.pick(lang, "极客外推", "Deep Dive", "極客外推")
-        )
-        JevAxisGroup.TKI_GAME -> listOf(
-            AppStrings.pick(lang, "协同破局", "Collaborate", "協同破局"),
-            AppStrings.pick(lang, "温和设限", "Firm Bound", "溫和設限"),
-            AppStrings.pick(lang, "升维重构", "Reframe", "升維重構")
-        )
-        JevAxisGroup.GROUP_BYSTANDER -> listOf(
-            AppStrings.pick(lang, "场外递梗", "Witty Riff", "場外遞梗"),
-            AppStrings.pick(lang, "顺题聊事", "On-Topic", "順題聊事"),
-            AppStrings.pick(lang, "幽默转场", "Light Pivot", "幽默轉場")
-        )
-        JevAxisGroup.BOTTOM_LINE_LOCKED -> listOf(
-            AppStrings.pick(lang, "周全给面", "Tactful", "周全給面"),
-            AppStrings.pick(lang, "松弛直给", "Direct", "鬆弛直給"),
-            AppStrings.pick(lang, "锚定闭环", "Anchored", "錨定收束")
-        )
-    }
-}
-
 internal fun localizedMilestoneTexts(
     item: MilestoneItem,
     snapshot: InsightsSnapshot,
@@ -427,27 +338,6 @@ internal fun localizedMilestoneTexts(
             }
             Triple(title, desc, prog)
         }
-        "jev_partner" -> {
-            val title = AppStrings.pick(lang, "军师默契派", "Jev Insider", "軍師默契派")
-            val desc = AppStrings.pick(lang, item.description, "Learn 2 style DNA traits or adopt Jev Copilot 5 times", "習得 2 條語體習慣或採納軍師 5 次")
-            val activeDna = snapshot.jevDnaItems.count { it.isActive }
-            val prog = if (item.unlocked) {
-                AppStrings.pick(
-                    lang,
-                    item.progressText,
-                    "Unlocked · $activeDna traits / ${snapshot.jevTotalInteractions} uses",
-                    "已達成 · $activeDna 條習慣 / ${snapshot.jevTotalInteractions} 次採納"
-                )
-            } else {
-                AppStrings.pick(
-                    lang,
-                    item.progressText,
-                    "$activeDna/2 traits · ${snapshot.jevTotalInteractions}/5 uses",
-                    "$activeDna/2 習慣 · ${snapshot.jevTotalInteractions}/5 採納"
-                )
-            }
-            Triple(title, desc, prog)
-        }
         else -> Triple(item.title, item.description, item.progressText)
     }
 }
@@ -480,7 +370,6 @@ internal fun localizedTokenFeatureLabel(key: String, fallbackLabel: String, lang
         TokenFeatureKeys.SPEAK_TO_EDIT -> AppStrings.pick(lang, "语音/快捷改写", "Voice / Quick Edit", "語音/快捷改寫")
         TokenFeatureKeys.HELP_ME_WRITE -> AppStrings.pick(lang, "帮我写 / 灵感成稿", "Help Me Write", "幫我寫 / 靈感成稿")
         TokenFeatureKeys.TRANSLATE -> AppStrings.pick(lang, "实时语音翻译", "Live Voice Translate", "即時語音翻譯")
-        TokenFeatureKeys.JEV_COPILOT -> AppStrings.pick(lang, "✦ Jev 军师", "✦ Jev Copilot", "✦ Jev 軍師")
         TokenFeatureKeys.ASK_AI -> AppStrings.pick(lang, "问 AI / == 直问", "Ask AI", "問 AI / == 直問")
         TokenFeatureKeys.SENTENCE_COMPLETION -> AppStrings.pick(lang, "AI 整句续写", "AI Sentence Completion", "AI 整句續寫")
         TokenFeatureKeys.MULTIMODAL_AUDIO -> AppStrings.pick(lang, "多模态音频直出", "Multimodal Audio Direct", "多模態音訊直出")
@@ -518,7 +407,6 @@ fun InsightsScreen(
     onOpenPrivacySettings: () -> Unit,
     onOpenStylesSettings: () -> Unit,
     onOpenPlayground: () -> Unit,
-    onOpenJevMemory: () -> Unit,
     onOpenApiUsage: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -751,13 +639,7 @@ fun InsightsScreen(
                     )
                 }
 
-                // 7. Jev Communication Persona & Style DNA Card
-                JevStyleDnaCard(
-                    snapshot = snapshot,
-                    onOpenJevMemory = onOpenJevMemory
-                )
-
-                // 8. Lexicon & Habitual Word Chains Card (Anti-peek blur)
+                // 7. Lexicon & Habitual Word Chains Card (Anti-peek blur)
                 LexiconAndWordChainsCard(snapshot = snapshot)
 
                 // 9. Lifetime Milestones Wall
@@ -853,9 +735,9 @@ private fun InsightsColdStartCard(
 
             Text(
                 text = tr(
-                    "当你开口说话或敲击键盘时，TypeFree 会在本机记录纯数字的表达节奏、语音与键盘比例，以及 Jev 军师的语体偏好——不保存任何原文，无痕与密码框自动零计数。",
-                    "As you dictate or type, TypeFree tallies pure numeric metrics on-device — your voice vs. keyboard ratio, 24h rhythm, and Jev style preferences — with zero raw text stored and zero tracking in Incognito or password fields.",
-                    "當你開口說話或敲擊鍵盤時，TypeFree 會在本機記錄純數字的表達節奏、語音與鍵盤比例，以及 Jev 軍師的語體偏好——不儲存任何原文，無痕與密碼框自動零計數。"
+                    "当你开口说话或敲击键盘时，TypeFree 会在本机记录纯数字的表达节奏、语音与键盘比例，以及常用输入场景——不保存任何原文，无痕与密码框自动零计数。",
+                    "As you dictate or type, TypeFree tallies pure numeric metrics on-device — your voice vs. keyboard ratio, 24h rhythm, and active scenes — with zero raw text stored and zero tracking in Incognito or password fields.",
+                    "當你開口說話或敲擊鍵盤時，TypeFree 會在本機記錄純數字的表達節奏、語音與鍵盤比例，以及常用輸入場景——不儲存任何原文，無痕與密碼框自動零計數。"
                 ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1711,9 +1593,9 @@ private fun LocalizedTokenUsageObservabilityCard(
                 ) {
                     Text(
                         text = tr(
-                            "当前时间范围暂无模型 Token 或语音转写记录。发起语音润色、帮我写、军师或问 AI 后，这里会自动统计真实用量。",
-                            "No model token or voice transcription records in this range yet. Real usage appears here after using Dictate, Help Write, Jev Copilot, or Ask AI.",
-                            "目前時間範圍尚無模型 Token 或語音轉寫記錄。發起語音潤飾、幫我寫、軍師或問 AI 後，這裡會自動統計真實用量。"
+                            "当前时间范围暂无模型 Token 或语音转写记录。发起语音润色、帮我写或问 AI 后，这里会自动统计真实用量。",
+                            "No model token or voice transcription records in this range yet. Real usage appears here after using Dictate, Help Write, or Ask AI.",
+                            "目前時間範圍尚無模型 Token 或語音轉寫記錄。發起語音潤飾、幫我寫或問 AI 後，這裡會自動統計真實用量。"
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -2761,7 +2643,6 @@ private fun ScenesAndIntentsCard(
         VoiceIntentMode.HELP_ME_WRITE -> helpWriteColor
         VoiceIntentMode.SPEAK_TO_EDIT -> TypeFreeAmber
         VoiceIntentMode.TRANSLATE -> Color(0xFF0EA5E9)
-        VoiceIntentMode.JEV_COPILOT -> TypeFreeRose
     }
 
     InsightsCard {
@@ -2980,330 +2861,6 @@ private fun AppSceneBarRow(
                     .clip(CircleShape)
                     .background(barColor.copy(alpha = 0.85f))
             )
-        }
-    }
-}
-
-@Composable
-private fun JevStyleDnaCard(
-    snapshot: InsightsSnapshot,
-    onOpenJevMemory: () -> Unit
-) {
-    val appLang = LocalAppLanguage.current
-    val isDark = LocalTypeFreeKeyboardPalette.current.isDark
-    val emerald = if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald
-    var selectedDnaKey by remember { mutableStateOf<StyleFeatureKey?>(null) }
-    val expandedItem: JevStyleDnaItem? = remember(snapshot.jevDnaItems, selectedDnaKey) {
-        selectedDnaKey?.let { key -> snapshot.jevDnaItems.firstOrNull { it.key == key } }
-    }
-
-    InsightsCard {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = tr("✦ Jev 沟通人格与语体 DNA", "✦ Jev Persona & Style DNA", "✦ Jev 溝通人格與語體 DNA"),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = if (snapshot.jevSessionCount > 0 || snapshot.jevTotalInteractions > 0) {
-                        tr(
-                            "${snapshot.jevSessionCount} 个关系档案 · ${snapshot.jevTotalInteractions} 次互动沉淀",
-                            "${snapshot.jevSessionCount} relation profiles · ${snapshot.jevTotalInteractions} interactions",
-                            "${snapshot.jevSessionCount} 個關係檔案 · ${snapshot.jevTotalInteractions} 次互動沉澱"
-                        )
-                    } else {
-                        tr(
-                            "在对话中呼出 Jev 军师后，将自动在端侧学习你的语体 DNA",
-                            "Summon Jev Copilot in chats to learn your personal tone & style DNA on-device",
-                            "在對話中呼出 Jev 軍師後，將自動在端側學習你的語體 DNA"
-                        )
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Row(
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .clickable(onClick = onOpenJevMemory)
-                    .padding(horizontal = 6.dp, vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = tr("管理", "Manage", "管理"),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(15.dp)
-                )
-            }
-        }
-
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            if (snapshot.jevDnaItems.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(ContinuousRoundedCornerShape(14.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
-                        .padding(12.dp)
-                ) {
-                    Text(
-                        text = tr(
-                            "尚未形成显著语体标签。多采纳几次 Jev 军师建议，它会记住你偏爱的直接度、标点松弛度与回复节奏。",
-                            "No style DNA traits finalized yet. Adopt or tweak a few Jev Copilot drafts and it will learn your directness, punctuation habits, and reply cadence.",
-                            "尚未形成顯著語體標籤。多採納幾次 Jev 軍師建議，它會記住你偏愛的直接度、標點鬆弛度與回覆節奏。"
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        lineHeight = 18.sp
-                    )
-                }
-            } else {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalFadeEdge(startFadeWidth = 6.dp, endFadeWidth = 18.dp)
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    snapshot.jevDnaItems.forEach { item ->
-                        val isSelected = selectedDnaKey == item.key
-                        val accent = if (item.isActive) emerald else TypeFreeAmber
-                        val dnaTitle = localizedDnaTitle(item.key, appLang)
-                        val chipText = if (item.isActive) {
-                            "✓ $dnaTitle"
-                        } else {
-                            tr(
-                                "$dnaTitle · 观察中 ${item.currentCount}/${item.requiredCount}",
-                                "$dnaTitle · Learning ${item.currentCount}/${item.requiredCount}",
-                                "$dnaTitle · 觀察中 ${item.currentCount}/${item.requiredCount}"
-                            )
-                        }
-                        Surface(
-                            onClick = {
-                                selectedDnaKey = if (isSelected) null else item.key
-                            },
-                            shape = CircleShape,
-                            color = accent.copy(alpha = if (isSelected) 0.22f else 0.12f),
-                            border = BorderStroke(
-                                width = if (isSelected) 1.3.dp else 0.8.dp,
-                                color = accent.copy(alpha = if (isSelected) 0.78f else 0.38f)
-                            )
-                        ) {
-                            Text(
-                                text = chipText,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp)
-                            )
-                        }
-                    }
-                }
-
-                SmoothDisclosure(expanded = expandedItem != null) {
-                    expandedItem?.let { dna ->
-                        val accent = if (dna.isActive) emerald else TypeFreeAmber
-                        val dnaTitle = localizedDnaTitle(dna.key, appLang)
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(ContinuousRoundedCornerShape(14.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-                                .border(0.6.dp, accent.copy(alpha = 0.35f), ContinuousRoundedCornerShape(14.dp))
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = dnaTitle + if (dna.isManualOverride) {
-                                        tr(" · 手动锁定", " · Pinned", " · 手動鎖定")
-                                    } else {
-                                        ""
-                                    },
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = if (dna.isActive) {
-                                        tr(
-                                            "已生效 · 倾向 ${dna.emaPercent}%",
-                                            "Active · ${dna.emaPercent}%",
-                                            "已生效 · 傾向 ${dna.emaPercent}%"
-                                        )
-                                    } else {
-                                        tr(
-                                            "观察中 ${dna.currentCount}/${dna.requiredCount}",
-                                            "Learning ${dna.currentCount}/${dna.requiredCount}",
-                                            "觀察中 ${dna.currentCount}/${dna.requiredCount}"
-                                        )
-                                    },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = accent
-                                )
-                            }
-                            Text(
-                                text = localizedDnaExplanation(dna, appLang),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                lineHeight = 18.sp
-                            )
-                        }
-                    }
-                }
-            }
-
-            snapshot.jevAxisTendency?.let { tendency ->
-                HorizontalDivider(
-                    thickness = 0.5.dp,
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-                )
-                LocalizedJevAxisBalanceBar(tendency = tendency)
-            }
-        }
-    }
-}
-
-@Composable
-private fun LocalizedJevAxisBalanceBar(
-    tendency: JevAxisTendencySummary,
-    modifier: Modifier = Modifier
-) {
-    val appLang = LocalAppLanguage.current
-    val localizedLabels = remember(tendency.group, appLang) {
-        localizedAxisLabels(tendency.group, appLang)
-    }
-    val count = minOf(localizedLabels.size, tendency.percents.size)
-    if (count == 0) return
-
-    val safePercents = remember(tendency) {
-        (0 until count).map { tendency.percents[it].coerceAtLeast(0) }
-    }
-    val sum = remember(safePercents) { safePercents.sum() }
-    val fractions = safePercents.mapIndexed { idx, pct ->
-        val target = if (sum > 0) pct.toFloat() / sum.toFloat() else 1f / count.toFloat()
-        val animated by animateFloatAsState(
-            targetValue = target,
-            animationSpec = spring(dampingRatio = 0.80f, stiffness = Spring.StiffnessMediumLow),
-            label = "jevAxisSeg_$idx"
-        )
-        animated
-    }
-
-    val isDark = LocalTypeFreeKeyboardPalette.current.isDark
-    val segmentColors = listOf(
-        if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald,
-        MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.76f else 0.82f),
-        TypeFreeAmber,
-        MaterialTheme.colorScheme.outline
-    )
-
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(7.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = localizedAxisGroupTitle(tendency.group, appLang),
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = tr("${tendency.sampleCount} 次参考", "${tendency.sampleCount} samples", "${tendency.sampleCount} 次參考"),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(9.dp)
-        ) {
-            val nonZeroIndices = (0 until count).filter { fractions[it] > 0.005f }
-            val radius = CornerRadius(size.height / 2f, size.height / 2f)
-            if (nonZeroIndices.isEmpty()) {
-                drawRoundRect(
-                    color = segmentColors.last().copy(alpha = 0.3f),
-                    size = size,
-                    cornerRadius = radius
-                )
-                return@Canvas
-            }
-
-            val gap = 2.5.dp.toPx()
-            val totalGap = gap * (nonZeroIndices.size - 1)
-            val usableW = (size.width - totalGap).coerceAtLeast(1f)
-            val activeSum = nonZeroIndices.sumOf { fractions[it].toDouble() }.toFloat().coerceAtLeast(0.001f)
-            var cursorX = 0f
-
-            nonZeroIndices.forEachIndexed { pos, segIdx ->
-                val segW = if (pos == nonZeroIndices.lastIndex) {
-                    (size.width - cursorX).coerceAtLeast(0f)
-                } else {
-                    (usableW * (fractions[segIdx] / activeSum)).coerceAtLeast(4.dp.toPx())
-                }
-                drawRoundRect(
-                    color = segmentColors[segIdx % segmentColors.size],
-                    topLeft = Offset(cursorX, 0f),
-                    size = Size(segW, size.height),
-                    cornerRadius = radius
-                )
-                cursorX += segW + gap
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            for (i in 0 until count) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(7.dp)
-                            .clip(CircleShape)
-                            .background(segmentColors[i % segmentColors.size])
-                    )
-                    Text(
-                        text = "${localizedLabels[i]} ${safePercents[i]}%",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
         }
     }
 }

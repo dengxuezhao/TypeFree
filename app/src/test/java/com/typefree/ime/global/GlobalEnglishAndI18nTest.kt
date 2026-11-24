@@ -13,10 +13,6 @@ import com.typefree.ime.i18n.AppLang
 import com.typefree.ime.i18n.AppStrings
 import com.typefree.ime.ime.EnglishSmartTyper
 import com.typefree.ime.ime.ImeLogic
-import com.typefree.ime.ime.jev.ChatTopology
-import com.typefree.ime.ime.jev.JevDomainProfile
-import com.typefree.ime.ime.jev.JevResponseParser
-import com.typefree.ime.ime.jev.JevRoleMode
 import com.typefree.ime.network.PromptBuilder
 import com.typefree.ime.ui.screens.ApiConfigBackupHelper
 import org.junit.Assert.assertEquals
@@ -362,15 +358,14 @@ class GlobalEnglishAndI18nTest {
     }
 
     @Test
-    fun `PromptBuilder English static constants, selector parity, and JevResponseParser English XML compatibility`() {
+    fun `PromptBuilder English static constants and selector parity`() {
         val enPromptFields = listOf(
             "DICTATE_SYSTEM_PROMPT_EN",
             "HELP_ME_WRITE_SYSTEM_PROMPT_EN",
             "ASK_AI_CARD_SYSTEM_PROMPT_EN",
             "SPEAK_TO_EDIT_SYSTEM_PROMPT_EN",
             "TRANSLATE_SYSTEM_PROMPT_EN",
-            "SENTENCE_COMPLETION_SYSTEM_PROMPT_EN",
-            "JEV_COPILOT_SYSTEM_PROMPT_EN"
+            "SENTENCE_COMPLETION_SYSTEM_PROMPT_EN"
         )
         for (fieldName in enPromptFields) {
             val field = PromptBuilder::class.java.getDeclaredField(fieldName)
@@ -412,53 +407,6 @@ class GlobalEnglishAndI18nTest {
         assertSame(PromptBuilder.ASK_AI_CARD_SYSTEM_PROMPT_EN, askSysEn)
         assertTrue(askSysEn.contains("60 words"))
         assertTrue(askUsrEn.contains("<user_query>\nHTTP 429 meaning\n</user_query>"))
-
-        val (jevSysEn, jevUsrEn) = PromptBuilder.buildJevCopilotPrompts(
-            domainProfile = JevDomainProfile.IM_CHAT,
-            targetAppName = "WhatsApp",
-            chatContextMessages = listOf("[Them]: Can you also squeeze the iOS redesign into Friday's sprint?"),
-            userBottomLine = "No capacity this week, earliest is next Wednesday",
-            chatTopology = ChatTopology(isGroupChat = false, roleMode = JevRoleMode.PRIVATE_1V1),
-            isChineseLocale = false
-        )
-        assertSame(PromptBuilder.JEV_COPILOT_SYSTEM_PROMPT_EN, jevSysEn)
-        assertTrue(jevSysEn.contains("<jev>"))
-        assertTrue(jevSysEn.contains("<weights>W1,W2,W3</weights>"))
-        assertTrue(jevSysEn.contains("<route>"))
-        assertTrue(jevUsrEn.contains("Host App: WhatsApp"))
-        assertTrue(jevUsrEn.contains("<user_bottom_line>"))
-
-        // Verify JevResponseParser parses English multi-word labels, tag, subtext, weights & route without CJK 8-char truncation
-        val simulatedEnglishXml = """
-            <think>1. 1v1 Direct -> 2. Route B -> 3. Lv.6 scope creep -> 4. Warm cushion / Firm boundary / Action lock-in</think>
-            <jev>
-            <lv>6</lv>
-            <tag>Scope Creep Probe</tag>
-            <subtext>Testing if you'll absorb extra iOS redesign work into Friday's deadline without pushing back on timeline.</subtext>
-            <opt label="Graceful Pivot">Friday's sprint is fully locked on our end, so I can't squeeze the iOS redesign in this week — happy to kick it off first thing Wednesday.</opt>
-            <opt label="Firm Boundary">No bandwidth left for Friday's cut, earliest I can take on the iOS redesign is next Wednesday.</opt>
-            <opt label="Dry Wit">Only if we invent a 36-hour Thursday — Friday is maxed out, let's slot iOS redesign for Wednesday morning?</opt>
-            <weights>28,54,18</weights>
-            <route>B</route>
-            </jev>
-        """.trimIndent()
-
-        val parsed = JevResponseParser.parse(simulatedEnglishXml)
-        assertEquals(6, parsed.level)
-        assertEquals("Scope Creep Probe", parsed.tag)
-        assertTrue(parsed.subtext.contains("without pushing back on timeline."))
-        assertEquals("B", parsed.routeCode)
-        assertEquals(3, parsed.options.size)
-        assertEquals("Firm Boundary", parsed.options[0].label)
-        assertEquals(54, parsed.options[0].probability)
-        assertTrue(parsed.options[0].isTopRecommended)
-        assertEquals("Graceful Pivot", parsed.options[1].label)
-        assertEquals("Dry Wit", parsed.options[2].label)
-        assertEquals(100, parsed.options.sumOf { it.probability })
-
-        val preview = JevResponseParser.parseStreamingPreview(simulatedEnglishXml)
-        assertNotNull(preview)
-        assertEquals("Firm Boundary", preview!!.options[0].label)
     }
 
     @Test
@@ -509,7 +457,7 @@ class GlobalEnglishAndI18nTest {
         )
         assertTrue(askUsrEn.contains("<current_date>2026-11-24 (Tuesday)</current_date>"))
 
-        // English QWERTY top bar fits all 4 pills (Ask AI, Copilot, Write/Edit, Voice) on 360dp phone (336dp inner width)
+        // English QWERTY top bar fits all 3 pills (Ask AI, Write/Edit, Voice) on 360dp phone (336dp inner width)
         val enPlan336 = com.typefree.ime.ime.chrome.TopBarSlotPolicy.resolveQwertyBarLayout(
             availableWidthDp = 336f,
             showUndoButton = true,
@@ -518,28 +466,41 @@ class GlobalEnglishAndI18nTest {
             hasPriorityBanner = false,
             isClipboardBannerActive = false,
             wantAskAi = true,
-            wantJevCopilot = true,
             wantVoicePen = true,
             lang = AppLang.EN
         )
         assertTrue(enPlan336.showRightAskAi)
-        assertTrue(enPlan336.showRightJevCopilot)
         assertTrue(enPlan336.showRightVoicePen)
 
-        // Ultra-narrow split-screen (270dp) still gracefully drops Ask AI first without overlapping left icons
-        val enPlan270 = com.typefree.ime.ime.chrome.TopBarSlotPolicy.resolveQwertyBarLayout(
-            availableWidthDp = 270f,
-            showUndoButton = false,
+        // Narrow split-screen (230dp) collapses Ask AI into a 28dp icon button without dropping it
+        val enPlan230 = com.typefree.ime.ime.chrome.TopBarSlotPolicy.resolveQwertyBarLayout(
+            availableWidthDp = 230f,
+            showUndoButton = true,
             showClipboardButton = true,
             isIncognito = false,
             hasPriorityBanner = false,
             isClipboardBannerActive = false,
             wantAskAi = true,
-            wantJevCopilot = true,
             wantVoicePen = true,
             lang = AppLang.EN
         )
-        assertFalse(enPlan270.showRightAskAi)
+        assertTrue(enPlan230.showRightAskAi)
+        assertTrue(enPlan230.compactAskAiIconOnly)
+
+        // Ultra-microscopic split-screen (195dp) gracefully drops Ask AI first without overlapping left icons
+        val enPlan195 = com.typefree.ime.ime.chrome.TopBarSlotPolicy.resolveQwertyBarLayout(
+            availableWidthDp = 195f,
+            showUndoButton = true,
+            showClipboardButton = true,
+            isIncognito = false,
+            hasPriorityBanner = false,
+            isClipboardBannerActive = false,
+            wantAskAi = true,
+            wantVoicePen = true,
+            lang = AppLang.EN
+        )
+        assertFalse(enPlan195.showRightAskAi)
+        assertTrue(enPlan195.showRightVoicePen)
 
         // Selected text triggers Ask AI pill even when currentEditorText has not been synced yet
         val selectedAskVisible = com.typefree.ime.ime.chrome.TopBarSlotPolicy.shouldShowTopBarAskAiPill(
@@ -554,26 +515,5 @@ class GlobalEnglishAndI18nTest {
             rawSelectedText = "RustDesk"
         )
         assertTrue(selectedAskVisible)
-
-        // English Jev prompt keeps <relationship_context> and closing <jev> instructions 100% free of Chinese leaks
-        val memPayload = com.typefree.ime.ime.jev.memory.JevMemoryPromptPayload(
-            relationLabel = com.typefree.ime.ime.jev.memory.GroupSceneTag.TECH_INTEREST_GROUP.shortLabel,
-            guideline = com.typefree.ime.ime.jev.memory.GroupSceneTag.TECH_INTEREST_GROUP.guideline,
-            externalBoundaryHint = "含[外部]协作标识，需注意跨组织说话口径",
-            deterministicStyleRules = listOf(com.typefree.ime.ime.jev.memory.StyleFeatureKey.DROP_TRAILING_PERIOD.defaultRuleText),
-            includesLengthCapRule = true,
-            axisTendencyHint = "用户在当前语境下常偏爱「同频升维」方向，可在保持三策差异化前提下适度贴合语感"
-        )
-        val (_, jevEnWithMem) = PromptBuilder.buildJevCopilotPrompts(
-            domainProfile = JevDomainProfile.IM_CHAT,
-            targetAppName = "WeChat",
-            chatContextMessages = listOf("[MemberA]: Switching Stage Manager drops frames"),
-            memoryPayload = memPayload,
-            isChineseLocale = false
-        )
-        assertTrue(jevEnWithMem.contains("CRITICAL LANGUAGE RULE: Active system language is English"))
-        assertTrue(jevEnWithMem.contains("Relationship: Tech / Hobby Group"))
-        assertFalse(jevEnWithMem.contains("语感倾向"))
-        assertFalse(jevEnWithMem.contains("关系："))
     }
 }

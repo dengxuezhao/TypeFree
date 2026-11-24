@@ -99,7 +99,6 @@ class SqliteDailyStatsBackend(
                 snippet_saved_chars INTEGER NOT NULL DEFAULT 0,
                 prediction_hits INTEGER NOT NULL DEFAULT 0,
                 prediction_saved_keys INTEGER NOT NULL DEFAULT 0,
-                jev_adopts INTEGER NOT NULL DEFAULT 0,
                 hourly_voice_json TEXT NOT NULL DEFAULT '[]',
                 hourly_key_json TEXT NOT NULL DEFAULT '[]',
                 scheme_chars_json TEXT NOT NULL DEFAULT '{}',
@@ -185,7 +184,6 @@ class SqliteDailyStatsBackend(
                 val snipSavedIdx = c.getColumnIndexOrThrow("snippet_saved_chars")
                 val predHitsIdx = c.getColumnIndexOrThrow("prediction_hits")
                 val predSavedIdx = c.getColumnIndexOrThrow("prediction_saved_keys")
-                val jevAdoptsIdx = c.getColumnIndexOrThrow("jev_adopts")
                 val hourlyVoiceIdx = c.getColumnIndexOrThrow("hourly_voice_json")
                 val hourlyKeyIdx = c.getColumnIndexOrThrow("hourly_key_json")
                 val schemeIdx = c.getColumnIndexOrThrow("scheme_chars_json")
@@ -226,7 +224,6 @@ class SqliteDailyStatsBackend(
                             snippetSavedChars = c.getInt(snipSavedIdx).coerceAtLeast(0),
                             predictionHits = c.getInt(predHitsIdx).coerceAtLeast(0),
                             predictionSavedKeys = c.getInt(predSavedIdx).coerceAtLeast(0),
-                            jevAdopts = c.getInt(jevAdoptsIdx).coerceAtLeast(0),
                             hourlyVoiceChars = parseHourlyList(c.getString(hourlyVoiceIdx)),
                             hourlyKeyChars = parseHourlyList(c.getString(hourlyKeyIdx)),
                             schemeChars = parseCountMap(c.getString(schemeIdx)),
@@ -275,7 +272,6 @@ class SqliteDailyStatsBackend(
                         put("snippet_saved_chars", record.snippetSavedChars.coerceAtLeast(0))
                         put("prediction_hits", record.predictionHits.coerceAtLeast(0))
                         put("prediction_saved_keys", record.predictionSavedKeys.coerceAtLeast(0))
-                        put("jev_adopts", record.jevAdopts.coerceAtLeast(0))
                         put("hourly_voice_json", gson.toJson(normalizeHourlyList(record.hourlyVoiceChars)))
                         put("hourly_key_json", gson.toJson(normalizeHourlyList(record.hourlyKeyChars)))
                         put("scheme_chars_json", gson.toJson(record.schemeChars))
@@ -517,28 +513,6 @@ class DailyStatsStore(
             existing.copy(
                 predictionHits = existing.predictionHits + 1,
                 predictionSavedKeys = existing.predictionSavedKeys + safeKeys
-            )
-        }
-    }
-
-    fun recordJevAdopt(
-        appName: String = "",
-        nowMs: Long = clock(),
-        enabled: Boolean = isStatsEnabled,
-        incognito: Boolean = isIncognitoMode
-    ) {
-        if (!enabled || incognito) return
-        ensureHydrated()
-        val (dateKey, _) = dateKeyAndHour(nowMs, timeZone)
-        val normalizedApp = normalizeCoarseAppName(appName)
-        mutateDay(dateKey) { existing ->
-            existing.copy(
-                jevAdopts = existing.jevAdopts + 1,
-                appCounts = if (normalizedApp.isNotEmpty()) {
-                    incrementMap(existing.appCounts, normalizedApp, 1)
-                } else {
-                    existing.appCounts
-                }
             )
         }
     }
@@ -867,7 +841,6 @@ class DailyStatsStore(
                 snippetSavedChars = rec.snippetSavedChars.coerceAtLeast(0),
                 predictionHits = rec.predictionHits.coerceAtLeast(0),
                 predictionSavedKeys = rec.predictionSavedKeys.coerceAtLeast(0),
-                jevAdopts = rec.jevAdopts.coerceAtLeast(0),
                 hourlyVoiceChars = List(24) { idx -> rec.hourlyVoiceChars.getOrElse(idx) { 0 }.coerceAtLeast(0) },
                 hourlyKeyChars = List(24) { idx -> rec.hourlyKeyChars.getOrElse(idx) { 0 }.coerceAtLeast(0) },
                 schemeChars = rec.schemeChars.filter { it.key.isNotBlank() && it.value > 0 },
@@ -921,7 +894,6 @@ class DailyStatsStore(
                 snippetSavedChars = maxOf(a.snippetSavedChars, b.snippetSavedChars),
                 predictionHits = maxOf(a.predictionHits, b.predictionHits),
                 predictionSavedKeys = maxOf(a.predictionSavedKeys, b.predictionSavedKeys),
-                jevAdopts = maxOf(a.jevAdopts, b.jevAdopts),
                 hourlyVoiceChars = List(24) { h ->
                     maxOf(a.hourlyVoiceChars.getOrElse(h) { 0 }, b.hourlyVoiceChars.getOrElse(h) { 0 })
                 },

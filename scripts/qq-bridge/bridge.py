@@ -105,8 +105,8 @@ def infer_area_labels(text: str) -> list[str]:
         labels.append("area: keyboard")
     if re.search(r"(小鹤|音形|码表|词库|双拼|五笔|键道|简码|顶字|逆切|空码|快符|rime|flypy|\.dict|\.schema|xkjd|wubi)", lower):
         labels.append("area: codetable")
-    if re.search(r"(语音|asr|麦克风|录音|转写|jev|军师|帮写|润色|翻译|deepseek|gemini|openai|\bai\b)", lower):
-        labels.append("area: voice-jev")
+    if re.search(r"(语音|asr|麦克风|录音|转写|帮写|润色|翻译|deepseek|gemini|openai|\bai\b)", lower):
+        labels.append("area: voice-ai")
     if re.search(r"(设置|界面|主题|深色|浅色|字体|更新|检查更新|隐私|权限|图标|\bui\b)", lower):
         labels.append("area: ui-settings")
     if re.search(r"(librime|jni|ndk|崩溃日志|sigsegv|native|\.so)", lower):
@@ -182,7 +182,7 @@ FAQ_ENTRIES: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"(api|key|语音|deepseek|gemini|百炼|豆包|ollama|离线)", re.IGNORECASE),
         "🎙️ 语音与 AI 配置说明（支持纯端侧离线 + BYOK）：\n"
         "• 零 Key 离线可用：在「语音与 AI → 离线模型」按需下载本地语音与端侧文本模型，断网也能听写、净写与基础改写；\n"
-        "• 如需云端大模型或 Jev 军师，可在「语音与 AI → 模型与 API」填入自己的 DeepSeek / 豆包 / 百炼 / Gemini / 本地 Ollama 地址与 Key；\n"
+        "• 如需云端大模型润色、帮写或问 AI，可在「语音与 AI → 模型与 API」填入自己的 DeepSeek / 豆包 / 百炼 / Gemini / 本地 Ollama 地址与 Key；\n"
         "• 详细教程见仓库文档：https://github.com/dengxuezhao/TypeFree/blob/main/docs/domestic-api-setup-guide.md",
     ),
 ]

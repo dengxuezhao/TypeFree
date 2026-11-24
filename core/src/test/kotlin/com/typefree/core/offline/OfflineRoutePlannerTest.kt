@@ -55,9 +55,7 @@ class OfflineRoutePlannerTest {
             hasCloudStt = true,
             cloudSttSupportsLiveWrite = true,
             hasCloudLlm = true,
-            llmPolishEnabled = true,
-            hasDedicatedJevCloud = true,
-            jevCanUseVision = true
+            llmPolishEnabled = true
         )
 
         val dictatePlan = OfflineRoutePlanner.resolveRoute(
@@ -70,12 +68,11 @@ class OfflineRoutePlannerTest {
         assertFalse(dictatePlan.badge.isPureOffline)
         assertFalse(dictatePlan.badge.isHybrid)
 
-        val jevPlan = OfflineRoutePlanner.resolveRoute(
-            RouteInput(task = AiTask.JEV_COPILOT, offline = offline, registry = registry, cloud = cloud)
+        val askAiPlan = OfflineRoutePlanner.resolveRoute(
+            RouteInput(task = AiTask.ASK_AI_CARD, offline = offline, registry = registry, cloud = cloud)
         )
-        assertEquals(AsrRoute.None, jevPlan.asr)
-        assertEquals(TextRoute.Cloud, jevPlan.text)
-        assertTrue(jevPlan.jevVisionAllowed)
+        assertEquals(AsrRoute.None, askAiPlan.asr)
+        assertEquals(TextRoute.Cloud, askAiPlan.text)
         assertFalse(
             OfflineRoutePlanner.isModelEffective(
                 offline,
@@ -166,7 +163,7 @@ class OfflineRoutePlannerTest {
     }
 
     @Test
-    fun truthTable04_hybrid08bJevUsesCloudIfPresentElseBlocked() {
+    fun truthTable04_hybrid08bAskAiUsesCloudIfPresentElseBlockedAndEditFallsBackLocal() {
         val registry = LocalModelRegistrySnapshot(
             records = mapOf(installedRecord(OfflineModelCatalog.ID_SLM_CORE_0_8B)),
             localServiceAlive = true,
@@ -180,26 +177,24 @@ class OfflineRoutePlannerTest {
 
         val withCloudPlan = OfflineRoutePlanner.resolveRoute(
             RouteInput(
-                task = AiTask.JEV_COPILOT,
+                task = AiTask.ASK_AI_CARD,
                 offline = offline,
                 registry = registry,
-                cloud = CloudAvailability(hasDedicatedJevCloud = true, jevCanUseVision = true)
+                cloud = CloudAvailability(hasCloudLlm = true)
             )
         )
         assertEquals(AsrRoute.None, withCloudPlan.asr)
         assertEquals(TextRoute.Cloud, withCloudPlan.text)
-        assertTrue(withCloudPlan.jevVisionAllowed)
 
         val withoutCloudPlan = OfflineRoutePlanner.resolveRoute(
             RouteInput(
-                task = AiTask.JEV_COPILOT,
+                task = AiTask.ASK_AI_CARD,
                 offline = offline,
                 registry = registry,
                 cloud = CloudAvailability()
             )
         )
         assertEquals(TextRoute.Blocked(RouteBlockReason.NO_CLOUD_OR_LOCAL_AVAILABLE), withoutCloudPlan.text)
-        assertFalse(withoutCloudPlan.jevVisionAllowed)
 
         // 0.8B falls back to local SPEAK_TO_EDIT / TEXT_TRANSFORM when offline or without cloud,
         // while still preferring Cloud LLM in HYBRID when cloud is online.
@@ -251,26 +246,29 @@ class OfflineRoutePlannerTest {
     }
 
     @Test
-    fun truthTable05_hybrid4bJevPrefersDedicatedCloudWhenOnlineAndFallsBackToLocal4bOffline() {
+    fun truthTable05_hybrid4bHelpMeWritePrefersCloudWhenOnlineAndFallsBackToLocal4bOffline() {
         val registry = LocalModelRegistrySnapshot(
-            records = mapOf(installedRecord(OfflineModelCatalog.ID_SLM_PRO_4B)),
+            records = mapOf(
+                installedRecord(OfflineModelCatalog.ID_ASR_SENSEVOICE_SMALL),
+                installedRecord(OfflineModelCatalog.ID_SLM_PRO_4B)
+            ),
             localServiceAlive = true,
             slmEngineAvailable = true
         )
         val offline = OfflineModelConfigData(
             mode = OfflineMode.HYBRID,
+            asrSlotOn = true,
             slmSlotOn = true,
+            selectedAsrModelId = OfflineModelCatalog.ID_ASR_SENSEVOICE_SMALL,
             selectedSlmModelId = OfflineModelCatalog.ID_SLM_PRO_4B
         )
         val cloud = CloudAvailability(
-            hasDedicatedJevCloud = true,
-            jevCanUseVision = true,
             hasCloudLlm = true
         )
 
         val onlinePlan = OfflineRoutePlanner.resolveRoute(
             RouteInput(
-                task = AiTask.JEV_COPILOT,
+                task = AiTask.HELP_ME_WRITE,
                 offline = offline,
                 registry = registry,
                 cloud = cloud,
@@ -278,11 +276,10 @@ class OfflineRoutePlannerTest {
             )
         )
         assertEquals(TextRoute.Cloud, onlinePlan.text)
-        assertTrue(onlinePlan.jevVisionAllowed)
 
         val offlinePlan = OfflineRoutePlanner.resolveRoute(
             RouteInput(
-                task = AiTask.JEV_COPILOT,
+                task = AiTask.HELP_ME_WRITE,
                 offline = offline,
                 registry = registry,
                 cloud = cloud,
@@ -293,7 +290,6 @@ class OfflineRoutePlannerTest {
             TextRoute.Local(OfflineModelCatalog.ID_SLM_PRO_4B, isFallbackTier = true),
             offlinePlan.text
         )
-        assertFalse(offlinePlan.jevVisionAllowed)
     }
 
     @Test

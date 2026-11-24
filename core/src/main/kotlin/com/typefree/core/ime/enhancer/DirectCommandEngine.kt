@@ -235,10 +235,10 @@ class DirectCommandEngine(
             "oai" -> {
                 listOf(
                     EnhancedCandidate(
-                        displayText = "[✦ Jev 军师润色]",
+                        displayText = "[✍️ AI 帮写]",
                         commitText = "",
                         codeHint = "252dp平滑联动",
-                        action = CommitAction.Command(DirectCommandType.OPEN_JEV_COPILOT)
+                        action = CommitAction.Command(DirectCommandType.OPEN_HELP_ME_WRITE)
                     )
                 )
             }

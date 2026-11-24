@@ -109,7 +109,6 @@ import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.DictionaryEntry
 import com.typefree.ime.data.DictionarySource
 import com.typefree.ime.data.DiscoveredModelItem
-import com.typefree.ime.ime.jev.memory.AndroidKeystoreSaltProvider
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
@@ -261,19 +260,14 @@ fun ApiSettingsScreen(
     var backupStatusMsg by remember { mutableStateOf<String?>(null) }
     var backupIsError by remember { mutableStateOf(false) }
     var isBackupBusy by remember { mutableStateOf(false) }
-    var includeEncryptedJevMemory by remember { mutableStateOf(false) }
     var includeHistoryBackup by remember { mutableStateOf(true) }
     var includeDailyStatsBackup by remember { mutableStateOf(true) }
     var includePredictionsBackup by remember { mutableStateOf(true) }
     var includePinnedClipboardBackup by remember { mutableStateOf(true) }
-    var backupMemoryPassphrase by remember { mutableStateOf("") }
-    var showImportMemorySkipAction by remember { mutableStateOf(false) }
-    var pendingImportJson by remember { mutableStateOf<String?>(null) }
 
     fun currentFullBackupOptions(includeSecrets: Boolean = true): FullBackupOptions {
         return FullBackupOptions(
             includeSecrets = includeSecrets,
-            includeJevMemory = includeSecrets && includeEncryptedJevMemory,
             includeHistory = includeSecrets && includeHistoryBackup,
             includeDailyStats = includeSecrets && includeDailyStatsBackup,
             includePredictions = includeSecrets && includePredictionsBackup,
@@ -282,8 +276,7 @@ fun ApiSettingsScreen(
     }
 
     fun formatMergeSuccessMessage(
-        outcome: ApiConfigBackupHelper.FullBackupImportOutcome,
-        skippedEncryptedMemory: Boolean
+        outcome: ApiConfigBackupHelper.FullBackupImportOutcome
     ): String {
         val parts = mutableListOf<String>()
         val merge: FullBackupMergeSummary = outcome.mergeSummary
@@ -328,16 +321,6 @@ fun ApiSettingsScreen(
                 )
             )
         }
-        outcome.memorySummary?.let {
-            parts.add(
-                AppStrings.pick(
-                    appLang,
-                    "军师记忆 ${it.importedSessions} 会话 / ${it.mergedBuckets} 风格组",
-                    "Copilot memory (${it.importedSessions} sessions / ${it.mergedBuckets} style groups)",
-                    "軍師記憶 ${it.importedSessions} 會話 / ${it.mergedBuckets} 風格組"
-                )
-            )
-        }
         val joined = parts.joinToString(" · ")
         val extra = if (parts.isNotEmpty()) {
             AppStrings.pick(
@@ -349,25 +332,15 @@ fun ApiSettingsScreen(
         } else {
             ""
         }
-        val skipNote = if (skippedEncryptedMemory) {
-            AppStrings.pick(
-                appLang,
-                "（已按要求跳过加密军师记忆）",
-                " (skipped encrypted Copilot memory as requested)",
-                "（已按要求略過加密軍師記憶）"
-            )
-        } else {
-            ""
-        }
         return AppStrings.pick(
             appLang,
-            "✓ 全量配置与数据导入成功！已同步密钥库、短语与个人词典$extra$skipNote",
-            "✓ Full backup imported! Synced API vault, snippets, and personal dictionary$extra$skipNote",
-            "✓ 全量設定與資料匯入成功！已同步金鑰庫、片語與個人詞典$extra$skipNote"
+            "✓ 全量配置与数据导入成功！已同步密钥库、短语与个人词典$extra",
+            "✓ Full backup imported! Synced API vault, snippets, and personal dictionary$extra",
+            "✓ 全量設定與資料匯入成功！已同步金鑰庫、片語與個人詞典$extra"
         )
     }
 
-    fun executeImportJsonPayload(rawJson: String, skipMemoryIfNoPassphrase: Boolean) {
+    fun executeImportJsonPayload(rawJson: String) {
         if (rawJson.isBlank()) {
             backupIsError = true
             backupStatusMsg = AppStrings.pick(
@@ -378,45 +351,20 @@ fun ApiSettingsScreen(
             )
             return
         }
-        val hasEncryptedMemory = ApiConfigBackupHelper.hasEncryptedJevMemoryArchive(rawJson)
-        if (hasEncryptedMemory && !skipMemoryIfNoPassphrase && backupMemoryPassphrase.isBlank()) {
-            pendingImportJson = rawJson
-            showImportMemorySkipAction = true
-            backupIsError = true
-            backupStatusMsg = AppStrings.pick(
-                appLang,
-                "检测到备份内含加密的军师记忆：请输入密码后点击「解锁并导入」，或点击「跳过记忆仅导其余数据」",
-                "Encrypted Copilot memory detected: enter your passphrase and tap \"Unlock & Import\", or tap \"Skip Memory & Import Rest\"",
-                "偵測到備份內含加密的軍師記憶：請輸入密碼後點擊「解鎖並匯入」，或點擊「略過記憶僅匯入其餘資料」"
-            )
-            return
-        }
         coroutineScope.launch {
             isBackupBusy = true
-            val passChars = if (skipMemoryIfNoPassphrase) null else backupMemoryPassphrase.takeIf { it.isNotBlank() }?.toCharArray()
             val res = withContext(Dispatchers.IO) {
                 ApiConfigBackupHelper.importFullBackupJson(
                     rawJson = rawJson,
                     existingSettings = settings,
-                    repository = repository,
-                    memoryRepository = repository.jevMemoryRepository,
-                    memoryPassphrase = passChars,
-                    adoptSaltProvider = repository.jevMemorySaltProvider as? AndroidKeystoreSaltProvider,
-                    skipMemoryIfNoPassphrase = skipMemoryIfNoPassphrase,
-                    wipePassphraseAfterUse = true
+                    repository = repository
                 )
             }
             isBackupBusy = false
             res.onSuccess { outcome ->
                 repository.updateSettings { outcome.settings }
-                backupMemoryPassphrase = ""
-                pendingImportJson = null
-                showImportMemorySkipAction = false
                 backupIsError = false
-                backupStatusMsg = formatMergeSuccessMessage(
-                    outcome = outcome,
-                    skippedEncryptedMemory = skipMemoryIfNoPassphrase && hasEncryptedMemory
-                )
+                backupStatusMsg = formatMergeSuccessMessage(outcome = outcome)
             }.onFailure { err ->
                 backupIsError = true
                 val fallbackErr = AppStrings.pick(appLang, "导入备份失败", "Failed to import backup", "匯入備份失敗")
@@ -432,7 +380,6 @@ fun ApiSettingsScreen(
         coroutineScope.launch {
             isBackupBusy = true
             val options = currentFullBackupOptions(includeSecrets = true)
-            val passChars = if (options.includeJevMemory) backupMemoryPassphrase.toCharArray() else null
             val writeRes = withContext(Dispatchers.IO) {
                 runCatching {
                     val dailyStats = if (options.includeDailyStats) {
@@ -452,10 +399,7 @@ fun ApiSettingsScreen(
                         history = if (options.includeHistory) repository.history.value else emptyList(),
                         dailyStats = dailyStats,
                         predictions = predictions,
-                        pinnedClipboard = if (options.includePinnedClipboard) repository.clipboardItems.value else emptyList(),
-                        memoryRepository = repository.jevMemoryRepository,
-                        memoryPassphrase = passChars,
-                        wipePassphraseAfterUse = true
+                        pinnedClipboard = if (options.includePinnedClipboard) repository.clipboardItems.value else emptyList()
                     )
                     val bytes = json.toByteArray(Charsets.UTF_8)
                     val out = context.contentResolver.openOutputStream(uri)
@@ -467,9 +411,6 @@ fun ApiSettingsScreen(
                 }
             }
             isBackupBusy = false
-            if (options.includeJevMemory) {
-                backupMemoryPassphrase = ""
-            }
             writeRes.onSuccess { byteCount ->
                 val kb = String.format(Locale.US, "%.1f KB", byteCount / 1024.0)
                 backupIsError = false
@@ -509,7 +450,7 @@ fun ApiSettingsScreen(
             }
             isBackupBusy = false
             readRes.onSuccess { raw ->
-                executeImportJsonPayload(rawJson = raw, skipMemoryIfNoPassphrase = false)
+                executeImportJsonPayload(rawJson = raw)
             }.onFailure { err ->
                 backupIsError = true
                 val unknownErr = AppStrings.pick(appLang, "未知错误", "Unknown error", "未知錯誤")
@@ -553,16 +494,6 @@ fun ApiSettingsScreen(
                 settings.multimodalConfig.apiKey,
                 settings.multimodalConfig.protocol
             )
-            ModelCapabilitySlot.JEV_COPILOT -> {
-                val effJev = aiEngine.resolveEffectiveJevLlmConfig(
-                    settings.copy(jevUseDedicatedModel = true)
-                ) ?: settings.jevLlmConfig
-                Triple(
-                    effJev.baseUrl,
-                    effJev.apiKey,
-                    MultimodalProtocol.OPENAI_AUDIO_CHAT
-                )
-            }
         }
         coroutineScope.launch {
             fetchingSlot = slot
@@ -628,16 +559,6 @@ fun ApiSettingsScreen(
                 activeProtocol = settings.multimodalConfig.protocol
                 activeThinkingMode = settings.multimodalConfig.thinkingMode
             }
-            ModelCapabilitySlot.JEV_COPILOT -> {
-                val effJev = aiEngine.resolveEffectiveJevLlmConfig(
-                    settings.copy(jevUseDedicatedModel = true)
-                ) ?: settings.jevLlmConfig
-                activeBaseUrl = effJev.baseUrl
-                activeApiKey = effJev.apiKey
-                currentModel = settings.jevLlmConfig.model
-                activeProtocol = MultimodalProtocol.OPENAI_AUDIO_CHAT
-                activeThinkingMode = settings.jevLlmConfig.thinkingMode
-            }
         }
         ProviderModelPickerDialog(
             slot = activeSlot,
@@ -661,9 +582,6 @@ fun ApiSettingsScreen(
                     }
                     ModelCapabilitySlot.MULTIMODAL -> repository.updateSettings {
                         it.copy(multimodalConfig = it.multimodalConfig.copy(model = chosenId))
-                    }
-                    ModelCapabilitySlot.JEV_COPILOT -> repository.updateSettings {
-                        it.copy(jevLlmConfig = it.jevLlmConfig.copy(model = chosenId))
                     }
                 }
                 pickerDialogSlot = null
@@ -776,8 +694,6 @@ fun ApiSettingsScreen(
             activePrimaryProviderId = activePrimaryProviderId,
             activeLlmProviderId = UnifiedProviderCatalog.inferLlmProviderId(settings.llmConfig),
             isLlmEnabled = settings.llmConfig.enabled,
-            activeJevProviderId = UnifiedProviderCatalog.inferLlmProviderId(settings.jevLlmConfig),
-            isJevDedicatedEnabled = settings.jevUseDedicatedModel,
             hasConfiguredStt = UnifiedProviderCatalog.hasConfiguredSttCredential(settings.sttConfig),
             onSelectProvider = { selectedVaultProviderId = it },
             onUpdateCredential = { updatedCred ->
@@ -831,9 +747,9 @@ fun ApiSettingsScreen(
                         providerId == UnifiedProviderCatalog.ID_DEEPSEEK ->
                             AppStrings.pick(
                                 appLang,
-                                "✓ 已启用 DeepSeek 单 Key 方案（语音识别 + 润色与军师）",
-                                "✓ Enabled DeepSeek 1-Key suite (ASR + Polish & Copilot)",
-                                "✓ 已啟用 DeepSeek 單 Key 方案（語音識別 + 潤飾與軍師）"
+                                "✓ 已启用 DeepSeek 单 Key 方案（语音识别 + 润色与帮写）",
+                                "✓ Enabled DeepSeek 1-Key suite (ASR + Polish & Help Write)",
+                                "✓ 已啟用 DeepSeek 單 Key 方案（語音識別 + 潤飾與幫寫）"
                             )
                         else ->
                             AppStrings.pick(
@@ -933,7 +849,6 @@ fun ApiSettingsScreen(
             UnifiedProviderCatalog.inferLlmProviderId(settings.llmConfig)
         }
         val isMixedSetup = dictatePlan.badge.isHybrid ||
-            settings.jevUseDedicatedModel ||
             (settings.pipelineMode == PipelineMode.DUAL_STAGE &&
                 settings.llmConfig.enabled &&
                 activePrimaryProviderId != activeLlmProviderId)
@@ -949,9 +864,9 @@ fun ApiSettingsScreen(
             } else {
                 AppStrings.pick(
                     appLang,
-                    "当前：$activeLabel · 点击自定义双阶段、多模态或军师独立模型",
-                    "Current: $activeLabel · Tap to configure Dual-Stage, Multimodal, or Copilot model",
-                    "目前：$activeLabel · 點擊自訂雙階段、多模態或軍師獨立模型"
+                    "当前：$activeLabel · 点击自定义双阶段或多模态混搭",
+                    "Current: $activeLabel · Tap to configure Dual-Stage or Multimodal routing",
+                    "目前：$activeLabel · 點擊自訂雙階段或多模態混搭"
                 )
             }
         }
@@ -1133,17 +1048,9 @@ fun ApiSettingsScreen(
                     selectedVaultProviderId = pid
                     repository.updateSettings { UnifiedProviderCatalog.selectMultimodalProvider(it, pid) }
                 },
-                onToggleJevDedicated = { enabled ->
-                    repository.updateSettings { it.copy(jevUseDedicatedModel = enabled) }
-                },
-                onSelectJevProvider = { pid ->
-                    selectedVaultProviderId = pid
-                    repository.updateSettings { UnifiedProviderCatalog.selectJevProvider(it, pid) }
-                },
                 onUpdateStt = { updated -> repository.updateSettings { it.copy(sttConfig = updated) } },
                 onUpdateLlm = { updated -> repository.updateSettings { it.copy(llmConfig = updated) } },
                 onUpdateMultimodal = { updated -> repository.updateSettings { it.copy(multimodalConfig = updated) } },
-                onUpdateJev = { updated -> repository.updateSettings { it.copy(jevLlmConfig = updated) } },
                 onFetchModels = ::triggerModelDiscovery
             )
         }
@@ -1173,8 +1080,7 @@ fun ApiSettingsScreen(
                 settings = settings,
                 onUpdateStt = { updated -> repository.updateSettings { it.copy(sttConfig = updated) } },
                 onUpdateLlm = { updated -> repository.updateSettings { it.copy(llmConfig = updated) } },
-                onUpdateMultimodal = { updated -> repository.updateSettings { it.copy(multimodalConfig = updated) } },
-                onUpdateJev = { updated -> repository.updateSettings { it.copy(jevLlmConfig = updated) } }
+                onUpdateMultimodal = { updated -> repository.updateSettings { it.copy(multimodalConfig = updated) } }
             )
         }
 
@@ -1284,9 +1190,9 @@ fun ApiSettingsScreen(
                 "📦 全量資料備份與跨機遷移"
             ),
             subtitle = tr(
-                "支持 .json 文件与剪贴板无损迁移：密钥、词典、短语、历史、每日统计、Token、连词库、置顶剪贴板与军师记忆",
-                "Lossless .json file & clipboard migration: API keys, dictionary, snippets, history, stats, tokens, predictions, pinned clips & Copilot memory",
-                "支援 .json 檔案與剪貼簿無損遷移：金鑰、詞典、片語、歷史、每日統計、Token、連詞庫、置頂剪貼簿與軍師記憶"
+                "支持 .json 文件与剪贴板无损迁移：密钥、词典、短语、历史、每日统计、Token、连词库与置顶剪贴板",
+                "Lossless .json file & clipboard migration: API keys, dictionary, snippets, history, stats, tokens, predictions & pinned clips",
+                "支援 .json 檔案與剪貼簿無損遷移：金鑰、詞典、片語、歷史、每日統計、Token、連詞庫與置頂剪貼簿"
             ),
             expanded = showBackupDrawer,
             onToggle = { showBackupDrawer = !showBackupDrawer }
@@ -1306,106 +1212,59 @@ fun ApiSettingsScreen(
                 onIncludePredictionsChange = { includePredictionsBackup = it },
                 includePinnedClipboard = includePinnedClipboardBackup,
                 onIncludePinnedClipboardChange = { includePinnedClipboardBackup = it },
-                includeEncryptedJevMemory = includeEncryptedJevMemory,
-                onIncludeEncryptedJevMemoryChange = { checked ->
-                    includeEncryptedJevMemory = checked
-                    if (!checked && !showImportMemorySkipAction) {
-                        backupMemoryPassphrase = ""
-                    }
-                },
-                memoryPassphrase = backupMemoryPassphrase,
-                onMemoryPassphraseChange = { backupMemoryPassphrase = it },
-                showPassphraseField = includeEncryptedJevMemory || showImportMemorySkipAction,
-                showSkipMemoryImportButton = showImportMemorySkipAction,
-                hasPendingFileImport = pendingImportJson != null,
                 onExportToJsonFile = {
-                    if (includeEncryptedJevMemory && backupMemoryPassphrase.isBlank()) {
-                        backupIsError = true
-                        backupStatusMsg = AppStrings.pick(
-                            appLang,
-                            "✕ 请先输入军师记忆加密密码再导出文件",
-                            "✕ Please enter a passphrase for Copilot memory encryption before exporting",
-                            "✕ 請先輸入軍師記憶加密密碼再匯出檔案"
-                        )
-                    } else {
-                        val stamp = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE)
-                        exportBackupFileLauncher.launch("typefree-backup-$stamp.json")
-                    }
+                    val stamp = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE)
+                    exportBackupFileLauncher.launch("typefree-backup-$stamp.json")
                 },
                 onImportFromJsonFile = {
                     importBackupFileLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
                 },
-                onUnlockPendingImport = {
-                    val cached = pendingImportJson
-                    if (cached != null) {
-                        executeImportJsonPayload(rawJson = cached, skipMemoryIfNoPassphrase = false)
-                    } else {
-                        executeImportJsonPayload(rawJson = readFromClipboard(context), skipMemoryIfNoPassphrase = false)
-                    }
-                },
                 onExportFullJsonToClipboard = {
-                    if (includeEncryptedJevMemory && backupMemoryPassphrase.isBlank()) {
-                        backupIsError = true
-                        backupStatusMsg = AppStrings.pick(
-                            appLang,
-                            "✕ 请先输入军师记忆加密密码再导出",
-                            "✕ Please enter a passphrase for Copilot memory encryption first",
-                            "✕ 請先輸入軍師記憶加密密碼再匯出"
-                        )
-                    } else {
-                        coroutineScope.launch {
-                            isBackupBusy = true
-                            val options = currentFullBackupOptions(includeSecrets = true)
-                            val passChars = if (options.includeJevMemory) backupMemoryPassphrase.toCharArray() else null
-                            val json = withContext(Dispatchers.IO) {
-                                val dailyStats = if (options.includeDailyStats) {
-                                    repository.dailyStatsStore.flushBlocking(1_000L)
-                                    repository.dailyStatsStore.listAllRecords()
-                                } else {
-                                    emptyList()
-                                }
-                                val predictions = if (options.includePredictions) {
-                                    repository.exportPredictionsArchive()
-                                } else {
-                                    com.typefree.ime.data.stats.PredictionBackupArchive()
-                                }
-                                ApiConfigBackupHelper.exportFullBackupJson(
-                                    settings = settings,
-                                    options = options,
-                                    history = if (options.includeHistory) repository.history.value else emptyList(),
-                                    dailyStats = dailyStats,
-                                    predictions = predictions,
-                                    pinnedClipboard = if (options.includePinnedClipboard) repository.clipboardItems.value else emptyList(),
-                                    memoryRepository = repository.jevMemoryRepository,
-                                    memoryPassphrase = passChars,
-                                    wipePassphraseAfterUse = true
-                                )
-                            }
-                            isBackupBusy = false
-                            if (options.includeJevMemory) {
-                                backupMemoryPassphrase = ""
-                            }
-                            val byteSize = json.toByteArray(Charsets.UTF_8).size
-                            if (byteSize > ApiConfigBackupHelper.CLIPBOARD_SAFE_MAX_BYTES) {
-                                val kb = String.format(Locale.US, "%.1f KB", byteSize / 1024.0)
-                                backupIsError = true
-                                backupStatusMsg = AppStrings.pick(
-                                    appLang,
-                                    "全量备份体积约 $kb，超过系统剪贴板安全上限，请点「导出 .json 文件」进行无损迁移",
-                                    "Full backup is ~$kb, exceeding the safe Android clipboard limit — please use \"Export .json File\" instead",
-                                    "全量備份體積約 $kb，超過系統剪貼簿安全上限，請點「匯出 .json 檔案」進行無損遷移"
-                                )
+                    coroutineScope.launch {
+                        isBackupBusy = true
+                        val options = currentFullBackupOptions(includeSecrets = true)
+                        val json = withContext(Dispatchers.IO) {
+                            val dailyStats = if (options.includeDailyStats) {
+                                repository.dailyStatsStore.flushBlocking(1_000L)
+                                repository.dailyStatsStore.listAllRecords()
                             } else {
-                                writeToClipboard(context, "TypeFree Full Backup", json)
-                                val kb = String.format(Locale.US, "%.1f KB", byteSize / 1024.0)
-                                backupIsError = false
-                                backupStatusMsg = AppStrings.pick(
-                                    appLang,
-                                    "✓ 全量备份 JSON（$kb）已复制到剪贴板（包含密钥与所选数据，请妥善保管）",
-                                    "✓ Full backup JSON ($kb) copied to clipboard (contains API keys & selected data — keep it safe)",
-                                    "✓ 全量備份 JSON（$kb）已複製到剪貼簿（包含金鑰與所選資料，請妥善保管）"
-                                )
+                                emptyList()
                             }
+                            val predictions = if (options.includePredictions) {
+                                repository.exportPredictionsArchive()
+                            } else {
+                                com.typefree.ime.data.stats.PredictionBackupArchive()
+                            }
+                            ApiConfigBackupHelper.exportFullBackupJson(
+                                settings = settings,
+                                options = options,
+                                history = if (options.includeHistory) repository.history.value else emptyList(),
+                                dailyStats = dailyStats,
+                                predictions = predictions,
+                                pinnedClipboard = if (options.includePinnedClipboard) repository.clipboardItems.value else emptyList()
+                            )
+                        }
+                        isBackupBusy = false
+                        val byteSize = json.toByteArray(Charsets.UTF_8).size
+                        if (byteSize > ApiConfigBackupHelper.CLIPBOARD_SAFE_MAX_BYTES) {
+                            val kb = String.format(Locale.US, "%.1f KB", byteSize / 1024.0)
+                            backupIsError = true
+                            backupStatusMsg = AppStrings.pick(
+                                appLang,
+                                "全量备份体积约 $kb，超过系统剪贴板安全上限，请点「导出 .json 文件」进行无损迁移",
+                                "Full backup is ~$kb, exceeding the safe Android clipboard limit — please use \"Export .json File\" instead",
+                                "全量備份體積約 $kb，超過系統剪貼簿安全上限，請點「匯出 .json 檔案」進行無損遷移"
+                            )
+                        } else {
+                            writeToClipboard(context, "TypeFree Full Backup", json)
+                            val kb = String.format(Locale.US, "%.1f KB", byteSize / 1024.0)
+                            backupIsError = false
+                            backupStatusMsg = AppStrings.pick(
+                                appLang,
+                                "✓ 全量备份 JSON（$kb）已复制到剪贴板（包含密钥与所选数据，请妥善保管）",
+                                "✓ Full backup JSON ($kb) copied to clipboard (contains API keys & selected data — keep it safe)",
+                                "✓ 全量備份 JSON（$kb）已複製到剪貼簿（包含金鑰與所選資料，請妥善保管）"
+                            )
                         }
                     }
                 },
@@ -1414,7 +1273,6 @@ fun ApiSettingsScreen(
                         settings = settings,
                         options = FullBackupOptions(
                             includeSecrets = false,
-                            includeJevMemory = false,
                             includeHistory = false,
                             includeDailyStats = false,
                             includePredictions = false,
@@ -1425,24 +1283,13 @@ fun ApiSettingsScreen(
                     backupIsError = false
                     backupStatusMsg = AppStrings.pick(
                         appLang,
-                        "✓ 脱敏配置 JSON 已复制到剪贴板（已隐藏所有 API Key，不含历史/剪贴板/记忆，可安全分享）",
+                        "✓ 脱敏配置 JSON 已复制到剪贴板（已隐藏所有 API Key，不含历史与剪贴板，可安全分享）",
                         "✓ Redacted config JSON copied to clipboard (all API keys & personal data stripped — safe to share)",
-                        "✓ 去識別化設定 JSON 已複製到剪貼簿（已隱藏所有 API Key，不含歷史/剪貼簿/記憶，可安全分享）"
+                        "✓ 去識別化設定 JSON 已複製到剪貼簿（已隱藏所有 API Key，不含歷史與剪貼簿，可安全分享）"
                     )
                 },
                 onImportFromClipboard = {
-                    pendingImportJson = null
-                    executeImportJsonPayload(
-                        rawJson = readFromClipboard(context),
-                        skipMemoryIfNoPassphrase = false
-                    )
-                },
-                onImportSkipEncryptedMemory = {
-                    val sourceJson = pendingImportJson ?: readFromClipboard(context)
-                    executeImportJsonPayload(
-                        rawJson = sourceJson,
-                        skipMemoryIfNoPassphrase = true
-                    )
+                    executeImportJsonPayload(rawJson = readFromClipboard(context))
                 }
             )
         }
@@ -1479,8 +1326,6 @@ private fun UnifiedProviderVaultCard(
     activePrimaryProviderId: String,
     activeLlmProviderId: String,
     isLlmEnabled: Boolean,
-    activeJevProviderId: String,
-    isJevDedicatedEnabled: Boolean,
     hasConfiguredStt: Boolean,
     onSelectProvider: (String) -> Unit,
     onUpdateCredential: (ProviderCredential) -> Unit,
@@ -1597,8 +1442,7 @@ private fun UnifiedProviderVaultCard(
                             isLocalActive
                         } else {
                             (!isLocalActive || !offlineCfg.asrSlotOn) && spec.id == activePrimaryProviderId ||
-                                (isLlmEnabled && (!isLocalActive || !offlineCfg.slmSlotOn) && spec.id == activeLlmProviderId) ||
-                                (isJevDedicatedEnabled && !isPureOfflineLocked && spec.id == activeJevProviderId)
+                                (isLlmEnabled && (!isLocalActive || !offlineCfg.slmSlotOn) && spec.id == activeLlmProviderId)
                         }
 
                         ProviderVaultTile(
@@ -1982,14 +1826,14 @@ private fun UnifiedProviderVaultCard(
                     ) {
                         val btnText = when {
                             isDeepSeekFullLoop -> tr(
-                                "✓ 已启用 DeepSeek 单 Key 方案（语音识别 + 润色与军师）",
-                                "✓ DeepSeek 1-Key Active (ASR + Polish & Copilot)",
-                                "✓ 已啟用 DeepSeek 單 Key 方案（語音識別 + 潤飾與軍師）"
+                                "✓ 已启用 DeepSeek 单 Key 方案（语音识别 + 润色与帮写）",
+                                "✓ DeepSeek 1-Key Active (ASR + Polish & Help Write)",
+                                "✓ 已啟用 DeepSeek 單 Key 方案（語音識別 + 潤飾與幫寫）"
                             )
                             selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK -> tr(
-                                "🚀 一键启用 DeepSeek 单 Key 方案（语音识别 + 润色与军师）",
-                                "🚀 Enable DeepSeek 1-Key (ASR + Polish & Copilot)",
-                                "🚀 一鍵啟用 DeepSeek 單 Key 方案（語音識別 + 潤飾與軍師）"
+                                "🚀 一键启用 DeepSeek 单 Key 方案（语音识别 + 润色与帮写）",
+                                "🚀 Enable DeepSeek 1-Key (ASR + Polish & Help Write)",
+                                "🚀 一鍵啟用 DeepSeek 單 Key 方案（語音識別 + 潤飾與幫寫）"
                             )
                             isAlreadyPrimary -> tr(
                                 "✓ 当前已是主力方案（点击重置为官方推荐模型）",
@@ -2140,12 +1984,9 @@ private fun UnifiedWorkflowRoutingCard(
     onSelectSttProvider: (String) -> Unit,
     onSelectLlmProvider: (String) -> Unit,
     onSelectMultimodalProvider: (String) -> Unit,
-    onToggleJevDedicated: (Boolean) -> Unit,
-    onSelectJevProvider: (String) -> Unit,
     onUpdateStt: (SttConfig) -> Unit,
     onUpdateLlm: (LlmConfig) -> Unit,
     onUpdateMultimodal: (MultimodalConfig) -> Unit,
-    onUpdateJev: (LlmConfig) -> Unit,
     onFetchModels: (ModelCapabilitySlot) -> Unit
 ) {
     val appLang = LocalAppLanguage.current
@@ -2157,9 +1998,6 @@ private fun UnifiedWorkflowRoutingCard(
     }
     val activeMmPid = remember(settings.multimodalConfig) {
         UnifiedProviderCatalog.inferMultimodalProviderId(settings.multimodalConfig)
-    }
-    val activeJevPid = remember(settings.jevLlmConfig) {
-        UnifiedProviderCatalog.inferLlmProviderId(settings.jevLlmConfig)
     }
     val installedAsrModels = remember(registrySnapshot) {
         OfflineModelCatalog.asrModels.filter { registrySnapshot.isInstalled(it.id) }
@@ -2579,110 +2417,6 @@ private fun UnifiedWorkflowRoutingCard(
                     }
                 }
             }
-
-            // Role C: Optional Dedicated Jev Copilot Model (Visible in both DUAL_STAGE and MULTIMODAL_DIRECT)
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                border = BorderStroke(
-                    width = 1.dp,
-                    color = if (settings.jevUseDedicatedModel) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-                    } else {
-                        MaterialTheme.colorScheme.outline.copy(alpha = 0.32f)
-                    }
-                )
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(end = 8.dp)
-                        ) {
-                            Text(
-                                text = tr(
-                                    "✦ Jev 军师专用模型（高情商/多模态独立路由）",
-                                    "✦ Dedicated Jev Copilot Model (EQ & Vision)",
-                                    "✦ Jev 軍師專用模型（高情商/多模態獨立路由）"
-                                ),
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = if (settings.jevUseDedicatedModel) {
-                                    tr(
-                                        "已开启：点按『✦ 军师』时固定调用下方高智商模型（日常语音仍走极速通道）",
-                                        "Enabled: Tapping ✦ Copilot routes to the flagship model below while keeping dictation on your fast lane",
-                                        "已開啟：點按『✦ 軍師』時固定呼叫下方高智商模型（日常語音仍走極速通道）"
-                                    )
-                                } else {
-                                    tr(
-                                        "默认关闭：跟随当前润色或多模态模型；开启后可单独指定旗舰模型做局势深算",
-                                        "Off by default: Follows your Polish or Multimodal model; enable to assign a dedicated flagship model for strategic replies",
-                                        "預設關閉：跟隨目前潤飾或多模態模型；開啟後可單獨指定旗艦模型做局勢深算"
-                                    )
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = settings.jevUseDedicatedModel,
-                            onCheckedChange = onToggleJevDedicated
-                        )
-                    }
-
-                    AnimatedVisibility(visible = settings.jevUseDedicatedModel) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            val llmProviders = remember {
-                                UnifiedProviderCatalog.providers.filter { it.supportsLlm }
-                            }
-                            RoleProviderChipsRow(
-                                specs = llmProviders,
-                                selectedId = activeJevPid,
-                                vault = vault,
-                                onSelect = onSelectJevProvider
-                            )
-
-                            val jevSuggestions = UnifiedProviderCatalog.jevSuggestedModelsByProvider[activeJevPid]
-                                ?: UnifiedProviderCatalog.llmSuggestedModelsByProvider[activeJevPid]
-                                ?: ApiConfigBackupHelper.llmModelSuggestions(settings.jevLlmConfig.presetId)
-
-                            ProviderModelFieldSection(
-                                externalModel = settings.jevLlmConfig.model,
-                                onModelCommit = { m -> onUpdateJev(settings.jevLlmConfig.copy(model = m)) },
-                                label = tr("Jev 军师专用模型 (Model)", "Jev Copilot Model ID", "Jev 軍師專用模型 (Model)"),
-                                placeholder = "gemini-3.8-flash / deepseek-chat",
-                                suggestions = jevSuggestions,
-                                isFetching = fetchingSlot == ModelCapabilitySlot.JEV_COPILOT,
-                                fetchError = modelFetchErrors[ModelCapabilitySlot.JEV_COPILOT],
-                                onFetchModels = { onFetchModels(ModelCapabilitySlot.JEV_COPILOT) }
-                            )
-
-                            ThinkingModeSelectorSection(
-                                thinkingMode = settings.jevLlmConfig.thinkingMode,
-                                onSelectMode = { mode ->
-                                    onUpdateJev(settings.jevLlmConfig.copy(thinkingMode = mode))
-                                }
-                            )
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -2942,8 +2676,7 @@ private fun AdvancedParametersDrawerContent(
     settings: AppSettings,
     onUpdateStt: (SttConfig) -> Unit,
     onUpdateLlm: (LlmConfig) -> Unit,
-    onUpdateMultimodal: (MultimodalConfig) -> Unit,
-    onUpdateJev: (LlmConfig) -> Unit
+    onUpdateMultimodal: (MultimodalConfig) -> Unit
 ) {
     val languageOptions = listOf(
         "" to tr("自动识别", "Auto Detect", "自動識別"),
@@ -3132,44 +2865,6 @@ private fun AdvancedParametersDrawerContent(
             model = settings.multimodalConfig.model,
             onTemperatureChange = { temp ->
                 onUpdateMultimodal(settings.multimodalConfig.copy(temperature = temp))
-            }
-        )
-    }
-
-    if (settings.jevUseDedicatedModel) {
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            SyncedOutlinedField(
-                externalValue = settings.jevLlmConfig.baseUrl,
-                onValueCommit = { onUpdateJev(settings.jevLlmConfig.copy(baseUrl = it.trim())) },
-                label = tr(
-                    "✦ Jev 军师端点覆盖 (Base URL)",
-                    "✦ Jev Copilot Base URL Override",
-                    "✦ Jev 軍師端點覆蓋 (Base URL)"
-                ),
-                placeholder = "https://generativelanguage.googleapis.com/v1beta"
-            )
-            EndpointPreviewCaption(
-                endpoint = if (EndpointResolver.isGeminiNativeHttpUrl(settings.jevLlmConfig.baseUrl) ||
-                    settings.jevLlmConfig.presetId == "gemini_llm"
-                ) {
-                    EndpointResolver.resolveGeminiEndpoint(
-                        settings.jevLlmConfig.baseUrl,
-                        settings.jevLlmConfig.model,
-                        "***"
-                    )
-                } else {
-                    EndpointResolver.resolveChatEndpoint(settings.jevLlmConfig.baseUrl)
-                }
-            )
-        }
-
-        TemperatureSliderSection(
-            temperature = settings.jevLlmConfig.temperature,
-            model = settings.jevLlmConfig.model,
-            onTemperatureChange = { temp ->
-                onUpdateJev(settings.jevLlmConfig.copy(temperature = temp))
             }
         )
     }
@@ -3597,20 +3292,11 @@ private fun ConfigBackupContent(
     onIncludePredictionsChange: (Boolean) -> Unit = {},
     includePinnedClipboard: Boolean = true,
     onIncludePinnedClipboardChange: (Boolean) -> Unit = {},
-    includeEncryptedJevMemory: Boolean = false,
-    onIncludeEncryptedJevMemoryChange: (Boolean) -> Unit = {},
-    memoryPassphrase: String = "",
-    onMemoryPassphraseChange: (String) -> Unit = {},
-    showPassphraseField: Boolean = false,
-    showSkipMemoryImportButton: Boolean = false,
-    hasPendingFileImport: Boolean = false,
     onExportToJsonFile: () -> Unit = {},
     onImportFromJsonFile: () -> Unit = {},
-    onUnlockPendingImport: () -> Unit = {},
     onExportFullJsonToClipboard: () -> Unit,
     onExportRedactedJson: () -> Unit,
-    onImportFromClipboard: () -> Unit,
-    onImportSkipEncryptedMemory: () -> Unit = {}
+    onImportFromClipboard: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
@@ -3677,67 +3363,6 @@ private fun ConfigBackupContent(
         )
     }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = tr(
-                    "附带端到端加密的 Jev 军师记忆",
-                    "Include End-to-End Encrypted Jev Copilot Memory",
-                    "附帶端到端加密的 Jev 軍師記憶"
-                ),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium
-            )
-            Text(
-                text = tr(
-                    "使用密码 AES-GCM 加密打包关系与风格记忆；脱敏导出绝不包含记忆",
-                    "Packs relationship & style memory using passphrase AES-GCM encryption; never included in redacted exports",
-                    "使用密碼 AES-GCM 加密打包關係與風格記憶；去識別化匯出絕不包含記憶"
-                ),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Switch(
-            checked = includeEncryptedJevMemory,
-            onCheckedChange = onIncludeEncryptedJevMemoryChange
-        )
-    }
-
-    AnimatedVisibility(visible = showPassphraseField) {
-        OutlinedTextField(
-            value = memoryPassphrase,
-            onValueChange = onMemoryPassphraseChange,
-            label = {
-                Text(
-                    tr(
-                        "军师记忆加密 / 解锁密码",
-                        "Copilot Memory Encryption / Unlock Passphrase",
-                        "軍師記憶加密 / 解鎖密碼"
-                    )
-                )
-            },
-            placeholder = {
-                Text(
-                    tr(
-                        "仅在本地用于 PBKDF2-AES-256 加密，不会保存",
-                        "Used locally for PBKDF2-AES-256 only — never stored",
-                        "僅在本地用於 PBKDF2-AES-256 加密，不會儲存"
-                    )
-                )
-            },
-            visualTransformation = PasswordVisualTransformation(),
-            singleLine = true,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 6.dp)
-        )
-    }
-
     // Primary File Export / Import Row (Recommended for Full Lossless Migration)
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
@@ -3749,13 +3374,7 @@ private fun ConfigBackupContent(
             enabled = !isBusy,
             shape = RoundedCornerShape(11.dp)
         ) {
-            Text(
-                if (includeEncryptedJevMemory) {
-                    tr("导出全量加密 .json 文件", "Export Encrypted .json", "匯出全量加密 .json 檔案")
-                } else {
-                    tr("导出全量 .json 文件", "Export Full .json File", "匯出全量 .json 檔案")
-                }
-            )
+            Text(tr("导出全量 .json 文件", "Export Full .json File", "匯出全量 .json 檔案"))
         }
 
         FilledTonalButton(
@@ -3764,16 +3383,6 @@ private fun ConfigBackupContent(
             shape = RoundedCornerShape(11.dp)
         ) {
             Text(tr("从 .json 文件导入", "Import .json File", "從 .json 檔案匯入"))
-        }
-
-        if (showSkipMemoryImportButton && hasPendingFileImport) {
-            Button(
-                onClick = onUnlockPendingImport,
-                enabled = !isBusy && memoryPassphrase.isNotBlank(),
-                shape = RoundedCornerShape(11.dp)
-            ) {
-                Text(tr("密码解锁并导入", "Unlock & Import", "密碼解鎖並匯入"))
-            }
         }
     }
 
@@ -3811,16 +3420,6 @@ private fun ConfigBackupContent(
             shape = RoundedCornerShape(11.dp)
         ) {
             Text(tr("脱敏分享 (隐藏 Key)", "Share Redacted", "去識別化分享 (隱藏 Key)"))
-        }
-
-        if (showSkipMemoryImportButton) {
-            OutlinedButton(
-                onClick = onImportSkipEncryptedMemory,
-                enabled = !isBusy,
-                shape = RoundedCornerShape(11.dp)
-            ) {
-                Text(tr("跳过记忆仅导其余数据", "Skip Memory & Import Rest", "略過記憶僅匯入其餘資料"))
-            }
         }
     }
 
@@ -4833,9 +4432,9 @@ private fun localizedProviderSpec(spec: UnifiedProviderSpec, lang: AppLang): Uni
             badge = AppStrings.pick(lang, "单 Key 通用 / 润色标杆", "1-Key All-in-One", "單 Key 通用 / 潤飾標竿"),
             summary = AppStrings.pick(
                 lang,
-                "单 Key 支持官方语音识别、二阶段中文润色与快译，以及 ✦ 军师、帮写和 🔍 问AI",
-                "One key powers official DeepSeek ASR, Stage-2 polish & translation, ✦ Copilot, Help Write, and 🔍 Ask AI",
-                "單 Key 支援官方語音識別、二階段中文潤飾與快譯，以及 ✦ 軍師、幫寫和 🔍 問AI"
+                "单 Key 支持官方语音识别、二阶段中文润色与快译，以及 ✍️ 帮我写和 🔍 问AI",
+                "One key powers official DeepSeek ASR, Stage-2 polish & translation, ✍️ Help Me Write, and 🔍 Ask AI",
+                "單 Key 支援官方語音識別、二階段中文潤飾與快譯，以及 ✍️ 幫我寫和 🔍 問AI"
             )
         )
         UnifiedProviderCatalog.ID_CUSTOM -> spec.copy(
@@ -4948,7 +4547,6 @@ private fun modelSlotLabel(slot: ModelCapabilitySlot, lang: AppLang): String = w
     ModelCapabilitySlot.STT -> AppStrings.pick(lang, "STT 语音识别", "Speech-to-Text (STT)", "STT 語音識別")
     ModelCapabilitySlot.LLM -> AppStrings.pick(lang, "LLM 语义润色", "LLM Text Polish", "LLM 語義潤飾")
     ModelCapabilitySlot.MULTIMODAL -> AppStrings.pick(lang, "多模态音频直出", "Multimodal Direct Audio", "多模態音訊直出")
-    ModelCapabilitySlot.JEV_COPILOT -> AppStrings.pick(lang, "Jev 军师专用", "Jev Copilot", "Jev 軍師專用")
 }
 
 private fun thinkingModeDescription(mode: ThinkingMode, lang: AppLang): String = when (mode) {
@@ -4974,7 +4572,6 @@ private fun thinkingModeDescription(mode: ThinkingMode, lang: AppLang): String =
 
 private fun localizeDiscoveredBadge(badge: String, lang: AppLang): String = when (badge) {
     "🔊 语音转写" -> AppStrings.pick(lang, "🔊 语音转写", "🔊 Speech-to-Text", "🔊 語音轉寫")
-    "🧠 军师推荐" -> AppStrings.pick(lang, "🧠 军师推荐", "🧠 Copilot Pick", "🧠 軍師推薦")
     "🎙 原生音频" -> AppStrings.pick(lang, "🎙 原生音频", "🎙 Native Audio", "🎙 原生音訊")
     else -> badge
 }

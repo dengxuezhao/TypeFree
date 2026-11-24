@@ -50,8 +50,8 @@ jobs:
             if (/(小鹤|音形|码表|词库|双拼|五笔|键道|简码|顶字|逆切|空码|快符|rime|flypy|\.dict|\.schema|xkjd|wubi)/.test(lower)) {
               labelsToAdd.add('area: codetable');
             }
-            if (/(语音|asr|麦克风|录音|转写|jev|军师|帮写|润色|翻译|deepseek|gemini|openai|\bai\b)/.test(lower)) {
-              labelsToAdd.add('area: voice-jev');
+            if (/(语音|asr|麦克风|录音|转写|帮写|润色|翻译|deepseek|gemini|openai|\bai\b)/.test(lower)) {
+              labelsToAdd.add('area: voice-ai');
             }
             if (/(设置|界面|主题|深色|浅色|字体|更新|检查更新|隐私|权限|图标|ui)/.test(lower)) {
               labelsToAdd.add('area: ui-settings');

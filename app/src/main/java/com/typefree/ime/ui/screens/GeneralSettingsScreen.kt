@@ -851,9 +851,9 @@ fun GeneralSettingsScreen(
             text = {
                 Text(
                     tr(
-                        "确定要清零本机累计的 ${statsMeta.statsTrackedDays} 天纯数字表达统计、24 小时节律与里程碑进度吗？此操作不会影响你的识别历史、个人词典或 Jev 记忆，且无法撤销。",
-                        "Clear ${statsMeta.statsTrackedDays} days of local numeric stats, 24h rhythm, and milestones? Your dictation history, personal dictionary, and Jev memory will NOT be affected.",
-                        "確定要清零本機累計的 ${statsMeta.statsTrackedDays} 天純數字表達統計、24 小時節律與里程碑進度嗎？此操作不會影響您的識別歷史、個人詞典或 Jev 記憶，且無法復原。"
+                        "确定要清零本机累计的 ${statsMeta.statsTrackedDays} 天纯数字表达统计、24 小时节律与里程碑进度吗？此操作不会影响你的识别历史或个人词典，且无法撤销。",
+                        "Clear ${statsMeta.statsTrackedDays} days of local numeric stats, 24h rhythm, and milestones? Your dictation history and personal dictionary will NOT be affected. This cannot be undone.",
+                        "確定要清零本機累計的 ${statsMeta.statsTrackedDays} 天純數字表達統計、24 小時節律與里程碑進度嗎？此操作不會影響您的識別歷史或個人詞典，且無法復原。"
                     )
                 )
             },

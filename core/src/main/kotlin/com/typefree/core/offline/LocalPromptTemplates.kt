@@ -24,9 +24,7 @@ object LocalPromptTemplates {
     private const val SPEAK_TO_EDIT_MAX_TOKENS: Int = 384
     private const val TRANSLATE_MAX_TOKENS: Int = 256
     private const val HELP_ME_WRITE_MAX_TOKENS: Int = 384
-    private const val JEV_COPILOT_MAX_TOKENS: Int = 320
     private const val MAX_HELP_CHAT_CONTEXT_CHARS: Int = 600
-    private const val MAX_JEV_CHAT_CONTEXT_CHARS: Int = 1200
 
     private const val DICTATE_SYSTEM_PROMPT: String =
         "TypeFree端侧引擎 | 任务:dictate | 仅输出净写正文，禁回答与前缀。"
@@ -42,9 +40,6 @@ object LocalPromptTemplates {
 
     private const val HELP_ME_WRITE_SYSTEM_PROMPT: String =
         "TypeFree端侧引擎 | 任务:help_me_write | 仅输出可直接发送的成稿正文，禁寒暄。"
-
-    private const val JEV_COPILOT_SYSTEM_PROMPT: String =
-        "TypeFree端侧引擎 | 任务:jev_copilot | 仅输出合规<jev>XML，含3策与求和100权重。"
 
     fun buildDictatePrompt(
         rawTranscript: String,
@@ -163,36 +158,6 @@ object LocalPromptTemplates {
             systemPrompt = HELP_ME_WRITE_SYSTEM_PROMPT,
             userPrompt = sb.toString(),
             maxTokens = HELP_ME_WRITE_MAX_TOKENS,
-            templateVersion = PROMPT_TEMPLATE_VERSION
-        )
-    }
-
-    fun buildJevCopilotPrompt(
-        chatContext: String,
-        userBottomLine: String = "",
-        domainHint: String = ""
-    ): LocalPromptPair {
-        val sb = StringBuilder()
-        val cleanDomain = domainHint.trim().ifEmpty { "日常沟通" }
-        sb.append("<domain_profile>\n战术域：").append(cleanDomain).append("\n</domain_profile>\n")
-        val cleanChat = chatContext.trim().takeLast(MAX_JEV_CHAT_CONTEXT_CHARS)
-        sb.append("<chat_context>\n").append(cleanChat).append("\n</chat_context>\n")
-        val cleanBottomLine = userBottomLine.trim()
-        if (cleanBottomLine.isNotEmpty()) {
-            sb.append("<user_bottom_line>\n").append(cleanBottomLine).append("\n</user_bottom_line>\n")
-        }
-        sb.append(
-            "\n请严格按以下 <jev> XML 结构输出：\n" +
-                "<jev>\n<lv>1-9</lv>\n<tag>4-8字定性</tag>\n<subtext>38字内潜台词</subtext>\n" +
-                "<opt label=\"4字鲜活战术词1\">策略1纯文本回复正文</opt>\n" +
-                "<opt label=\"4字鲜活战术词2\">策略2纯文本回复正文</opt>\n" +
-                "<opt label=\"4字鲜活战术词3\">策略3纯文本回复正文</opt>\n" +
-                "<weights>W1,W2,W3</weights>\n</jev>"
-        )
-        return LocalPromptPair(
-            systemPrompt = JEV_COPILOT_SYSTEM_PROMPT,
-            userPrompt = sb.toString(),
-            maxTokens = JEV_COPILOT_MAX_TOKENS,
             templateVersion = PROMPT_TEMPLATE_VERSION
         )
     }

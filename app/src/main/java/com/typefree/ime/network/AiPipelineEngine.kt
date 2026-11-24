@@ -36,11 +36,6 @@ import com.typefree.ime.data.UnifiedProviderCatalog
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.data.stats.TokenUsage
 import com.typefree.ime.i18n.AppStrings
-import com.typefree.ime.ime.jev.ChatTopology
-import com.typefree.ime.ime.jev.JevCopilotResult
-import com.typefree.ime.ime.jev.JevDomainProfile
-import com.typefree.ime.ime.jev.JevResponseParser
-import com.typefree.ime.ime.jev.memory.JevMemoryPromptPayload
 import com.typefree.ime.localai.GenRequest
 import com.typefree.ime.localai.LocalAiServiceClient
 import com.typefree.ime.localai.LocalModelRegistry
@@ -246,17 +241,6 @@ class AiPipelineEngine(
                     }
                 }
             }
-            if (settings.jevCopilotEnabled) {
-                if (settings.jevUseDedicatedModel) {
-                    resolveEffectiveJevLlmConfig(settings)?.baseUrl?.takeIf {
-                        it.isNotBlank() && !isLocalEndpoint(it)
-                    }?.let { add(it) }
-                } else {
-                    resolveAvailableGeminiVisionConfig(settings)?.baseUrl?.takeIf {
-                        it.isNotBlank() && !isLocalEndpoint(it)
-                    }?.let { add(it) }
-                }
-            }
         }
 
         val now = System.currentTimeMillis()
@@ -400,8 +384,6 @@ class AiPipelineEngine(
         translateTargetLanguage: String = settings.activeTranslateTarget,
         preTranscribedText: String? = null,
         sttTailWaitMs: Long = 0L,
-        chatContextMessages: List<String> = emptyList(),
-        chatContextScreenshotBase64: String = "",
         attitudeInstruction: String = "",
         editorDraft: String = "",
         onStageChanged: (PipelineStage) -> Unit = {}
@@ -459,8 +441,6 @@ class AiPipelineEngine(
                     translateTargetLanguage = translateTargetLanguage,
                     preTranscribedText = preTranscribedText,
                     sttTailWaitMs = sttTailWaitMs,
-                    chatContextMessages = chatContextMessages,
-                    chatContextScreenshotBase64 = chatContextScreenshotBase64,
                     attitudeInstruction = attitudeInstruction,
                     editorDraft = editorDraft,
                     startMs = startMs,
@@ -636,17 +616,6 @@ class AiPipelineEngine(
                                 ?: llmCfg.model.trim()
                         )
                     } else {
-                        val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
-                        val canSendVision = canRouteVisionScreenshot(
-                            primaryBaseUrl = llmCfg.baseUrl,
-                            primaryModel = llmCfg.model,
-                            fallbackGeminiConfig = fallbackGeminiCfg
-                        )
-                        val activeImageB64 = if (effectiveIntent == VoiceIntentMode.HELP_ME_WRITE && canSendVision) {
-                            chatContextScreenshotBase64
-                        } else {
-                            ""
-                        }
                         val (sysPrompt, usrPrompt) = when (effectiveIntent) {
                             VoiceIntentMode.SPEAK_TO_EDIT -> PromptBuilder.buildSpeakToEditPrompts(
                                 selectedText = selectedText,
@@ -665,20 +634,7 @@ class AiPipelineEngine(
                                 targetAppName = targetAppName,
                                 dictionary = settings.dictionary,
                                 surroundingBeforeCursor = safeContext,
-                                chatContextMessages = chatContextMessages,
-                                hasChatScreenshot = activeImageB64.isNotBlank(),
                                 editorDraft = editorDraft,
-                                isChineseLocale = isZh
-                            )
-                            VoiceIntentMode.JEV_COPILOT -> PromptBuilder.buildJevCopilotPrompts(
-                                domainProfile = JevDomainProfile.FORMAL_WORKFLOW,
-                                targetAppName = targetAppName,
-                                chatContextMessages = chatContextMessages,
-                                hasChatScreenshot = activeImageB64.isNotBlank(),
-                                userBottomLine = rawTranscript,
-                                surroundingBeforeCursor = safeContext,
-                                style = activeStyle,
-                                dictionary = settings.dictionary,
                                 isChineseLocale = isZh
                             )
                             VoiceIntentMode.TRANSLATE -> PromptBuilder.buildTranslatePrompts(
@@ -700,9 +656,7 @@ class AiPipelineEngine(
                         executeLlmChatWithDiagnostics(
                             config = llmCfg,
                             systemPrompt = sysPrompt,
-                            userPrompt = usrPrompt,
-                            imageJpegBase64 = activeImageB64,
-                            fallbackGeminiConfig = fallbackGeminiCfg
+                            userPrompt = usrPrompt
                         )
                     }
                     val polished = llmOutcome.text
@@ -738,14 +692,6 @@ class AiPipelineEngine(
                     }
 
                     onStageChanged(PipelineStage.MULTIMODAL_PROCESSING)
-                    val activeImageB64 = if (
-                        effectiveIntent == VoiceIntentMode.HELP_ME_WRITE &&
-                        mmCfg.protocol == MultimodalProtocol.GEMINI_NATIVE
-                    ) {
-                        chatContextScreenshotBase64
-                    } else {
-                        ""
-                    }
                     val prompt = PromptBuilder.buildMultimodalDirectPrompt(
                         intentMode = effectiveIntent,
                         selectedText = selectedText,
@@ -754,8 +700,6 @@ class AiPipelineEngine(
                         targetAppName = targetAppName,
                         dictionary = settings.dictionary,
                         surroundingBeforeCursor = safeContext,
-                        chatContextMessages = chatContextMessages,
-                        hasChatScreenshot = activeImageB64.isNotBlank(),
                         attitudeInstruction = attitudeInstruction,
                         editorDraft = editorDraft,
                         isChineseLocale = AppStrings.isChinese(settings.appLanguage)
@@ -774,8 +718,7 @@ class AiPipelineEngine(
                                     config = mmCfg,
                                     prompt = prompt,
                                     base64Wav = b64,
-                                    mimeType = uploadMime,
-                                    imageJpegBase64 = activeImageB64
+                                    mimeType = uploadMime
                                 )
                             } finally {
                                 if (compressedM4a != null) {
@@ -802,7 +745,6 @@ class AiPipelineEngine(
                     val rawSummary = when (effectiveIntent) {
                         VoiceIntentMode.SPEAK_TO_EDIT -> "[多模态语音改写指令]"
                         VoiceIntentMode.HELP_ME_WRITE -> "[多模态帮我写需求]"
-                        VoiceIntentMode.JEV_COPILOT -> "[多模态军师底牌]"
                         VoiceIntentMode.TRANSLATE -> "[多模态直译 → $translateTargetLanguage]"
                         VoiceIntentMode.DICTATE -> "[多模态音频一步直出]"
                     }
@@ -836,8 +778,6 @@ class AiPipelineEngine(
         translateTargetLanguage: String,
         preTranscribedText: String?,
         sttTailWaitMs: Long,
-        chatContextMessages: List<String>,
-        chatContextScreenshotBase64: String,
         attitudeInstruction: String,
         editorDraft: String,
         startMs: Long,
@@ -966,7 +906,6 @@ class AiPipelineEngine(
                     selectedText = selectedText,
                     translateTargetLanguage = translateTargetLanguage,
                     editorDraft = editorDraft,
-                    chatContextMessages = chatContextMessages,
                     activeStyle = activeStyle,
                     settings = settings,
                     incognito = plan.clearLocalStateAfterRun
@@ -1005,8 +944,6 @@ class AiPipelineEngine(
                             translateTargetLanguage = translateTargetLanguage,
                             activeStyle = activeStyle,
                             targetAppName = targetAppName,
-                            chatContextMessages = chatContextMessages,
-                            chatContextScreenshotBase64 = chatContextScreenshotBase64,
                             attitudeInstruction = attitudeInstruction,
                             editorDraft = editorDraft,
                             preferMultimodalFallback = false
@@ -1081,8 +1018,6 @@ class AiPipelineEngine(
                     translateTargetLanguage = translateTargetLanguage,
                     activeStyle = activeStyle,
                     targetAppName = targetAppName,
-                    chatContextMessages = chatContextMessages,
-                    chatContextScreenshotBase64 = chatContextScreenshotBase64,
                     attitudeInstruction = attitudeInstruction,
                     editorDraft = editorDraft,
                     preferMultimodalFallback = textRoute is TextRoute.CloudMultimodalTextFallback
@@ -1204,7 +1139,6 @@ class AiPipelineEngine(
         selectedText: String,
         translateTargetLanguage: String,
         editorDraft: String,
-        chatContextMessages: List<String>,
         activeStyle: ToneStyle,
         settings: AppSettings,
         incognito: Boolean
@@ -1287,13 +1221,8 @@ class AiPipelineEngine(
             VoiceIntentMode.HELP_ME_WRITE -> LocalPromptTemplates.buildHelpMeWritePrompt(
                 writingRequest = rawTranscript,
                 editorDraft = editorDraft,
-                chatContext = chatContextMessages.joinToString("\n"),
                 dictionaryTerms = topDict,
                 toneHint = toneHint
-            )
-            VoiceIntentMode.JEV_COPILOT -> LocalPromptTemplates.buildJevCopilotPrompt(
-                chatContext = chatContextMessages.joinToString("\n"),
-                userBottomLine = rawTranscript
             )
         }
         val priority = if (effectiveIntent == VoiceIntentMode.DICTATE) PRIORITY_VOICE else PRIORITY_EDIT_WRITE
@@ -1359,8 +1288,6 @@ class AiPipelineEngine(
         translateTargetLanguage: String,
         activeStyle: ToneStyle,
         targetAppName: String,
-        chatContextMessages: List<String>,
-        chatContextScreenshotBase64: String,
         attitudeInstruction: String,
         editorDraft: String,
         preferMultimodalFallback: Boolean
@@ -1383,8 +1310,6 @@ class AiPipelineEngine(
                     activeStyle = activeStyle,
                     targetAppName = targetAppName,
                     settings = settings,
-                    chatContextMessages = chatContextMessages,
-                    hasChatScreenshot = false,
                     attitudeInstruction = attitudeInstruction,
                     editorDraft = editorDraft
                 )
@@ -1434,17 +1359,6 @@ class AiPipelineEngine(
                             ?: llmCfg.model.trim()
                     )
                 } else {
-                    val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
-                    val canSendVision = canRouteVisionScreenshot(
-                        primaryBaseUrl = llmCfg.baseUrl,
-                        primaryModel = llmCfg.model,
-                        fallbackGeminiConfig = fallbackGeminiCfg
-                    )
-                    val activeImageB64 = if (effectiveIntent == VoiceIntentMode.HELP_ME_WRITE && canSendVision) {
-                        chatContextScreenshotBase64
-                    } else {
-                        ""
-                    }
                     val (sysPrompt, usrPrompt) = buildCloudVoicePrompts(
                         effectiveIntent = effectiveIntent,
                         rawTranscript = rawTranscript,
@@ -1454,17 +1368,13 @@ class AiPipelineEngine(
                         activeStyle = activeStyle,
                         targetAppName = targetAppName,
                         settings = settings,
-                        chatContextMessages = chatContextMessages,
-                        hasChatScreenshot = activeImageB64.isNotBlank(),
                         attitudeInstruction = attitudeInstruction,
                         editorDraft = editorDraft
                     )
                     executeLlmChatWithDiagnostics(
                         config = llmCfg,
                         systemPrompt = sysPrompt,
-                        userPrompt = usrPrompt,
-                        imageJpegBase64 = activeImageB64,
-                        fallbackGeminiConfig = fallbackGeminiCfg
+                        userPrompt = usrPrompt
                     )
                 }
                 outcome to llmCfg.model.substringAfterLast('/').ifBlank { "LLM" }
@@ -1481,8 +1391,6 @@ class AiPipelineEngine(
         activeStyle: ToneStyle,
         targetAppName: String,
         settings: AppSettings,
-        chatContextMessages: List<String>,
-        hasChatScreenshot: Boolean,
         attitudeInstruction: String,
         editorDraft: String
     ): Pair<String, String> {
@@ -1505,20 +1413,7 @@ class AiPipelineEngine(
                 targetAppName = targetAppName,
                 dictionary = settings.dictionary,
                 surroundingBeforeCursor = safeContext,
-                chatContextMessages = chatContextMessages,
-                hasChatScreenshot = hasChatScreenshot,
                 editorDraft = editorDraft,
-                isChineseLocale = isZh
-            )
-            VoiceIntentMode.JEV_COPILOT -> PromptBuilder.buildJevCopilotPrompts(
-                domainProfile = JevDomainProfile.FORMAL_WORKFLOW,
-                targetAppName = targetAppName,
-                chatContextMessages = chatContextMessages,
-                hasChatScreenshot = hasChatScreenshot,
-                userBottomLine = rawTranscript,
-                surroundingBeforeCursor = safeContext,
-                style = activeStyle,
-                dictionary = settings.dictionary,
                 isChineseLocale = isZh
             )
             VoiceIntentMode.TRANSLATE -> PromptBuilder.buildTranslatePrompts(
@@ -1544,7 +1439,6 @@ class AiPipelineEngine(
         sysPrompt: String,
         usrPrompt: String,
         imageJpegBase64: String = "",
-        forJevCopilot: Boolean = false,
         geminiMaxOutputTokens: Int? = null,
         onThinkingStarted: (() -> Unit)? = null,
         onStreamingTextUpdate: ((String) -> Unit)? = null
@@ -1558,7 +1452,6 @@ class AiPipelineEngine(
                 config = mmCfg,
                 fullPrompt = "$sysPrompt\n\n$usrPrompt",
                 imageJpegBase64 = imageJpegBase64,
-                forJevCopilot = forJevCopilot,
                 maxOutputTokens = geminiMaxOutputTokens,
                 onThinkingStarted = onThinkingStarted,
                 onStreamingTextUpdate = onStreamingTextUpdate
@@ -1575,7 +1468,6 @@ class AiPipelineEngine(
                 userPrompt = usrPrompt,
                 imageJpegBase64 = imageJpegBase64,
                 fallbackGeminiConfig = resolveAvailableGeminiVisionConfig(settings),
-                forJevCopilot = forJevCopilot,
                 geminiMaxOutputTokens = geminiMaxOutputTokens,
                 onThinkingStarted = onThinkingStarted,
                 onStreamingTextUpdate = onStreamingTextUpdate
@@ -1617,7 +1509,6 @@ class AiPipelineEngine(
         VoiceIntentMode.SPEAK_TO_EDIT -> AiTask.SPEAK_TO_EDIT
         VoiceIntentMode.HELP_ME_WRITE -> AiTask.HELP_ME_WRITE
         VoiceIntentMode.TRANSLATE -> AiTask.TRANSLATE
-        VoiceIntentMode.JEV_COPILOT -> AiTask.JEV_COPILOT
     }
 
     private fun shortLocalModelLabel(modelId: String): String = when (modelId) {
@@ -1680,7 +1571,7 @@ class AiPipelineEngine(
             settings.llmConfig.apiKey.isNotBlank() &&
             isKnownPureTextModel(settings.llmConfig.model)
         ) {
-            return "语音听写(一阶段 STT)尚未配置 API Key：当前 ${settings.llmConfig.model} 仅处理文本润色与军师，请在「API 配置」启用 DeepSeek 单 Key 语音识别或补填硅基流动/豆包/千问/Gemini 语音密钥"
+            return "语音听写(一阶段 STT)尚未配置 API Key：当前 ${settings.llmConfig.model} 仅处理文本润色与 AI 帮写，请在「API 配置」启用 DeepSeek 单 Key 语音识别或补填硅基流动/豆包/千问/Gemini 语音密钥"
         }
         return rawError
     }
@@ -1852,38 +1743,12 @@ class AiPipelineEngine(
         )
     }
 
-    internal fun resolveEffectiveJevLlmConfig(settings: AppSettings): LlmConfig? {
-        if (!settings.jevUseDedicatedModel) return null
-        val cfg = settings.jevLlmConfig
-        if (cfg.apiKey.isNotBlank() || isLocalEndpoint(cfg.baseUrl)) {
-            return cfg
-        }
-        val providerId = UnifiedProviderCatalog.inferLlmProviderId(cfg)
-        val vault = UnifiedProviderCatalog.hydrateVaultFromSettings(settings)
-        val cred = vault[providerId]
-        val fallbackKey = when (providerId) {
-            UnifiedProviderCatalog.ID_VOLCENGINE -> cred?.apiKey?.ifBlank { cred.sttApiKey }.orEmpty()
-            UnifiedProviderCatalog.ID_GOOGLE ->
-                cred?.apiKey?.ifBlank { resolveAvailableGeminiVisionConfig(settings)?.apiKey.orEmpty() }.orEmpty()
-            else -> cred?.apiKey.orEmpty()
-        }
-        val fallbackBaseUrl = cfg.baseUrl.ifBlank {
-            cred?.customBaseUrl?.ifBlank { null }
-                ?: UnifiedProviderCatalog.specFor(providerId).defaultBaseUrl
-        }
-        return cfg.copy(
-            baseUrl = fallbackBaseUrl,
-            apiKey = fallbackKey
-        )
-    }
-
     private fun executeLlmChatWithDiagnostics(
         config: LlmConfig,
         systemPrompt: String,
         userPrompt: String,
         imageJpegBase64: String = "",
         fallbackGeminiConfig: MultimodalConfig? = null,
-        forJevCopilot: Boolean = false,
         geminiMaxOutputTokens: Int? = null,
         onThinkingStarted: (() -> Unit)? = null,
         onStreamingTextUpdate: ((String) -> Unit)? = null
@@ -1901,7 +1766,6 @@ class AiPipelineEngine(
                 ),
                 fullPrompt = "$systemPrompt\n\n$userPrompt",
                 imageJpegBase64 = imageJpegBase64,
-                forJevCopilot = forJevCopilot,
                 maxOutputTokens = geminiMaxOutputTokens,
                 onThinkingStarted = onThinkingStarted,
                 onStreamingTextUpdate = onStreamingTextUpdate
@@ -1915,7 +1779,6 @@ class AiPipelineEngine(
                             config = fallbackGeminiConfig,
                             fullPrompt = "$systemPrompt\n\n$userPrompt",
                             imageJpegBase64 = imageJpegBase64,
-                            forJevCopilot = forJevCopilot,
                             maxOutputTokens = geminiMaxOutputTokens,
                             onThinkingStarted = onThinkingStarted,
                             onStreamingTextUpdate = onStreamingTextUpdate
@@ -1923,13 +1786,11 @@ class AiPipelineEngine(
                     }
                     visionAttempt.getOrNull()?.let { return it }
                 }
-                val strippedPrompt = PromptBuilder.stripChatScreenVisionGuide(userPrompt)
                 return callOpenAiChatCompletionWithDiagnostics(
                     config = config,
                     systemPrompt = systemPrompt,
-                    userPrompt = strippedPrompt,
+                    userPrompt = userPrompt,
                     imageJpegBase64 = "",
-                    forJevCopilot = forJevCopilot,
                     onThinkingStarted = onThinkingStarted,
                     onStreamingTextUpdate = onStreamingTextUpdate
                 )
@@ -1940,7 +1801,6 @@ class AiPipelineEngine(
                     systemPrompt = systemPrompt,
                     userPrompt = userPrompt,
                     imageJpegBase64 = imageJpegBase64,
-                    forJevCopilot = forJevCopilot,
                     onThinkingStarted = onThinkingStarted,
                     onStreamingTextUpdate = onStreamingTextUpdate
                 )
@@ -1956,7 +1816,6 @@ class AiPipelineEngine(
                         config = fallbackGeminiConfig,
                         fullPrompt = "$systemPrompt\n\n$userPrompt",
                         imageJpegBase64 = imageJpegBase64,
-                        forJevCopilot = forJevCopilot,
                         maxOutputTokens = geminiMaxOutputTokens,
                         onThinkingStarted = onThinkingStarted,
                         onStreamingTextUpdate = onStreamingTextUpdate
@@ -1965,17 +1824,11 @@ class AiPipelineEngine(
                 geminiFallback.getOrNull()?.let { return it }
             }
         }
-        val textOnlyPrompt = if (imageJpegBase64.isNotBlank()) {
-            PromptBuilder.stripChatScreenVisionGuide(userPrompt)
-        } else {
-            userPrompt
-        }
         return callOpenAiChatCompletionWithDiagnostics(
             config = config,
             systemPrompt = systemPrompt,
-            userPrompt = textOnlyPrompt,
+            userPrompt = userPrompt,
             imageJpegBase64 = "",
-            forJevCopilot = forJevCopilot,
             onThinkingStarted = onThinkingStarted,
             onStreamingTextUpdate = onStreamingTextUpdate
         )
@@ -1990,17 +1843,14 @@ class AiPipelineEngine(
         activeStyle: ToneStyle,
         rawOrSelectedText: String,
         explicitInstruction: String? = null,
-        targetAppName: String = "",
-        chatContextMessages: List<String> = emptyList(),
-        chatContextScreenshotBase64: String = ""
+        targetAppName: String = ""
     ): Result<PipelineExecutionResult> = withContext(Dispatchers.IO) {
         val startMs = System.currentTimeMillis()
         try {
-            val isContextualReply = chatContextMessages.isNotEmpty() || chatContextScreenshotBase64.isNotBlank()
-            val task = when {
-                isContextualReply -> AiTask.HELP_ME_WRITE
-                !explicitInstruction.isNullOrBlank() -> AiTask.SPEAK_TO_EDIT
-                else -> AiTask.TEXT_TRANSFORM
+            val task = if (!explicitInstruction.isNullOrBlank()) {
+                AiTask.SPEAK_TO_EDIT
+            } else {
+                AiTask.TEXT_TRANSFORM
             }
             val plan = resolveRoutePlanEnsuringLocalService(task = task, settings = settings)
             val planText = plan.text
@@ -2015,12 +1865,6 @@ class AiPipelineEngine(
             if (planText is TextRoute.Local) {
                 val topDict = extractTopDictionaryTerms(settings)
                 val prompt = when (task) {
-                    AiTask.HELP_ME_WRITE -> LocalPromptTemplates.buildHelpMeWritePrompt(
-                        writingRequest = explicitInstruction?.takeIf { it.isNotBlank() } ?: rawOrSelectedText,
-                        chatContext = chatContextMessages.joinToString("\n"),
-                        dictionaryTerms = topDict,
-                        toneHint = activeStyle.name
-                    )
                     AiTask.SPEAK_TO_EDIT -> LocalPromptTemplates.buildSpeakToEditPrompt(
                         selectedText = rawOrSelectedText,
                         voiceInstruction = explicitInstruction.orEmpty(),
@@ -2070,43 +1914,8 @@ class AiPipelineEngine(
                 )
             }
 
-            val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
-            val canSendVision = when (settings.pipelineMode) {
-                PipelineMode.DUAL_STAGE -> {
-                    val llmCfg = resolveEffectiveLlmConfig(settings)
-                    canRouteVisionScreenshot(
-                        primaryBaseUrl = llmCfg.baseUrl,
-                        primaryModel = llmCfg.model,
-                        fallbackGeminiConfig = fallbackGeminiCfg
-                    )
-                }
-                PipelineMode.MULTIMODAL_DIRECT -> {
-                    val mmCfg = settings.multimodalConfig
-                    when (mmCfg.protocol) {
-                        MultimodalProtocol.GEMINI_NATIVE -> true
-                        MultimodalProtocol.OPENAI_AUDIO_CHAT ->
-                            canRouteVisionScreenshot(
-                                primaryBaseUrl = mmCfg.baseUrl,
-                                primaryModel = mmCfg.model,
-                                fallbackGeminiConfig = fallbackGeminiCfg
-                            )
-                    }
-                }
-            }
-            val effectiveScreenshotB64 = if (canSendVision) chatContextScreenshotBase64 else ""
             val isZh = AppStrings.isChinese(settings.appLanguage)
-            val (sysPrompt, usrPrompt) = if (isContextualReply) {
-                PromptBuilder.buildHelpMeWritePrompts(
-                    voiceInstruction = explicitInstruction?.takeIf { it.isNotBlank() } ?: rawOrSelectedText,
-                    style = activeStyle,
-                    targetAppName = targetAppName,
-                    dictionary = settings.dictionary,
-                    surroundingBeforeCursor = "",
-                    chatContextMessages = chatContextMessages,
-                    hasChatScreenshot = effectiveScreenshotB64.isNotBlank(),
-                    isChineseLocale = isZh
-                )
-            } else if (!explicitInstruction.isNullOrBlank()) {
+            val (sysPrompt, usrPrompt) = if (!explicitInstruction.isNullOrBlank()) {
                 PromptBuilder.buildSpeakToEditPrompts(
                     selectedText = rawOrSelectedText,
                     voiceInstruction = explicitInstruction,
@@ -2135,8 +1944,7 @@ class AiPipelineEngine(
                 val outcome = executeCloudMultimodalTextFallback(
                     settings = settings,
                     sysPrompt = sysPrompt,
-                    usrPrompt = usrPrompt,
-                    imageJpegBase64 = effectiveScreenshotB64
+                    usrPrompt = usrPrompt
                 )
                 output = outcome.text
                 diagLog = outcome.diagnosticLog
@@ -2153,9 +1961,7 @@ class AiPipelineEngine(
                         val outcome = executeLlmChatWithDiagnostics(
                             config = llmCfg,
                             systemPrompt = sysPrompt,
-                            userPrompt = usrPrompt,
-                            imageJpegBase64 = effectiveScreenshotB64,
-                            fallbackGeminiConfig = fallbackGeminiCfg
+                            userPrompt = usrPrompt
                         )
                         output = outcome.text
                         diagLog = outcome.diagnosticLog
@@ -2172,8 +1978,7 @@ class AiPipelineEngine(
                             MultimodalProtocol.GEMINI_NATIVE -> {
                                 val outcome = callGeminiTextOnlyWithDiagnostics(
                                     config = mmCfg,
-                                    fullPrompt = "$sysPrompt\n\n$usrPrompt",
-                                    imageJpegBase64 = effectiveScreenshotB64
+                                    fullPrompt = "$sysPrompt\n\n$usrPrompt"
                                 )
                                 output = outcome.text
                                 diagLog = outcome.diagnosticLog
@@ -2190,9 +1995,7 @@ class AiPipelineEngine(
                                         thinkingMode = mmCfg.thinkingMode
                                     ),
                                     systemPrompt = sysPrompt,
-                                    userPrompt = usrPrompt,
-                                    imageJpegBase64 = effectiveScreenshotB64,
-                                    fallbackGeminiConfig = fallbackGeminiCfg
+                                    userPrompt = usrPrompt
                                 )
                                 output = outcome.text
                                 diagLog = outcome.diagnosticLog
@@ -2231,7 +2034,8 @@ class AiPipelineEngine(
     suspend fun runAskAiCardQuery(
         settings: AppSettings,
         query: String,
-        targetAppName: String = ""
+        targetAppName: String = "",
+        onStreamingTextUpdate: ((String) -> Unit)? = null
     ): Result<PipelineExecutionResult> = withContext(Dispatchers.IO) {
         val startMs = System.currentTimeMillis()
         try {
@@ -2267,7 +2071,8 @@ class AiPipelineEngine(
                 val outcome = executeCloudMultimodalTextFallback(
                     settings = settings,
                     sysPrompt = sysPrompt,
-                    usrPrompt = usrPrompt
+                    usrPrompt = usrPrompt,
+                    onStreamingTextUpdate = onStreamingTextUpdate
                 )
                 output = outcome.text
                 diagLog = outcome.diagnosticLog
@@ -2286,7 +2091,8 @@ class AiPipelineEngine(
                             systemPrompt = sysPrompt,
                             userPrompt = usrPrompt,
                             imageJpegBase64 = "",
-                            fallbackGeminiConfig = fallbackGeminiCfg
+                            fallbackGeminiConfig = fallbackGeminiCfg,
+                            onStreamingTextUpdate = onStreamingTextUpdate
                         )
                         output = outcome.text
                         diagLog = outcome.diagnosticLog
@@ -2303,7 +2109,8 @@ class AiPipelineEngine(
                             MultimodalProtocol.GEMINI_NATIVE -> {
                                 val outcome = callGeminiTextOnlyWithDiagnostics(
                                     config = mmCfg,
-                                    fullPrompt = "$sysPrompt\n\n$usrPrompt"
+                                    fullPrompt = "$sysPrompt\n\n$usrPrompt",
+                                    onStreamingTextUpdate = onStreamingTextUpdate
                                 )
                                 output = outcome.text
                                 diagLog = outcome.diagnosticLog
@@ -2322,7 +2129,8 @@ class AiPipelineEngine(
                                     systemPrompt = sysPrompt,
                                     userPrompt = usrPrompt,
                                     imageJpegBase64 = "",
-                                    fallbackGeminiConfig = fallbackGeminiCfg
+                                    fallbackGeminiConfig = fallbackGeminiCfg,
+                                    onStreamingTextUpdate = onStreamingTextUpdate
                                 )
                                 output = outcome.text
                                 diagLog = outcome.diagnosticLog
@@ -2351,467 +2159,6 @@ class AiPipelineEngine(
             )
         } catch (e: Exception) {
             Result.failure(e)
-        }
-    }
-
-    /**
-     * Executes `✦ Jev 军师` (Subtext Radar & 3-Strategy Copilot):
-     * - Supports zero-audio direct generation (`userBottomLine = ""`, `wavFile = null`) as well as
-     *   `[↻ 换一批]` (`excludedPreviousReplies`) and voice bottom-line supplement (`userBottomLine` or `wavFile`).
-     * - Automatically routes desensitive viewport screenshots when [canRouteVisionScreenshot] is true
-     *   and strips `<chat_screen_vision_guide>` transparently for pure-text models (DeepSeek, Qwen, Groq, Ollama).
-     * - Parses model output via 3-tier anti-fragile [JevResponseParser] and restores reversible
-     *   contact placeholders via [redactionSession].
-     */
-    internal fun canJevUseVisionScreenshot(settings: AppSettings): Boolean {
-        if (!settings.chatContextSendScreenshot) return false
-        val plan = resolveRoutePlan(task = AiTask.JEV_COPILOT, settings = settings)
-        if (!plan.egressAllowed || !plan.jevVisionAllowed) return false
-        val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
-        val dedicatedCfg = resolveEffectiveJevLlmConfig(settings)
-        return if (dedicatedCfg != null) {
-            canRouteVisionScreenshot(
-                primaryBaseUrl = dedicatedCfg.baseUrl,
-                primaryModel = dedicatedCfg.model,
-                fallbackGeminiConfig = null
-            ) && !isVisionMarkedUnsupported(dedicatedCfg.baseUrl, dedicatedCfg.model)
-        } else {
-            when (settings.pipelineMode) {
-                PipelineMode.DUAL_STAGE -> {
-                    val llmCfg = resolveEffectiveLlmConfig(settings)
-                    val routeable = canRouteVisionScreenshot(
-                        primaryBaseUrl = llmCfg.baseUrl,
-                        primaryModel = llmCfg.model,
-                        fallbackGeminiConfig = fallbackGeminiCfg
-                    )
-                    routeable && (
-                        fallbackGeminiCfg != null ||
-                            !isVisionMarkedUnsupported(llmCfg.baseUrl, llmCfg.model)
-                        )
-                }
-                PipelineMode.MULTIMODAL_DIRECT -> {
-                    val mmCfg = settings.multimodalConfig
-                    when (mmCfg.protocol) {
-                        MultimodalProtocol.GEMINI_NATIVE -> true
-                        MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
-                            val routeable = canRouteVisionScreenshot(
-                                primaryBaseUrl = mmCfg.baseUrl,
-                                primaryModel = mmCfg.model,
-                                fallbackGeminiConfig = fallbackGeminiCfg
-                            )
-                            routeable && (
-                                fallbackGeminiCfg != null ||
-                                    !isVisionMarkedUnsupported(mmCfg.baseUrl, mmCfg.model)
-                                )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    suspend fun runJevCopilot(
-        settings: AppSettings,
-        activeStyle: ToneStyle,
-        domainProfile: JevDomainProfile,
-        targetAppName: String = "",
-        chatContextMessages: List<String> = emptyList(),
-        chatContextScreenshotBase64: String = "",
-        userBottomLine: String = "",
-        excludedPreviousReplies: List<String> = emptyList(),
-        surroundingBeforeCursor: String = "",
-        redactionSession: RedactionSession? = null,
-        wavFile: File? = null,
-        preTranscribedBottomLine: String? = null,
-        chatTopology: ChatTopology = ChatTopology(),
-        targetPackageName: String = "",
-        memoryPayload: JevMemoryPromptPayload? = null,
-        priorWeightFuser: ((List<Int>, String) -> List<Int>)? = null,
-        shouldLockOptionOrder: () -> Boolean = { false },
-        onThinkingStarted: (() -> Unit)? = null,
-        onPartialResult: ((JevCopilotResult) -> Unit)? = null
-    ): Result<Pair<JevCopilotResult, String>> = withContext(Dispatchers.IO) {
-        try {
-            val plan = resolveRoutePlan(task = AiTask.JEV_COPILOT, settings = settings)
-            val planText = plan.text
-            if (planText is TextRoute.Blocked &&
-                (!plan.egressAllowed || settings.offlineConfig.mode != OfflineMode.OFF)
-            ) {
-                return@withContext Result.failure(
-                    IllegalStateException(routeBlockMessage(planText.reason, "请先填写云端 API Key 或启用 4B 本机离线军师"))
-                )
-            }
-
-            val resolvedBottomLine = when {
-                !preTranscribedBottomLine.isNullOrBlank() -> cleanRawTranscript(preTranscribedBottomLine)
-                wavFile != null && wavFile.exists() && wavFile.length() > 44L -> {
-                    val asrPlan = resolveRoutePlan(task = AiTask.DICTATE, settings = settings)
-                    when (val asr = asrPlan.asr) {
-                        is AsrRoute.Local -> {
-                            val localAsrRes = transcribeWithLocalAsrFile(
-                                wavFile = wavFile,
-                                modelId = asr.modelId,
-                                settings = settings,
-                                incognito = asrPlan.clearLocalStateAfterRun
-                            )
-                            if (localAsrRes.isSuccess) {
-                                localAsrRes.getOrThrow()
-                            } else if (plan.egressAllowed) {
-                                transcribeWithCloudSttStage(wavFile, settings)
-                            } else {
-                                return@withContext Result.failure(localAsrRes.exceptionOrNull()!!)
-                            }
-                        }
-                        is AsrRoute.Cloud -> {
-                            if (!plan.egressAllowed) {
-                                return@withContext Result.failure(
-                                    IllegalStateException(routeBlockMessage(RouteBlockReason.OFFLINE_ONLY_NO_MODEL, "纯离线锁已开启"))
-                                )
-                            }
-                            val effectiveStt = resolveEffectiveSttConfig(settings)
-                            validateSttConfig(effectiveStt, settings)?.let { errMsg ->
-                                return@withContext Result.failure(IllegalStateException(errMsg))
-                            }
-                            val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
-                            val bias = PromptBuilder.buildSttBiasPrompt(
-                                dictionary = settings.dictionary,
-                                isChineseLocale = AppStrings.isChinese(settings.appLanguage)
-                            )
-                            if (effectiveStt.protocol == SttProtocol.GEMINI_LIVE_WS) {
-                                transcribeGeminiWavWithFastFallback(wavFile, effectiveStt, hotwords)
-                            } else {
-                                transcribeWithOpenAiStt(wavFile, effectiveStt, bias)
-                            }
-                        }
-                        is AsrRoute.None -> {
-                            if (!plan.egressAllowed) {
-                                return@withContext Result.failure(
-                                    IllegalStateException(routeBlockMessage(RouteBlockReason.OFFLINE_ONLY_NO_MODEL, "纯离线锁已开启"))
-                                )
-                            }
-                            val effectiveStt = resolveEffectiveSttConfig(settings)
-                            validateSttConfig(effectiveStt, settings)?.let { errMsg ->
-                                return@withContext Result.failure(IllegalStateException(errMsg))
-                            }
-                            val hotwords = PromptBuilder.extractHotwordTerms(settings.dictionary)
-                            val bias = PromptBuilder.buildSttBiasPrompt(
-                                dictionary = settings.dictionary,
-                                isChineseLocale = AppStrings.isChinese(settings.appLanguage)
-                            )
-                            if (effectiveStt.protocol == SttProtocol.GEMINI_LIVE_WS) {
-                                transcribeGeminiWavWithFastFallback(wavFile, effectiveStt, hotwords)
-                            } else {
-                                transcribeWithOpenAiStt(wavFile, effectiveStt, bias)
-                            }
-                        }
-                    }
-                }
-                userBottomLine.isNotBlank() -> userBottomLine.trim()
-                else -> ""
-            }
-
-            // On-device 4B Jev Copilot (pure OCR text mode, no vision screenshot)
-            if (planText is TextRoute.Local) {
-                val localPrompt = LocalPromptTemplates.buildJevCopilotPrompt(
-                    chatContext = chatContextMessages.joinToString("\n"),
-                    userBottomLine = resolvedBottomLine,
-                    domainHint = domainProfile.name
-                )
-                val streamAccum = StringBuilder()
-                var lastSubtextClosedLocal = false
-                var lastOptCloseCountLocal = 0
-                var lastWeightsClosedLocal = false
-                val localRes = executeLocalSlmPrompt(
-                    modelId = planText.modelId,
-                    taskName = AiTask.JEV_COPILOT.name,
-                    prompt = localPrompt,
-                    temperature = settings.jevLlmConfig.temperature,
-                    priority = PRIORITY_EDIT_WRITE,
-                    incognito = plan.clearLocalStateAfterRun,
-                    onTokenBatch = if (onPartialResult != null) {
-                        { chunk, _ ->
-                            streamAccum.append(chunk)
-                            val partialText = streamAccum.toString()
-                            val subtextClosed = partialText.contains("</subtext>", ignoreCase = true)
-                            val optCloseCount = OPT_CLOSE_TAG_REGEX.findAll(partialText).count()
-                            val weightsClosed = partialText.contains("</weights>", ignoreCase = true)
-                            if ((subtextClosed && !lastSubtextClosedLocal) ||
-                                optCloseCount > lastOptCloseCountLocal ||
-                                (weightsClosed && !lastWeightsClosedLocal)
-                            ) {
-                                lastSubtextClosedLocal = subtextClosed
-                                lastOptCloseCountLocal = optCloseCount
-                                lastWeightsClosedLocal = weightsClosed
-                                JevResponseParser.parseStreamingPreview(
-                                    rawPartialOutput = partialText,
-                                    redactionSession = redactionSession,
-                                    usedVision = false,
-                                    redactionCount = redactionSession?.redactionCount ?: 0,
-                                    priorWeightFuser = priorWeightFuser,
-                                    lockVisualOrder = shouldLockOptionOrder()
-                                )?.let { preview -> onPartialResult(preview) }
-                            }
-                        }
-                    } else null
-                )
-                if (localRes.isSuccess) {
-                    val localRaw = cleanModelOutput(localRes.getOrThrow().text)
-                    if (localRaw.isNotBlank()) {
-                        val parsed = JevResponseParser.parse(
-                            rawModelOutput = localRaw,
-                            redactionSession = redactionSession,
-                            usedVision = false,
-                            redactionCount = redactionSession?.redactionCount ?: 0,
-                            priorWeightFuser = priorWeightFuser,
-                            lockVisualOrder = shouldLockOptionOrder()
-                        )
-                        return@withContext Result.success(parsed to resolvedBottomLine)
-                    }
-                }
-                if (!plan.egressAllowed) {
-                    return@withContext Result.failure(
-                        localRes.exceptionOrNull() ?: IOException("离线军师返回内容为空，请重试")
-                    )
-                }
-            }
-
-            if (!plan.egressAllowed) {
-                return@withContext Result.failure(
-                    IllegalStateException(routeBlockMessage(RouteBlockReason.OFFLINE_ONLY_UNSUPPORTED_TASK, "纯离线锁已开启"))
-                )
-            }
-
-            val fallbackGeminiCfg = resolveAvailableGeminiVisionConfig(settings)
-            val dedicatedCfg = resolveEffectiveJevLlmConfig(settings)
-            val canSendVision = if (dedicatedCfg != null) {
-                canRouteVisionScreenshot(
-                    primaryBaseUrl = dedicatedCfg.baseUrl,
-                    primaryModel = dedicatedCfg.model,
-                    fallbackGeminiConfig = null
-                )
-            } else {
-                when (settings.pipelineMode) {
-                    PipelineMode.DUAL_STAGE -> {
-                        val llmCfg = resolveEffectiveLlmConfig(settings)
-                        canRouteVisionScreenshot(
-                            primaryBaseUrl = llmCfg.baseUrl,
-                            primaryModel = llmCfg.model,
-                            fallbackGeminiConfig = fallbackGeminiCfg
-                        )
-                    }
-                    PipelineMode.MULTIMODAL_DIRECT -> {
-                        val mmCfg = settings.multimodalConfig
-                        when (mmCfg.protocol) {
-                            MultimodalProtocol.GEMINI_NATIVE -> true
-                            MultimodalProtocol.OPENAI_AUDIO_CHAT ->
-                                canRouteVisionScreenshot(
-                                    primaryBaseUrl = mmCfg.baseUrl,
-                                    primaryModel = mmCfg.model,
-                                    fallbackGeminiConfig = fallbackGeminiCfg
-                                )
-                        }
-                    }
-                }
-            }
-
-            val allowScreenshot = plan.jevVisionAllowed &&
-                canSendVision &&
-                settings.chatContextSendScreenshot &&
-                redactionSession?.hasHighRiskCredentials != true
-            val effectiveScreenshotB64 = if (allowScreenshot) chatContextScreenshotBase64 else ""
-
-            val systemIsZh = AppStrings.isChinese(settings.appLanguage)
-            val jevIsChineseLocale = when (settings.jevLanguageMode) {
-                "chat" -> {
-                    val sample = (chatContextMessages.joinToString(" ") + " " + resolvedBottomLine).trim()
-                    if (sample.isEmpty()) {
-                        systemIsZh
-                    } else {
-                        sample.any { ch ->
-                            val code = ch.code
-                            code in 0x4E00..0x9FFF || code in 0x3400..0x4DBF || code in 0xF900..0xFAFF
-                        }
-                    }
-                }
-                else -> systemIsZh
-            }
-            val jevReplyMatchesSystem = settings.jevLanguageMode == "strict_system"
-
-            val (sysPrompt, usrPrompt) = PromptBuilder.buildJevCopilotPrompts(
-                domainProfile = domainProfile,
-                targetAppName = targetAppName,
-                chatContextMessages = chatContextMessages,
-                hasChatScreenshot = effectiveScreenshotB64.isNotBlank(),
-                userBottomLine = resolvedBottomLine,
-                excludedPreviousReplies = excludedPreviousReplies,
-                surroundingBeforeCursor = surroundingBeforeCursor,
-                style = activeStyle,
-                dictionary = settings.dictionary,
-                chatTopology = chatTopology,
-                targetPackageName = targetPackageName,
-                memoryPayload = memoryPayload,
-                isChineseLocale = jevIsChineseLocale,
-                replyMatchesSystemLanguage = jevReplyMatchesSystem
-            )
-
-            var lastSubtextClosed = false
-            var lastOptCloseCount = 0
-            var lastWeightsClosed = false
-            var thinkingNotified = false
-            val notifyThinkingStartedOnce = {
-                if (!thinkingNotified) {
-                    thinkingNotified = true
-                    onThinkingStarted?.invoke()
-                }
-            }
-            val onStreamingTextUpdate: ((String) -> Unit)? = if (onPartialResult != null) {
-                { partialText ->
-                    val subtextClosed = partialText.contains("</subtext>", ignoreCase = true)
-                    val optCloseCount = OPT_CLOSE_TAG_REGEX.findAll(partialText).count()
-                    val weightsClosed = partialText.contains("</weights>", ignoreCase = true)
-                    if ((subtextClosed && !lastSubtextClosed) ||
-                        optCloseCount > lastOptCloseCount ||
-                        (weightsClosed && !lastWeightsClosed)
-                    ) {
-                        lastSubtextClosed = subtextClosed
-                        lastOptCloseCount = optCloseCount
-                        lastWeightsClosed = weightsClosed
-                        JevResponseParser.parseStreamingPreview(
-                            rawPartialOutput = partialText,
-                            redactionSession = redactionSession,
-                            usedVision = effectiveScreenshotB64.isNotBlank(),
-                            redactionCount = redactionSession?.redactionCount ?: 0,
-                            priorWeightFuser = priorWeightFuser,
-                            lockVisualOrder = shouldLockOptionOrder(),
-                            preferEnglishUi = !jevIsChineseLocale
-                        )?.let { preview ->
-                            onPartialResult(preview)
-                        }
-                    }
-                }
-            } else {
-                null
-            }
-
-            // Shared global LLM defaults to ThinkingMode.DISABLED for dictation speed;
-            // Jev Copilot needs real tactical reasoning by default, so promote DISABLED -> AUTO
-            // unless the user explicitly enabled Dedicated Model mode and selected DISABLED.
-            fun promoteSharedThinking(mode: ThinkingMode): ThinkingMode =
-                if (mode == ThinkingMode.DISABLED) ThinkingMode.AUTO else mode
-
-            val jevOutcome: ChatCallOutcome = if (dedicatedCfg != null) {
-                if (dedicatedCfg.apiKey.isBlank() && !isLocalEndpoint(dedicatedCfg.baseUrl)) {
-                    return@withContext Result.failure(
-                        IllegalStateException("请先在「API 配置」中填写 Jev 军师专用模型 API Key")
-                    )
-                }
-                executeLlmChatWithDiagnostics(
-                    config = dedicatedCfg,
-                    systemPrompt = sysPrompt,
-                    userPrompt = usrPrompt,
-                    imageJpegBase64 = effectiveScreenshotB64,
-                    fallbackGeminiConfig = null,
-                    forJevCopilot = true,
-                    geminiMaxOutputTokens = JEV_GEMINI_MAX_OUTPUT_TOKENS,
-                    onThinkingStarted = notifyThinkingStartedOnce,
-                    onStreamingTextUpdate = onStreamingTextUpdate
-                )
-            } else {
-                when (settings.pipelineMode) {
-                    PipelineMode.DUAL_STAGE -> {
-                        val llmCfg = resolveEffectiveLlmConfig(settings).let {
-                            it.copy(thinkingMode = promoteSharedThinking(it.thinkingMode))
-                        }
-                        if (llmCfg.apiKey.isBlank() && !isLocalEndpoint(llmCfg.baseUrl)) {
-                            return@withContext Result.failure(IllegalStateException("请先填写 LLM API Key"))
-                        }
-                        executeLlmChatWithDiagnostics(
-                            config = llmCfg,
-                            systemPrompt = sysPrompt,
-                            userPrompt = usrPrompt,
-                            imageJpegBase64 = effectiveScreenshotB64,
-                            fallbackGeminiConfig = fallbackGeminiCfg?.copy(thinkingMode = ThinkingMode.AUTO),
-                            forJevCopilot = true,
-                            geminiMaxOutputTokens = JEV_GEMINI_MAX_OUTPUT_TOKENS,
-                            onThinkingStarted = notifyThinkingStartedOnce,
-                            onStreamingTextUpdate = onStreamingTextUpdate
-                        )
-                    }
-                    PipelineMode.MULTIMODAL_DIRECT -> {
-                        val mmCfg = settings.multimodalConfig.let {
-                            it.copy(thinkingMode = promoteSharedThinking(it.thinkingMode))
-                        }
-                        if (mmCfg.apiKey.isBlank() && !isLocalEndpoint(mmCfg.baseUrl)) {
-                            return@withContext Result.failure(IllegalStateException("请先填写多模态 API Key"))
-                        }
-                        when (mmCfg.protocol) {
-                            MultimodalProtocol.GEMINI_NATIVE -> {
-                                callGeminiTextOnlyWithDiagnostics(
-                                    config = mmCfg,
-                                    fullPrompt = "$sysPrompt\n\n$usrPrompt",
-                                    imageJpegBase64 = effectiveScreenshotB64,
-                                    forJevCopilot = true,
-                                    maxOutputTokens = JEV_GEMINI_MAX_OUTPUT_TOKENS,
-                                    onThinkingStarted = notifyThinkingStartedOnce,
-                                    onStreamingTextUpdate = onStreamingTextUpdate
-                                )
-                            }
-                            MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
-                                executeLlmChatWithDiagnostics(
-                                    config = LlmConfig(
-                                        baseUrl = mmCfg.baseUrl,
-                                        apiKey = mmCfg.apiKey,
-                                        model = mmCfg.model,
-                                        temperature = mmCfg.temperature,
-                                        thinkingMode = mmCfg.thinkingMode
-                                    ),
-                                    systemPrompt = sysPrompt,
-                                    userPrompt = usrPrompt,
-                                    imageJpegBase64 = effectiveScreenshotB64,
-                                    fallbackGeminiConfig = fallbackGeminiCfg?.copy(thinkingMode = ThinkingMode.AUTO),
-                                    forJevCopilot = true,
-                                    geminiMaxOutputTokens = JEV_GEMINI_MAX_OUTPUT_TOKENS,
-                                    onThinkingStarted = notifyThinkingStartedOnce,
-                                    onStreamingTextUpdate = onStreamingTextUpdate
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            val rawOutput = jevOutcome.text
-
-            if (rawOutput.isBlank()) {
-                return@withContext Result.failure(
-                    IOException(
-                        AppStrings.pick(
-                            settings.appLanguage,
-                            "模型返回内容为空，请点「↻ 换一批」重试",
-                            "Empty response from model — tap ↻ Refresh to retry",
-                            "模型回傳內容為空，請點「↻ 換一批」重試"
-                        )
-                    )
-                )
-            }
-
-            val parsed = JevResponseParser.parse(
-                rawModelOutput = rawOutput,
-                redactionSession = redactionSession,
-                usedVision = effectiveScreenshotB64.isNotBlank(),
-                redactionCount = redactionSession?.redactionCount ?: 0,
-                priorWeightFuser = priorWeightFuser,
-                lockVisualOrder = shouldLockOptionOrder(),
-                preferEnglishUi = !jevIsChineseLocale
-            ).copy(
-                tokenUsage = jevOutcome.tokenUsage,
-                modelName = jevOutcome.modelName,
-                executionSource = ExecutionSource.CLOUD
-            )
-            Result.success(parsed to resolvedBottomLine)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (t: Throwable) {
-            Result.failure(t)
         }
     }
 
@@ -3095,7 +2442,7 @@ class AiPipelineEngine(
 
             val isGeminiNativeSlot =
                 (slot == ModelCapabilitySlot.MULTIMODAL && protocol == MultimodalProtocol.GEMINI_NATIVE) ||
-                    ((slot == ModelCapabilitySlot.LLM || slot == ModelCapabilitySlot.JEV_COPILOT) &&
+                    (slot == ModelCapabilitySlot.LLM &&
                         EndpointResolver.isGeminiNativeHttpUrl(cleanBase))
             val models = if (isGeminiNativeSlot) {
                 fetchGeminiOrGatewayModels(cleanBase, cleanKey, slot)
@@ -3237,7 +2584,7 @@ class AiPipelineEngine(
         if (modelIds.isEmpty()) return@withContext emptyList()
         val warmTarget = when {
             (slot == ModelCapabilitySlot.MULTIMODAL && protocol == MultimodalProtocol.GEMINI_NATIVE) ||
-                ((slot == ModelCapabilitySlot.LLM || slot == ModelCapabilitySlot.JEV_COPILOT) &&
+                (slot == ModelCapabilitySlot.LLM &&
                     EndpointResolver.isGeminiNativeHttpUrl(baseUrl)) ->
                 EndpointResolver.resolveGeminiModelsEndpoint(baseUrl, apiKey)
             slot == ModelCapabilitySlot.STT ->
@@ -3332,7 +2679,7 @@ class AiPipelineEngine(
                 }
 
                 (slot == ModelCapabilitySlot.MULTIMODAL && protocol == MultimodalProtocol.GEMINI_NATIVE) ||
-                    ((slot == ModelCapabilitySlot.LLM || slot == ModelCapabilitySlot.JEV_COPILOT) &&
+                    (slot == ModelCapabilitySlot.LLM &&
                         EndpointResolver.isGeminiNativeHttpUrl(baseUrl)) -> {
                     val url = EndpointResolver.resolveGeminiEndpoint(baseUrl, cleanModel, apiKey)
                     fun buildGeminiProbe(withThinking: Boolean): JsonObject {
@@ -3594,7 +2941,6 @@ class AiPipelineEngine(
         systemPrompt: String,
         userPrompt: String,
         imageJpegBase64: String = "",
-        forJevCopilot: Boolean = false,
         onThinkingStarted: (() -> Unit)? = null,
         onStreamingTextUpdate: ((String) -> Unit)? = null
     ): ChatCallOutcome {
@@ -3631,8 +2977,7 @@ class AiPipelineEngine(
                             body = this,
                             baseUrl = config.baseUrl,
                             model = config.model,
-                            thinkingMode = config.thinkingMode,
-                            forJevCopilot = forJevCopilot
+                            thinkingMode = config.thinkingMode
                         )
                     }
                     "reasoning_effort" -> {
@@ -3903,7 +3248,6 @@ class AiPipelineEngine(
         config: MultimodalConfig,
         fullPrompt: String,
         imageJpegBase64: String = "",
-        forJevCopilot: Boolean = false,
         maxOutputTokens: Int? = null,
         onThinkingStarted: (() -> Unit)? = null,
         onStreamingTextUpdate: ((String) -> Unit)? = null
@@ -3924,7 +3268,6 @@ class AiPipelineEngine(
         return executeGeminiGenerateContentWithDiagnostics(
             config = config,
             parts = parts,
-            forJevCopilot = forJevCopilot,
             maxOutputTokens = maxOutputTokens,
             onThinkingStarted = onThinkingStarted,
             onStreamingTextUpdate = onStreamingTextUpdate
@@ -3934,7 +3277,6 @@ class AiPipelineEngine(
     private fun executeGeminiGenerateContentWithDiagnostics(
         config: MultimodalConfig,
         parts: JsonArray,
-        forJevCopilot: Boolean = false,
         maxOutputTokens: Int? = null,
         onThinkingStarted: (() -> Unit)? = null,
         onStreamingTextUpdate: ((String) -> Unit)? = null
@@ -3964,7 +3306,6 @@ class AiPipelineEngine(
             temperature = config.temperature,
             thinkingMode = config.thinkingMode,
             includeThinkingHint = true,
-            forJevCopilot = forJevCopilot,
             maxOutputTokens = maxOutputTokens
         )
         val traceLines = mutableListOf<String>()
@@ -4197,8 +3538,6 @@ class AiPipelineEngine(
         )
 
         private const val PREWARM_COOLDOWN_MS = 25_000L
-        private const val JEV_GEMINI_MAX_OUTPUT_TOKENS = 1536
-        private val OPT_CLOSE_TAG_REGEX = Regex("</opt>", RegexOption.IGNORE_CASE)
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val SPECIAL_TOKEN_REGEX = Regex("<\\|[^|]+\\|>")
         private val THINK_BLOCK_REGEX = Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE)
@@ -4545,10 +3884,9 @@ class AiPipelineEngine(
             body: JsonObject,
             baseUrl: String,
             model: String,
-            thinkingMode: ThinkingMode,
-            forJevCopilot: Boolean = false
+            thinkingMode: ThinkingMode
         ): Boolean {
-            if (thinkingMode == ThinkingMode.AUTO && !forJevCopilot) return false
+            if (thinkingMode == ThinkingMode.AUTO) return false
             val lowerUrl = baseUrl.trim().lowercase()
             val rawLowerModel = model.trim().lowercase()
             val code = normalizeModelCode(model)
@@ -4565,45 +3903,6 @@ class AiPipelineEngine(
                 code.contains("-thinking") ||
                 code.endsWith("thinking")
             ) {
-                return false
-            }
-
-            if (thinkingMode == ThinkingMode.AUTO && forJevCopilot) {
-                val isDeepSeekHybridAuto = code == "deepseek-chat" ||
-                    code.startsWith("deepseek-v3.1") ||
-                    code.startsWith("deepseek-v3-1") ||
-                    code.startsWith("deepseek-v3.2") ||
-                    code.startsWith("deepseek-v3-2")
-                if (isDeepSeekHybridAuto) {
-                    if (lowerUrl.contains("siliconflow")) {
-                        body.addProperty("enable_thinking", true)
-                    } else {
-                        body.add("thinking", JsonObject().apply {
-                            addProperty("type", "enabled")
-                        })
-                    }
-                    return true
-                }
-                val isDoubaoSeed2PlusAuto = code.startsWith("doubao-seed-2") ||
-                    code.startsWith("doubao-seed-3") ||
-                    code.startsWith("doubao-2") ||
-                    code.startsWith("doubao-3")
-                if (isDoubaoSeed2PlusAuto) {
-                    body.addProperty("reasoning_effort", "medium")
-                    return true
-                }
-                val isQwenHybridAuto = (code.startsWith("qwen") &&
-                    !code.startsWith("qwen2") &&
-                    !code.startsWith("qwen1")) ||
-                    rawLowerModel.contains("qwen3") ||
-                    rawLowerModel.contains("qwen4")
-                val isDashScopeHybridAuto = lowerUrl.contains("dashscope.aliyuncs.com") &&
-                    !code.startsWith("qwen2") &&
-                    !code.startsWith("qwen1")
-                if (isQwenHybridAuto || isDashScopeHybridAuto) {
-                    body.addProperty("enable_thinking", true)
-                    return true
-                }
                 return false
             }
 
@@ -4919,7 +4218,6 @@ class AiPipelineEngine(
             temperature: Float,
             thinkingMode: ThinkingMode = ThinkingMode.DISABLED,
             includeThinkingHint: Boolean = true,
-            forJevCopilot: Boolean = false,
             maxOutputTokens: Int? = null
         ): JsonObject? {
             val cfg = JsonObject()
@@ -4935,56 +4233,7 @@ class AiPipelineEngine(
                     code.contains("live") ||
                     code.contains("image") ||
                     code.contains("transcribe")
-                if (forJevCopilot && !isNonThinkingSpecial) {
-                    when (thinkingMode) {
-                        ThinkingMode.AUTO -> {
-                            when {
-                                code.startsWith("gemini-2.5") -> {
-                                    cfg.add("thinkingConfig", JsonObject().apply {
-                                        addProperty("thinkingBudget", 256)
-                                    })
-                                }
-                                code.startsWith("gemini-3") && code.contains("lite") -> {
-                                    cfg.add("thinkingConfig", JsonObject().apply {
-                                        addProperty("thinkingLevel", "LOW")
-                                    })
-                                }
-                                code.startsWith("gemini-3") || code.startsWith("gemini-4") -> {
-                                    cfg.add("thinkingConfig", JsonObject().apply {
-                                        addProperty("thinkingLevel", "MEDIUM")
-                                    })
-                                }
-                            }
-                        }
-                        ThinkingMode.ENABLED -> {
-                            when {
-                                code.startsWith("gemini-3") || code.startsWith("gemini-4") -> {
-                                    cfg.add("thinkingConfig", JsonObject().apply {
-                                        addProperty("thinkingLevel", "HIGH")
-                                    })
-                                }
-                                code.startsWith("gemini-2.5") -> {
-                                    cfg.add("thinkingConfig", JsonObject().apply {
-                                        addProperty("thinkingBudget", 1024)
-                                    })
-                                }
-                            }
-                        }
-                        ThinkingMode.DISABLED -> {
-                            if (code.startsWith("gemini-2.5") && !code.contains("pro")) {
-                                cfg.add("thinkingConfig", JsonObject().apply {
-                                    addProperty("thinkingBudget", 0)
-                                })
-                            } else {
-                                recommendedGeminiThinkingLevel(model)?.let { level ->
-                                    cfg.add("thinkingConfig", JsonObject().apply {
-                                        addProperty("thinkingLevel", level)
-                                    })
-                                }
-                            }
-                        }
-                    }
-                } else if (thinkingMode != ThinkingMode.AUTO) {
+                if (thinkingMode != ThinkingMode.AUTO) {
                     when (thinkingMode) {
                         ThinkingMode.DISABLED -> {
                             if (code.startsWith("gemini-2.5") && !code.contains("pro")) {
@@ -5372,28 +4621,12 @@ class AiPipelineEngine(
                         badge = "🔊 语音转写"
                     }
                 }
-                ModelCapabilitySlot.LLM,
-                ModelCapabilitySlot.JEV_COPILOT -> {
+                ModelCapabilitySlot.LLM -> {
                     // Universal chat eligibility: filter out non-chat utility/embedding/STT/live models,
                     // while letting real live-probed `ms` latency badges replace hardcoded speed strings.
                     val isPureStt = lower.contains("whisper") || lower.contains("sensevoice") || lower.endsWith("-asr")
                     if (!isNonTextOrUtility && !isPureStt && !lower.contains("live")) {
                         recommended = true
-                        if (slot == ModelCapabilitySlot.JEV_COPILOT) {
-                            val isHighIqFlagship = code.startsWith("gemini-3.8-flash") ||
-                                code.startsWith("gemini-3.1-pro") ||
-                                code.startsWith("gemini-2.5-pro") ||
-                                code == "deepseek-chat" ||
-                                code == "deepseek-reasoner" ||
-                                (code.startsWith("doubao-seed-2") && code.contains("pro")) ||
-                                code.startsWith("qwen3-max") ||
-                                code.startsWith("qwen-max") ||
-                                code.startsWith("gpt-4o") ||
-                                code.startsWith("claude-")
-                            if (isHighIqFlagship) {
-                                badge = "🧠 军师推荐"
-                            }
-                        }
                     }
                 }
                 ModelCapabilitySlot.MULTIMODAL -> {
@@ -5452,20 +4685,6 @@ class AiPipelineEngine(
                     code == "gemini-3.8-flash" -> 93
                     code == "gpt-4o-mini" -> 92
                     code.startsWith("qwen3-8b") -> 91
-                    else -> 10
-                }
-                ModelCapabilitySlot.JEV_COPILOT -> when {
-                    code == "gemini-3.8-flash" -> 106
-                    code.startsWith("gemini-3.1-pro") -> 105
-                    code.startsWith("doubao-seed-2") && code.contains("pro") -> 104
-                    code == "deepseek-chat" -> 103
-                    code == "deepseek-reasoner" -> 102
-                    code == "gemini-2.5-pro" -> 101
-                    code.startsWith("qwen3-max") || code.startsWith("qwen-max") -> 100
-                    code == "gpt-4o" -> 99
-                    code.startsWith("claude-") -> 98
-                    code == "gemini-2.5-flash" -> 95
-                    code == "gemini-3.5-flash-lite" -> 92
                     else -> 10
                 }
                 ModelCapabilitySlot.STT -> when {

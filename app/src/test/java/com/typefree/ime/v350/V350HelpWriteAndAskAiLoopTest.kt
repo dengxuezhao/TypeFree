@@ -27,12 +27,7 @@ import com.typefree.ime.ime.UndoSnapshot
 import com.typefree.ime.ime.VoiceController
 import com.typefree.ime.ime.VoiceSubPanel
 import com.typefree.ime.ime.chrome.TopBarSlotPolicy
-import com.typefree.ime.ime.jev.ChatTopology
-import com.typefree.ime.ime.jev.JevDomainProfile
-import com.typefree.ime.ime.jev.JevRoleMode
-import com.typefree.ime.ime.panels.HelpWriteChipFilter
 import com.typefree.ime.network.AiPipelineEngine
-import com.typefree.ime.network.PipelineExecutionResult
 import com.typefree.ime.network.PromptBuilder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,14 +44,13 @@ import java.io.File
 import java.lang.reflect.Modifier
 
 /**
- * TypeFree v3.5.0 全面质量审计与高对抗性独立单元测试套件：
- * 
+ * TypeFree v3.5.0 帮写与问 AI 独立单元测试套件：
+ *
  * 模块 1：帮写彻底去回复化 + 7大主动创作体裁 + 静音草稿免开口扩写与按住说话原地替换（双阶段 & 多模态直通）
  * 模块 2：无前缀顶栏 [🔍 问AI] 胶囊 + 键盘内 AskAiCardPanel + == 回车下线 + Undo 恢复完整闭环对抗
- * 模块 3：Jev 军师五层反装蠢决策树（二元分流/事实筛子/内行认知平视三轴/禁用装蠢反问/笃定陈述句/禁谐音烂梗与黄豆）
- * 模块 4：架构红线（KeyboardScreen.kt <= 650 行、Prompt 100% 静态 const val）
+ * 模块 3：架构红线（KeyboardScreen.kt <= 650 行、Prompt 100% 静态 const val）
  */
-class V350PureHelpWriteAskAiAndJevEpistemicTest {
+class V350HelpWriteAndAskAiLoopTest {
 
     private fun resolveProjectRoot(): File {
         val cwd = File(System.getProperty("user.dir") ?: ".")
@@ -298,8 +292,6 @@ class V350PureHelpWriteAskAiAndJevEpistemicTest {
             controller.openOrRestoreVoicePenPanel()
             val state = host.stateFlow.value
             assertEquals("Password must NEVER be copied into currentEditorText", "", state.currentEditorText)
-            assertFalse("Chat context must never be captured", state.capturedChatContext.hasContext)
-            assertFalse("Disclosure must not prompt", state.showChatContextDisclosurePrompt)
 
             // 3. 验证点击问AI入口时，密码框下直接 return，不发起检索
             host.stateFlow.value = host.stateFlow.value.copy(
@@ -670,44 +662,7 @@ class V350PureHelpWriteAskAiAndJevEpistemicTest {
     }
 
     // =========================================================================
-    // 6. Jev 军师五层反装蠢决策树严苛对抗审查
-    // =========================================================================
-
-    @Test
-    fun jevCopilot_epistemicDecisionTree_adheresStrictlyToAntiStupidityRules() {
-        val prompt = PromptBuilder.JEV_COPILOT_SYSTEM_PROMPT
-
-        // 1. 静态常量检查
-        val field = PromptBuilder::class.java.getField("JEV_COPILOT_SYSTEM_PROMPT")
-        assertTrue("Must be static", Modifier.isStatic(field.modifiers))
-        assertTrue("Must be final", Modifier.isFinal(field.modifiers))
-
-        // 2. 二元分流与事实筛子
-        assertTrue("Must declare Path E & P dichotomy", prompt.contains("路径 E：认知/技术/观点探讨局"))
-        assertTrue(prompt.contains("路径 P：人际/利益/情绪社交局"))
-        assertTrue(prompt.contains("事实与专业度筛子"))
-        assertTrue(prompt.contains("严禁盲目采信对方的“科普”或暴论"))
-        assertTrue(prompt.contains("审视对方是否存在概念偷换、民科类比"))
-
-        // 3. 封杀装蠢反问与陈年黄豆烂梗
-        assertTrue(prompt.contains("封杀“装蠢捧哏提问”与“陈年谐音烂梗”"))
-        assertTrue(prompt.contains("严禁为了合群而先商业吹捧“这个例子很形象/说得很有道理”再用“所以……？”、“……吧？”装外行好奇宝宝反问递话筒"))
-        assertTrue(prompt.contains("严禁滥用“单身狗”式陈年低幼谐音烂梗与 😂/🤣 黄豆表情凑幽默"))
-
-        // 4. 关键策略轴 3 校验：必须是「极客外推 · 逻辑冷幽默」，绝不能是提问/反问！
-        assertTrue("Strategy 3 must be Geek Extrapolation", prompt.contains("策略3（极客外推 · 逻辑冷幽默）"))
-        assertTrue("Must extrapolate logically", prompt.contains("顺着对方前提做荒谬好玩的逻辑外推造梗"))
-        assertFalse(
-            "Strategy 3 must NOT be questions or asks",
-            prompt.contains("策略3（深度反问") || prompt.contains("策略3（延伸提问")
-        )
-
-        // 5. 语言铁律：笃定陈述句，禁用外行请教反问
-        assertTrue(prompt.contains("统一以懂行同侪视角用笃定陈述句发言，禁用外行请教反问"))
-    }
-
-    // =========================================================================
-    // 7. 架构红线与代码行数审查
+    // 6. 架构红线与代码行数审查
     // =========================================================================
 
     @Test
