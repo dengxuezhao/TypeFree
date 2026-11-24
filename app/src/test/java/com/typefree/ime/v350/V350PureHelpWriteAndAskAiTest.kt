@@ -433,7 +433,9 @@ class V350PureHelpWriteAndAskAiTest {
                 askAiQuery = "什么是微服务架构？",
                 askAiAnswer = "微服务是一种将单体应用拆分为多个独立服务、通过轻量通信协同的架构风格。"
             )
-        )
+        ).apply {
+            repository.updateSettings { it.copy(appLanguage = "zh-CN") }
+        }
         val controller = VoiceController(
             host = host,
             audioRecorderProvider = { throw UnsupportedOperationException() },

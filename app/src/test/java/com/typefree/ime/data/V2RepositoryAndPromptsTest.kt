@@ -146,6 +146,7 @@ class V2RepositoryAndPromptsTest {
 
         val engine = AiPipelineEngine(mockClient)
         val settings = AppSettings(
+            appLanguage = "zh-CN",
             pipelineMode = PipelineMode.DUAL_STAGE,
             sttConfig = SttConfig(apiKey = "sk-test-stt"),
             llmConfig = LlmConfig(enabled = false, apiKey = "sk-test-llm") // Even with enabled=false, HELP_ME_WRITE forces generative LLM!

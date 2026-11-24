@@ -509,6 +509,7 @@ class PredictionAndIncognitoTest {
 
         val engine = AiPipelineEngine(httpClient = mockHttp)
         val settings = AppSettings(
+            appLanguage = "zh-CN",
             pipelineMode = PipelineMode.DUAL_STAGE,
             llmConfig = LlmConfig(
                 enabled = true,
