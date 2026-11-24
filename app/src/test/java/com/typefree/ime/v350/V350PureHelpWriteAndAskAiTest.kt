@@ -408,7 +408,7 @@ class V350PureHelpWriteAndAskAiTest {
         assertTrue(steadyPlan.showRightJevCopilot)
         assertTrue(steadyPlan.showRightVoicePen)
 
-        // 4. 常态窄屏叠加无痕 + 4 个右侧胶囊时，按优先级先降级 AskAI，避免挤爆
+        // 4. 常态窄屏叠加无痕 + 4 个右侧胶囊时，采用自适应纯图标折叠（不隐藏入口，AskAI 自动折叠为 28dp 圆形图标）
         val crowdedSteady = TopBarSlotPolicy.resolveQwertyBarLayout(
             availableWidthDp = 340f,
             showUndoButton = true,
@@ -420,7 +420,8 @@ class V350PureHelpWriteAndAskAiTest {
             wantJevCopilot = true,
             wantVoicePen = true
         )
-        assertFalse(crowdedSteady.showRightAskAi)
+        assertTrue(crowdedSteady.showRightAskAi)
+        assertTrue(crowdedSteady.compactAskAiIconOnly)
         assertTrue(crowdedSteady.showRightVoicePen)
     }
 
