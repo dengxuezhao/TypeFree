@@ -32,7 +32,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -64,6 +64,10 @@ import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.OfflineRouteBridge
 import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.stats.StatsTimeRange
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.components.CompletionBackendHint
@@ -91,6 +95,7 @@ fun VoiceAiStudioScreen(
     onOpenInsights: () -> Unit = {},
     onSubTabChanged: ((Int) -> Unit)? = null
 ) {
+    val appLang = LocalAppLanguage.current
     val settings by repository.settings.collectAsState()
     val registrySnapshot = rememberLocalModelRegistrySnapshot()
     val readiness = remember(settings, registrySnapshot) {
@@ -139,7 +144,7 @@ fun VoiceAiStudioScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "语音与 AI",
+                    text = tr("语音与 AI", "Voice & AI", "語音與 AI"),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.ExtraBold
                 )
@@ -166,11 +171,11 @@ fun VoiceAiStudioScreen(
                         Text(
                             text = when (readiness) {
                                 is ReadinessState.Ready ->
-                                    SetupStatsHelper.formatActivePipelineBadge(settings, registrySnapshot)
+                                    SetupStatsHelper.formatActivePipelineBadge(settings, registrySnapshot, appLang)
                                 is ReadinessState.DegradedRawOnly ->
-                                    readiness.badge.shortLabel
+                                    if (appLang == AppLang.EN) "Local ASR Only" else readiness.badge.shortLabel
                                 is ReadinessState.NotReady ->
-                                    "未配置引擎"
+                                    tr("未配置引擎", "Setup Required", "未設定引擎")
                             },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -182,7 +187,11 @@ fun VoiceAiStudioScreen(
             }
 
             SpringSegmentedControl(
-                options = listOf("语音与词典", "AI 助手", "模型与 API"),
+                options = listOf(
+                    tr("语音与词典", "Voice", "語音與詞典"),
+                    tr("AI 助手", "AI Assist", "AI 助手"),
+                    tr("模型与 API", "Models", "模型與 API")
+                ),
                 selectedIndex = activeSubTab,
                 onSelect = ::selectSubTab,
                 modifier = Modifier.fillMaxWidth()
@@ -240,14 +249,18 @@ private fun VoiceAndHotwordsPane(
     ) {
         MochiGroupedCard {
             Text(
-                text = "语音收音偏好",
+                text = tr("语音收音偏好", "Voice Recording Preferences", "語音收音偏好"),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
 
             PreferenceSwitchRow(
-                title = "实时写入输入框",
-                subtitle = "边说边上屏，未定稿文字自动修正；部分应用不支持时自动回退",
+                title = tr("实时写入输入框", "Live Streaming into Text Box", "即時寫入輸入框"),
+                subtitle = tr(
+                    "边说边上屏，未定稿文字自动修正；部分应用不支持时自动回退",
+                    "Insert words into the editor in real time as you speak, with automatic fallback in unsupported apps",
+                    "邊說邊上屏，未定稿文字自動修正；部分應用不支援時自動回退"
+                ),
                 checked = settings.liveWriteToEditor,
                 onCheckedChange = { enabled ->
                     repository.updateSettings { it.copy(liveWriteToEditor = enabled) }
@@ -257,8 +270,12 @@ private fun VoiceAndHotwordsPane(
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
             PreferenceSwitchRow(
-                title = "录音时自动暂停外放媒体",
-                subtitle = "按住说话时暂停正在播放的音乐或视频，松手恢复",
+                title = tr("录音时自动暂停外放媒体", "Pause Media While Recording", "錄音時自動暫停外放媒體"),
+                subtitle = tr(
+                    "按住说话时暂停正在播放的音乐或视频，松手恢复",
+                    "Temporarily pause background music or video while holding the mic and resume on release",
+                    "按住說話時暫停正在播放的音樂或影片，放開恢復"
+                ),
                 checked = settings.pauseMediaWhileRecording,
                 onCheckedChange = { enabled ->
                     repository.updateSettings { it.copy(pauseMediaWhileRecording = enabled) }
@@ -268,8 +285,12 @@ private fun VoiceAndHotwordsPane(
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
             PreferenceSwitchRow(
-                title = "轻声高灵敏收音",
-                subtitle = "适合安静环境下贴近麦克风轻声口述，语音面板也可随时切换",
+                title = tr("轻声高灵敏收音", "Whisper High-Sensitivity Mode", "輕聲高靈敏收音"),
+                subtitle = tr(
+                    "适合安静环境下贴近麦克风轻声口述，语音面板也可随时切换",
+                    "Boost mic gain for quiet speaking close to the phone; can also be toggled from the voice panel",
+                    "適合安靜環境下貼近麥克風輕聲口述，語音面板也可隨時切換"
+                ),
                 checked = settings.whisperModeEnabled,
                 onCheckedChange = { enabled ->
                     repository.updateSettings { it.copy(whisperModeEnabled = enabled) }
@@ -279,8 +300,12 @@ private fun VoiceAndHotwordsPane(
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
             PreferenceSwitchRow(
-                title = "光标上文语境感知",
-                subtitle = "读取光标前最多 80 字上下文，使标点衔接、人称代词与续写更自然",
+                title = tr("光标上文语境感知", "Surrounding Cursor Context", "游標上文語境感知"),
+                subtitle = tr(
+                    "读取光标前最多 80 字上下文，使标点衔接、人称代词与续写更自然",
+                    "Read up to 80 preceding characters before the cursor for natural punctuation, pronouns, and continuation",
+                    "讀取游標前最多 80 字上下文，使標點銜接、人稱代名詞與續寫更自然"
+                ),
                 checked = settings.useSurroundingContext,
                 onCheckedChange = { enabled ->
                     repository.updateSettings { it.copy(useSurroundingContext = enabled) }
@@ -302,6 +327,7 @@ private fun AiAssistantAndTonePane(
     registrySnapshot: LocalModelRegistrySnapshot,
     onJumpToApiSubTab: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     var detailPage by rememberSaveable { mutableStateOf(AiAssistantDetailPage.NONE) }
     var showTranslateSheet by rememberSaveable { mutableStateOf(false) }
 
@@ -343,14 +369,18 @@ private fun AiAssistantAndTonePane(
         // Card 1: Keyboard Quick AI (Ask AI + Sentence Completion unified here)
         MochiGroupedCard {
             Text(
-                text = "键盘随手 AI",
+                text = tr("键盘随手 AI", "Keyboard Quick AI", "鍵盤隨手 AI"),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
 
             PreferenceSwitchRow(
-                title = "🔍 顶栏「问 AI」胶囊",
-                subtitle = "打字满 2 字浮现入口，在键盘内弹出解答卡",
+                title = tr("🔍 顶栏「问 AI」胶囊", "🔍 Top-Bar \"Ask AI\" Pill", "🔍 頂欄「問 AI」膠囊"),
+                subtitle = tr(
+                    "打字满 2 字浮现入口，在键盘内弹出解答卡",
+                    "Shows an Ask AI pill after typing 2+ characters to answer questions right inside the keyboard",
+                    "打字滿 2 字浮現入口，在鍵盤內彈出解答卡"
+                ),
                 checked = settings.equalEqualAskAiEnabled,
                 onCheckedChange = { enabled ->
                     repository.updateSettings { it.copy(equalEqualAskAiEnabled = enabled) }
@@ -360,8 +390,12 @@ private fun AiAssistantAndTonePane(
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
             PreferenceSwitchRow(
-                title = "✨ AI 整句补全",
-                subtitle = "停顿后给出续写建议（密码框与无痕模式永不触发）",
+                title = tr("✨ AI 整句补全", "✨ AI Sentence Completion", "✨ AI 整句補全"),
+                subtitle = tr(
+                    "停顿后给出续写建议（密码框与无痕模式永不触发）",
+                    "Suggest inline sentence continuations when you pause (never runs in passwords or Incognito)",
+                    "停頓後給出續寫建議（密碼框與無痕模式永不觸發）"
+                ),
                 checked = settings.aiCompletionEnabled,
                 onCheckedChange = { enabled ->
                     repository.updateSettings { it.copy(aiCompletionEnabled = enabled) }
@@ -376,7 +410,7 @@ private fun AiAssistantAndTonePane(
             }
         }
 
-        // Card 2: Jev Chat Copilot (Hierarchical parent-child disclosure)
+        // Card 2: Jev Chat Copilot
         AiCopilotAndPrivacyCard(
             repository = repository,
             settings = settings,
@@ -384,19 +418,34 @@ private fun AiAssistantAndTonePane(
             onJumpToApiSubTab = onJumpToApiSubTab
         )
 
-        // Card 3: Tone Style & Quick Translate Summary Hub (Zero nested segmented tabs)
+        // Card 3: Tone Style & Quick Translate Summary Hub
         MochiGroupedCard {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    text = "润色语气与快译语言",
+                    text = tr("润色语气与快译语言", "Tone Styles & Quick Translate", "潤飾語氣與快譯語言"),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = when {
-                        lockedStyle != null -> "已全局锁定「${lockedStyle.emoji} ${lockedStyle.name}」"
-                        settings.appAwareToneEnabled -> "自动匹配宿主应用（已启用 $enabledRuleCount 条规则）"
-                        else -> "当前使用「✨ 通用灵动」默认风格"
+                        lockedStyle != null -> {
+                            val lockedName = AppStrings.toneStyleName(lockedStyle, appLang)
+                            tr(
+                                "已全局锁定「${lockedStyle.emoji} $lockedName」",
+                                "Pinned globally: ${lockedStyle.emoji} $lockedName",
+                                "已全域鎖定「${lockedStyle.emoji} $lockedName」"
+                            )
+                        }
+                        settings.appAwareToneEnabled -> tr(
+                            "自动匹配宿主应用（已启用 $enabledRuleCount 条规则）",
+                            "Auto-matching host apps ($enabledRuleCount rules active)",
+                            "自動比對宿主應用（已啟用 $enabledRuleCount 條規則）"
+                        )
+                        else -> tr(
+                            "当前使用「✨ 通用灵动」默认风格",
+                            "Using default '✨ Smart Default' tone",
+                            "目前使用「✨ 通用靈動」預設風格"
+                        )
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -418,7 +467,7 @@ private fun AiAssistantAndTonePane(
                                 )
                             }
                         },
-                        label = { Text("🧭 自动匹配应用") },
+                        label = { Text(tr("🧭 自动匹配应用", "🧭 Auto-Match App", "🧭 自動比對應用")) },
                         leadingIcon = if (isAutoMatched) {
                             {
                                 Icon(
@@ -433,6 +482,7 @@ private fun AiAssistantAndTonePane(
 
                 items(styles, key = { "quick_lock_${it.id}" }) { style ->
                     val isLocked = settings.selectedManualStyleId == style.id
+                    val sName = AppStrings.toneStyleName(style, appLang)
                     FilterChip(
                         selected = isLocked,
                         onClick = {
@@ -440,7 +490,7 @@ private fun AiAssistantAndTonePane(
                                 it.copy(selectedManualStyleId = style.id)
                             }
                         },
-                        label = { Text("${style.emoji} ${style.name}") },
+                        label = { Text("${style.emoji} $sName") },
                         leadingIcon = if (isLocked) {
                             {
                                 Icon(
@@ -457,24 +507,28 @@ private fun AiAssistantAndTonePane(
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
             MochiSummaryNavRow(
-                title = "语气风格库",
-                trailingValue = "${styles.size} 种预设",
+                title = tr("语气风格库", "Tone Style Library", "語氣風格庫"),
+                trailingValue = tr("${styles.size} 种预设", "${styles.size} presets", "${styles.size} 種預設"),
                 onClick = { detailPage = AiAssistantDetailPage.TONE_LIBRARY }
             )
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
             MochiSummaryNavRow(
-                title = "应用自动匹配规则",
-                trailingValue = "已启用 $enabledRuleCount 条",
+                title = tr("应用自动匹配规则", "App-Aware Tone Rules", "應用自動比對規則"),
+                trailingValue = tr("已启用 $enabledRuleCount 条", "$enabledRuleCount active", "已啟用 $enabledRuleCount 條"),
                 onClick = { detailPage = AiAssistantDetailPage.APP_RULES }
             )
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
             MochiSummaryNavRow(
-                title = "弧形快译目标语言",
-                trailingValue = "默认：$activeTarget（共 ${targets.size} 种）",
+                title = tr("弧形快译目标语言", "Quick Translate Languages", "弧形快譯目標語言"),
+                trailingValue = tr(
+                    "默认：$activeTarget（共 ${targets.size} 种）",
+                    "Default: $activeTarget (${targets.size})",
+                    "預設：$activeTarget（共 ${targets.size} 種）"
+                ),
                 onClick = { showTranslateSheet = true }
             )
         }
@@ -574,14 +628,18 @@ private fun AiCopilotAndPrivacyCard(
 
     MochiGroupedCard {
         Text(
-            text = "✦ Jev 聊天军师",
+            text = tr("✦ Jev 聊天军师", "✦ Jev Chat Copilot", "✦ Jev 聊天軍師"),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold
         )
 
         PreferenceSwitchRow(
-            title = "✦ 启用 Jev 军师",
-            subtitle = "在键盘顶栏、语音面板与帮写顶栏启用潜台词分析与多策略回复草稿",
+            title = tr("✦ 启用 Jev 军师", "✦ Enable Jev Copilot", "✦ 啟用 Jev 軍師"),
+            subtitle = tr(
+                "在键盘顶栏、语音面板与帮写顶栏启用潜台词分析与多策略回复草稿",
+                "Show Jev Copilot in the keyboard top bar and voice panel for subtext reading & multi-angle reply drafts",
+                "在鍵盤頂欄、語音面板與幫寫頂欄啟用潛台詞分析與多策略回覆草稿"
+            ),
             checked = settings.jevCopilotEnabled,
             onCheckedChange = { enabled ->
                 repository.updateSettings { it.copy(jevCopilotEnabled = enabled) }
@@ -591,14 +649,15 @@ private fun AiCopilotAndPrivacyCard(
         SmoothDisclosure(expanded = settings.jevCopilotEnabled) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 val activeJevSummary = if (settings.jevUseDedicatedModel) {
-                    "独立模型 · ${settings.jevLlmConfig.model.substringAfterLast('/')}"
+                    val m = settings.jevLlmConfig.model.substringAfterLast('/')
+                    tr("独立模型 · $m", "Dedicated · $m", "獨立模型 · $m")
                 } else {
                     val fallbackModel = if (settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT) {
                         settings.multimodalConfig.model.substringAfterLast('/')
                     } else {
                         settings.llmConfig.model.substringAfterLast('/')
                     }
-                    "跟随默认 · $fallbackModel"
+                    tr("跟随默认 · $fallbackModel", "Default · $fallbackModel", "跟隨預設 · $fallbackModel")
                 }
 
                 Surface(
@@ -614,7 +673,11 @@ private fun AiCopilotAndPrivacyCard(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "当前军师模型：$activeJevSummary",
+                            text = tr(
+                                "当前军师模型：$activeJevSummary",
+                                "Copilot Model: $activeJevSummary",
+                                "目前軍師模型：$activeJevSummary"
+                            ),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.weight(1f),
@@ -627,7 +690,7 @@ private fun AiCopilotAndPrivacyCard(
                             modifier = Modifier.height(28.dp)
                         ) {
                             Text(
-                                text = "切换 ›",
+                                text = tr("切换 ›", "Change ›", "切換 ›"),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold
                             )
@@ -638,8 +701,12 @@ private fun AiCopilotAndPrivacyCard(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
                 PreferenceSwitchRow(
-                    title = "读取当前聊天上文",
-                    subtitle = "仅在你主动点击 ✦ 军师时按需读取可见聊天记录并端侧脱敏；密码框、无痕与支付类应用自动屏蔽",
+                    title = tr("读取当前聊天上文", "Read Visible Chat Context", "讀取目前聊天上文"),
+                    subtitle = tr(
+                        "仅在你主动点击 ✦ 军师时按需读取可见聊天记录并端侧脱敏；密码框、无痕与支付类应用自动屏蔽",
+                        "Reads visible chat messages on demand only when you tap ✦ Jev, with local PII redaction; blocked in passwords, Incognito & banking apps",
+                        "僅在你主動點擊 ✦ 軍師時按需讀取可見聊天記錄並端側去識別化；密碼框、無痕與支付類應用自動封鎖"
+                    ),
                     checked = settings.chatContextReplyEnabled,
                     onCheckedChange = { enabled ->
                         if (enabled && !settings.chatContextDisclosureAccepted) {
@@ -650,14 +717,21 @@ private fun AiCopilotAndPrivacyCard(
                     }
                 )
 
-                // Screenshot sub-option strictly disclosed ONLY when chatContextReplyEnabled is ON
                 SmoothDisclosure(expanded = settings.chatContextReplyEnabled) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
                         PreferenceSwitchRow(
-                            title = "🖼️ 允许附带脱敏截图",
-                            subtitle = "开启后可识别表情包与图片内容，端侧自动遮挡敏感信息；关闭则仅发送纯文本",
+                            title = tr(
+                                "🖼️ 允许附带脱敏截图",
+                                "🖼️ Include Redacted Screenshot",
+                                "🖼️ 允許附帶去識別化截圖"
+                            ),
+                            subtitle = tr(
+                                "开启后可识别表情包与图片内容，端侧自动遮挡敏感信息；关闭则仅发送纯文本",
+                                "Understand stickers and images with on-device sensitive-data masking; sends text only when off",
+                                "開啟後可識別貼圖與圖片內容，端側自動遮蔽敏感資訊；關閉則僅傳送純文字"
+                            ),
                             checked = settings.chatContextSendScreenshot,
                             onCheckedChange = { enabled ->
                                 repository.updateSettings { it.copy(chatContextSendScreenshot = enabled) }
@@ -678,9 +752,17 @@ private fun AiCopilotAndPrivacyCard(
                             ) {
                                 Text(
                                     text = if (isLocalJevActive || settings.offlineConfig.mode == OfflineMode.OFFLINE_ONLY) {
-                                        "ℹ️ 离线军师仅使用端侧 OCR 文本，不支持截图/表情包视觉理解"
+                                        tr(
+                                            "ℹ️ 离线军师仅使用端侧 OCR 文本，不支持截图/表情包视觉理解",
+                                            "ℹ️ On-device offline Jev uses local OCR text only (no image/sticker vision)",
+                                            "ℹ️ 離線軍師僅使用端側 OCR 文字，不支援截圖/貼圖視覺理解"
+                                        )
                                     } else {
-                                        "ℹ️ 断网回退至本机离线 4B 军师时，仅使用端侧 OCR 文本，不支持截图/表情包视觉理解"
+                                        tr(
+                                            "ℹ️ 断网回退至本机离线 4B 军师时，仅使用端侧 OCR 文本，不支持截图/表情包视觉理解",
+                                            "ℹ️ When offline fallback switches to local 4B Jev, only on-device OCR text is used",
+                                            "ℹ️ 斷網回退至本機離線 4B 軍師時，僅使用端側 OCR 文字，不支援截圖/貼圖視覺理解"
+                                        )
                                     },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurface,
@@ -694,8 +776,16 @@ private fun AiCopilotAndPrivacyCard(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
                 PreferenceSwitchRow(
-                    title = "🧠 关系记忆与口癖自学习",
-                    subtitle = "采用设备本地 HMAC-SHA256 匿名锚点记忆对话身份与习惯语体，不存明文姓名或聊天内容",
+                    title = tr(
+                        "🧠 关系记忆与口癖自学习",
+                        "🧠 Relationship Memory & Style Learning",
+                        "🧠 關係記憶與口頭禪自學習"
+                    ),
+                    subtitle = tr(
+                        "采用设备本地 HMAC-SHA256 匿名锚点记忆对话身份与习惯语体，不存明文姓名或聊天内容",
+                        "Uses local HMAC-SHA256 anonymous anchors to remember relationship tone & phrasing — never stores real names or chat logs",
+                        "採用裝置本機 HMAC-SHA256 匿名錨點記憶對話身分與習慣語體，不存明文姓名或聊天內容"
+                    ),
                     checked = settings.jevMemoryEnabled,
                     onCheckedChange = { enabled ->
                         repository.updateSettings { it.copy(jevMemoryEnabled = enabled) }
@@ -748,9 +838,17 @@ private fun AiCopilotAndPrivacyCard(
                                 )
                                 Text(
                                     text = if (hasLearnedSignals) {
-                                        "已习得 $activeDnaCount 条语体习惯 · $jevSessionCount 个会话档案"
+                                        tr(
+                                            "已习得 $activeDnaCount 条语体习惯 · $jevSessionCount 个会话档案",
+                                            "$activeDnaCount style traits · $jevSessionCount chat profiles",
+                                            "已習得 $activeDnaCount 條語體習慣 · $jevSessionCount 個對話檔案"
+                                        )
                                     } else {
-                                        "正在端侧学习你的语体习惯"
+                                        tr(
+                                            "正在端侧学习你的语体习惯",
+                                            "Learning your phrasing habits on-device",
+                                            "正在端側學習你的語體習慣"
+                                        )
                                     },
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.SemiBold,
@@ -765,7 +863,7 @@ private fun AiCopilotAndPrivacyCard(
                             }
 
                             Text(
-                                text = "管理记忆 ›",
+                                text = tr("管理记忆 ›", "Manage ›", "管理記憶 ›"),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
@@ -787,10 +885,22 @@ private fun AiCopilotAndPrivacyCard(
     if (showChatContextDisclosureDialog) {
         AlertDialog(
             onDismissRequest = { showChatContextDisclosureDialog = false },
-            title = { Text("开启「读取当前聊天上文」说明") },
+            title = {
+                Text(
+                    tr(
+                        "开启「读取当前聊天上文」说明",
+                        "Enable Visible Chat Context?",
+                        "開啟「讀取目前聊天上文」說明"
+                    )
+                )
+            },
             text = {
                 Text(
-                    "仅在你主动点击 ✦ 军师时按需读取当前窗口可见聊天记录，端侧脱敏后发给你配置的模型，不保存、不写入历史。\n\n密码框、无痕模式与支付类应用自动屏蔽，退出面板后内存立即清空。"
+                    tr(
+                        "仅在你主动点击 ✦ 军师时按需读取当前窗口可见聊天记录，端侧脱敏后发给你配置的模型，不保存、不写入历史。\n\n密码框、无痕模式与支付类应用自动屏蔽，退出面板后内存立即清空。",
+                        "Visible chat messages are read on demand ONLY when you tap ✦ Jev Copilot, redacted locally on-device before being sent to your configured model, and never saved to history.\n\nPassword fields, Incognito mode, and banking/payment apps are automatically blocked, and memory is cleared immediately on exit.",
+                        "僅在你主動點擊 ✦ 軍師時按需讀取目前視窗可見聊天記錄，端側去識別化後傳送給你設定的模型，不儲存、不寫入歷史。\n\n密碼框、無痕模式與支付類應用自動封鎖，退出面板後記憶體立即清空。"
+                    )
                 )
             },
             confirmButton = {
@@ -805,10 +915,12 @@ private fun AiCopilotAndPrivacyCard(
                             )
                         }
                     }
-                ) { Text("同意并启用") }
+                ) { Text(tr("同意并启用", "Agree & Enable", "同意並啟用")) }
             },
             dismissButton = {
-                TextButton(onClick = { showChatContextDisclosureDialog = false }) { Text("暂不开启") }
+                TextButton(onClick = { showChatContextDisclosureDialog = false }) {
+                    Text(tr("暂不开启", "Not Now", "暫不開啟"))
+                }
             }
         )
     }

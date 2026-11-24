@@ -108,7 +108,7 @@ object TopBarSlotPolicy {
         val penLabel = if (hasActiveSelection) {
             AppStrings.pick(lang, "改写", "Rewrite", "改寫")
         } else {
-            AppStrings.pick(lang, "帮写", "Help Write", "幫寫")
+            AppStrings.pick(lang, "帮写", "Write", "幫寫")
         }
         if (isComposing) {
             return TopBarLeftSlotState(
@@ -187,19 +187,26 @@ object TopBarSlotPolicy {
         isClipboardBannerActive: Boolean,
         wantAskAi: Boolean,
         wantJevCopilot: Boolean,
-        wantVoicePen: Boolean
+        wantVoicePen: Boolean,
+        lang: AppLang = AppLang.ZH_CN
     ): QwertyTopBarLayoutPlan {
         // When a fresh clipboard paste banner takes over the middle, hide the redundant
         // clipboard icon on the left to maximize readable preview space (user can dismiss via ×).
         val effectiveClipboardIcon = showClipboardButton && !isClipboardBannerActive
+        val isEn = lang == AppLang.EN
+        val voiceWidth = if (isEn) 76f else WIDTH_VOICE_CAPSULE_DP
+        val penWidth = if (isEn) 68f else WIDTH_RIGHT_PILL_SLOT_DP
+        val jevWidth = if (isEn) 76f else WIDTH_RIGHT_PILL_SLOT_DP
+        val askAiWidth = if (isEn) 70f else WIDTH_RIGHT_PILL_SLOT_DP
+
         val leftFixedWidth = WIDTH_TOOL_BUTTON_DP +
             (if (showUndoButton) WIDTH_SMALL_ICON_SLOT_DP else 0f) +
             (if (effectiveClipboardIcon) WIDTH_SMALL_ICON_SLOT_DP else 0f) +
             (if (isIncognito) WIDTH_INCOGNITO_BADGE_DP else 0f) +
-            WIDTH_GAP_BETWEEN_CLUSTERS_DP
+            WIDTH_GAP_BETWEEN_CLUSTERS_DP + 8f
 
         if (hasPriorityBanner) {
-            val remainingForBanner = availableWidthDp - leftFixedWidth - WIDTH_VOICE_CAPSULE_DP
+            val remainingForBanner = availableWidthDp - leftFixedWidth - voiceWidth
             val canShowBanner = remainingForBanner >= MIN_INLINE_BANNER_WIDTH_DP
             return QwertyTopBarLayoutPlan(
                 bannerTakesOverMiddle = canShowBanner,
@@ -213,22 +220,25 @@ object TopBarSlotPolicy {
 
         var showAskAi = wantAskAi
         var showJev = wantJevCopilot
-        val showPen = wantVoicePen
+        var showPen = wantVoicePen
 
         fun rightClusterWidth(): Float {
-            var w = WIDTH_VOICE_CAPSULE_DP
-            if (showPen) w += WIDTH_RIGHT_PILL_SLOT_DP
-            if (showJev) w += WIDTH_RIGHT_PILL_SLOT_DP
-            if (showAskAi) w += WIDTH_RIGHT_PILL_SLOT_DP
+            var w = voiceWidth
+            if (showPen) w += penWidth
+            if (showJev) w += jevWidth
+            if (showAskAi) w += askAiWidth
             return w
         }
 
-        // Narrow-screen / split-screen overflow guard: drop lowest-priority secondary pills first
+        // Narrow-screen / English-label overflow guard: drop lowest-priority secondary pills first
         if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showAskAi) {
             showAskAi = false
         }
         if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showJev) {
             showJev = false
+        }
+        if (leftFixedWidth + rightClusterWidth() > availableWidthDp && showPen) {
+            showPen = false
         }
 
         return QwertyTopBarLayoutPlan(
@@ -254,7 +264,7 @@ fun TopBarToolPanelButton(
 
     Box(
         modifier = Modifier
-            .requiredSize(28.dp)
+            .size(28.dp)
             .clip(CircleShape)
             .background(bgColor)
             .border(1.dp, borderColor, CircleShape)
@@ -369,7 +379,8 @@ fun TypeFreeTopBar(
                 isClipboardBannerActive = isClipboardBannerActive,
                 wantAskAi = wantAskAi,
                 wantJevCopilot = slotState.showJevCopilotPill,
-                wantVoicePen = slotState.showVoicePenPill
+                wantVoicePen = slotState.showVoicePenPill,
+                lang = appLang
             )
         } else {
             null
@@ -1022,12 +1033,12 @@ fun TopBarClipboardIconButton(
     val iconTint = if (isOpen) palette.onPrimaryMic else palette.keyTextPrimary
 
     Box(
-        modifier = Modifier.requiredSize(26.dp),
+        modifier = Modifier.size(26.dp),
         contentAlignment = Alignment.Center
     ) {
         Box(
             modifier = Modifier
-                .requiredSize(26.dp)
+                .size(26.dp)
                 .clip(CircleShape)
                 .background(bgColor)
                 .border(1.dp, borderColor, CircleShape)
@@ -1061,7 +1072,7 @@ fun TopBarUndoIconButton(
     val palette = LocalTypeFreeKeyboardPalette.current
     Box(
         modifier = Modifier
-            .requiredSize(26.dp)
+            .size(26.dp)
             .clip(CircleShape)
             .background(palette.keyCapBg)
             .border(1.dp, palette.keyBorder, CircleShape)

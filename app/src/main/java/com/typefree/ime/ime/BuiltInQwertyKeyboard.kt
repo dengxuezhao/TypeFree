@@ -305,6 +305,7 @@ fun BuiltInQwertyKeyboard(
     onSwipeUpPeriodSlash: (() -> Unit)? = null,
     keycapBadgeMode: KeycapBadgeMode = KeycapBadgeMode.SWIPE_UP,
     autoCapShift: Boolean = false,
+    customSchemaDisplayName: String? = null,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
@@ -825,6 +826,8 @@ fun BuiltInQwertyKeyboard(
                     QwertySpaceBarKey(
                         isFlypyChineseMode = isFlypyChineseMode && !isSymbolLayer,
                         activeInputScheme = activeInputScheme,
+                        customSchemaDisplayName = customSchemaDisplayName,
+                        fiveKeyBottomRow = fiveKeyBottomRow,
                         hasComposing = hasActiveFlypyComposing,
                         verticalCellPad = rowVPad,
                         onTap = onInsertSpace,
@@ -918,22 +921,26 @@ fun BuiltInQwertyKeyboard(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(3.dp)
                                 ) {
+                                    val showReturnIconOnly = !isPrimaryAction && enterActionInfo.label.equals("Return", ignoreCase = true)
                                     if (!isPrimaryAction) {
                                         Icon(
                                             imageVector = TypeFreeIcons.ReturnEnter,
                                             contentDescription = enterActionInfo.label,
                                             tint = enterContentColor,
-                                            modifier = Modifier.size(15.dp)
+                                            modifier = Modifier.size(if (showReturnIconOnly) 18.dp else 15.dp)
                                         )
                                     }
-                                    Text(
-                                        text = enterActionInfo.label,
-                                        color = enterContentColor,
-                                        fontSize = 12.5.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    if (!showReturnIconOnly && enterActionInfo.label.isNotBlank()) {
+                                        Text(
+                                            text = enterActionInfo.label,
+                                            color = enterContentColor,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1275,6 +1282,8 @@ private fun QwertyCharKey(
 private fun QwertySpaceBarKey(
     isFlypyChineseMode: Boolean,
     activeInputScheme: InputScheme = InputScheme.FLYPY_TABLE,
+    customSchemaDisplayName: String? = null,
+    fiveKeyBottomRow: Boolean = false,
     hasComposing: Boolean,
     verticalCellPad: Dp = KEY_CELL_VPAD_5ROW,
     onTap: () -> Unit,
@@ -1393,15 +1402,20 @@ private fun QwertySpaceBarKey(
             shadowColor = palette.keyShadow
         ) {
             val spaceLang = LocalAppLanguage.current
-            val label = when {
-                isCursorSliding -> tr("‹ 滑动移光标 ›", "‹ Slide to move cursor ›", "‹ 滑動移游標 ›")
-                hasComposing -> tr("空格首选", "Space: 1st", "空白首選")
-                isFlypyChineseMode -> if (spaceLang == AppLang.EN) {
-                    AppStrings.inputSchemeLabel(activeInputScheme, spaceLang)
-                } else {
-                    shortInputSchemeLabel(activeInputScheme)
+            val resolvedChineseName = when {
+                activeInputScheme == InputScheme.RIME_CUSTOM && !customSchemaDisplayName.isNullOrBlank() -> {
+                    val clean = customSchemaDisplayName.trim()
+                    if (spaceLang == AppLang.EN && clean.contains("小鹤")) "Flypy" else clean
                 }
-                else -> "English"
+                activeInputScheme == InputScheme.RIME_CUSTOM -> tr("自定义码表", "Rime", "自訂碼表")
+                spaceLang == AppLang.EN -> AppStrings.inputSchemeLabel(activeInputScheme, spaceLang)
+                else -> shortInputSchemeLabel(activeInputScheme)
+            }
+            val label = when {
+                isCursorSliding -> tr("‹ 滑动移光标 ›", "‹ Slide cursor ›", "‹ 滑動移游標 ›")
+                hasComposing -> tr("空格首选", "Space: 1st", "空白首選")
+                isFlypyChineseMode -> if (fiveKeyBottomRow) "$resolvedChineseName · 中" else resolvedChineseName
+                else -> if (fiveKeyBottomRow) "English · EN" else "English"
             }
             Text(
                 text = label,

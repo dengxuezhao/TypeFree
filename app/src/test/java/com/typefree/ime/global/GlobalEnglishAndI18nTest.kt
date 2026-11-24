@@ -229,7 +229,7 @@ class GlobalEnglishAndI18nTest {
             (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI) to 0,
             (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS) to 0,
             (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS) to 0,
-            (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) to 0,
+            (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_FILTER) to 0,
             normalProseInputType to EditorInfo.IME_FLAG_FORCE_ASCII,
             InputType.TYPE_CLASS_NUMBER to 0
         )
@@ -459,5 +459,69 @@ class GlobalEnglishAndI18nTest {
         val preview = JevResponseParser.parseStreamingPreview(simulatedEnglishXml)
         assertNotNull(preview)
         assertEquals("Firm Boundary", preview!!.options[0].label)
+    }
+
+    @Test
+    fun `regression - web and IM chat fields do not auto-cap mid-sentence, NO_SUGGESTIONS chat boxes trigger contractions, and Ask AI anchors local date`() {
+        val webEditType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_WEB_EDIT_TEXT
+        val shortMsgType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_SHORT_MESSAGE
+        val wechatNoSugType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        val personNameType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PERSON_NAME
+
+        // Mid-sentence spaces in web inputs and IM chat boxes MUST NOT auto-capitalize every word
+        assertFalse(EnglishSmartTyper.shouldAutoCapitalize("I'm ", webEditType, 0, isChineseMode = false, englishAutoCapEnabled = true))
+        assertFalse(EnglishSmartTyper.shouldAutoCapitalize("I'm don't ", shortMsgType, 0, isChineseMode = false, englishAutoCapEnabled = true))
+        assertTrue(EnglishSmartTyper.shouldAutoCapitalize("", webEditType, 0, isChineseMode = false, englishAutoCapEnabled = true))
+        assertTrue(EnglishSmartTyper.shouldAutoCapitalize("Done. ", shortMsgType, 0, isChineseMode = false, englishAutoCapEnabled = true))
+        assertTrue(EnglishSmartTyper.shouldAutoCapitalize("John ", personNameType, 0, isChineseMode = false, englishAutoCapEnabled = true))
+
+        // WeChat/QQ chat boxes with TYPE_TEXT_FLAG_NO_SUGGESTIONS MUST still trigger contractions & suggestion previews
+        val typer = EnglishSmartTyper()
+        val dontCommit = typer.onCommitDelimiter(
+            textBeforeCursor = "dont",
+            delimiter = " ",
+            inputType = wechatNoSugType,
+            imeOptions = 0,
+            isChineseMode = false,
+            englishAutoCorrectEnabled = true
+        )
+        assertNotNull(dontCommit)
+        assertEquals("don't ", dontCommit!!.textToCommit)
+
+        val suggester = com.typefree.ime.ime.predict.EnglishWordSuggester()
+        assertEquals("don't", suggester.suggestWords("dont").firstOrNull())
+        assertEquals("I'm", suggester.suggestWords("im").firstOrNull())
+        assertEquals("the", suggester.suggestWords("teh").firstOrNull())
+
+        // Ask AI prompt injects <current_date> anchor in both locales
+        val fixedDate = java.time.LocalDate.of(2026, 11, 24)
+        val (_, askUsrZh) = PromptBuilder.buildAskAiCardPrompts(
+            query = "今天是什么节日",
+            isChineseLocale = true,
+            currentDate = fixedDate
+        )
+        assertTrue(askUsrZh.contains("<current_date>2026年11月24日（星期二）</current_date>"))
+
+        val (_, askUsrEn) = PromptBuilder.buildAskAiCardPrompts(
+            query = "What day is today?",
+            isChineseLocale = false,
+            currentDate = fixedDate
+        )
+        assertTrue(askUsrEn.contains("<current_date>2026-11-24 (Tuesday)</current_date>"))
+
+        // English QWERTY top bar drops Ask AI on 360dp width instead of overlapping left icons
+        val enPlan360 = com.typefree.ime.ime.chrome.TopBarSlotPolicy.resolveQwertyBarLayout(
+            availableWidthDp = 360f,
+            showUndoButton = false,
+            showClipboardButton = true,
+            isIncognito = false,
+            hasPriorityBanner = false,
+            isClipboardBannerActive = false,
+            wantAskAi = true,
+            wantJevCopilot = true,
+            wantVoicePen = true,
+            lang = AppLang.EN
+        )
+        assertFalse(enPlan360.showRightAskAi)
     }
 }

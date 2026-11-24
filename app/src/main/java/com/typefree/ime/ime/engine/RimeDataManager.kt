@@ -257,12 +257,14 @@ class RimeDataManager(
 
     fun listInstalledCustomSchemas(): List<InstalledCustomSchema> {
         if (!sharedDir.isDirectory) return emptyList()
-        val builtinSchemas = setOf(
-            "rime_ice.schema.yaml",
-            "t9.schema.yaml",
-            "double_pinyin_flypy.schema.yaml",
-            "flypy.schema.yaml"
-        )
+        val builtinSchemas = buildSet {
+            add("rime_ice.schema.yaml")
+            add("t9.schema.yaml")
+            add("double_pinyin_flypy.schema.yaml")
+            if (BuildConfig.USE_PRIVATE_DICT) {
+                add("flypy.schema.yaml")
+            }
+        }
         val out = ArrayList<InstalledCustomSchema>()
         val seen = HashSet<String>()
         sharedDir.listFiles().orEmpty()
@@ -278,6 +280,7 @@ class RimeDataManager(
                 val id = parsedId?.takeIf { it.isNotBlank() } ?: file.name.removeSuffix(".schema.yaml")
                 if (id.isNotBlank() && seen.add(id)) {
                     val presetName = PresetSchemaCatalog.BUILT_IN_PRESETS.firstOrNull { it.id == id }?.displayName
+                        ?: if (id == "flypy") "小鹤音形" else null
                     val name = parsedName?.takeIf { it.isNotBlank() } ?: presetName ?: id
                     out.add(InstalledCustomSchema(schemaId = id, displayName = name))
                 }

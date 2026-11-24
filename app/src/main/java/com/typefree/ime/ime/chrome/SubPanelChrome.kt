@@ -95,7 +95,7 @@ fun SubPanelHeaderBridgeBar(
             val appLang = LocalAppLanguage.current
             Text(
                 text = if (isFlypyChineseMode) {
-                    if (appLang == AppLang.EN) "Keyboard" else "$inputSchemeShortBadge 打字"
+                    if (appLang == AppLang.EN) "ABC" else "$inputSchemeShortBadge 打字"
                 } else {
                     tr("EN 打字", "ABC", "EN 打字")
                 },
@@ -178,12 +178,12 @@ fun SubPanelModeSwitchTrack(
         ) {
             Icon(
                 imageVector = TypeFreeIcons.VoicePen,
-                contentDescription = tr("帮写", "Help Write", "幫寫"),
+                contentDescription = tr("帮写", "Write", "幫寫"),
                 tint = palette.onPrimaryMic,
                 modifier = Modifier.size(11.dp)
             )
             Text(
-                text = tr("帮写", "Help Write", "幫寫"),
+                text = tr("帮写", "Write", "幫寫"),
                 color = palette.onPrimaryMic,
                 fontSize = 10.5.sp,
                 fontWeight = FontWeight.Bold,
@@ -217,12 +217,12 @@ fun SubPanelModeSwitchTrack(
         ) {
             Icon(
                 imageVector = TypeFreeIcons.VoicePen,
-                contentDescription = tr("帮写", "Help Write", "幫寫"),
+                contentDescription = tr("帮写", "Write", "幫寫"),
                 tint = if (writeActive) palette.onPrimaryMic else palette.keyTextMuted,
                 modifier = Modifier.size(11.dp)
             )
             Text(
-                text = tr("帮写", "Help Write", "幫寫"),
+                text = tr("帮写", "Write", "幫寫"),
                 color = if (writeActive) palette.onPrimaryMic else palette.keyTextMuted,
                 fontSize = 10.5.sp,
                 fontWeight = if (writeActive) FontWeight.Bold else FontWeight.SemiBold,

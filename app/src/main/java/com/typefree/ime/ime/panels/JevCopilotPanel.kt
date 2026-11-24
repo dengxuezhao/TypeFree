@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -158,6 +159,13 @@ fun JevCopilotPanel(
                     onSelectJevCopilot = {}
                 )
 
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                 // Redaction / Domain / Context status pill (toggles read-only JevContextInspectorCard)
                 val appLang = LocalAppLanguage.current
                 val statusLabel = when {
@@ -285,6 +293,7 @@ fun JevCopilotPanel(
                         maxLines = 1,
                         softWrap = false
                     )
+                }
                 }
             }
 
@@ -840,6 +849,7 @@ private fun JevContextInspectorCard(
                     platformStyle = PlatformTextStyle(includeFontPadding = false)
                 ),
                 maxLines = 1,
+                softWrap = false,
                 modifier = Modifier.weight(1f)
             )
             Spacer(modifier = Modifier.width(6.dp))
@@ -967,6 +977,7 @@ private fun JevContextInspectorCard(
                     platformStyle = PlatformTextStyle(includeFontPadding = false)
                 ),
                 maxLines = 1,
+                softWrap = false,
                 modifier = Modifier.weight(1f)
             )
             Spacer(modifier = Modifier.width(6.dp))
@@ -1132,7 +1143,7 @@ private fun JevBottomControlRow(
             isRecording -> tr("正在聆听底牌 · 松手重算", "Listening for your stance · Release", "正在聆聽底牌 · 放開重算")
             isProcessing -> tr("军师推演中…", "Crafting replies…", "軍師推演中…")
             userBottomLine.isNotBlank() -> "${tr("底牌：", "Stance: ", "底牌：")}$userBottomLine"
-            else -> tr("按住说底牌 · 如：底价800 / 周六补约", "Hold to speak your stance (e.g. reschedule to Fri)", "按住說底牌 · 如：底價800 / 週六補約")
+            else -> tr("按住说底牌 · 如：底价800 / 周六补约", "Hold to speak stance (e.g. Friday)", "按住說底牌 · 如：底價800 / 週六補約")
         }
     }
 
@@ -1224,6 +1235,7 @@ private fun JevBottomControlRow(
                     platformStyle = PlatformTextStyle(includeFontPadding = false)
                 ),
                 maxLines = 1,
+                softWrap = false,
                 modifier = Modifier.weight(1f)
             )
         }

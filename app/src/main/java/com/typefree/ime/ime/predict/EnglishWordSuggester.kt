@@ -1,6 +1,7 @@
 package com.typefree.ime.ime.predict
 
 import com.typefree.core.ime.enhancer.EnglishWordTrie
+import com.typefree.ime.ime.EnglishSmartTyper
 import java.util.Locale
 
 data class EnglishSuggestionResult(
@@ -39,6 +40,8 @@ class EnglishWordSuggester(
         if (!trimmed.all(::isAsciiLetter)) return emptyList()
 
         val lowerPrefix = trimmed.lowercase(Locale.ROOT)
+        val smartReplacement = EnglishSmartTyper.resolveReplacement(trimmed)
+            ?.takeIf { it != trimmed }
         val rawCandidates = LinkedHashSet<String>(limit * 2)
 
         if (customTrie != null) {
@@ -50,14 +53,20 @@ class EnglishWordSuggester(
             }
         }
 
-        if (rawCandidates.isEmpty()) return emptyList()
+        if (rawCandidates.isEmpty() && smartReplacement == null) return emptyList()
 
-        return rawCandidates
+        val result = ArrayList<String>(limit)
+        if (smartReplacement != null) {
+            result.add(smartReplacement)
+        }
+        rawCandidates
             .asSequence()
             .sortedWith(compareBy<String>({ it == lowerPrefix }, { it.length }, { it }))
-            .take(limit)
             .map { adaptCase(word = it, prefix = trimmed) }
-            .toList()
+            .filter { it != smartReplacement }
+            .take((limit - result.size).coerceAtLeast(0))
+            .forEach { result.add(it) }
+        return result
     }
 
     companion object {

@@ -55,6 +55,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -86,6 +87,10 @@ import com.typefree.ime.data.stats.InsightsSnapshot
 import com.typefree.ime.data.stats.SharePosterModule
 import com.typefree.ime.data.stats.SharePosterPreset
 import com.typefree.ime.data.stats.SharePosterSkin
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
 import com.typefree.ime.ui.components.SmoothDisclosure
 import com.typefree.ime.ui.components.TypeFreeIcons
@@ -94,14 +99,14 @@ import com.typefree.ime.ui.components.springPressScale
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import com.typefree.ime.ui.theme.TypeFreeEmeraldLight
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Immutable
 private data class PosterPalette(
@@ -176,6 +181,37 @@ private fun paletteForSkin(skin: SharePosterSkin): PosterPalette = when (skin) {
     )
 }
 
+private fun localizedPosterSkinLabel(skin: SharePosterSkin, lang: AppLang): String {
+    return when (skin) {
+        SharePosterSkin.OBSIDIAN_DARK -> AppStrings.pick(lang, "曜石黑", "Obsidian Dark", "曜石黑")
+        SharePosterSkin.PAPER_LIGHT -> AppStrings.pick(lang, "纸感白", "Paper Light", "紙感白")
+        SharePosterSkin.EMERALD_NIGHT -> AppStrings.pick(lang, "暗夜翠", "Emerald Night", "暗夜翠")
+    }
+}
+
+private fun localizedPosterPresetLabel(preset: SharePosterPreset, lang: AppLang): String {
+    return when (preset) {
+        SharePosterPreset.EFFICIENCY -> AppStrings.pick(lang, "效率战报", "Efficiency", "效率戰報")
+        SharePosterPreset.ANNUAL -> AppStrings.pick(lang, "年度手账", "Annual", "年度手賬")
+        SharePosterPreset.KEYBOARD -> AppStrings.pick(lang, "键盘战报", "Keyboard", "鍵盤戰報")
+        SharePosterPreset.PERSONA -> AppStrings.pick(lang, "沟通人格", "Persona", "溝通人格")
+    }
+}
+
+private fun localizedPosterModuleChip(module: SharePosterModule, lang: AppLang): String {
+    return when (module) {
+        SharePosterModule.HERO -> AppStrings.pick(lang, "大字账单", "Hero Stats", "大字帳單")
+        SharePosterModule.DUAL_TRACK -> AppStrings.pick(lang, "双轨占比", "Dual-Track", "雙軌佔比")
+        SharePosterModule.SHORTCUTS -> AppStrings.pick(lang, "省键账单", "Key Savings", "省鍵帳單")
+        SharePosterModule.HEATMAP -> AppStrings.pick(lang, "热力足迹", "Heatmap", "熱力足跡")
+        SharePosterModule.MONTHLY_TREND -> AppStrings.pick(lang, "月度走势", "12M Trend", "月度走勢")
+        SharePosterModule.RHYTHM_24H -> AppStrings.pick(lang, "24h 节律", "24h Rhythm", "24h 節律")
+        SharePosterModule.JEV_DNA -> AppStrings.pick(lang, "沟通 DNA", "Style DNA", "溝通 DNA")
+        SharePosterModule.SCENES -> AppStrings.pick(lang, "场景分布", "Top Scenes", "場景分佈")
+        SharePosterModule.MILESTONES -> AppStrings.pick(lang, "离线印记", "Milestones", "離線印記")
+    }
+}
+
 /**
  * Full-screen customizable Share Poster Studio overlay.
  * Privacy guarantee: never renders raw typed text, word chains, or contact names.
@@ -186,6 +222,7 @@ fun SharePosterStudioDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val appLang = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
     val graphicsLayer = rememberGraphicsLayer()
 
@@ -207,428 +244,460 @@ fun SharePosterStudioDialog(
             decorFitsSystemWindows = false
         )
     ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
+        CompositionLocalProvider(LocalAppLanguage provides appLang) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background
             ) {
-                // Top bar: Cancel | Title | 3 Skin Circles
-                Row(
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
                 ) {
-                    TextButton(
-                        onClick = { if (!isExporting) onDismiss() }
-                    ) {
-                        Text(
-                            text = "取消",
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Text(
-                        text = "定制表达手账",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-
+                    // Top bar: Cancel | Title | 3 Skin Circles
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(end = 6.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        SharePosterSkin.entries.forEach { skin ->
-                            val skinPalette = remember(skin) { paletteForSkin(skin) }
-                            val isSelected = selectedSkin == skin
-                            val ringColor by animateColorAsState(
-                                targetValue = if (isSelected) TypeFreeEmerald else skinPalette.swatchRing,
-                                animationSpec = spring(stiffness = Spring.StiffnessMedium),
-                                label = "skinRing_${skin.name}"
+                        TextButton(
+                            onClick = { if (!isExporting) onDismiss() }
+                        ) {
+                            Text(
+                                text = tr("取消", "Cancel", "取消"),
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            val interactionSource = remember { MutableInteractionSource() }
-                            Box(
-                                modifier = Modifier
-                                    .size(26.dp)
-                                    .springPressScale(0.90f, interactionSource)
-                                    .clip(CircleShape)
-                                    .border(
-                                        width = if (isSelected) 2.2.dp else 1.dp,
-                                        color = ringColor,
-                                        shape = CircleShape
-                                    )
-                                    .padding(3.dp)
-                                    .clip(CircleShape)
-                                    .background(skinPalette.swatchFill)
-                                    .clickable(
-                                        interactionSource = interactionSource,
-                                        indication = null
-                                    ) {
-                                        selectedSkin = skin
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (isSelected) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(7.dp)
-                                            .clip(CircleShape)
-                                            .background(TypeFreeEmerald)
-                                    )
+                        }
+
+                        Text(
+                            text = tr("定制表达手账", "Share Poster Studio", "定製表達手賬"),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(end = 6.dp)
+                        ) {
+                            SharePosterSkin.entries.forEach { skin ->
+                                val skinPalette = remember(skin) { paletteForSkin(skin) }
+                                val isSelected = selectedSkin == skin
+                                val ringColor by animateColorAsState(
+                                    targetValue = if (isSelected) TypeFreeEmerald else skinPalette.swatchRing,
+                                    animationSpec = spring(stiffness = Spring.StiffnessMedium),
+                                    label = "skinRing_${skin.name}"
+                                )
+                                val interactionSource = remember { MutableInteractionSource() }
+                                Box(
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .springPressScale(0.90f, interactionSource)
+                                        .clip(CircleShape)
+                                        .border(
+                                            width = if (isSelected) 2.2.dp else 1.dp,
+                                            color = ringColor,
+                                            shape = CircleShape
+                                        )
+                                        .padding(3.dp)
+                                        .clip(CircleShape)
+                                        .background(skinPalette.swatchFill)
+                                        .clickable(
+                                            interactionSource = interactionSource,
+                                            indication = null
+                                        ) {
+                                            selectedSkin = skin
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isSelected) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(7.dp)
+                                                .clip(CircleShape)
+                                                .background(TypeFreeEmerald)
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                HorizontalDivider(
-                    thickness = 0.5.dp,
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
-                )
+                    HorizontalDivider(
+                        thickness = 0.5.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                    )
 
-                // Live Scrollable Preview Area with GraphicsLayer Capture
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 20.dp, vertical = 16.dp),
-                    contentAlignment = Alignment.TopCenter
-                ) {
+                    // Live Scrollable Preview Area with GraphicsLayer Capture
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .drawWithContent {
-                                graphicsLayer.record {
-                                    this@drawWithContent.drawContent()
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 20.dp, vertical = 16.dp),
+                        contentAlignment = Alignment.TopCenter
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .drawWithContent {
+                                    graphicsLayer.record {
+                                        this@drawWithContent.drawContent()
+                                    }
+                                    drawLayer(graphicsLayer)
                                 }
-                                drawLayer(graphicsLayer)
-                            }
-                    ) {
-                        SharePosterCard(
-                            snapshot = snapshot,
-                            selectedModules = orderedModules,
-                            skin = selectedSkin,
-                            hideAppNames = hideAppNames
-                        )
-                    }
-                }
-
-                // Bottom Fixed Customization & Export Sheet
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(
-                        0.5.dp,
-                        MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
-                    ),
-                    shadowElevation = 6.dp
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                        verticalArrangement = Arrangement.spacedBy(11.dp)
-                    ) {
-                        // Row 1: 4 One-Tap Presets + Count Hint
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
+                            SharePosterCard(
+                                snapshot = snapshot,
+                                selectedModules = orderedModules,
+                                skin = selectedSkin,
+                                hideAppNames = hideAppNames
+                            )
+                        }
+                    }
+
+                    // Bottom Fixed Customization & Export Sheet
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(
+                            0.5.dp,
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                        ),
+                        shadowElevation = 6.dp
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalArrangement = Arrangement.spacedBy(11.dp)
+                        ) {
+                            // Row 1: 4 One-Tap Presets + Count Hint
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .horizontalFadeEdge(startFadeWidth = 4.dp, endFadeWidth = 14.dp)
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    SharePosterPreset.entries.forEach { preset ->
+                                        val isPresetActive = selectedModules == preset.modules.toSet()
+                                        val pLabel = localizedPosterPresetLabel(preset, appLang)
+                                        Surface(
+                                            onClick = {
+                                                selectedModules = preset.modules.toSet()
+                                            },
+                                            shape = CircleShape,
+                                            color = if (isPresetActive) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+                                            }
+                                        ) {
+                                            Text(
+                                                text = pLabel,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (isPresetActive) {
+                                                    MaterialTheme.colorScheme.onPrimary
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurface
+                                                },
+                                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = tr(
+                                        "已选 ${selectedModules.size}/${SharePosterModule.entries.size}",
+                                        "${selectedModules.size}/${SharePosterModule.entries.size} on",
+                                        "已選 ${selectedModules.size}/${SharePosterModule.entries.size}"
+                                    ),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1
+                                )
+                            }
+
+                            // Row 2: Horizontal Scrollable Module Toggle Chips
                             Row(
                                 modifier = Modifier
-                                    .weight(1f)
-                                    .horizontalFadeEdge(startFadeWidth = 4.dp, endFadeWidth = 14.dp)
+                                    .fillMaxWidth()
+                                    .horizontalFadeEdge(startFadeWidth = 6.dp, endFadeWidth = 18.dp)
                                     .horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(7.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                SharePosterPreset.entries.forEach { preset ->
-                                    val isPresetActive = selectedModules == preset.modules.toSet()
+                                SharePosterModule.entries.forEach { module ->
+                                    val isChecked = module in selectedModules
+                                    val mLabel = localizedPosterModuleChip(module, appLang)
                                     Surface(
-                                        onClick = { selectedModules = preset.modules.toSet() },
-                                        shape = CircleShape,
-                                        color = if (isPresetActive) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
-                                        }
-                                    ) {
-                                        Text(
-                                            text = preset.label,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = if (isPresetActive) {
-                                                MaterialTheme.colorScheme.onPrimary
+                                        onClick = {
+                                            if (isChecked) {
+                                                if (selectedModules.size <= 1) {
+                                                    Toast.makeText(
+                                                        context,
+                                                        AppStrings.pick(
+                                                            appLang,
+                                                            "至少保留 1 个手账模块",
+                                                            "Keep at least 1 poster module",
+                                                            "至少保留 1 個手賬模組"
+                                                        ),
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                } else {
+                                                    selectedModules = selectedModules - module
+                                                }
                                             } else {
-                                                MaterialTheme.colorScheme.onSurface
-                                            },
-                                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp)
+                                                selectedModules = selectedModules + module
+                                            }
+                                        },
+                                        shape = ContinuousRoundedCornerShape(12.dp),
+                                        color = if (isChecked) {
+                                            TypeFreeEmerald.copy(alpha = 0.14f)
+                                        } else {
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                                        },
+                                        border = BorderStroke(
+                                            width = 1.dp,
+                                            color = if (isChecked) {
+                                                TypeFreeEmerald.copy(alpha = 0.55f)
+                                            } else {
+                                                MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                                            }
                                         )
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            if (isChecked) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.Check,
+                                                    contentDescription = null,
+                                                    tint = TypeFreeEmerald,
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                            }
+                                            Text(
+                                                text = mLabel,
+                                                fontSize = 12.sp,
+                                                fontWeight = if (isChecked) FontWeight.SemiBold else FontWeight.Normal,
+                                                color = if (isChecked) {
+                                                    MaterialTheme.colorScheme.onSurface
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
 
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "已选 ${selectedModules.size}/${SharePosterModule.entries.size}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-
-                        // Row 2: Horizontal Scrollable Module Toggle Chips
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalFadeEdge(startFadeWidth = 6.dp, endFadeWidth = 18.dp)
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(7.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            SharePosterModule.entries.forEach { module ->
-                                val isChecked = module in selectedModules
+                            // Conditional Privacy Toggle when SCENES is selected
+                            SmoothDisclosure(expanded = SharePosterModule.SCENES in selectedModules) {
                                 Surface(
-                                    onClick = {
-                                        if (isChecked) {
-                                            if (selectedModules.size <= 1) {
-                                                Toast.makeText(
-                                                    context,
-                                                    "至少保留 1 个手账模块",
-                                                    Toast.LENGTH_SHORT
-                                                ).show()
-                                            } else {
-                                                selectedModules = selectedModules - module
-                                            }
-                                        } else {
-                                            selectedModules = selectedModules + module
-                                        }
-                                    },
+                                    onClick = { hideAppNames = !hideAppNames },
                                     shape = ContinuousRoundedCornerShape(12.dp),
-                                    color = if (isChecked) {
-                                        TypeFreeEmerald.copy(alpha = 0.14f)
+                                    color = if (hideAppNames) {
+                                        TypeFreeEmerald.copy(alpha = 0.10f)
                                     } else {
                                         MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
                                     },
                                     border = BorderStroke(
-                                        width = 1.dp,
-                                        color = if (isChecked) {
-                                            TypeFreeEmerald.copy(alpha = 0.55f)
+                                        width = 0.8.dp,
+                                        color = if (hideAppNames) {
+                                            TypeFreeEmerald.copy(alpha = 0.45f)
                                         } else {
                                             MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
                                         }
-                                    )
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        if (isChecked) {
-                                            Icon(
-                                                imageVector = Icons.Filled.Check,
-                                                contentDescription = null,
-                                                tint = TypeFreeEmerald,
-                                                modifier = Modifier.size(13.dp)
-                                            )
-                                        }
-                                        Text(
-                                            text = module.chipLabel,
-                                            fontSize = 12.sp,
-                                            fontWeight = if (isChecked) FontWeight.SemiBold else FontWeight.Normal,
-                                            color = if (isChecked) {
-                                                MaterialTheme.colorScheme.onSurface
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        // Conditional Privacy Toggle when SCENES is selected
-                        SmoothDisclosure(expanded = SharePosterModule.SCENES in selectedModules) {
-                            Surface(
-                                onClick = { hideAppNames = !hideAppNames },
-                                shape = ContinuousRoundedCornerShape(12.dp),
-                                color = if (hideAppNames) {
-                                    TypeFreeEmerald.copy(alpha = 0.10f)
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-                                },
-                                border = BorderStroke(
-                                    width = 0.8.dp,
-                                    color = if (hideAppNames) {
-                                        TypeFreeEmerald.copy(alpha = 0.45f)
-                                    } else {
-                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
-                                    }
-                                ),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Lock,
-                                            contentDescription = null,
-                                            tint = if (hideAppNames) TypeFreeEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                        Text(
-                                            text = "隐藏具体 App 名（仅展示社交/职场等场景）",
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                    Box(
                                         modifier = Modifier
-                                            .size(18.dp)
-                                            .clip(CircleShape)
-                                            .background(
-                                                if (hideAppNames) TypeFreeEmerald else Color.Transparent
-                                            )
-                                            .border(
-                                                width = 1.4.dp,
-                                                color = if (hideAppNames) TypeFreeEmerald else MaterialTheme.colorScheme.outline,
-                                                shape = CircleShape
-                                            ),
-                                        contentAlignment = Alignment.Center
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
-                                        if (hideAppNames) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
                                             Icon(
-                                                imageVector = Icons.Filled.Check,
+                                                imageVector = Icons.Filled.Lock,
                                                 contentDescription = null,
-                                                tint = Color.White,
-                                                modifier = Modifier.size(12.dp)
+                                                tint = if (hideAppNames) TypeFreeEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(14.dp)
                                             )
+                                            Text(
+                                                text = tr(
+                                                    "隐藏具体 App 名（仅展示社交/职场等场景）",
+                                                    "Hide specific app names (show scene categories only)",
+                                                    "隱藏具體 App 名（僅顯示社交/職場等場景）"
+                                                ),
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Box(
+                                            modifier = Modifier
+                                                .size(18.dp)
+                                                .clip(CircleShape)
+                                                .background(
+                                                    if (hideAppNames) TypeFreeEmerald else Color.Transparent
+                                                )
+                                                .border(
+                                                    width = 1.4.dp,
+                                                    color = if (hideAppNames) TypeFreeEmerald else MaterialTheme.colorScheme.outline,
+                                                    shape = CircleShape
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            if (hideAppNames) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.Check,
+                                                    contentDescription = null,
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
 
-                        // Row 3: Save to Gallery & Share Poster
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    if (isExporting) return@OutlinedButton
-                                    isExporting = true
-                                    scope.launch {
-                                        val result = runCatching {
-                                            val bmp = capturePosterBitmap(graphicsLayer)
-                                            try {
-                                                savePosterToGallery(context, bmp)
-                                            } finally {
-                                                bmp.recycle()
+                            // Row 3: Save to Gallery & Share Poster
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        if (isExporting) return@OutlinedButton
+                                        isExporting = true
+                                        scope.launch {
+                                            val result = runCatching {
+                                                val bmp = capturePosterBitmap(graphicsLayer, appLang)
+                                                try {
+                                                    savePosterToGallery(context, bmp, appLang)
+                                                } finally {
+                                                    bmp.recycle()
+                                                }
+                                            }
+                                            isExporting = false
+                                            result.onSuccess { message ->
+                                                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                                            }.onFailure { err ->
+                                                Toast.makeText(
+                                                    context,
+                                                    AppStrings.pick(
+                                                        appLang,
+                                                        "保存失败：${err.message ?: "请稍后重试"}",
+                                                        "Save failed: ${err.message ?: "Please try again"}",
+                                                        "儲存失敗：${err.message ?: "請稍後重試"}"
+                                                    ),
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
                                             }
                                         }
-                                        isExporting = false
-                                        result.onSuccess { message ->
-                                            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-                                        }.onFailure { err ->
-                                            Toast.makeText(
-                                                context,
-                                                "保存失败：${err.message ?: "请稍后重试"}",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        }
-                                    }
-                                },
-                                enabled = !isExporting,
-                                shape = ContinuousRoundedCornerShape(14.dp),
-                                border = BorderStroke(
-                                    1.dp,
-                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
-                                ),
-                                contentPadding = PaddingValues(vertical = 12.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text(
-                                    text = "保存相册",
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-
-                            Button(
-                                onClick = {
-                                    if (isExporting) return@Button
-                                    isExporting = true
-                                    scope.launch {
-                                        val result = runCatching {
-                                            val bmp = capturePosterBitmap(graphicsLayer)
-                                            val file = try {
-                                                writePosterToShareCache(context, bmp)
-                                            } finally {
-                                                bmp.recycle()
-                                            }
-                                            launchPosterShareIntent(context, file)
-                                        }
-                                        isExporting = false
-                                        result.onFailure { err ->
-                                            Toast.makeText(
-                                                context,
-                                                "分享失败：${err.message ?: "请稍后重试"}",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        }
-                                    }
-                                },
-                                enabled = !isExporting,
-                                shape = ContinuousRoundedCornerShape(14.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary,
-                                    contentColor = MaterialTheme.colorScheme.onPrimary
-                                ),
-                                contentPadding = PaddingValues(vertical = 12.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                if (isExporting) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(16.dp),
-                                        strokeWidth = 2.dp,
-                                        color = MaterialTheme.colorScheme.onPrimary
-                                    )
-                                } else {
-                                    Icon(
-                                        imageVector = Icons.Filled.Share,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                    },
+                                    enabled = !isExporting,
+                                    shape = ContinuousRoundedCornerShape(14.dp),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
+                                    ),
+                                    contentPadding = PaddingValues(vertical = 12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
                                     Text(
-                                        text = "分享海报",
-                                        fontWeight = FontWeight.Bold
+                                        text = tr("保存相册", "Save Image", "儲存相簿"),
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
+                                }
+
+                                Button(
+                                    onClick = {
+                                        if (isExporting) return@Button
+                                        isExporting = true
+                                        scope.launch {
+                                            val result = runCatching {
+                                                val bmp = capturePosterBitmap(graphicsLayer, appLang)
+                                                val file = try {
+                                                    writePosterToShareCache(context, bmp)
+                                                } finally {
+                                                    bmp.recycle()
+                                                }
+                                                launchPosterShareIntent(context, file, appLang)
+                                            }
+                                            isExporting = false
+                                            result.onFailure { err ->
+                                                Toast.makeText(
+                                                    context,
+                                                    AppStrings.pick(
+                                                        appLang,
+                                                        "分享失败：${err.message ?: "请稍后重试"}",
+                                                        "Share failed: ${err.message ?: "Please try again"}",
+                                                        "分享失敗：${err.message ?: "請稍後重試"}"
+                                                    ),
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        }
+                                    },
+                                    enabled = !isExporting,
+                                    shape = ContinuousRoundedCornerShape(14.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    ),
+                                    contentPadding = PaddingValues(vertical = 12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    if (isExporting) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.onPrimary
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Filled.Share,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = tr("分享海报", "Share Poster", "分享海報"),
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -653,6 +722,7 @@ fun SharePosterCard(
     hideAppNames: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val appLang = LocalAppLanguage.current
     val palette = remember(skin) { paletteForSkin(skin) }
     val posterShape = ContinuousRoundedCornerShape(24.dp)
     val dateStamp = remember {
@@ -701,7 +771,7 @@ fun SharePosterCard(
                     }
                     Column {
                         Text(
-                            text = "TypeFree 表达手账",
+                            text = tr("TypeFree 表达手账", "TypeFree Expression Journal", "TypeFree 表達手賬"),
                             fontSize = 15.sp,
                             fontWeight = FontWeight.ExtraBold,
                             color = palette.textPrimary,
@@ -723,10 +793,11 @@ fun SharePosterCard(
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
                     Text(
-                        text = snapshot.range.posterBadge,
+                        text = localizedPosterRangeBadge(snapshot.range, appLang),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
-                        color = palette.accent
+                        color = palette.accent,
+                        maxLines = 1
                     )
                 }
             }
@@ -754,7 +825,11 @@ fun SharePosterCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Speak, don't type. · 端侧零正文统计",
+                    text = tr(
+                        "Speak, don't type. · 端侧零正文统计",
+                        "Speak, don't type. · Zero-Text Local Stats",
+                        "Speak, don't type. · 端側零正文統計"
+                    ),
                     fontSize = 10.sp,
                     color = palette.textSecondary
                 )
@@ -792,6 +867,8 @@ private fun PosterHeroModule(
     snapshot: InsightsSnapshot,
     palette: PosterPalette
 ) {
+    val appLang = LocalAppLanguage.current
+    val badgeLbl = localizedPosterRangeBadge(snapshot.range, appLang)
     PosterSectionCard(palette) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
@@ -800,17 +877,22 @@ private fun PosterHeroModule(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${snapshot.range.posterBadge}总表达",
+                    text = tr("${badgeLbl}总表达", "$badgeLbl Total Output", "${badgeLbl}總表達"),
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.Medium,
                     color = palette.textSecondary
                 )
                 if (snapshot.streakDays > 0) {
                     Text(
-                        text = "连续活跃 ${snapshot.streakDays} 天",
+                        text = tr(
+                            "连续活跃 ${snapshot.streakDays} 天",
+                            "${snapshot.streakDays}d Streak",
+                            "連續活躍 ${snapshot.streakDays} 天"
+                        ),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = palette.accent
+                        color = palette.accent,
+                        maxLines = 1
                     )
                 }
             }
@@ -820,7 +902,7 @@ private fun PosterHeroModule(
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(
-                    text = formatChartCompactChars(snapshot.totalChars),
+                    text = formatInsightsCompactChars(snapshot.totalChars, appLang),
                     fontSize = 36.sp,
                     lineHeight = 38.sp,
                     fontWeight = FontWeight.ExtraBold,
@@ -828,10 +910,12 @@ private fun PosterHeroModule(
                     color = palette.textPrimary
                 )
                 Text(
-                    text = "字",
+                    text = tr("字", "chars", "字"),
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     color = palette.textSecondary,
+                    maxLines = 1,
+                    softWrap = false,
                     modifier = Modifier.padding(bottom = 5.dp)
                 )
                 Spacer(modifier = Modifier.weight(1f))
@@ -842,27 +926,37 @@ private fun PosterHeroModule(
                         .padding(horizontal = 9.dp, vertical = 4.dp)
                 ) {
                     Text(
-                        text = "省下 ${snapshot.savedMinutes} 分钟",
+                        text = tr(
+                            "省下 ${snapshot.savedMinutes} 分钟",
+                            "Saved ${snapshot.savedMinutes} min",
+                            "省下 ${snapshot.savedMinutes} 分鐘"
+                        ),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
-                        color = palette.accent
+                        color = palette.accent,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }
 
             if (snapshot.hasMeasuredWpm) {
+                val mult = String.format(Locale.US, "%.1f", snapshot.speedMultiplier)
                 Text(
-                    text = "实测口述 ${snapshot.averageWpm} 字/分 · 约 ${
-                        String.format(Locale.US, "%.1f", snapshot.speedMultiplier)
-                    }× 拇指打字",
+                    text = tr(
+                        "实测口述 ${snapshot.averageWpm} 字/分 · 约 ${mult}× 拇指打字",
+                        "Measured ${snapshot.averageWpm} CPM · ~${mult}× thumb typing",
+                        "實測口述 ${snapshot.averageWpm} 字/分 · 約 ${mult}× 拇指打字"
+                    ),
                     fontSize = 11.5.sp,
                     color = palette.textSecondary
                 )
             }
 
-            if (snapshot.metaphorLine.isNotBlank()) {
+            val metaphor = localizedMetaphorLine(snapshot, appLang)
+            if (metaphor.isNotBlank()) {
                 Text(
-                    text = snapshot.metaphorLine,
+                    text = metaphor,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
                     color = palette.textPrimary.copy(alpha = 0.9f)
@@ -877,11 +971,14 @@ private fun PosterDualTrackModule(
     snapshot: InsightsSnapshot,
     palette: PosterPalette
 ) {
+    val appLang = LocalAppLanguage.current
     val v = snapshot.voiceChars.coerceAtLeast(0)
     val k = snapshot.keyChars.coerceAtLeast(0)
     val total = v + k
     val voicePct = if (total > 0) ((v * 100f) / total).toInt().coerceIn(0, 100) else 0
     val keyPct = if (total > 0) (100 - voicePct).coerceIn(0, 100) else 0
+    val vStr = formatInsightsCompactChars(v, appLang)
+    val kStr = formatInsightsCompactChars(k, appLang)
 
     PosterSectionCard(palette) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -890,16 +987,18 @@ private fun PosterDualTrackModule(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "语音 $voicePct% · ${formatChartCompactChars(v)} 字",
+                    text = tr("语音 $voicePct% · $vStr 字", "Voice $voicePct% · $vStr", "語音 $voicePct% · $vStr 字"),
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = palette.accent
+                    color = palette.accent,
+                    maxLines = 1
                 )
                 Text(
-                    text = "键盘 $keyPct% · ${formatChartCompactChars(k)} 字",
+                    text = tr("键盘 $keyPct% · $kStr 字", "Keyboard $keyPct% · $kStr", "鍵盤 $keyPct% · $kStr 字"),
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = palette.textPrimary
+                    color = palette.textPrimary,
+                    maxLines = 1
                 )
             }
 
@@ -951,9 +1050,10 @@ private fun PosterDualTrackModule(
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
                             Text(
-                                text = "${scheme.displayName} ${scheme.percent}%",
+                                text = "${localizedSchemeShareName(scheme, appLang)} ${scheme.percent}%",
                                 fontSize = 10.5.sp,
-                                color = palette.textSecondary
+                                color = palette.textSecondary,
+                                maxLines = 1
                             )
                         }
                     }
@@ -968,10 +1068,11 @@ private fun PosterShortcutsModule(
     snapshot: InsightsSnapshot,
     palette: PosterPalette
 ) {
+    val appLang = LocalAppLanguage.current
     PosterSectionCard(palette) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
-                text = "少敲键效率账单",
+                text = tr("少敲键效率账单", "Keystroke Savings", "少敲鍵效率帳單"),
                 fontSize = 11.5.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = palette.textSecondary
@@ -982,28 +1083,36 @@ private fun PosterShortcutsModule(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "${formatChartCompactChars(snapshot.snippetSavedChars)} 字",
+                        text = "${formatInsightsCompactChars(snapshot.snippetSavedChars, appLang)} ${tr("字", "chars", "字")}",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.ExtraBold,
-                        color = palette.textPrimary
+                        color = palette.textPrimary,
+                        maxLines = 1,
+                        softWrap = false
                     )
                     Text(
-                        text = "快捷短语 · ${snapshot.snippetHits} 次",
+                        text = tr("快捷短语 · ${snapshot.snippetHits} 次", "Snippets · ${snapshot.snippetHits} hits", "快捷短語 · ${snapshot.snippetHits} 次"),
                         fontSize = 10.5.sp,
-                        color = palette.textSecondary
+                        color = palette.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "${formatChartCompactChars(snapshot.predictionSavedKeys)} 键",
+                        text = "${formatInsightsCompactChars(snapshot.predictionSavedKeys, appLang)} ${tr("键", "keys", "鍵")}",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.ExtraBold,
-                        color = palette.textPrimary
+                        color = palette.textPrimary,
+                        maxLines = 1,
+                        softWrap = false
                     )
                     Text(
-                        text = "L2 联想 · ${snapshot.predictionHits} 次",
+                        text = tr("L2 联想 · ${snapshot.predictionHits} 次", "L2 Predict · ${snapshot.predictionHits} uses", "L2 聯想 · ${snapshot.predictionHits} 次"),
                         fontSize = 10.5.sp,
-                        color = palette.textSecondary
+                        color = palette.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 if (snapshot.helpWriteLeverage > 1.0f) {
@@ -1012,12 +1121,16 @@ private fun PosterShortcutsModule(
                             text = "${String.format(Locale.US, "%.1f", snapshot.helpWriteLeverage)}×",
                             fontSize = 18.sp,
                             fontWeight = FontWeight.ExtraBold,
-                            color = palette.accent
+                            color = palette.accent,
+                            maxLines = 1,
+                            softWrap = false
                         )
                         Text(
-                            text = "帮我写杠杆",
+                            text = tr("帮我写杠杆", "Help Write", "幫我寫槓桿"),
                             fontSize = 10.5.sp,
-                            color = palette.textSecondary
+                            color = palette.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -1050,13 +1163,17 @@ private fun PosterHeatmapModule(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "陪伴热力足迹",
+                    text = tr("陪伴热力足迹", "Activity Heatmap", "陪伴熱力足跡"),
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = palette.textSecondary
                 )
                 Text(
-                    text = "累计活跃 ${snapshot.lifetimeActiveDays} 天",
+                    text = tr(
+                        "累计活跃 ${snapshot.lifetimeActiveDays} 天",
+                        "${snapshot.lifetimeActiveDays}d Active",
+                        "累計活躍 ${snapshot.lifetimeActiveDays} 天"
+                    ),
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = palette.accent
@@ -1065,7 +1182,7 @@ private fun PosterHeatmapModule(
 
             if (rows.isEmpty()) {
                 Text(
-                    text = "暂无足迹记录",
+                    text = tr("暂无足迹记录", "No activity yet", "尚無足跡記錄"),
                     fontSize = 11.sp,
                     color = palette.textSecondary
                 )
@@ -1119,13 +1236,13 @@ private fun PosterMonthlyTrendModule(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "12 月成长走势",
+                    text = tr("12 月成长走势", "12-Month Trend", "12 月成長走勢"),
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = palette.textSecondary
                 )
                 Text(
-                    text = "语音 × 键盘",
+                    text = tr("语音 × 键盘", "Voice × Key", "語音 × 鍵盤"),
                     fontSize = 10.5.sp,
                     color = palette.textSecondary
                 )
@@ -1133,7 +1250,7 @@ private fun PosterMonthlyTrendModule(
 
             if (points.isEmpty()) {
                 Text(
-                    text = "暂无月度数据",
+                    text = tr("暂无月度数据", "No monthly data", "尚無月度資料"),
                     fontSize = 11.sp,
                     color = palette.textSecondary
                 )
@@ -1208,6 +1325,7 @@ private fun PosterRhythm24hModule(
     snapshot: InsightsSnapshot,
     palette: PosterPalette
 ) {
+    val appLang = LocalAppLanguage.current
     val safeVoice = remember(snapshot.hourlyVoiceChars) {
         List(24) { idx -> snapshot.hourlyVoiceChars.getOrElse(idx) { 0 }.coerceAtLeast(0) }
     }
@@ -1216,6 +1334,9 @@ private fun PosterRhythm24hModule(
     }
     val maxTotal = remember(safeVoice, safeKey) {
         (0 until 24).maxOfOrNull { safeVoice[it] + safeKey[it] }?.coerceAtLeast(1) ?: 1
+    }
+    val headline = remember(snapshot, appLang) {
+        localizedRhythmHeadline(snapshot, appLang)
     }
 
     PosterSectionCard(palette) {
@@ -1226,19 +1347,21 @@ private fun PosterRhythm24hModule(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "24h 双轨作息节律",
+                    text = tr("24h 双轨作息节律", "24h Activity Rhythm", "24h 雙軌作息節律"),
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = palette.textSecondary
                 )
-                if (snapshot.rhythmHeadline.isNotBlank()) {
+                if (headline.isNotBlank()) {
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = snapshot.rhythmHeadline,
-                        fontSize = 11.sp,
+                        text = headline,
+                        fontSize = 10.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = palette.accent,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                 }
             }
@@ -1316,6 +1439,7 @@ private fun PosterJevDnaModule(
     snapshot: InsightsSnapshot,
     palette: PosterPalette
 ) {
+    val appLang = LocalAppLanguage.current
     PosterSectionCard(palette) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
@@ -1324,14 +1448,18 @@ private fun PosterJevDnaModule(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "✦ Jev 沟通语体 DNA",
+                    text = tr("✦ Jev 沟通语体 DNA", "✦ Jev Style DNA", "✦ Jev 溝通語體 DNA"),
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = palette.textSecondary
                 )
                 if (snapshot.jevTotalInteractions > 0) {
                     Text(
-                        text = "${snapshot.jevTotalInteractions} 次互动沉淀",
+                        text = tr(
+                            "${snapshot.jevTotalInteractions} 次互动沉淀",
+                            "${snapshot.jevTotalInteractions} interactions",
+                            "${snapshot.jevTotalInteractions} 次互動沉澱"
+                        ),
                         fontSize = 10.5.sp,
                         color = palette.accent
                     )
@@ -1340,7 +1468,7 @@ private fun PosterJevDnaModule(
 
             if (snapshot.jevDnaItems.isEmpty()) {
                 Text(
-                    text = "端侧语体模型观察积累中",
+                    text = tr("端侧语体模型观察积累中", "Learning your style DNA locally…", "端側語體模型觀察累積中"),
                     fontSize = 11.5.sp,
                     color = palette.textSecondary
                 )
@@ -1351,6 +1479,7 @@ private fun PosterJevDnaModule(
                 ) {
                     snapshot.jevDnaItems.take(5).forEach { dna ->
                         val badgeColor = if (dna.isActive) palette.accent else palette.amberAccent
+                        val dnaTitle = localizedDnaTitle(dna.key, appLang)
                         Box(
                             modifier = Modifier
                                 .clip(CircleShape)
@@ -1359,7 +1488,11 @@ private fun PosterJevDnaModule(
                                 .padding(horizontal = 9.dp, vertical = 4.dp)
                         ) {
                             Text(
-                                text = if (dna.isActive) "✓ ${dna.title}" else "${dna.title} · 观察中",
+                                text = if (dna.isActive) {
+                                    "✓ $dnaTitle"
+                                } else {
+                                    tr("$dnaTitle · 观察中", "$dnaTitle · Learning", "$dnaTitle · 觀察中")
+                                },
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = palette.textPrimary
@@ -1370,7 +1503,8 @@ private fun PosterJevDnaModule(
             }
 
             snapshot.jevAxisTendency?.let { tendency ->
-                val count = minOf(tendency.labels.size, tendency.percents.size)
+                val labels = localizedAxisLabels(tendency.group, appLang)
+                val count = minOf(labels.size, tendency.percents.size)
                 if (count > 0) {
                     val segColors = listOf(palette.accent, palette.keyBar, palette.amberAccent)
                     val total = (0 until count).sumOf { tendency.percents[it].coerceAtLeast(0) }
@@ -1405,9 +1539,10 @@ private fun PosterJevDnaModule(
                         ) {
                             for (i in 0 until count) {
                                 Text(
-                                    text = "${tendency.labels[i]} ${tendency.percents[i]}%",
+                                    text = "${labels[i]} ${tendency.percents[i]}%",
                                     fontSize = 10.sp,
-                                    color = palette.textSecondary
+                                    color = palette.textSecondary,
+                                    maxLines = 1
                                 )
                             }
                         }
@@ -1429,13 +1564,18 @@ private fun PosterScenesModule(
     palette: PosterPalette,
     hideAppNames: Boolean
 ) {
-    val rows = remember(snapshot.topAppScenes, hideAppNames) {
+    val appLang = LocalAppLanguage.current
+    val rows = remember(snapshot.topAppScenes, hideAppNames, appLang) {
         if (snapshot.topAppScenes.isEmpty()) {
             emptyList()
         } else if (hideAppNames) {
             val grouped = linkedMapOf<String, Int>()
             snapshot.topAppScenes.forEach { item ->
-                val cat = item.sceneCategory.ifBlank { "常用表达场景" }
+                val cat = if (item.sceneCategory.isBlank()) {
+                    AppStrings.pick(appLang, "常用表达场景", "General Apps", "常用表達場景")
+                } else {
+                    localizedSceneCategory(item.sceneCategory, appLang)
+                }
                 grouped[cat] = (grouped[cat] ?: 0) + item.count.coerceAtLeast(1)
             }
             val total = grouped.values.sum().coerceAtLeast(1)
@@ -1450,7 +1590,11 @@ private fun PosterScenesModule(
                 }
         } else {
             snapshot.topAppScenes.take(4).map { item ->
-                val suffix = if (item.sceneCategory.isNotBlank()) " · ${item.sceneCategory}" else ""
+                val suffix = if (item.sceneCategory.isNotBlank()) {
+                    " · ${localizedSceneCategory(item.sceneCategory, appLang)}"
+                } else {
+                    ""
+                }
                 PosterSceneRow(
                     label = "${item.appName}$suffix",
                     percent = item.percent.coerceIn(0, 100)
@@ -1466,14 +1610,14 @@ private fun PosterScenesModule(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "主要表达场景",
+                    text = tr("主要表达场景", "Top Scenes", "主要表達場景"),
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = palette.textSecondary
                 )
                 if (hideAppNames) {
                     Text(
-                        text = "已脱敏 App 名",
+                        text = tr("已脱敏 App 名", "App Names Hidden", "已去識別化 App 名"),
                         fontSize = 10.sp,
                         color = palette.accent
                     )
@@ -1482,7 +1626,7 @@ private fun PosterScenesModule(
 
             if (rows.isEmpty()) {
                 Text(
-                    text = "暂无场景分布数据",
+                    text = tr("暂无场景分布数据", "No scene breakdown yet", "尚無場景分佈資料"),
                     fontSize = 11.sp,
                     color = palette.textSecondary
                 )
@@ -1537,6 +1681,7 @@ private fun PosterMilestonesModule(
     snapshot: InsightsSnapshot,
     palette: PosterPalette
 ) {
+    val appLang = LocalAppLanguage.current
     val unlocked = remember(snapshot.milestones) {
         snapshot.milestones.filter { it.unlocked }
     }
@@ -1555,9 +1700,17 @@ private fun PosterMilestonesModule(
                 )
                 Text(
                     text = if (snapshot.hasOfflineSplitData) {
-                        "本机离线引擎静默护航 ${snapshot.offlinePercent}% · 0 字节出网"
+                        tr(
+                            "本机离线引擎静默护航 ${snapshot.offlinePercent}% · 0 字节出网",
+                            "On-device offline AI handled ${snapshot.offlinePercent}% · 0 bytes sent",
+                            "本機離線引擎靜默護航 ${snapshot.offlinePercent}% · 0 位元組出網"
+                        )
                     } else {
-                        "端侧纯数字累计统计 · 0 正文留存"
+                        tr(
+                            "端侧纯数字累计统计 · 0 正文留存",
+                            "100% Local Numeric Counters · Zero Raw Text",
+                            "端側純數字累計統計 · 0 正文留存"
+                        )
                     },
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -1571,6 +1724,7 @@ private fun PosterMilestonesModule(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     unlocked.take(4).forEach { badge ->
+                        val (mTitle, _, _) = localizedMilestoneTexts(badge, snapshot, appLang)
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(9.dp))
@@ -1579,7 +1733,7 @@ private fun PosterMilestonesModule(
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
                             Text(
-                                text = "${badge.glyph} ${badge.title}",
+                                text = "${badge.glyph} $mTitle",
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = palette.textPrimary
@@ -1592,16 +1746,14 @@ private fun PosterMilestonesModule(
     }
 }
 
-private suspend fun capturePosterBitmap(graphicsLayer: GraphicsLayer): Bitmap {
+private suspend fun capturePosterBitmap(graphicsLayer: GraphicsLayer, lang: AppLang): Bitmap {
     val imageBitmap = graphicsLayer.toImageBitmap()
     val raw = imageBitmap.asAndroidBitmap()
-    // Always export an independent software ARGB_8888 copy so HARDWARE bitmaps compress
-    // cleanly and recycling the exported bitmap never disturbs Compose's internal buffer.
     return raw.copy(Bitmap.Config.ARGB_8888, false)
-        ?: error("无法生成海报位图")
+        ?: error(AppStrings.pick(lang, "无法生成海报位图", "Failed to capture poster bitmap", "無法產生海報點陣圖"))
 }
 
-private suspend fun savePosterToGallery(context: Context, bitmap: Bitmap): String =
+private suspend fun savePosterToGallery(context: Context, bitmap: Bitmap, lang: AppLang): String =
     withContext(Dispatchers.IO) {
         val filename = "TypeFree_Poster_${System.currentTimeMillis()}.png"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -1616,18 +1768,23 @@ private suspend fun savePosterToGallery(context: Context, bitmap: Bitmap): Strin
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
             val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                ?: error("无法创建相册图片条目")
+                ?: error(AppStrings.pick(lang, "无法创建相册图片条目", "Cannot create gallery entry", "無法建立相簿圖片項目"))
             try {
                 resolver.openOutputStream(uri)?.use { out ->
                     check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
-                        "PNG 编码失败"
+                        AppStrings.pick(lang, "PNG 编码失败", "PNG encoding failed", "PNG 編碼失敗")
                     }
-                } ?: error("无法写入相册")
+                } ?: error(AppStrings.pick(lang, "无法写入相册", "Cannot write to gallery", "無法寫入相簿"))
                 val doneValues = ContentValues().apply {
                     put(MediaStore.Images.Media.IS_PENDING, 0)
                 }
                 resolver.update(uri, doneValues, null, null)
-                "已保存到系统相册 Pictures/TypeFree"
+                AppStrings.pick(
+                    lang,
+                    "已保存到系统相册 Pictures/TypeFree",
+                    "Saved to Pictures/TypeFree",
+                    "已儲存到系統相簿 Pictures/TypeFree"
+                )
             } catch (t: Throwable) {
                 runCatching { resolver.delete(uri, null, null) }
                 throw t
@@ -1639,10 +1796,15 @@ private suspend fun savePosterToGallery(context: Context, bitmap: Bitmap): Strin
             val outFile = File(targetDir, filename)
             FileOutputStream(outFile).use { out ->
                 check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
-                    "PNG 编码失败"
+                    AppStrings.pick(lang, "PNG 编码失败", "PNG encoding failed", "PNG 編碼失敗")
                 }
             }
-            "已保存至应用图片目录（可点击「分享海报」发送）"
+            AppStrings.pick(
+                lang,
+                "已保存至应用图片目录（可点击「分享海报」发送）",
+                "Saved to app pictures folder",
+                "已儲存至應用程式圖片目錄（可點擊「分享海報」傳送）"
+            )
         }
     }
 
@@ -1650,7 +1812,6 @@ private suspend fun writePosterToShareCache(context: Context, bitmap: Bitmap): F
     withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "shared_posters")
         if (!dir.exists()) dir.mkdirs()
-        // Keep cache tidy by pruning older exports beyond the latest 5 files
         dir.listFiles()
             ?.sortedByDescending { it.lastModified() }
             ?.drop(5)
@@ -1659,13 +1820,13 @@ private suspend fun writePosterToShareCache(context: Context, bitmap: Bitmap): F
         val outFile = File(dir, "typefree_poster_${System.currentTimeMillis()}.png")
         FileOutputStream(outFile).use { out ->
             check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
-                "PNG 编码失败"
+                "PNG encoding failed"
             }
         }
         outFile
     }
 
-private fun launchPosterShareIntent(context: Context, file: File) {
+private fun launchPosterShareIntent(context: Context, file: File, lang: AppLang) {
     val uri = FileProvider.getUriForFile(
         context,
         "${context.packageName}.fileprovider",
@@ -1674,11 +1835,17 @@ private fun launchPosterShareIntent(context: Context, file: File) {
     val shareIntent = Intent(Intent.ACTION_SEND).apply {
         type = "image/png"
         putExtra(Intent.EXTRA_STREAM, uri)
-        putExtra(Intent.EXTRA_SUBJECT, "我的 TypeFree 表达手账")
+        putExtra(
+            Intent.EXTRA_SUBJECT,
+            AppStrings.pick(lang, "我的 TypeFree 表达手账", "My TypeFree Expression Poster", "我的 TypeFree 表達手賬")
+        )
         clipData = ClipData.newRawUri("TypeFree Poster", uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
-    val chooser = Intent.createChooser(shareIntent, "分享 TypeFree 表达手账").apply {
+    val chooser = Intent.createChooser(
+        shareIntent,
+        AppStrings.pick(lang, "分享 TypeFree 表达手账", "Share TypeFree Poster", "分享 TypeFree 表達手賬")
+    ).apply {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     context.startActivity(chooser)

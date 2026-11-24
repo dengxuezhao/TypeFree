@@ -174,8 +174,10 @@ class EnglishSmartTyper {
 
         /**
          * Returns `true` only when typing in `EN` QWERTY mode on a normal prose text field.
-         * Skips Chinese mode, password fields, URI/email/filter variations, `TYPE_TEXT_FLAG_NO_SUGGESTIONS`,
-         * `IME_FLAG_FORCE_ASCII` code/terminal fields, and numeric/phone/datetime editors.
+         * Skips Chinese mode, password fields, URI/email/filter variations,
+         * `IME_FLAG_FORCE_ASCII` code/terminal/redeem fields, and numeric/phone/datetime editors.
+         * Note: `TYPE_TEXT_FLAG_NO_SUGGESTIONS` is intentionally NOT blocked because WeChat, QQ,
+         * and many Android IM apps set it on normal chat boxes solely to hide OS spellcheck underlines.
          */
         fun shouldEnableEnglishProseAssist(
             inputType: Int,
@@ -186,7 +188,6 @@ class EnglishSmartTyper {
             if (ImeLogic.isPasswordEditorInputType(inputType)) return false
             if (ImeLogic.isAsciiPreferredEditor(inputType, imeOptions)) return false
             if ((imeOptions and EditorInfo.IME_FLAG_FORCE_ASCII) != 0) return false
-            if ((inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0) return false
 
             val cls = inputType and InputType.TYPE_MASK_CLASS
             if (cls != 0 && cls != InputType.TYPE_CLASS_TEXT) {
@@ -211,6 +212,7 @@ class EnglishSmartTyper {
          * - At the start of an empty field (or leading spaces)
          * - Immediately after `\n`
          * - After sentence-ending `. `, `! `, or `? `
+         * - After space in an explicit `TYPE_TEXT_VARIATION_PERSON_NAME` field
          */
         fun shouldAutoCapitalize(
             textBeforeCursor: String,
@@ -221,7 +223,12 @@ class EnglishSmartTyper {
         ): Boolean {
             if (!englishAutoCapEnabled) return false
             if (!shouldEnableEnglishProseAssist(inputType, imeOptions, isChineseMode)) return false
-            if ((inputType and InputType.TYPE_TEXT_VARIATION_PERSON_NAME) != 0 && textBeforeCursor.endsWith(" ")) {
+            val variation = inputType and InputType.TYPE_MASK_VARIATION
+            if (
+                (inputType and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT &&
+                variation == InputType.TYPE_TEXT_VARIATION_PERSON_NAME &&
+                textBeforeCursor.endsWith(" ")
+            ) {
                 return true
             }
 

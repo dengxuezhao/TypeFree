@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -63,21 +65,36 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.ime.data.AppRepository
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.data.stats.AppSceneShareItem
+import com.typefree.ime.data.stats.HeatmapDayCell
 import com.typefree.ime.data.stats.InsightsSnapshot
 import com.typefree.ime.data.stats.IntentShareItem
+import com.typefree.ime.data.stats.JevAxisTendencySummary
 import com.typefree.ime.data.stats.JevStyleDnaItem
 import com.typefree.ime.data.stats.MilestoneItem
+import com.typefree.ime.data.stats.MonthlyTrendPoint
 import com.typefree.ime.data.stats.SchemeShareItem
+import com.typefree.ime.data.stats.SchemeStatsKeys
 import com.typefree.ime.data.stats.StatsTimeRange
+import com.typefree.ime.data.stats.TokenFeatureKeys
+import com.typefree.ime.data.stats.TokenShareItem
+import com.typefree.ime.data.stats.TokenUsageSnapshot
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
+import com.typefree.ime.ime.jev.memory.JevAxisGroup
 import com.typefree.ime.ime.jev.memory.StyleFeatureKey
 import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
 import com.typefree.ime.ui.components.RollingDigitCounter
@@ -93,7 +110,405 @@ import com.typefree.ime.ui.theme.TypeFreeEmeraldLight
 import com.typefree.ime.ui.theme.TypeFreeRose
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.Month
+import java.time.format.TextStyle
 import java.util.Locale
+
+internal fun formatInsightsCompactChars(chars: Int, lang: AppLang): String {
+    val safe = chars.coerceAtLeast(0)
+    return if (lang == AppLang.EN) {
+        when {
+            safe >= 1_000_000 -> String.format(Locale.US, "%.1fM", safe / 1_000_000.0)
+            safe >= 10_000 -> String.format(Locale.US, "%.1fk", safe / 1_000.0)
+            else -> String.format(Locale.US, "%,d", safe)
+        }
+    } else if (safe >= 10_000) {
+        String.format(Locale.US, "%.1fw", safe / 10_000.0)
+    } else {
+        String.format(Locale.US, "%,d", safe)
+    }
+}
+
+internal fun localizedRangeLabel(range: StatsTimeRange, lang: AppLang): String {
+    return when (range) {
+        StatsTimeRange.DAYS_7 -> AppStrings.pick(lang, "近 7 天", "7 Days", "近 7 天")
+        StatsTimeRange.THIS_MONTH -> AppStrings.pick(lang, "本月", "Month", "本月")
+        StatsTimeRange.THIS_YEAR -> AppStrings.pick(lang, "本年", "Year", "本年")
+        StatsTimeRange.ALL -> AppStrings.pick(lang, "全部", "All", "全部")
+    }
+}
+
+internal fun localizedPosterRangeBadge(range: StatsTimeRange, lang: AppLang): String {
+    return when (range) {
+        StatsTimeRange.DAYS_7 -> AppStrings.pick(lang, "近 7 天", "Last 7 Days", "近 7 天")
+        StatsTimeRange.THIS_MONTH -> AppStrings.pick(lang, "本月", "This Month", "本月")
+        StatsTimeRange.THIS_YEAR -> AppStrings.pick(lang, "年度", "This Year", "年度")
+        StatsTimeRange.ALL -> AppStrings.pick(lang, "累计", "All Time", "累計")
+    }
+}
+
+internal fun localizedSchemeShareName(item: SchemeShareItem, lang: AppLang): String {
+    return when (item.key) {
+        InputScheme.FLYPY_TABLE.name -> AppStrings.pick(lang, "小鹤音形", "Flypy 4-Code", "小鶴音形")
+        InputScheme.RIME_PINYIN.name -> AppStrings.pick(lang, "雾凇全拼", "Full Pinyin", "霧凇全拼")
+        InputScheme.RIME_T9_PINYIN.name -> AppStrings.pick(lang, "九键拼音", "9-Key T9", "九鍵拼音")
+        InputScheme.RIME_DOUBLE_PINYIN_FLYPY.name -> AppStrings.pick(lang, "小鹤双拼", "Double Pinyin", "小鶴雙拼")
+        InputScheme.RIME_CUSTOM.name -> AppStrings.pick(lang, "自定义码表", "Custom Rime", "自訂碼表")
+        SchemeStatsKeys.ENGLISH_DIRECT -> AppStrings.pick(lang, "英文直输", "English QWERTY", "英文直輸")
+        else -> item.displayName
+    }
+}
+
+internal fun localizedSceneCategory(rawCategory: String, lang: AppLang): String {
+    return when (rawCategory) {
+        "即时社交" -> AppStrings.pick(lang, "即时社交", "Social Chat", "即時社交")
+        "职场协作" -> AppStrings.pick(lang, "职场协作", "Work Collab", "職場協作")
+        "邮件与文档" -> AppStrings.pick(lang, "邮件与文档", "Mail & Docs", "郵件與文件")
+        "编程与 AI" -> AppStrings.pick(lang, "编程与 AI", "Code & AI", "程式與 AI")
+        "跨应用快输" -> AppStrings.pick(lang, "跨应用快输", "Quick Capsule", "跨應用快輸")
+        "日常表达" -> AppStrings.pick(lang, "日常表达", "Daily Typing", "日常表達")
+        else -> rawCategory
+    }
+}
+
+internal fun localizedMetaphorLine(snapshot: InsightsSnapshot, lang: AppLang): String {
+    if (lang == AppLang.ZH_CN && snapshot.metaphorLine.isNotBlank()) {
+        return snapshot.metaphorLine
+    }
+    val totalChars = snapshot.totalChars
+    val savedMinutes = snapshot.savedMinutes
+    return when {
+        totalChars <= 0 -> AppStrings.pick(
+            lang,
+            "每一次开口与落键，都在本地为你沉淀静默的数字注脚。",
+            "Every spoken thought and keystroke stays strictly private as local numeric metrics.",
+            "每一次開口與落鍵，都在本機為你沉澱靜默的數字註腳。"
+        )
+        totalChars >= 100_000 -> AppStrings.pick(
+            lang,
+            "累计输出约等于一本中篇小说，想法从未因打字速度而停顿。",
+            "Roughly the length of a novella — your ideas never slowed down for typing.",
+            "累計輸出約等於一本中篇小說，想法從未因打字速度而停頓。"
+        )
+        totalChars >= 20_000 -> {
+            val essays = maxOf(1, totalChars / 1500)
+            AppStrings.pick(
+                lang,
+                "约等于 $essays 篇深度长文，表达节奏从容顺手。",
+                "Equivalent to ~$essays long-form essays expressed effortlessly.",
+                "約等於 $essays 篇深度長文，表達節奏從容順手。"
+            )
+        }
+        totalChars >= 3_000 -> {
+            val notes = maxOf(1, totalChars / 800)
+            AppStrings.pick(
+                lang,
+                "相当于 $notes 篇日常随笔，语音与键盘配合默契。",
+                "Roughly $notes daily notes — voice and keyboard working in sync.",
+                "相當於 $notes 篇日常隨筆，語音與鍵盤配合默契。"
+            )
+        }
+        savedMinutes >= 5 -> AppStrings.pick(
+            lang,
+            "这段时间已悄悄为你省下约 $savedMinutes 分钟手动敲击。",
+            "Quietly saved you ~$savedMinutes minutes of manual thumb typing.",
+            "這段時間已悄悄為你省下約 $savedMinutes 分鐘手動敲擊。"
+        )
+        else -> {
+            val formatted = String.format(Locale.US, "%,d", totalChars.coerceAtLeast(0))
+            AppStrings.pick(
+                lang,
+                "已在本地轻声记录 $formatted 字表达，越用越顺手。",
+                "Logged $formatted characters locally — getting smoother with every use.",
+                "已在本機輕聲記錄 $formatted 字表達，越用越順手。"
+            )
+        }
+    }
+}
+
+internal fun localizedRhythmHeadline(snapshot: InsightsSnapshot, lang: AppLang): String {
+    if (lang == AppLang.ZH_CN && snapshot.rhythmHeadline.isNotBlank()) {
+        return snapshot.rhythmHeadline
+    }
+    val combined = IntArray(24) { h ->
+        snapshot.hourlyVoiceChars.getOrElse(h) { 0 }.coerceAtLeast(0) +
+            snapshot.hourlyKeyChars.getOrElse(h) { 0 }.coerceAtLeast(0)
+    }
+    val total = combined.sum()
+    if (total <= 0) {
+        return AppStrings.pick(
+            lang,
+            "开始输入后，这里将浮现你的 24 小时表达节律",
+            "Start typing or dictating to uncover your 24-hour rhythm",
+            "開始輸入後，這裡將浮現你的 24 小時表達節律"
+        )
+    }
+    var peakHour = 0
+    var peakVal = -1
+    for (h in 0..23) {
+        if (combined[h] > peakVal) {
+            peakVal = combined[h]
+            peakHour = h
+        }
+    }
+    val rangeStr = String.format(Locale.US, "%02d:00-%02d:00", peakHour, (peakHour + 1) % 24)
+    return when (peakHour) {
+        in 5..8 -> AppStrings.pick(lang, "清晨思绪清晰，$rangeStr 是你的表达高峰", "Crisp morning focus · Peak output at $rangeStr", "清晨思緒清晰，$rangeStr 是你的表達高峰")
+        in 9..11 -> AppStrings.pick(lang, "上午专注高效，$rangeStr 输出最为集中", "Deep morning flow · Peak output at $rangeStr", "上午專注高效，$rangeStr 輸出最為集中")
+        in 12..13 -> AppStrings.pick(lang, "午间节奏轻快，$rangeStr 表达最活跃", "Midday momentum · Most active at $rangeStr", "午間節奏輕快，$rangeStr 表達最活躍")
+        in 14..17 -> AppStrings.pick(lang, "午后表达渐入佳境，$rangeStr 迎来峰值", "Afternoon stride · Peak expression at $rangeStr", "午後表達漸入佳境，$rangeStr 迎來峰值")
+        in 18..21 -> AppStrings.pick(lang, "傍晚与晚间灵感充沛，$rangeStr 最爱表达", "Evening inspiration · Most active at $rangeStr", "傍晚與晚間靈感充沛，$rangeStr 最愛表達")
+        else -> AppStrings.pick(lang, "偏爱静谧夜色，$rangeStr 是你的灵感高光时段", "Night owl flow · Peak inspiration at $rangeStr", "偏愛靜謐夜色，$rangeStr 是你的靈感高光時段")
+    }
+}
+
+internal fun localizedDnaTitle(key: StyleFeatureKey, lang: AppLang): String {
+    return when (key) {
+        StyleFeatureKey.DROP_TRAILING_PERIOD -> AppStrings.pick(lang, "句末不加句号", "No Trailing Period", "句末不加句號")
+        StyleFeatureKey.DAMPEN_EXCLAMATION_TILDE -> AppStrings.pick(lang, "禁用感叹号与波浪号", "No '!' or '~' Marks", "停用驚嘆號與波浪號")
+        StyleFeatureKey.STRIP_EMOJI -> AppStrings.pick(lang, "禁用表情与 Emoji", "No Emoji", "停用表情與 Emoji")
+        StyleFeatureKey.HONORIFIC_NIN_TO_NI -> AppStrings.pick(lang, "称呼用“你”禁用“您”", "Casual 'You' (你)", "稱呼用「你」停用「您」")
+        StyleFeatureKey.HONORIFIC_NI_TO_NIN -> AppStrings.pick(lang, "称呼强制使用敬称“您”", "Polite 'You' (您)", "稱呼強制使用敬稱「您」")
+        StyleFeatureKey.TRIM_MODAL_PARTICLE -> AppStrings.pick(lang, "禁用句末软化语气词", "No Filler Particles", "停用句末軟化語氣詞")
+        StyleFeatureKey.TRIM_POLITE_PREFIX -> AppStrings.pick(lang, "省去前置客套寒暄", "Skip Small Talk", "省去前置客套寒暄")
+        StyleFeatureKey.COMPRESS_LENGTH -> AppStrings.pick(lang, "偏好极简短句", "Concise Short Replies", "偏好極簡短句")
+    }
+}
+
+private fun localizedDnaRuleDescription(key: StyleFeatureKey, lang: AppLang): String {
+    return when (key) {
+        StyleFeatureKey.DROP_TRAILING_PERIOD -> AppStrings.pick(lang, "句尾直接收束，不加句号", "omit sentence-ending periods", "句尾直接收束，不加句號")
+        StyleFeatureKey.DAMPEN_EXCLAMATION_TILDE -> AppStrings.pick(lang, "禁用感叹号与波浪号，保持克制语气", "avoid '!' and '~' for a calm tone", "停用驚嘆號與波浪號，保持克制語氣")
+        StyleFeatureKey.STRIP_EMOJI -> AppStrings.pick(lang, "不输出任何 Emoji 或表情符号", "strip all emojis from drafts", "不輸出任何 Emoji 或表情符號")
+        StyleFeatureKey.HONORIFIC_NIN_TO_NI -> AppStrings.pick(lang, "第二人称统一使用“你”", "use casual phrasing over formal honorifics", "第二人稱統一使用「你」")
+        StyleFeatureKey.HONORIFIC_NI_TO_NIN -> AppStrings.pick(lang, "第二人称使用敬称“您”", "use respectful honorific phrasing", "第二人稱使用敬稱「您」")
+        StyleFeatureKey.TRIM_MODAL_PARTICLE -> AppStrings.pick(lang, "省去句末软化语气词", "trim trailing modal filler particles", "省去句末軟化語氣詞")
+        StyleFeatureKey.TRIM_POLITE_PREFIX -> AppStrings.pick(lang, "省去前置客套寒暄，开门见山", "skip polite preambles and get straight to the point", "省去前置客套寒暄，開門見山")
+        StyleFeatureKey.COMPRESS_LENGTH -> AppStrings.pick(lang, "保持短句精炼表达", "keep reply drafts crisp and under 25 words", "保持短句精煉表達")
+    }
+}
+
+internal fun localizedDnaExplanation(item: JevStyleDnaItem, lang: AppLang): String {
+    if (lang == AppLang.ZH_CN) return item.explanation
+    val ruleDesc = localizedDnaRuleDescription(item.key, lang)
+    return when {
+        item.isManualOverride -> AppStrings.pick(
+            lang,
+            item.explanation,
+            "Manually pinned preference ($ruleDesc). Jev Copilot will always follow this rule.",
+            "你已手動鎖定此項語體習慣（$ruleDesc），Jev 軍師產生回覆時將始終遵循。"
+        )
+        item.isActive -> AppStrings.pick(
+            lang,
+            item.explanation,
+            "Learned across ${item.currentCount} real edits (${item.emaPercent}% confidence). Jev automatically applies: $ruleDesc.",
+            "已在 ${item.currentCount} 次真實採納中穩定識別你的表達偏好（信心度 ${item.emaPercent}%），Jev 軍師會自動套用：$ruleDesc。"
+        )
+        else -> AppStrings.pick(
+            lang,
+            item.explanation,
+            "Quietly observing your edits on-device (${item.currentCount}/${item.requiredCount} samples); activates once consistent.",
+            "端側正在安靜觀察你的改稿傾向（已累計 ${item.currentCount}/${item.requiredCount} 次樣本），穩定後將自動生效。"
+        )
+    }
+}
+
+internal fun localizedAxisGroupTitle(group: JevAxisGroup, lang: AppLang): String {
+    return when (group) {
+        JevAxisGroup.PEER_TECH -> AppStrings.pick(lang, "技术与同频探讨", "Tech & Peer Dialogue", "技術與同頻探討")
+        JevAxisGroup.TKI_GAME -> AppStrings.pick(lang, "沟通博弈策略", "Pragmatic Strategy", "溝通博弈策略")
+        JevAxisGroup.GROUP_BYSTANDER -> AppStrings.pick(lang, "群聊旁观互动", "Group Chat Dynamics", "群聊旁觀互動")
+        JevAxisGroup.BOTTOM_LINE_LOCKED -> AppStrings.pick(lang, "底牌锁定表达", "Bottom-Line Stance", "底牌鎖定表達")
+    }
+}
+
+internal fun localizedAxisLabels(group: JevAxisGroup, lang: AppLang): List<String> {
+    return when (group) {
+        JevAxisGroup.PEER_TECH -> listOf(
+            AppStrings.pick(lang, "同频升维", "Elevate", "同頻升維"),
+            AppStrings.pick(lang, "温和勘误", "Gentle Fix", "溫和勘誤"),
+            AppStrings.pick(lang, "极客外推", "Deep Dive", "極客外推")
+        )
+        JevAxisGroup.TKI_GAME -> listOf(
+            AppStrings.pick(lang, "协同破局", "Collaborate", "協同破局"),
+            AppStrings.pick(lang, "温和设限", "Firm Bound", "溫和設限"),
+            AppStrings.pick(lang, "升维重构", "Reframe", "升維重構")
+        )
+        JevAxisGroup.GROUP_BYSTANDER -> listOf(
+            AppStrings.pick(lang, "场外递梗", "Witty Riff", "場外遞梗"),
+            AppStrings.pick(lang, "顺题聊事", "On-Topic", "順題聊事"),
+            AppStrings.pick(lang, "幽默转场", "Light Pivot", "幽默轉場")
+        )
+        JevAxisGroup.BOTTOM_LINE_LOCKED -> listOf(
+            AppStrings.pick(lang, "周全给面", "Tactful", "周全給面"),
+            AppStrings.pick(lang, "松弛直给", "Direct", "鬆弛直給"),
+            AppStrings.pick(lang, "锚定闭环", "Anchored", "錨定收束")
+        )
+    }
+}
+
+internal fun localizedMilestoneTexts(
+    item: MilestoneItem,
+    snapshot: InsightsSnapshot,
+    lang: AppLang
+): Triple<String, String, String> {
+    if (lang == AppLang.ZH_CN) {
+        return Triple(item.title, item.description, item.progressText)
+    }
+    return when (item.id) {
+        "chars_expression" -> {
+            val is100k = snapshot.lifetimeTotalChars >= 100_000 || item.title.contains("十万")
+            val title = if (is100k) {
+                AppStrings.pick(lang, "十万字表达", "100k Chars", "十萬字表達")
+            } else {
+                AppStrings.pick(lang, "万字表达", "10k Chars", "萬字表達")
+            }
+            val desc = if (is100k) {
+                AppStrings.pick(lang, item.description, "Surpassed 100,000 cumulative voice & keyboard characters", "累計語音與鍵盤輸出突破 100,000 字")
+            } else {
+                AppStrings.pick(lang, item.description, "Reached 10,000 cumulative voice & keyboard characters", "累計語音與鍵盤輸出滿 10,000 字")
+            }
+            val countStr = String.format(Locale.US, "%,d", snapshot.lifetimeTotalChars.coerceAtLeast(0))
+            val prog = if (item.unlocked) {
+                AppStrings.pick(lang, item.progressText, "Unlocked · $countStr chars", "已達成 · 累計 $countStr 字")
+            } else {
+                AppStrings.pick(lang, item.progressText, "$countStr / 10,000 chars", "$countStr / 10,000 字")
+            }
+            Triple(title, desc, prog)
+        }
+        "voice_master" -> {
+            val title = AppStrings.pick(lang, "口述达人", "Voice Master", "口述達人")
+            val desc = AppStrings.pick(lang, item.description, "Complete 100 voice dictations", "累計完成 100 次語音輸入")
+            val num = item.progressText.filter { it.isDigit() || it == '/' }.substringBefore('/').ifBlank { "0" }
+            val prog = if (item.unlocked) {
+                val c = item.progressText.filter { it.isDigit() }.ifBlank { "100" }
+                AppStrings.pick(lang, item.progressText, "Unlocked · $c sessions", "已達成 · $c 次")
+            } else {
+                AppStrings.pick(lang, item.progressText, "$num / 100 sessions", "$num / 100 次")
+            }
+            Triple(title, desc, prog)
+        }
+        "keyboard_artisan" -> {
+            val title = AppStrings.pick(lang, "键盘匠人", "Key Artisan", "鍵盤匠人")
+            val desc = AppStrings.pick(lang, item.description, "Type 10,000 characters on the keyboard", "鍵盤累計輸出滿 10,000 字")
+            val prog = if (item.unlocked) {
+                val num = item.progressText.substringAfter("·").replace("字", "").trim()
+                AppStrings.pick(lang, item.progressText, "Unlocked · $num chars", "已達成 · $num 字")
+            } else {
+                val raw = item.progressText.replace("字", "").trim()
+                AppStrings.pick(lang, item.progressText, "$raw chars", "$raw 字")
+            }
+            Triple(title, desc, prog)
+        }
+        "snippet_magician" -> {
+            val title = AppStrings.pick(lang, "短语魔术师", "Snippet Pro", "短語魔術師")
+            val desc = AppStrings.pick(lang, item.description, "Expand slash or voice snippets 30 times", "快捷短語累計命中 30 次")
+            val prog = if (item.unlocked) {
+                val c = item.progressText.filter { it.isDigit() }.ifBlank { "30" }
+                AppStrings.pick(lang, item.progressText, "Unlocked · $c hits", "已達成 · $c 次")
+            } else {
+                val num = item.progressText.substringBefore('/').trim()
+                AppStrings.pick(lang, item.progressText, "$num / 30 hits", "$num / 30 次")
+            }
+            Triple(title, desc, prog)
+        }
+        "offline_guardian" -> {
+            val title = AppStrings.pick(lang, "离线守护者", "Offline Guard", "離線守護者")
+            val desc = AppStrings.pick(lang, item.description, "Run ≥10 on-device offline inferences with ≥50% share", "本機離線推理滿 10 次且佔比 ≥ 50%")
+            val prog = if (item.unlocked) {
+                val pct = item.progressText.substringAfterLast("占比").trim().ifBlank { "${snapshot.offlinePercent}%" }
+                AppStrings.pick(lang, item.progressText, "Unlocked · $pct offline", "已達成 · 離線佔比 $pct")
+            } else {
+                val replaced = item.progressText
+                    .replace("次", " runs")
+                    .replace("占比 ", "")
+                val tw = item.progressText.replace("占比", "佔比")
+                AppStrings.pick(lang, item.progressText, "$replaced offline", tw)
+            }
+            Triple(title, desc, prog)
+        }
+        "jev_partner" -> {
+            val title = AppStrings.pick(lang, "军师默契派", "Jev Insider", "軍師默契派")
+            val desc = AppStrings.pick(lang, item.description, "Learn 2 style DNA traits or adopt Jev Copilot 5 times", "習得 2 條語體習慣或採納軍師 5 次")
+            val activeDna = snapshot.jevDnaItems.count { it.isActive }
+            val prog = if (item.unlocked) {
+                AppStrings.pick(
+                    lang,
+                    item.progressText,
+                    "Unlocked · $activeDna traits / ${snapshot.jevTotalInteractions} uses",
+                    "已達成 · $activeDna 條習慣 / ${snapshot.jevTotalInteractions} 次採納"
+                )
+            } else {
+                AppStrings.pick(
+                    lang,
+                    item.progressText,
+                    "$activeDna/2 traits · ${snapshot.jevTotalInteractions}/5 uses",
+                    "$activeDna/2 習慣 · ${snapshot.jevTotalInteractions}/5 採納"
+                )
+            }
+            Triple(title, desc, prog)
+        }
+        else -> Triple(item.title, item.description, item.progressText)
+    }
+}
+
+internal fun localizedHeatmapDateLabel(cell: HeatmapDayCell, lang: AppLang): String {
+    val month = (cell.dateKey / 100) % 100
+    val day = cell.dateKey % 100
+    if (month !in 1..12 || day !in 1..31) return cell.dateLabel
+    return if (lang == AppLang.EN) {
+        val mShort = Month.of(month).getDisplayName(TextStyle.SHORT, Locale.US)
+        "$mShort $day"
+    } else {
+        "${month}月${day}日"
+    }
+}
+
+internal fun localizedMonthHeaderLabel(point: MonthlyTrendPoint, lang: AppLang): String {
+    if (point.month !in 1..12) return "${point.year} ${point.label}"
+    return if (lang == AppLang.EN) {
+        val mShort = Month.of(point.month).getDisplayName(TextStyle.SHORT, Locale.US)
+        "$mShort ${point.year}"
+    } else {
+        "${point.year}年${point.month}月"
+    }
+}
+
+internal fun localizedTokenFeatureLabel(key: String, fallbackLabel: String, lang: AppLang): String {
+    return when (key) {
+        TokenFeatureKeys.VOICE_POLISH -> AppStrings.pick(lang, "语音口述润色", "Voice Dictate & Polish", "語音口述潤飾")
+        TokenFeatureKeys.SPEAK_TO_EDIT -> AppStrings.pick(lang, "语音/快捷改写", "Voice / Quick Edit", "語音/快捷改寫")
+        TokenFeatureKeys.HELP_ME_WRITE -> AppStrings.pick(lang, "帮我写 / 灵感成稿", "Help Me Write", "幫我寫 / 靈感成稿")
+        TokenFeatureKeys.TRANSLATE -> AppStrings.pick(lang, "实时语音翻译", "Live Voice Translate", "即時語音翻譯")
+        TokenFeatureKeys.JEV_COPILOT -> AppStrings.pick(lang, "✦ Jev 军师", "✦ Jev Copilot", "✦ Jev 軍師")
+        TokenFeatureKeys.ASK_AI -> AppStrings.pick(lang, "问 AI / == 直问", "Ask AI", "問 AI / == 直問")
+        TokenFeatureKeys.SENTENCE_COMPLETION -> AppStrings.pick(lang, "AI 整句续写", "AI Sentence Completion", "AI 整句續寫")
+        TokenFeatureKeys.MULTIMODAL_AUDIO -> AppStrings.pick(lang, "多模态音频直出", "Multimodal Audio Direct", "多模態音訊直出")
+        TokenFeatureKeys.API_TEST -> AppStrings.pick(lang, "连通性实测", "API Connection Test", "連通性實測")
+        else -> fallbackLabel
+    }
+}
+
+private fun formatLocalizedVoiceDuration(durationMs: Long, lang: AppLang): String {
+    val totalSec = (durationMs.coerceAtLeast(0L) + 500L) / 1000L
+    if (totalSec <= 0L) return AppStrings.pick(lang, "0 秒", "0s", "0 秒")
+    val hours = totalSec / 3600L
+    val mins = (totalSec % 3600L) / 60L
+    val secs = totalSec % 60L
+    return if (lang == AppLang.EN) {
+        when {
+            hours > 0L -> "${hours}h ${mins}m"
+            mins > 0L -> "${mins}m ${secs}s"
+            else -> "${secs}s"
+        }
+    } else {
+        when {
+            hours > 0L -> AppStrings.pick(lang, "${hours}小时${mins}分", "${hours}h ${mins}m", "${hours}小時${mins}分")
+            mins > 0L -> "${mins}分${secs}秒"
+            else -> "${secs}秒"
+        }
+    }
+}
 
 @Composable
 fun InsightsScreen(
@@ -107,6 +522,7 @@ fun InsightsScreen(
     onOpenApiUsage: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val appLang = LocalAppLanguage.current
     val statsRevision by repository.dailyStatsRevision.collectAsState()
     val history by repository.history.collectAsState()
     val settings by repository.settings.collectAsState()
@@ -163,21 +579,24 @@ fun InsightsScreen(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     IconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                            contentDescription = "返回",
+                            contentDescription = tr("返回", "Back", "返回"),
                             tint = MaterialTheme.colorScheme.onBackground,
                             modifier = Modifier.size(24.dp)
                         )
                     }
                     Text(
-                        text = "表达洞察",
+                        text = tr("表达洞察", "Expression Insights", "表達洞察"),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.ExtraBold,
-                        color = MaterialTheme.colorScheme.onBackground
+                        color = MaterialTheme.colorScheme.onBackground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Box(
@@ -188,9 +607,10 @@ fun InsightsScreen(
                             .padding(horizontal = 7.dp, vertical = 2.dp)
                     ) {
                         Text(
-                            text = "永久统计",
+                            text = tr("永久统计", "Lifetime", "永久統計"),
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
+                            maxLines = 1,
                             color = if (LocalTypeFreeKeyboardPalette.current.isDark) {
                                 TypeFreeEmeraldLight
                             } else {
@@ -206,7 +626,12 @@ fun InsightsScreen(
                         if (isGlobalColdStart) {
                             Toast.makeText(
                                 context,
-                                "先说几句或打几行字，即可生成专属表达手账",
+                                AppStrings.pick(
+                                    appLang,
+                                    "先说几句或打几行字，即可生成专属表达手账",
+                                    "Dictate or type a few words first to generate your poster",
+                                    "先說幾句或打幾行字，即可產生專屬表達手賬"
+                                ),
                                 Toast.LENGTH_SHORT
                             ).show()
                         } else {
@@ -240,9 +665,10 @@ fun InsightsScreen(
                             modifier = Modifier.size(13.dp)
                         )
                         Text(
-                            text = "定制手账",
+                            text = tr("定制手账", "Poster", "定製手賬"),
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
+                            maxLines = 1,
                             color = if (isGlobalColdStart) {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             } else {
@@ -276,7 +702,9 @@ fun InsightsScreen(
             } else {
                 // 1. Time Range Segmented Control
                 SpringSegmentedControl(
-                    options = StatsTimeRange.entries.map { it.label },
+                    options = StatsTimeRange.entries.map { range ->
+                        localizedRangeLabel(range, appLang)
+                    },
                     selectedIndex = StatsTimeRange.entries.indexOf(selectedRange),
                     onSelect = { idx ->
                         selectedRange = StatsTimeRange.entries.getOrElse(idx) { StatsTimeRange.DAYS_7 }
@@ -286,7 +714,7 @@ fun InsightsScreen(
 
                 if (isRangeQuietOnly) {
                     InsightsRangeQuietCard(
-                        rangeLabel = selectedRange.label,
+                        rangeLabel = localizedRangeLabel(selectedRange, appLang),
                         lifetimeChars = snapshot.lifetimeTotalChars,
                         lifetimeDays = snapshot.lifetimeActiveDays,
                         onSwitchToAll = { selectedRange = StatsTimeRange.ALL },
@@ -301,7 +729,7 @@ fun InsightsScreen(
                 }
 
                 // 3.5 Unified Model Token & Voice Duration Observability Card
-                TokenUsageObservabilityCard(
+                LocalizedTokenUsageObservabilityCard(
                     repository = repository,
                     externalRange = selectedRange
                 )
@@ -413,14 +841,22 @@ private fun InsightsColdStartCard(
             }
 
             Text(
-                text = "正在认识你的表达习惯",
+                text = tr(
+                    "正在认识你的表达习惯",
+                    "Getting to Know Your Style",
+                    "正在認識你的表達習慣"
+                ),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.ExtraBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
 
             Text(
-                text = "当你开口说话或敲击键盘时，TypeFree 会在本机记录纯数字的表达节奏、语音与键盘比例，以及 Jev 军师的语体偏好——不保存任何原文，无痕与密码框自动零计数。",
+                text = tr(
+                    "当你开口说话或敲击键盘时，TypeFree 会在本机记录纯数字的表达节奏、语音与键盘比例，以及 Jev 军师的语体偏好——不保存任何原文，无痕与密码框自动零计数。",
+                    "As you dictate or type, TypeFree tallies pure numeric metrics on-device — your voice vs. keyboard ratio, 24h rhythm, and Jev style preferences — with zero raw text stored and zero tracking in Incognito or password fields.",
+                    "當你開口說話或敲擊鍵盤時，TypeFree 會在本機記錄純數字的表達節奏、語音與鍵盤比例，以及 Jev 軍師的語體偏好——不儲存任何原文，無痕與密碼框自動零計數。"
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -433,7 +869,11 @@ private fun InsightsColdStartCard(
                     .padding(top = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                listOf("双轨字数账单", "24h 作息节律", "零正文端侧统计").forEach { tag ->
+                listOf(
+                    tr("双轨字数账单", "Dual-Track", "雙軌字數帳單"),
+                    tr("24h 作息节律", "24h Rhythm", "24h 作息節律"),
+                    tr("零正文端侧统计", "Zero-Text Local", "零正文端側統計")
+                ).forEach { tag ->
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -477,7 +917,7 @@ private fun InsightsColdStartCard(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "去语音沙盒试说一下",
+                    text = tr("去语音沙盒试说一下", "Try Voice Sandbox", "去語音沙盒試說一下"),
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -493,17 +933,25 @@ private fun InsightsRangeQuietCard(
     onSwitchToAll: () -> Unit,
     onOpenPlayground: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
+    val charsFormatted = formatInsightsCompactChars(lifetimeChars, appLang)
     InsightsCard {
         Text(
-            text = "${rangeLabel}暂无新的输入记录",
+            text = tr(
+                "${rangeLabel}暂无新的输入记录",
+                "No input activity in $rangeLabel",
+                "${rangeLabel}尚無新的輸入記錄"
+            ),
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface
         )
         Text(
-            text = "你在 TypeFree 已累计陪伴 $lifetimeDays 天、共表达 ${
-                formatChartCompactChars(lifetimeChars)
-            } 字，可切换到「全部」查看完整累计数据。",
+            text = tr(
+                "你在 TypeFree 已累计陪伴 $lifetimeDays 天、共表达 $charsFormatted 字，可切换到「全部」查看完整累计数据。",
+                "You've used TypeFree across $lifetimeDays active days ($charsFormatted chars total). Switch to 'All' to view your full history.",
+                "你在 TypeFree 已累計陪伴 $lifetimeDays 天、共表達 $charsFormatted 字，可切換到「全部」檢視完整累計資料。"
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             lineHeight = 19.sp
@@ -521,7 +969,12 @@ private fun InsightsRangeQuietCard(
                 ),
                 modifier = Modifier.weight(1f)
             ) {
-                Text(text = "查看全部累计", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                Text(
+                    text = tr("查看全部累计", "View All-Time", "檢視全部累計"),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.5.sp,
+                    maxLines = 1
+                )
             }
             Surface(
                 onClick = onOpenPlayground,
@@ -534,9 +987,10 @@ private fun InsightsRangeQuietCard(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "去语音沙盒试试",
+                        text = tr("去语音沙盒试试", "Voice Sandbox", "去語音沙盒試試"),
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 12.5.sp,
+                        maxLines = 1,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
@@ -547,18 +1001,18 @@ private fun InsightsRangeQuietCard(
 
 @Composable
 private fun HeroExpressionCard(snapshot: InsightsSnapshot) {
+    val appLang = LocalAppLanguage.current
     val isDark = LocalTypeFreeKeyboardPalette.current.isDark
     val emerald = if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald
 
     InsightsCard {
-        // Header + Streak badge
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "解放双手 · 全量表达",
+                text = tr("解放双手 · 全量表达", "Hands-Free · Total Expression", "解放雙手 · 全量表達"),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -577,12 +1031,21 @@ private fun HeroExpressionCard(snapshot: InsightsSnapshot) {
             ) {
                 Text(
                     text = if (snapshot.streakDays > 0) {
-                        "🔥 连续 ${snapshot.streakDays} 天"
+                        tr(
+                            "🔥 连续 ${snapshot.streakDays} 天",
+                            "🔥 ${snapshot.streakDays}d Streak",
+                            "🔥 連續 ${snapshot.streakDays} 天"
+                        )
                     } else {
-                        "活跃 ${snapshot.activeDaysInRange} 天"
+                        tr(
+                            "活跃 ${snapshot.activeDaysInRange} 天",
+                            "${snapshot.activeDaysInRange}d Active",
+                            "活躍 ${snapshot.activeDaysInRange} 天"
+                        )
                     },
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
                     color = if (snapshot.streakDays > 0) {
                         if (isDark) TypeFreeAmber else Color(0xFFB45309)
                     } else {
@@ -600,7 +1063,7 @@ private fun HeroExpressionCard(snapshot: InsightsSnapshot) {
         ) {
             Row(verticalAlignment = Alignment.Bottom) {
                 RollingDigitCounter(
-                    text = formatChartCompactChars(snapshot.totalChars),
+                    text = formatInsightsCompactChars(snapshot.totalChars, appLang),
                     style = MaterialTheme.typography.displaySmall.copy(
                         fontSize = 38.sp,
                         lineHeight = 42.sp,
@@ -611,10 +1074,12 @@ private fun HeroExpressionCard(snapshot: InsightsSnapshot) {
                 )
                 Spacer(modifier = Modifier.width(5.dp))
                 Text(
-                    text = "字",
+                    text = tr("字", "chars", "字"),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
                     modifier = Modifier.padding(bottom = 5.dp)
                 )
             }
@@ -630,10 +1095,12 @@ private fun HeroExpressionCard(snapshot: InsightsSnapshot) {
                     horizontalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
                     Text(
-                        text = "省下",
+                        text = tr("省下", "Saved", "省下"),
                         fontSize = 11.sp,
                         color = emerald,
-                        fontWeight = FontWeight.Medium
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        softWrap = false
                     )
                     RollingDigitCounter(
                         text = "${snapshot.savedMinutes}",
@@ -642,30 +1109,40 @@ private fun HeroExpressionCard(snapshot: InsightsSnapshot) {
                         fontWeight = FontWeight.ExtraBold
                     )
                     Text(
-                        text = "分钟",
+                        text = tr("分钟", "min", "分鐘"),
                         fontSize = 11.sp,
                         color = emerald,
-                        fontWeight = FontWeight.Medium
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }
         }
 
-        // Measured WPM & Latency readout (never faked)
+        // Measured WPM & Latency readout
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            val multStr = String.format(Locale.US, "%.1f", snapshot.speedMultiplier)
             val speedSummary = if (snapshot.hasMeasuredWpm) {
-                "实测口述 ${snapshot.averageWpm} 字/分（约 ${
-                    String.format(Locale.US, "%.1f", snapshot.speedMultiplier)
-                }× 拇指打字）"
+                tr(
+                    "实测口述 ${snapshot.averageWpm} 字/分（约 ${multStr}× 拇指打字）",
+                    "Measured ${snapshot.averageWpm} CPM (~${multStr}× thumb typing)",
+                    "實測口述 ${snapshot.averageWpm} 字/分（約 ${multStr}× 拇指打字）"
+                )
             } else {
-                "口述满 3 秒后自动测算实测语速"
+                tr(
+                    "口述满 3 秒后自动测算实测语速",
+                    "Speak for 3s+ to measure live dictation speed",
+                    "口述滿 3 秒後自動測算實測語速"
+                )
             }
             val latencySuffix = if (snapshot.avgLatencyMs > 0L) {
-                " · 响应 ${formatLatency(snapshot.avgLatencyMs)}"
+                val lat = formatLatency(snapshot.avgLatencyMs)
+                tr(" · 响应 $lat", " · Latency $lat", " · 回應 $lat")
             } else {
                 ""
             }
@@ -676,8 +1153,10 @@ private fun HeroExpressionCard(snapshot: InsightsSnapshot) {
             )
         }
 
-        // Dynamic Metaphor Line
-        if (snapshot.metaphorLine.isNotBlank()) {
+        val metaphorText = remember(snapshot, appLang) {
+            localizedMetaphorLine(snapshot, appLang)
+        }
+        if (metaphorText.isNotBlank()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -686,7 +1165,7 @@ private fun HeroExpressionCard(snapshot: InsightsSnapshot) {
                     .padding(horizontal = 12.dp, vertical = 9.dp)
             ) {
                 Text(
-                    text = snapshot.metaphorLine,
+                    text = metaphorText,
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurface
@@ -695,7 +1174,7 @@ private fun HeroExpressionCard(snapshot: InsightsSnapshot) {
         }
 
         // Dual Track Ratio Bar
-        DualTrackRatioBar(
+        LocalizedDualTrackRatioBar(
             voiceChars = snapshot.voiceChars,
             keyChars = snapshot.keyChars
         )
@@ -757,9 +1236,17 @@ private fun HeroExpressionCard(snapshot: InsightsSnapshot) {
             )
             Text(
                 text = if (snapshot.hasOfflineSplitData) {
-                    "本机离线引擎静默护航 ${snapshot.offlinePercent}% · 0 字节出网"
+                    tr(
+                        "本机离线引擎静默护航 ${snapshot.offlinePercent}% · 0 字节出网",
+                        "On-device offline AI handled ${snapshot.offlinePercent}% · 0 bytes sent",
+                        "本機離線引擎靜默護航 ${snapshot.offlinePercent}% · 0 位元組出網"
+                    )
                 } else {
-                    "本机纯数字累计护航 · 不保存也不上传任何正文"
+                    tr(
+                        "本机纯数字累计护航 · 不保存也不上传任何正文",
+                        "100% local numeric stats · Zero raw text stored or uploaded",
+                        "本機純數字累計護航 · 不儲存也不上傳任何正文"
+                    )
                 },
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.SemiBold,
@@ -772,10 +1259,148 @@ private fun HeroExpressionCard(snapshot: InsightsSnapshot) {
 }
 
 @Composable
+private fun LocalizedDualTrackRatioBar(
+    voiceChars: Int,
+    keyChars: Int,
+    modifier: Modifier = Modifier
+) {
+    val appLang = LocalAppLanguage.current
+    val safeVoice = voiceChars.coerceAtLeast(0)
+    val safeKey = keyChars.coerceAtLeast(0)
+    val total = safeVoice + safeKey
+    val voicePercent = if (total > 0) ((safeVoice * 100f) / total).toInt().coerceIn(0, 100) else 0
+    val keyPercent = if (total > 0) (100 - voicePercent).coerceIn(0, 100) else 0
+
+    val targetVoiceFrac = if (total > 0) safeVoice.toFloat() / total.toFloat() else 0f
+    val animatedVoiceFrac by animateFloatAsState(
+        targetValue = targetVoiceFrac,
+        animationSpec = spring(dampingRatio = 0.80f, stiffness = 340f),
+        label = "dualTrackVoiceFraction"
+    )
+
+    val isDark = LocalTypeFreeKeyboardPalette.current.isDark
+    val voiceColor = if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald
+    val keyColor = MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.72f else 0.78f)
+    val emptyTrackColor = MaterialTheme.colorScheme.surfaceVariant
+    val unitStr = tr("字", "chars", "字")
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(voiceColor)
+                )
+                Text(
+                    text = tr("语音口述 $voicePercent%", "Voice $voicePercent%", "語音口述 $voicePercent%"),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1
+                )
+                Text(
+                    text = "${formatInsightsCompactChars(safeVoice, appLang)} $unitStr",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Text(
+                    text = "${formatInsightsCompactChars(safeKey, appLang)} $unitStr",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false
+                )
+                Text(
+                    text = tr("键盘 $keyPercent%", "Keyboard $keyPercent%", "鍵盤 $keyPercent%"),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1
+                )
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(keyColor)
+                )
+            }
+        }
+
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(10.dp)
+        ) {
+            if (size.width <= 1f || size.height <= 1f) return@Canvas
+            val radius = CornerRadius(size.height / 2f, size.height / 2f)
+            if (total <= 0) {
+                drawRoundRect(
+                    color = emptyTrackColor,
+                    size = size,
+                    cornerRadius = radius
+                )
+                return@Canvas
+            }
+
+            val gap = 2.5.dp.toPx()
+            val minSeg = 8.dp.toPx().coerceAtMost(size.width * 0.25f)
+
+            when {
+                safeVoice > 0 && safeKey == 0 -> {
+                    drawRoundRect(color = voiceColor, size = size, cornerRadius = radius)
+                }
+                safeKey > 0 && safeVoice == 0 -> {
+                    drawRoundRect(color = keyColor, size = size, cornerRadius = radius)
+                }
+                else -> {
+                    val usableWidth = (size.width - gap).coerceAtLeast(minSeg * 2f)
+                    val voiceWidth = (usableWidth * animatedVoiceFrac).coerceIn(minSeg, usableWidth - minSeg)
+                    val keyWidth = (usableWidth - voiceWidth).coerceAtLeast(minSeg)
+
+                    drawRoundRect(
+                        color = voiceColor,
+                        topLeft = Offset.Zero,
+                        size = Size(voiceWidth, size.height),
+                        cornerRadius = radius
+                    )
+                    drawRoundRect(
+                        color = keyColor,
+                        topLeft = Offset(voiceWidth + gap, 0f),
+                        size = Size(keyWidth, size.height),
+                        cornerRadius = radius
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SchemeMiniTile(
     item: SchemeShareItem,
     modifier: Modifier = Modifier
 ) {
+    val appLang = LocalAppLanguage.current
     val tileShape = ContinuousRoundedCornerShape(14.dp)
     val animatedPct by animateFloatAsState(
         targetValue = (item.percent / 100f).coerceIn(0.04f, 1f),
@@ -795,7 +1420,7 @@ private fun SchemeMiniTile(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = item.displayName,
+                text = localizedSchemeShareName(item, appLang),
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -803,17 +1428,22 @@ private fun SchemeMiniTile(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
+            Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = "${item.percent}%",
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false
             )
         }
         Text(
-            text = "${formatChartCompactChars(item.chars)} 字",
+            text = "${formatInsightsCompactChars(item.chars, appLang)} ${tr("字", "chars", "字")}",
             fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false
         )
         Box(
             modifier = Modifier
@@ -835,6 +1465,7 @@ private fun SchemeMiniTile(
 
 @Composable
 private fun EfficiencyBillCard(snapshot: InsightsSnapshot) {
+    val appLang = LocalAppLanguage.current
     val isDark = LocalTypeFreeKeyboardPalette.current.isDark
     val emerald = if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald
     val tileShape = ContinuousRoundedCornerShape(16.dp)
@@ -846,13 +1477,13 @@ private fun EfficiencyBillCard(snapshot: InsightsSnapshot) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "⚡ 少敲键效率账单",
+                text = tr("⚡ 少敲键效率账单", "⚡ Keystroke Savings", "⚡ 少敲鍵效率帳單"),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                text = "短语 · 联想 · 杠杆",
+                text = tr("短语 · 联想 · 杠杆", "Snippets · L2 · AI", "短語 · 聯想 · 槓桿"),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -871,29 +1502,39 @@ private fun EfficiencyBillCard(snapshot: InsightsSnapshot) {
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    text = "快捷短语命中",
+                    text = tr("快捷短语命中", "Slash Snippets", "快捷短語命中"),
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Row(verticalAlignment = Alignment.Bottom) {
                     RollingDigitCounter(
-                        text = formatChartCompactChars(snapshot.snippetSavedChars),
+                        text = formatInsightsCompactChars(snapshot.snippetSavedChars, appLang),
                         style = MaterialTheme.typography.headlineSmall.copy(fontSize = 24.sp),
                         color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.ExtraBold
                     )
                     Spacer(modifier = Modifier.width(3.dp))
                     Text(
-                        text = "字",
+                        text = tr("字", "chars", "字"),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
                         modifier = Modifier.padding(bottom = 3.dp)
                     )
                 }
                 Text(
-                    text = "省下输入 · 触发 ${snapshot.snippetHits} 次",
+                    text = tr(
+                        "省下输入 · 触发 ${snapshot.snippetHits} 次",
+                        "Saved · ${snapshot.snippetHits} hits",
+                        "省下輸入 · 觸發 ${snapshot.snippetHits} 次"
+                    ),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
@@ -906,29 +1547,39 @@ private fun EfficiencyBillCard(snapshot: InsightsSnapshot) {
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    text = "L2 私人联想采纳",
+                    text = tr("L2 私人联想采纳", "L2 Predictions", "L2 私人聯想採納"),
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Row(verticalAlignment = Alignment.Bottom) {
                     RollingDigitCounter(
-                        text = formatChartCompactChars(snapshot.predictionSavedKeys),
+                        text = formatInsightsCompactChars(snapshot.predictionSavedKeys, appLang),
                         style = MaterialTheme.typography.headlineSmall.copy(fontSize = 24.sp),
                         color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.ExtraBold
                     )
                     Spacer(modifier = Modifier.width(3.dp))
                     Text(
-                        text = "键",
+                        text = tr("键", "keys", "鍵"),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
                         modifier = Modifier.padding(bottom = 3.dp)
                     )
                 }
                 Text(
-                    text = "免敲按键 · 采纳 ${snapshot.predictionHits} 次",
+                    text = tr(
+                        "免敲按键 · 采纳 ${snapshot.predictionHits} 次",
+                        "Saved · ${snapshot.predictionHits} adopts",
+                        "免敲按鍵 · 採納 ${snapshot.predictionHits} 次"
+                    ),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -946,24 +1597,508 @@ private fun EfficiencyBillCard(snapshot: InsightsSnapshot) {
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "「帮我写」平均表达杠杆倍率",
+                        text = tr("「帮我写」平均表达杠杆倍率", "\"Help Write\" Expansion Leverage", "「幫我寫」平均表達槓桿倍率"),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "简短口述扩展为完整可发送成文",
+                        text = tr(
+                            "简短口述扩展为完整可发送成文",
+                            "Brief voice prompts expanded into ready-to-send drafts",
+                            "簡短口述擴展為完整可傳送成文"
+                        ),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = "${String.format(Locale.US, "%.1f", snapshot.helpWriteLeverage)}×",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.ExtraBold,
-                    color = emerald
+                    color = emerald,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LocalizedTokenUsageObservabilityCard(
+    repository: AppRepository,
+    externalRange: StatsTimeRange
+) {
+    val appLang = LocalAppLanguage.current
+    val statsRevision by repository.dailyStatsRevision.collectAsState()
+    var breakdownTab by rememberSaveable { mutableIntStateOf(0) }
+
+    val snapshot: TokenUsageSnapshot = remember(externalRange, statsRevision) {
+        repository.computeTokenUsageSnapshot(externalRange)
+    }
+
+    val isDark = LocalTypeFreeKeyboardPalette.current.isDark
+    val emerald = if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald
+    val promptColor = if (isDark) Color(0xFF60A5FA) else Color(0xFF2563EB)
+    val cachedColor = emerald
+    val outputColor = if (isDark) Color(0xFFA78BFA) else Color(0xFF7C3AED)
+    val reasoningColor = TypeFreeAmber
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = ContinuousRoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.50f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = tr("模型 Token 与语音时长用量", "Model Tokens & Voice Duration", "模型 Token 與語音時長用量"),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = tr(
+                            "纯用量观测 · 不做费用估算 · 无痕自动零计数",
+                            "Pure usage telemetry · No price estimates · Zero count in Incognito",
+                            "純用量觀測 · 不做費用估算 · 無痕自動零計數"
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                if (snapshot.estimatedCallCount > 0) {
+                    Surface(
+                        shape = CircleShape,
+                        color = TypeFreeAmber.copy(alpha = 0.14f),
+                        border = BorderStroke(0.6.dp, TypeFreeAmber.copy(alpha = 0.45f))
+                    ) {
+                        Text(
+                            text = tr("含估算", "Est.", "含估算"),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TypeFreeAmber,
+                            maxLines = 1,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+            }
+
+            if (!snapshot.hasData) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = ContinuousRoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                ) {
+                    Text(
+                        text = tr(
+                            "当前时间范围暂无模型 Token 或语音转写记录。发起语音润色、帮我写、军师或问 AI 后，这里会自动统计真实用量。",
+                            "No model token or voice transcription records in this range yet. Real usage appears here after using Dictate, Help Write, Jev Copilot, or Ask AI.",
+                            "目前時間範圍尚無模型 Token 或語音轉寫記錄。發起語音潤飾、幫我寫、軍師或問 AI 後，這裡會自動統計真實用量。"
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 19.sp,
+                        modifier = Modifier.padding(14.dp)
+                    )
+                }
+            } else {
+                val rangeLbl = localizedRangeLabel(externalRange, appLang)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = tr("${rangeLbl}云端模型消耗", "$rangeLbl Cloud Token Usage", "${rangeLbl}雲端模型消耗"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            verticalAlignment = Alignment.Bottom,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            RollingDigitCounter(
+                                text = formatCompactTokens(snapshot.totalTokens),
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Tokens",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(bottom = 4.dp)
+                            )
+                        }
+                        if (snapshot.totalTokens >= 1_000_000L) {
+                            val exact = String.format(Locale.US, "%,d", snapshot.totalTokens.coerceAtLeast(0L))
+                            Text(
+                                text = tr("精确累计 $exact Tokens", "Exact total: $exact Tokens", "精確累計 $exact Tokens"),
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    if (snapshot.cacheHitPercent > 0) {
+                        Surface(
+                            shape = CircleShape,
+                            color = emerald.copy(alpha = 0.14f),
+                            border = BorderStroke(0.6.dp, emerald.copy(alpha = 0.40f))
+                        ) {
+                            Text(
+                                text = tr(
+                                    "缓存命中 ${snapshot.cacheHitPercent}%",
+                                    "Cached ${snapshot.cacheHitPercent}%",
+                                    "快取命中 ${snapshot.cacheHitPercent}%"
+                                ),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = emerald,
+                                maxLines = 1,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+
+                if (snapshot.totalTokens > 0L) {
+                    val total = snapshot.totalTokens.coerceAtLeast(1L).toFloat()
+                    val segments = remember(snapshot) {
+                        listOf(
+                            snapshot.uncachedPromptTokens to promptColor,
+                            snapshot.cachedTokens to cachedColor,
+                            snapshot.visibleOutputTokens to outputColor,
+                            snapshot.reasoningTokens to reasoningColor
+                        ).filter { it.first > 0L }
+                    }
+                    if (segments.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(10.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            segments.forEach { (count, color) ->
+                                val targetWeight = (count.toFloat() / total).coerceAtLeast(0.03f)
+                                val animWeight by animateFloatAsState(
+                                    targetValue = targetWeight,
+                                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                    label = "tokenSegWeight"
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .weight(animWeight)
+                                        .fillMaxHeight()
+                                        .background(color)
+                                )
+                            }
+                        }
+                    }
+
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        LocalizedTokenLegendChip(
+                            dotColor = promptColor,
+                            label = tr("输入", "Input", "輸入"),
+                            value = formatCompactTokens(snapshot.uncachedPromptTokens)
+                        )
+                        if (snapshot.cachedTokens > 0L) {
+                            LocalizedTokenLegendChip(
+                                dotColor = cachedColor,
+                                label = tr("缓存命中", "Cached", "快取命中"),
+                                value = formatCompactTokens(snapshot.cachedTokens)
+                            )
+                        }
+                        LocalizedTokenLegendChip(
+                            dotColor = outputColor,
+                            label = tr("输出", "Output", "輸出"),
+                            value = formatCompactTokens(snapshot.visibleOutputTokens)
+                        )
+                        if (snapshot.reasoningTokens > 0L) {
+                            LocalizedTokenLegendChip(
+                                dotColor = reasoningColor,
+                                label = tr("思考推理", "Reasoning", "思考推理"),
+                                value = formatCompactTokens(snapshot.reasoningTokens)
+                            )
+                        }
+                    }
+                }
+
+                if (snapshot.byFeature.isNotEmpty() || snapshot.byModel.isNotEmpty()) {
+                    HorizontalDivider(
+                        thickness = 0.6.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.30f)
+                    )
+
+                    SpringSegmentedControl(
+                        options = listOf(
+                            tr("按功能分布", "By Feature", "按功能分佈"),
+                            tr("按模型分布", "By Model", "按模型分佈")
+                        ),
+                        selectedIndex = breakdownTab,
+                        onSelect = { breakdownTab = it },
+                        compact = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    val activeList = if (breakdownTab == 0) snapshot.byFeature else snapshot.byModel
+                    val barTint = if (breakdownTab == 0) promptColor else outputColor
+                    if (activeList.isEmpty()) {
+                        Text(
+                            text = if (breakdownTab == 0) {
+                                tr("暂无功能明细", "No feature breakdown yet", "尚無功能明細")
+                            } else {
+                                tr("暂无模型明细", "No model breakdown yet", "尚無模型明細")
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            activeList.forEach { item ->
+                                val displayLabel = if (breakdownTab == 0) {
+                                    localizedTokenFeatureLabel(item.key, item.label, appLang)
+                                } else {
+                                    item.label
+                                }
+                                LocalizedTokenBreakdownRow(
+                                    item = item,
+                                    displayLabel = displayLabel,
+                                    isMonospaceLabel = breakdownTab == 1,
+                                    barColor = barTint
+                                )
+                            }
+                        }
+                    }
+                }
+
+                val totalVoiceDurMs = snapshot.cloudVoiceDurationMs + snapshot.offlineVoiceDurationMs
+                if (totalVoiceDurMs > 0L || snapshot.offlineSavedCloudCalls > 0) {
+                    HorizontalDivider(
+                        thickness = 0.6.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.30f)
+                    )
+                    val totalMs = totalVoiceDurMs.coerceAtLeast(1L)
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = tr("语音转写时长分布", "Voice Transcription Duration", "語音轉寫時長分佈"),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            if (snapshot.offlineSavedCloudCalls > 0) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .background(emerald.copy(alpha = 0.13f))
+                                        .border(0.6.dp, emerald.copy(alpha = 0.35f), CircleShape)
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = tr(
+                                            "本机离线免去 ${snapshot.offlineSavedCloudCalls} 次云端调用",
+                                            "Saved ${snapshot.offlineSavedCloudCalls} cloud calls offline",
+                                            "本機離線免去 ${snapshot.offlineSavedCloudCalls} 次雲端呼叫"
+                                        ),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = emerald,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+
+                        if (snapshot.cloudVoiceDurationMs > 0L || snapshot.offlineVoiceDurationMs > 0L) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                if (snapshot.cloudVoiceDurationMs > 0L) {
+                                    Box(
+                                        modifier = Modifier
+                                            .weight((snapshot.cloudVoiceDurationMs.toFloat() / totalMs.toFloat()).coerceAtLeast(0.04f))
+                                            .fillMaxHeight()
+                                            .background(promptColor)
+                                    )
+                                }
+                                if (snapshot.offlineVoiceDurationMs > 0L) {
+                                    Box(
+                                        modifier = Modifier
+                                            .weight((snapshot.offlineVoiceDurationMs.toFloat() / totalMs.toFloat()).coerceAtLeast(0.04f))
+                                            .fillMaxHeight()
+                                            .background(emerald)
+                                    )
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                LocalizedTokenLegendChip(
+                                    dotColor = promptColor,
+                                    label = tr("云端转写", "Cloud ASR", "雲端轉寫"),
+                                    value = formatLocalizedVoiceDuration(snapshot.cloudVoiceDurationMs, appLang)
+                                )
+                                LocalizedTokenLegendChip(
+                                    dotColor = emerald,
+                                    label = tr("本机离线", "Offline ASR", "本機離線"),
+                                    value = formatLocalizedVoiceDuration(snapshot.offlineVoiceDurationMs, appLang)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Text(
+                text = tr(
+                    "注：仅统计接口返回的 usage 实测值；若第三方反代未回传 usage，会按字符数估算并标记「含估算」。数据仅存于本机。",
+                    "Note: Tallies provider-reported token usage (approximated and badged 'Est.' if a gateway omits usage metadata). Stored strictly on-device.",
+                    "註：僅統計介面回傳的 usage 實測值；若第三方反代未回傳 usage，會按字元數估算並標記「含估算」。資料僅存於本機。"
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                lineHeight = 16.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun LocalizedTokenLegendChip(
+    dotColor: Color,
+    label: String,
+    value: String
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(7.dp)
+                .clip(CircleShape)
+                .background(dotColor)
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = FontFamily.Monospace,
+                fontFeatureSettings = "tnum"
+            ),
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            softWrap = false
+        )
+    }
+}
+
+@Composable
+private fun LocalizedTokenBreakdownRow(
+    item: TokenShareItem,
+    displayLabel: String,
+    isMonospaceLabel: Boolean,
+    barColor: Color
+) {
+    val progress by animateFloatAsState(
+        targetValue = (item.percent / 100f).coerceIn(0.02f, 1f),
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "tokenBreakdownBar"
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = displayLabel,
+                style = if (isMonospaceLabel) {
+                    MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                } else {
+                    MaterialTheme.typography.bodySmall
+                },
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "${formatCompactTokens(item.tokens)} · ${item.percent}%",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontFeatureSettings = "tnum"
+                ),
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(5.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(progress)
+                    .fillMaxHeight()
+                    .clip(CircleShape)
+                    .background(barColor.copy(alpha = 0.85f))
+            )
         }
     }
 }
@@ -973,6 +2108,7 @@ private fun GrowthTrajectoryCard(
     snapshot: InsightsSnapshot,
     onOpenHistoryForDate: (Int?) -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     var trajectoryTab by rememberSaveable { mutableIntStateOf(0) }
 
     val defaultMonth = remember(snapshot.monthlyTrend) {
@@ -991,6 +2127,8 @@ private fun GrowthTrajectoryCard(
         mutableStateOf(defaultHeatmapDateKey)
     }
 
+    val lifetimeCharsStr = formatInsightsCompactChars(snapshot.lifetimeTotalChars, appLang)
+
     InsightsCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -999,30 +2137,36 @@ private fun GrowthTrajectoryCard(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "陪伴成长轨迹",
+                    text = tr("陪伴成长轨迹", "Growth Trajectory", "陪伴成長軌跡"),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "累计陪伴 ${snapshot.lifetimeActiveDays} 天 · 累计 ${
-                        formatChartCompactChars(snapshot.lifetimeTotalChars)
-                    } 字",
+                    text = tr(
+                        "累计陪伴 ${snapshot.lifetimeActiveDays} 天 · 累计 $lifetimeCharsStr 字",
+                        "${snapshot.lifetimeActiveDays} active days · $lifetimeCharsStr chars lifetime",
+                        "累計陪伴 ${snapshot.lifetimeActiveDays} 天 · 累計 $lifetimeCharsStr 字"
+                    ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            Spacer(modifier = Modifier.width(6.dp))
             SpringSegmentedControl(
-                options = listOf("月度趋势", "热力格"),
+                options = listOf(
+                    tr("月度趋势", "Monthly", "月度趨勢"),
+                    tr("热力格", "Heatmap", "熱力格")
+                ),
                 selectedIndex = trajectoryTab,
                 onSelect = { trajectoryTab = it },
                 compact = true,
-                modifier = Modifier.width(136.dp)
+                modifier = Modifier.width(142.dp)
             )
         }
 
         if (trajectoryTab == 0) {
-            MonthlyStackedTrendChart(
+            LocalizedMonthlyStackedTrendChart(
                 points = snapshot.monthlyTrend,
                 selectedMonth = selectedMonth,
                 onSelectMonth = { selectedMonth = it.month }
@@ -1039,26 +2183,33 @@ private fun GrowthTrajectoryCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "${activePoint.year}年${activePoint.label}",
+                        text = localizedMonthHeaderLabel(activePoint, appLang),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                    val totStr = formatInsightsCompactChars(activePoint.totalChars, appLang)
+                    val vStr = formatInsightsCompactChars(activePoint.voiceChars, appLang)
+                    val kStr = formatInsightsCompactChars(activePoint.keyChars, appLang)
                     Text(
                         text = if (activePoint.totalChars > 0) {
-                            "共 ${formatChartCompactChars(activePoint.totalChars)} 字 · 语音 ${
-                                formatChartCompactChars(activePoint.voiceChars)
-                            } / 键盘 ${formatChartCompactChars(activePoint.keyChars)}"
+                            tr(
+                                "共 $totStr 字 · 语音 $vStr / 键盘 $kStr",
+                                "$totStr chars · Voice $vStr / Key $kStr",
+                                "共 $totStr 字 · 語音 $vStr / 鍵盤 $kStr"
+                            )
                         } else {
-                            "本月暂无输入记录"
+                            tr("本月暂无输入记录", "No records this month", "本月尚無輸入記錄")
                         },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
         } else {
-            CalendarHeatmapGrid(
+            LocalizedCalendarHeatmapGrid(
                 days = snapshot.heatmapDays,
                 selectedDateKey = selectedHeatmapKey,
                 onSelectDay = { selectedHeatmapKey = it.dateKey }
@@ -1075,18 +2226,24 @@ private fun GrowthTrajectoryCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
+                        val dateStr = localizedHeatmapDateLabel(activeCell, appLang)
+                        val totStr = formatInsightsCompactChars(activeCell.totalChars, appLang)
+                        val vStr = formatInsightsCompactChars(activeCell.voiceChars, appLang)
+                        val kStr = formatInsightsCompactChars(activeCell.keyChars, appLang)
                         Text(
-                            text = "${activeCell.dateLabel} · 共 ${
-                                formatChartCompactChars(activeCell.totalChars)
-                            } 字",
+                            text = tr(
+                                "$dateStr · 共 $totStr 字",
+                                "$dateStr · $totStr chars",
+                                "$dateStr · 共 $totStr 字"
+                            ),
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         val detail = buildString {
-                            append("语音 ${formatChartCompactChars(activeCell.voiceChars)} · 键盘 ${formatChartCompactChars(activeCell.keyChars)}")
+                            append(tr("语音 $vStr · 键盘 $kStr", "Voice $vStr · Key $kStr", "語音 $vStr · 鍵盤 $kStr"))
                             if (activeCell.topAppName.isNotBlank()) {
-                                append(" · 常用于 ${activeCell.topAppName}")
+                                append(tr(" · 常用于 ${activeCell.topAppName}", " · Top: ${activeCell.topAppName}", " · 常用於 ${activeCell.topAppName}"))
                             }
                         }
                         Text(
@@ -1112,10 +2269,11 @@ private fun GrowthTrajectoryCard(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "看当日",
+                                text = tr("看当日", "History", "看當日"),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1
                             )
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -1132,7 +2290,358 @@ private fun GrowthTrajectoryCard(
 }
 
 @Composable
+private fun LocalizedCalendarHeatmapGrid(
+    days: List<HeatmapDayCell>,
+    selectedDateKey: Int?,
+    onSelectDay: (HeatmapDayCell) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val appLang = LocalAppLanguage.current
+    if (days.isEmpty()) {
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .height(84.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = tr("暂无热力足迹数据", "No heatmap data yet", "尚無熱力足跡資料"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        return
+    }
+
+    val isDark = LocalTypeFreeKeyboardPalette.current.isDark
+    val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val selectionRingColor = if (isDark) TypeFreeAmber else MaterialTheme.colorScheme.onSurface
+
+    fun levelColor(level: Int): Color = when (level.coerceIn(0, 4)) {
+        0 -> surfaceVariant.copy(alpha = if (isDark) 0.55f else 0.90f)
+        1 -> TypeFreeEmerald.copy(alpha = if (isDark) 0.28f else 0.24f)
+        2 -> TypeFreeEmerald.copy(alpha = if (isDark) 0.55f else 0.52f)
+        3 -> if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald
+        else -> primaryColor
+    }
+
+    val columns = if (days.size <= 28) 7 else 14
+    val rows = remember(days, columns) { days.chunked(columns) }
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        rows.forEach { rowCells ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+            ) {
+                rowCells.forEach { cell ->
+                    val isSelected = selectedDateKey != null && cell.dateKey == selectedDateKey
+                    val tileShape = RoundedCornerShape(4.dp)
+                    val interactionSource = remember { MutableInteractionSource() }
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .aspectRatio(1f)
+                            .clip(tileShape)
+                            .background(levelColor(cell.intensityLevel))
+                            .then(
+                                if (isSelected) {
+                                    Modifier.border(1.8.dp, selectionRingColor, tileShape)
+                                } else {
+                                    Modifier.border(
+                                        0.5.dp,
+                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                                        tileShape
+                                    )
+                                }
+                            )
+                            .clickable(
+                                interactionSource = interactionSource,
+                                indication = null
+                            ) {
+                                onSelectDay(cell)
+                            }
+                    )
+                }
+                if (rowCells.size < columns) {
+                    repeat(columns - rowCells.size) {
+                        Spacer(
+                            modifier = Modifier
+                                .weight(1f)
+                                .aspectRatio(1f)
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(2.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "${localizedHeatmapDateLabel(days.first(), appLang)} – ${localizedHeatmapDateLabel(days.last(), appLang)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 10.5.sp
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Text(
+                    text = tr("轻", "Less", "輕"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 10.sp
+                )
+                for (lvl in 0..4) {
+                    Box(
+                        modifier = Modifier
+                            .size(9.dp)
+                            .clip(RoundedCornerShape(2.5.dp))
+                            .background(levelColor(lvl))
+                    )
+                }
+                Text(
+                    text = tr("高产", "More", "高產"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 10.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocalizedMonthlyStackedTrendChart(
+    points: List<MonthlyTrendPoint>,
+    selectedMonth: Int,
+    onSelectMonth: (MonthlyTrendPoint) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (points.isEmpty()) {
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .height(128.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = tr("暂无月度成长记录", "No monthly records yet", "尚無月度成長記錄"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        return
+    }
+
+    val isDark = LocalTypeFreeKeyboardPalette.current.isDark
+    val voiceBaseColor = if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald
+    val keyBaseColor = MaterialTheme.colorScheme.primary
+    val gridColor = MaterialTheme.colorScheme.outline.copy(alpha = if (isDark) 0.28f else 0.35f)
+    val selectedHighlightBg = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isDark) 0.55f else 0.75f)
+    val futureStubColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
+
+    val maxTotal = remember(points) {
+        points.maxOfOrNull { it.totalChars }?.coerceAtLeast(1) ?: 1
+    }
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(126.dp)
+        ) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(102.dp)
+                    .align(Alignment.TopCenter)
+            ) {
+                val dash = PathEffect.dashPathEffect(floatArrayOf(6f, 6f), 0f)
+                listOf(0.08f, 0.54f, 0.99f).forEachIndexed { idx, yFrac ->
+                    val y = size.height * yFrac
+                    drawLine(
+                        color = gridColor,
+                        start = Offset(0f, y),
+                        end = Offset(size.width, y),
+                        strokeWidth = 0.8.dp.toPx(),
+                        pathEffect = if (idx < 2) dash else null
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxSize(),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                points.forEach { point ->
+                    val isSelected = point.month == selectedMonth
+                    val targetTotalFrac = if (point.isFuture || point.totalChars <= 0) {
+                        0f
+                    } else {
+                        (point.totalChars.toFloat() / maxTotal.toFloat()).coerceIn(0.08f, 1f)
+                    }
+                    val targetVoiceShare = if (point.totalChars > 0) {
+                        point.voiceChars.toFloat() / point.totalChars.toFloat()
+                    } else {
+                        0f
+                    }
+
+                    val animTotalFrac by animateFloatAsState(
+                        targetValue = targetTotalFrac,
+                        animationSpec = spring(dampingRatio = 0.78f, stiffness = 360f),
+                        label = "monthTotal_${point.month}"
+                    )
+                    val animVoiceShare by animateFloatAsState(
+                        targetValue = targetVoiceShare,
+                        animationSpec = spring(dampingRatio = 0.80f, stiffness = 360f),
+                        label = "monthVoice_${point.month}"
+                    )
+
+                    val interactionSource = remember { MutableInteractionSource() }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isSelected) selectedHighlightBg else Color.Transparent)
+                            .clickable(
+                                interactionSource = interactionSource,
+                                indication = null
+                            ) {
+                                onSelectMonth(point)
+                            }
+                            .padding(vertical = 3.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Bottom
+                    ) {
+                        Canvas(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(horizontal = 3.dp, vertical = 2.dp)
+                        ) {
+                            val barW = (size.width * 0.72f).coerceIn(5.dp.toPx(), 13.dp.toPx())
+                            val left = (size.width - barW) / 2f
+                            val radius = CornerRadius(barW / 2f, barW / 2f)
+
+                            if (point.isFuture || point.totalChars <= 0) {
+                                val stubH = 3.5.dp.toPx()
+                                drawRoundRect(
+                                    color = if (point.isFuture) futureStubColor else gridColor.copy(alpha = 0.55f),
+                                    topLeft = Offset(left, size.height - stubH),
+                                    size = Size(barW, stubH),
+                                    cornerRadius = radius
+                                )
+                                return@Canvas
+                            }
+
+                            val totalH = (size.height * animTotalFrac).coerceAtLeast(6.dp.toPx())
+                            val voiceH = if (point.voiceChars > 0) {
+                                (totalH * animVoiceShare).coerceAtLeast(3.dp.toPx())
+                            } else {
+                                0f
+                            }
+                            val keyH = if (point.keyChars > 0) {
+                                (totalH - voiceH).coerceAtLeast(3.dp.toPx())
+                            } else {
+                                0f
+                            }
+                            val vColor = voiceBaseColor.copy(alpha = if (isSelected) 1f else 0.74f)
+                            val kColor = keyBaseColor.copy(alpha = if (isSelected) 0.86f else 0.42f)
+
+                            if (keyH > 0f) {
+                                val clampedKeyH = keyH.coerceAtMost(size.height)
+                                drawRoundRect(
+                                    color = kColor,
+                                    topLeft = Offset(left, size.height - clampedKeyH),
+                                    size = Size(barW, clampedKeyH),
+                                    cornerRadius = radius
+                                )
+                            }
+                            if (voiceH > 0f) {
+                                val gap = if (keyH > 0f) 1.5.dp.toPx() else 0f
+                                val clampedVoiceH = voiceH.coerceAtMost((size.height - keyH - gap).coerceAtLeast(3.dp.toPx()))
+                                val topY = (size.height - keyH - gap - clampedVoiceH).coerceAtLeast(0f)
+                                drawRoundRect(
+                                    color = vColor,
+                                    topLeft = Offset(left, topY),
+                                    size = Size(barW, clampedVoiceH),
+                                    cornerRadius = radius
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = "${point.month}",
+                            fontSize = 10.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = when {
+                                isSelected -> MaterialTheme.colorScheme.onSurface
+                                point.isFuture -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(voiceBaseColor)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = tr("语音", "Voice", "語音"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 10.5.sp
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(keyBaseColor.copy(alpha = 0.72f))
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = tr("键盘", "Keyboard", "鍵盤"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 10.5.sp
+            )
+        }
+    }
+}
+
+@Composable
 private fun Rhythm24hCard(snapshot: InsightsSnapshot) {
+    val appLang = LocalAppLanguage.current
     val peakHour = remember(snapshot.hourlyVoiceChars, snapshot.hourlyKeyChars) {
         var bestHour = -1
         var bestTotal = 0
@@ -1161,7 +2670,7 @@ private fun Rhythm24hCard(snapshot: InsightsSnapshot) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "24h 双轨作息节律",
+                text = tr("24h 双轨作息节律", "24h Dual-Track Rhythm", "24h 雙軌作息節律"),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -1173,21 +2682,21 @@ private fun Rhythm24hCard(snapshot: InsightsSnapshot) {
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f))
                     .padding(horizontal = 9.dp, vertical = 4.dp)
             ) {
+                val timeStr = String.format(Locale.US, "%02d:00", selectedHour)
                 Text(
                     text = if (hourTotal > 0) {
-                        String.format(
-                            Locale.US,
-                            "%02d:00 · 语%d%% / 键%d%%",
-                            selectedHour,
-                            hourVoicePct,
-                            hourKeyPct
+                        tr(
+                            "$timeStr · 语$hourVoicePct% / 键$hourKeyPct%",
+                            "$timeStr · V $hourVoicePct% / K $hourKeyPct%",
+                            "$timeStr · 語$hourVoicePct% / 鍵$hourKeyPct%"
                         )
                     } else {
-                        String.format(Locale.US, "%02d:00 · 无记录", selectedHour)
+                        tr("$timeStr · 无记录", "$timeStr · Idle", "$timeStr · 無記錄")
                     },
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1
                 )
             }
         }
@@ -1199,6 +2708,10 @@ private fun Rhythm24hCard(snapshot: InsightsSnapshot) {
             onSelectHour = { selectedHour = it }
         )
 
+        val headlineText = remember(snapshot, appLang) {
+            localizedRhythmHeadline(snapshot, appLang)
+        }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1209,7 +2722,7 @@ private fun Rhythm24hCard(snapshot: InsightsSnapshot) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = snapshot.rhythmHeadline.ifBlank { "滑动柱状条探索你的全天表达节奏" },
+                text = headlineText,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -1220,10 +2733,12 @@ private fun Rhythm24hCard(snapshot: InsightsSnapshot) {
             if (hourTotal > 0) {
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "${formatChartCompactChars(hourTotal)} 字",
+                    text = "${formatInsightsCompactChars(hourTotal, appLang)} ${tr("字", "chars", "字")}",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
         }
@@ -1236,6 +2751,7 @@ private fun ScenesAndIntentsCard(
     snapshot: InsightsSnapshot,
     onOpenStylesSettings: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val isDark = LocalTypeFreeKeyboardPalette.current.isDark
     val emerald = if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald
     val helpWriteColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.80f)
@@ -1255,7 +2771,7 @@ private fun ScenesAndIntentsCard(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "你在哪最爱表达",
+                text = tr("你在哪最爱表达", "Top Apps & Intents", "你在哪最愛表達"),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -1268,7 +2784,7 @@ private fun ScenesAndIntentsCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "场景风格",
+                    text = tr("场景风格", "App Styles", "場景風格"),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1282,7 +2798,6 @@ private fun ScenesAndIntentsCard(
             }
         }
 
-        // 5-intent stacked distribution bar
         if (snapshot.intentShares.isNotEmpty()) {
             IntentStackedBar(
                 items = snapshot.intentShares,
@@ -1304,7 +2819,7 @@ private fun ScenesAndIntentsCard(
                                 .background(intentColor(item.mode))
                         )
                         Text(
-                            text = "${item.label} ${item.percent}%",
+                            text = "${AppStrings.voiceIntentLabel(item.mode, appLang)} ${item.percent}%",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1320,10 +2835,13 @@ private fun ScenesAndIntentsCard(
             )
         }
 
-        // Top App Scene Bars
         if (snapshot.topAppScenes.isEmpty()) {
             Text(
-                text = "在不同应用中使用语音或键盘后，这里会呈现你的常用表达场景",
+                text = tr(
+                    "在不同应用中使用语音或键盘后，这里会呈现你的常用表达场景",
+                    "Use voice or keyboard across apps to see your top communication scenes here",
+                    "在不同應用程式中使用語音或鍵盤後，這裡會呈現你的常用表達場景"
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1387,6 +2905,7 @@ private fun AppSceneBarRow(
     barColor: Color,
     onClick: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val animatedFrac by animateFloatAsState(
         targetValue = (item.percent / 100f).coerceIn(0.05f, 1f),
         animationSpec = spring(dampingRatio = 0.80f, stiffness = 360f),
@@ -1426,17 +2945,25 @@ private fun AppSceneBarRow(
                             .padding(horizontal = 6.dp, vertical = 1.dp)
                     ) {
                         Text(
-                            text = item.sceneCategory,
+                            text = localizedSceneCategory(item.sceneCategory, appLang),
                             fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
                         )
                     }
                 }
             }
+            Spacer(modifier = Modifier.width(6.dp))
             Text(
-                text = "${item.count} 次 · ${item.percent}%",
+                text = tr(
+                    "${item.count} 次 · ${item.percent}%",
+                    "${item.count} uses · ${item.percent}%",
+                    "${item.count} 次 · ${item.percent}%"
+                ),
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false
             )
         }
         Box(
@@ -1462,6 +2989,7 @@ private fun JevStyleDnaCard(
     snapshot: InsightsSnapshot,
     onOpenJevMemory: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val isDark = LocalTypeFreeKeyboardPalette.current.isDark
     val emerald = if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald
     var selectedDnaKey by remember { mutableStateOf<StyleFeatureKey?>(null) }
@@ -1477,16 +3005,24 @@ private fun JevStyleDnaCard(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "✦ Jev 沟通人格与语体 DNA",
+                    text = tr("✦ Jev 沟通人格与语体 DNA", "✦ Jev Persona & Style DNA", "✦ Jev 溝通人格與語體 DNA"),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
                     text = if (snapshot.jevSessionCount > 0 || snapshot.jevTotalInteractions > 0) {
-                        "${snapshot.jevSessionCount} 个关系档案 · ${snapshot.jevTotalInteractions} 次互动沉淀"
+                        tr(
+                            "${snapshot.jevSessionCount} 个关系档案 · ${snapshot.jevTotalInteractions} 次互动沉淀",
+                            "${snapshot.jevSessionCount} relation profiles · ${snapshot.jevTotalInteractions} interactions",
+                            "${snapshot.jevSessionCount} 個關係檔案 · ${snapshot.jevTotalInteractions} 次互動沉澱"
+                        )
                     } else {
-                        "在对话中呼出 Jev 军师后，将自动在端侧学习你的语体 DNA"
+                        tr(
+                            "在对话中呼出 Jev 军师后，将自动在端侧学习你的语体 DNA",
+                            "Summon Jev Copilot in chats to learn your personal tone & style DNA on-device",
+                            "在對話中呼出 Jev 軍師後，將自動在端側學習你的語體 DNA"
+                        )
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1500,7 +3036,7 @@ private fun JevStyleDnaCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "管理",
+                    text = tr("管理", "Manage", "管理"),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1514,110 +3050,260 @@ private fun JevStyleDnaCard(
             }
         }
 
-        if (snapshot.jevDnaItems.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(ContinuousRoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
-                    .padding(12.dp)
-            ) {
-                Text(
-                    text = "尚未形成显著语体标签。多采纳几次 Jev 军师建议，它会记住你偏爱的直接度、标点松弛度与回复节奏。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    lineHeight = 18.sp
-                )
-            }
-        } else {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalFadeEdge(startFadeWidth = 6.dp, endFadeWidth = 18.dp)
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                snapshot.jevDnaItems.forEach { item ->
-                    val isSelected = selectedDnaKey == item.key
-                    val accent = if (item.isActive) emerald else TypeFreeAmber
-                    val chipText = if (item.isActive) {
-                        "✓ ${item.title}"
-                    } else {
-                        "${item.title} · 观察中 ${item.currentCount}/${item.requiredCount}"
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            if (snapshot.jevDnaItems.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(ContinuousRoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = tr(
+                            "尚未形成显著语体标签。多采纳几次 Jev 军师建议，它会记住你偏爱的直接度、标点松弛度与回复节奏。",
+                            "No style DNA traits finalized yet. Adopt or tweak a few Jev Copilot drafts and it will learn your directness, punctuation habits, and reply cadence.",
+                            "尚未形成顯著語體標籤。多採納幾次 Jev 軍師建議，它會記住你偏愛的直接度、標點鬆弛度與回覆節奏。"
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 18.sp
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalFadeEdge(startFadeWidth = 6.dp, endFadeWidth = 18.dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    snapshot.jevDnaItems.forEach { item ->
+                        val isSelected = selectedDnaKey == item.key
+                        val accent = if (item.isActive) emerald else TypeFreeAmber
+                        val dnaTitle = localizedDnaTitle(item.key, appLang)
+                        val chipText = if (item.isActive) {
+                            "✓ $dnaTitle"
+                        } else {
+                            tr(
+                                "$dnaTitle · 观察中 ${item.currentCount}/${item.requiredCount}",
+                                "$dnaTitle · Learning ${item.currentCount}/${item.requiredCount}",
+                                "$dnaTitle · 觀察中 ${item.currentCount}/${item.requiredCount}"
+                            )
+                        }
+                        Surface(
+                            onClick = {
+                                selectedDnaKey = if (isSelected) null else item.key
+                            },
+                            shape = CircleShape,
+                            color = accent.copy(alpha = if (isSelected) 0.22f else 0.12f),
+                            border = BorderStroke(
+                                width = if (isSelected) 1.3.dp else 0.8.dp,
+                                color = accent.copy(alpha = if (isSelected) 0.78f else 0.38f)
+                            )
+                        ) {
+                            Text(
+                                text = chipText,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp)
+                            )
+                        }
                     }
-                    Surface(
-                        onClick = {
-                            selectedDnaKey = if (isSelected) null else item.key
-                        },
-                        shape = CircleShape,
-                        color = accent.copy(alpha = if (isSelected) 0.22f else 0.12f),
-                        border = BorderStroke(
-                            width = if (isSelected) 1.3.dp else 0.8.dp,
-                            color = accent.copy(alpha = if (isSelected) 0.78f else 0.38f)
-                        )
-                    ) {
-                        Text(
-                            text = chipText,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp)
-                        )
+                }
+
+                SmoothDisclosure(expanded = expandedItem != null) {
+                    expandedItem?.let { dna ->
+                        val accent = if (dna.isActive) emerald else TypeFreeAmber
+                        val dnaTitle = localizedDnaTitle(dna.key, appLang)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(ContinuousRoundedCornerShape(14.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                                .border(0.6.dp, accent.copy(alpha = 0.35f), ContinuousRoundedCornerShape(14.dp))
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = dnaTitle + if (dna.isManualOverride) {
+                                        tr(" · 手动锁定", " · Pinned", " · 手動鎖定")
+                                    } else {
+                                        ""
+                                    },
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (dna.isActive) {
+                                        tr(
+                                            "已生效 · 倾向 ${dna.emaPercent}%",
+                                            "Active · ${dna.emaPercent}%",
+                                            "已生效 · 傾向 ${dna.emaPercent}%"
+                                        )
+                                    } else {
+                                        tr(
+                                            "观察中 ${dna.currentCount}/${dna.requiredCount}",
+                                            "Learning ${dna.currentCount}/${dna.requiredCount}",
+                                            "觀察中 ${dna.currentCount}/${dna.requiredCount}"
+                                        )
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = accent
+                                )
+                            }
+                            Text(
+                                text = localizedDnaExplanation(dna, appLang),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                lineHeight = 18.sp
+                            )
+                        }
                     }
                 }
             }
 
-            SmoothDisclosure(expanded = expandedItem != null) {
-                expandedItem?.let { dna ->
-                    val accent = if (dna.isActive) emerald else TypeFreeAmber
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(ContinuousRoundedCornerShape(14.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-                            .border(0.6.dp, accent.copy(alpha = 0.35f), ContinuousRoundedCornerShape(14.dp))
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = dna.title + if (dna.isManualOverride) " · 手动锁定" else "",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = if (dna.isActive) {
-                                    "已生效 · 倾向 ${dna.emaPercent}%"
-                                } else {
-                                    "观察中 ${dna.currentCount}/${dna.requiredCount}"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = accent
-                            )
-                        }
-                        Text(
-                            text = dna.explanation,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            lineHeight = 18.sp
-                        )
-                    }
+            snapshot.jevAxisTendency?.let { tendency ->
+                HorizontalDivider(
+                    thickness = 0.5.dp,
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                )
+                LocalizedJevAxisBalanceBar(tendency = tendency)
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocalizedJevAxisBalanceBar(
+    tendency: JevAxisTendencySummary,
+    modifier: Modifier = Modifier
+) {
+    val appLang = LocalAppLanguage.current
+    val localizedLabels = remember(tendency.group, appLang) {
+        localizedAxisLabels(tendency.group, appLang)
+    }
+    val count = minOf(localizedLabels.size, tendency.percents.size)
+    if (count == 0) return
+
+    val safePercents = remember(tendency) {
+        (0 until count).map { tendency.percents[it].coerceAtLeast(0) }
+    }
+    val sum = remember(safePercents) { safePercents.sum() }
+    val fractions = safePercents.mapIndexed { idx, pct ->
+        val target = if (sum > 0) pct.toFloat() / sum.toFloat() else 1f / count.toFloat()
+        val animated by animateFloatAsState(
+            targetValue = target,
+            animationSpec = spring(dampingRatio = 0.80f, stiffness = Spring.StiffnessMediumLow),
+            label = "jevAxisSeg_$idx"
+        )
+        animated
+    }
+
+    val isDark = LocalTypeFreeKeyboardPalette.current.isDark
+    val segmentColors = listOf(
+        if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald,
+        MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.76f else 0.82f),
+        TypeFreeAmber,
+        MaterialTheme.colorScheme.outline
+    )
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = localizedAxisGroupTitle(tendency.group, appLang),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = tr("${tendency.sampleCount} 次参考", "${tendency.sampleCount} samples", "${tendency.sampleCount} 次參考"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(9.dp)
+        ) {
+            val nonZeroIndices = (0 until count).filter { fractions[it] > 0.005f }
+            val radius = CornerRadius(size.height / 2f, size.height / 2f)
+            if (nonZeroIndices.isEmpty()) {
+                drawRoundRect(
+                    color = segmentColors.last().copy(alpha = 0.3f),
+                    size = size,
+                    cornerRadius = radius
+                )
+                return@Canvas
+            }
+
+            val gap = 2.5.dp.toPx()
+            val totalGap = gap * (nonZeroIndices.size - 1)
+            val usableW = (size.width - totalGap).coerceAtLeast(1f)
+            val activeSum = nonZeroIndices.sumOf { fractions[it].toDouble() }.toFloat().coerceAtLeast(0.001f)
+            var cursorX = 0f
+
+            nonZeroIndices.forEachIndexed { pos, segIdx ->
+                val segW = if (pos == nonZeroIndices.lastIndex) {
+                    (size.width - cursorX).coerceAtLeast(0f)
+                } else {
+                    (usableW * (fractions[segIdx] / activeSum)).coerceAtLeast(4.dp.toPx())
                 }
+                drawRoundRect(
+                    color = segmentColors[segIdx % segmentColors.size],
+                    topLeft = Offset(cursorX, 0f),
+                    size = Size(segW, size.height),
+                    cornerRadius = radius
+                )
+                cursorX += segW + gap
             }
         }
 
-        snapshot.jevAxisTendency?.let { tendency ->
-            HorizontalDivider(
-                thickness = 0.5.dp,
-                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-            )
-            JevAxisBalanceBar(tendency = tendency)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            for (i in 0 until count) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(segmentColors[i % segmentColors.size])
+                    )
+                    Text(
+                        text = "${localizedLabels[i]} ${safePercents[i]}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
         }
     }
 }
@@ -1635,7 +3321,7 @@ private fun LexiconAndWordChainsCard(snapshot: InsightsSnapshot) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "词海与惯用词链",
+                text = tr("词海与惯用词链", "Personal Lexicon & Word Chains", "詞海與慣用詞鏈"),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -1658,7 +3344,11 @@ private fun LexiconAndWordChainsCard(snapshot: InsightsSnapshot) {
                         modifier = Modifier.size(13.dp)
                     )
                     Text(
-                        text = if (obscured) "防窥模糊" else "已显示",
+                        text = if (obscured) {
+                            tr("防窥模糊", "Privacy Blur", "防窺模糊")
+                        } else {
+                            tr("已显示", "Visible", "已顯示")
+                        },
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1672,28 +3362,32 @@ private fun LexiconAndWordChainsCard(snapshot: InsightsSnapshot) {
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             LexiconCounterTile(
-                title = "自动纠错词条",
+                title = tr("自动纠错词条", "Auto-Learned", "自動糾錯詞條"),
                 value = "${snapshot.autoLearnedDictCount}",
-                subtitle = "词典共 ${snapshot.totalDictCount}",
+                subtitle = tr("词典共 ${snapshot.totalDictCount}", "${snapshot.totalDictCount} in dict", "詞典共 ${snapshot.totalDictCount}"),
                 modifier = Modifier.weight(1f)
             )
             LexiconCounterTile(
-                title = "私人二元连词",
+                title = tr("私人二元连词", "L2 Bigrams", "私人二元連詞"),
                 value = "${snapshot.personalBigramCount}",
-                subtitle = "L2 端侧联想",
+                subtitle = tr("L2 端侧联想", "Word pairs", "L2 端側聯想"),
                 modifier = Modifier.weight(1f)
             )
             LexiconCounterTile(
-                title = "私人三元词链",
+                title = tr("私人三元词链", "L2 Trigrams", "私人三元詞鏈"),
                 value = "${snapshot.personalTrigramCount}",
-                subtitle = "上下文预测",
+                subtitle = tr("上下文预测", "3-word chains", "上下文預測"),
                 modifier = Modifier.weight(1f)
             )
         }
 
         if (snapshot.topWordChains.isEmpty()) {
             Text(
-                text = "日常打字积累后，你的高频专属词链会在这里浮现（仅保存在本机，永不进入分享海报）。",
+                text = tr(
+                    "日常打字积累后，你的高频专属词链会在这里浮现（仅保存在本机，永不进入分享海报）。",
+                    "As you type, your top recurring word chains will appear here (stored strictly offline and never included in shared posters).",
+                    "日常打字累積後，你的高頻專屬詞鏈會在這裡浮現（僅儲存在本機，永不進入分享海報）。"
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1754,7 +3448,7 @@ private fun LexiconAndWordChainsCard(snapshot: InsightsSnapshot) {
                             .padding(horizontal = 11.dp, vertical = 5.dp)
                     ) {
                         Text(
-                            text = "点按临时查看本机高频词链",
+                            text = tr("点按临时查看本机高频词链", "Tap to reveal local word chains", "點按臨時檢視本機高頻詞鏈"),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
@@ -1791,7 +3485,9 @@ private fun LexiconCounterTile(
             text = value,
             fontSize = 19.sp,
             fontWeight = FontWeight.ExtraBold,
-            color = MaterialTheme.colorScheme.onSurface
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            softWrap = false
         )
         Text(
             text = subtitle,
@@ -1805,6 +3501,7 @@ private fun LexiconCounterTile(
 
 @Composable
 private fun MilestonesWallCard(snapshot: InsightsSnapshot) {
+    val appLang = LocalAppLanguage.current
     val isDark = LocalTypeFreeKeyboardPalette.current.isDark
     val emerald = if (isDark) TypeFreeEmeraldLight else TypeFreeEmerald
     val unlockedCount = remember(snapshot.milestones) {
@@ -1822,13 +3519,17 @@ private fun MilestonesWallCard(snapshot: InsightsSnapshot) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "永久里程碑印记",
+                text = tr("永久里程碑印记", "Lifetime Milestones", "永久里程碑印記"),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                text = "已点亮 $unlockedCount/${snapshot.milestones.size}",
+                text = tr(
+                    "已点亮 $unlockedCount/${snapshot.milestones.size}",
+                    "$unlockedCount/${snapshot.milestones.size} Unlocked",
+                    "已點亮 $unlockedCount/${snapshot.milestones.size}"
+                ),
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.SemiBold,
                 color = if (unlockedCount > 0) emerald else MaterialTheme.colorScheme.onSurfaceVariant
@@ -1837,7 +3538,11 @@ private fun MilestonesWallCard(snapshot: InsightsSnapshot) {
 
         if (snapshot.milestones.isEmpty()) {
             Text(
-                text = "你的每一次表达都会永久累积里程碑印记。",
+                text = tr(
+                    "你的每一次表达都会永久累积里程碑印记。",
+                    "Every word you speak or type builds toward lifetime milestones.",
+                    "你的每一次表達都會永久累積里程碑印記。"
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1850,8 +3555,10 @@ private fun MilestonesWallCard(snapshot: InsightsSnapshot) {
                     ) {
                         rowItems.forEach { item ->
                             val isSelected = selectedMilestoneId == item.id
+                            val (mTitle, _, _) = localizedMilestoneTexts(item, snapshot, appLang)
                             MilestoneTile(
                                 item = item,
+                                displayTitle = mTitle,
                                 isSelected = isSelected,
                                 emerald = emerald,
                                 onClick = {
@@ -1871,6 +3578,7 @@ private fun MilestonesWallCard(snapshot: InsightsSnapshot) {
 
             SmoothDisclosure(expanded = selectedMilestone != null) {
                 selectedMilestone?.let { ms ->
+                    val (mTitle, mDesc, mProg) = localizedMilestoneTexts(ms, snapshot, appLang)
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1890,20 +3598,20 @@ private fun MilestonesWallCard(snapshot: InsightsSnapshot) {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "${ms.glyph} ${ms.title}",
+                                text = "${ms.glyph} $mTitle",
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = ms.progressText,
+                                text = mProg,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (ms.unlocked) emerald else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Text(
-                            text = ms.description,
+                            text = mDesc,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1917,6 +3625,7 @@ private fun MilestonesWallCard(snapshot: InsightsSnapshot) {
 @Composable
 private fun MilestoneTile(
     item: MilestoneItem,
+    displayTitle: String,
     isSelected: Boolean,
     emerald: Color,
     onClick: () -> Unit,
@@ -1961,7 +3670,7 @@ private fun MilestoneTile(
             }
         )
         Text(
-            text = item.title,
+            text = displayTitle,
             fontSize = 11.5.sp,
             fontWeight = if (item.unlocked) FontWeight.Bold else FontWeight.Medium,
             color = if (item.unlocked) {
@@ -1975,10 +3684,11 @@ private fun MilestoneTile(
         )
         if (item.unlocked) {
             Text(
-                text = "已点亮",
+                text = tr("已点亮", "Unlocked", "已點亮"),
                 fontSize = 10.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = emerald
+                color = emerald,
+                maxLines = 1
             )
         } else {
             val progress = (item.progressPercent / 100f).coerceIn(0f, 1f)
@@ -2000,7 +3710,8 @@ private fun MilestoneTile(
             Text(
                 text = "${item.progressPercent}%",
                 fontSize = 9.5.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
             )
         }
     }
@@ -2012,6 +3723,7 @@ private fun InsightsPrivacyFooterCard(
     onOpenPrivacySettings: () -> Unit
 ) {
     val shape = ContinuousRoundedCornerShape(20.dp)
+    val dbSizeStr = formatDbSize(snapshot.statsDbSizeBytes)
     Surface(
         onClick = onOpenPrivacySettings,
         shape = shape,
@@ -2031,15 +3743,21 @@ private fun InsightsPrivacyFooterCard(
                 verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 Text(
-                    text = "🔒 所有累计统计均为纯数字本地存储 · 0 正文",
+                    text = tr(
+                        "🔒 所有累计统计均为纯数字本地存储 · 0 正文",
+                        "🔒 100% Local Numeric Counters · Zero Raw Text",
+                        "🔒 所有累計統計均為純數字本機儲存 · 0 正文"
+                    ),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "已记录 ${snapshot.statsTrackedDays} 天 · 约 ${
-                        formatDbSize(snapshot.statsDbSizeBytes)
-                    } · 无痕与密码框强制零计数",
+                    text = tr(
+                        "已记录 ${snapshot.statsTrackedDays} 天 · 约 $dbSizeStr · 无痕与密码框强制零计数",
+                        "Tracked ${snapshot.statsTrackedDays} days · ~$dbSizeStr · Zero count in Incognito & passwords",
+                        "已記錄 ${snapshot.statsTrackedDays} 天 · 約 $dbSizeStr · 無痕與密碼框強制零計數"
+                    ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2047,10 +3765,11 @@ private fun InsightsPrivacyFooterCard(
             Spacer(modifier = Modifier.width(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "管理与重置",
+                    text = tr("管理与重置", "Manage", "管理與重設"),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
                 )
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,

@@ -1387,7 +1387,7 @@ private fun HistoryEntryCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "识别历史",
+                            text = tr("识别历史", "History", "識別歷史"),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -1396,7 +1396,7 @@ private fun HistoryEntryCard(
                             color = MaterialTheme.colorScheme.surfaceVariant
                         ) {
                             Text(
-                                text = "$totalCount 条",
+                                text = tr("$totalCount 条", "$totalCount", "$totalCount 條"),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1406,9 +1406,13 @@ private fun HistoryEntryCard(
                     }
                     Text(
                         text = if (latestSnippet.isNotBlank()) {
-                            "最近：$latestSnippet"
+                            tr("最近：$latestSnippet", "Latest: $latestSnippet", "最近：$latestSnippet")
                         } else {
-                            "查看本机口述、帮写、改写与翻译历史记录"
+                            tr(
+                                "查看本机口述、帮写、改写与翻译历史记录",
+                                "Browse on-device dictation, rewrite, and translation history",
+                                "查看本機口述、幫寫、改寫與翻譯歷史紀錄"
+                            )
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1422,7 +1426,7 @@ private fun HistoryEntryCard(
                 shape = RoundedCornerShape(10.dp),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) {
-                Text("查看", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                Text(tr("查看", "Open", "查看"), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -1450,21 +1454,29 @@ private fun HeroMiniStatBox(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1
             )
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text(
-                    text = value,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.width(3.dp))
-                Text(
-                    text = unit,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 1.dp)
-                )
-            }
+                    Row(
+                        verticalAlignment = Alignment.Bottom,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = value,
+                            fontSize = if (value.length >= 5) 14.5.sp else 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text(
+                            text = unit,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(bottom = 1.dp)
+                        )
+                    }
         }
     }
 }
@@ -1554,7 +1566,7 @@ private fun FloatingBubbleHeroCard(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
-                                text = tr("无需切键盘语音", "Floating Voice Bubble", "無需切鍵盤語音"),
+                                text = tr("无需切键盘语音", "Floating Voice", "無需切鍵盤語音"),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.ExtraBold,
                                 maxLines = 1,
@@ -1567,7 +1579,7 @@ private fun FloatingBubbleHeroCard(
                                 color = MaterialTheme.colorScheme.primary
                             ) {
                                 Text(
-                                    text = tr("悬浮胶囊", "Keep Gboard", "懸浮膠囊"),
+                                    text = tr("悬浮胶囊", "No Switch", "懸浮膠囊"),
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onPrimary,

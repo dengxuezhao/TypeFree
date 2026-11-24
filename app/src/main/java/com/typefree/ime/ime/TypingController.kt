@@ -128,6 +128,8 @@ class TypingController(
     var onUndoRequested: (() -> Unit)? = null
     private var lastCommittedForRepeat: String = ""
     private var lastCommitDuringDispatch: String = ""
+    private var lastOptimisticBeforeCursor: String = ""
+    private var lastOptimisticAtMs: Long = 0L
 
     val aiCompleter: AiSentenceCompleter = aiSentenceCompleter ?: AiSentenceCompleter(
         scope = host.scope,
@@ -526,7 +528,7 @@ class TypingController(
         )
     }
 
-    fun refreshEnglishWordSuggestions() {
+    fun refreshEnglishWordSuggestions(overrideBeforeCursor: String? = null) {
         val curr = host.stateFlow.value
         if (curr.tabMode != KeyboardTabMode.QWERTY ||
             curr.isFlypyChineseMode ||
@@ -540,7 +542,7 @@ class TypingController(
             }
             return
         }
-        val before = host.readSurroundingBeforeCursor(32)
+        val before = overrideBeforeCursor ?: host.readSurroundingBeforeCursor(32)
         val suggestion = englishWordSuggester.suggestForBeforeCursor(before, limit = 6)
         val nextWords = suggestion?.suggestions.orEmpty()
         val nextReplace = suggestion?.replaceLength ?: 0
@@ -616,7 +618,18 @@ class TypingController(
             return false
         }
         val settings = safeSettings()
-        val before = host.readSurroundingBeforeCursor(48)
+        val rawBefore = host.readSurroundingBeforeCursor(48)
+        val before = if (
+            lastOptimisticBeforeCursor.isNotEmpty() &&
+            (System.currentTimeMillis() - lastOptimisticAtMs) <= 600L &&
+            lastOptimisticBeforeCursor.length > rawBefore.length &&
+            lastOptimisticBeforeCursor.startsWith(rawBefore)
+        ) {
+            lastOptimisticBeforeCursor
+        } else {
+            rawBefore
+        }
+        lastOptimisticBeforeCursor = ""
         val commit = englishSmartTyper.onCommitDelimiter(
             textBeforeCursor = before,
             delimiter = delimiter,
@@ -876,10 +889,19 @@ class TypingController(
             predictionCoordinator.dismissPredictions(resetChain = true)
         }
         englishSmartTyper.onRegularInputCommitted()
+        val beforeCommit = host.readSurroundingBeforeCursor(32)
         host.commitDirectText(text = ch, recordUndo = true, markManualEdit = true)
-        refreshEnglishWordSuggestions()
+        val liveBefore = host.readSurroundingBeforeCursor(32)
+        val optimisticBefore = if (liveBefore.endsWith(ch) && liveBefore.length >= beforeCommit.length + ch.length) {
+            liveBefore
+        } else {
+            (beforeCommit + ch).takeLast(32)
+        }
+        lastOptimisticBeforeCursor = optimisticBefore
+        lastOptimisticAtMs = System.currentTimeMillis()
+        refreshEnglishWordSuggestions(overrideBeforeCursor = optimisticBefore)
         refreshPassiveMathSuggestion()
-        refreshEnglishAutoCapState()
+        refreshEnglishAutoCapState(overrideBeforeCursor = optimisticBefore)
     }
 
     fun handleCommaOrPeriodKey(isComma: Boolean) {

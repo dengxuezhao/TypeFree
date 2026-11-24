@@ -468,6 +468,7 @@ fun KeyboardScreen(
                                 }
 
                                 uiState.tabMode == KeyboardTabMode.QWERTY -> {
+                                    val customSchemaName = remember(uiState.activeInputScheme, uiState.inputSessionToken) { runCatching { com.typefree.ime.TypeFreeApp.instance.rimeDataManager.readCustomSchemaName() }.getOrNull() }
                                     if (uiState.activeInputScheme == InputScheme.RIME_T9_PINYIN && uiState.isFlypyChineseMode) {
                                         BuiltInT9KeyboardHost(uiState, settings.qwertyKeyPopupPreview, onAction, settings.backspaceSwipeUpClearEnabled)
                                     } else BuiltInQwertyKeyboard(
@@ -504,6 +505,7 @@ fun KeyboardScreen(
                                         fiveKeyBottomRow = fiveKeyBottomRowActive,
                                         keycapBadgeMode = settings.keycapBadgeMode,
                                         autoCapShift = uiState.englishAutoCapActive,
+                                        customSchemaDisplayName = customSchemaName,
                                         onSwipeUpPeriodSlash = { onAction(ImeUiAction.SwipeUpPeriodSlash) }
                                     )
 
