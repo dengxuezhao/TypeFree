@@ -132,6 +132,10 @@ import com.typefree.ime.data.UnifiedProviderSpec
 import com.typefree.ime.data.stats.FullBackupMergeSummary
 import com.typefree.ime.data.stats.FullBackupOptions
 import com.typefree.ime.data.stats.TokenFeatureKeys
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.EndpointResolver
 import com.typefree.ime.network.PipelineExecutionResult
@@ -152,6 +156,23 @@ import kotlin.math.roundToInt
 
 private const val DEFAULT_LIVE_TEST_INPUT =
     "嗯那个明天下午两点，哦不对改成三点半，跟王总对一下太普利斯API接口方案"
+private const val DEFAULT_LIVE_TEST_INPUT_EN =
+    "Um, let's meet tomorrow at 2 PM—actually make it 3:30 PM—to review the TypeFree API spec with Alex."
+private const val DEFAULT_LIVE_TEST_INPUT_TW =
+    "嗯那個明天下午兩點，喔不對改成三點半，跟王總對一下太普利斯 API 介面方案"
+
+private val ALL_DEFAULT_TEST_INPUTS = setOf(
+    DEFAULT_LIVE_TEST_INPUT,
+    DEFAULT_LIVE_TEST_INPUT_EN,
+    DEFAULT_LIVE_TEST_INPUT_TW
+)
+
+private fun defaultLiveTestInput(lang: AppLang): String = AppStrings.pick(
+    lang,
+    DEFAULT_LIVE_TEST_INPUT,
+    DEFAULT_LIVE_TEST_INPUT_EN,
+    DEFAULT_LIVE_TEST_INPUT_TW
+)
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -164,6 +185,7 @@ fun ApiSettingsScreen(
     onOpenInsights: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val appLang = LocalAppLanguage.current
     val coroutineScope = rememberCoroutineScope()
     val settings by repository.settings.collectAsState()
     val registrySnapshot = rememberLocalModelRegistrySnapshot()
@@ -213,7 +235,12 @@ fun ApiSettingsScreen(
     var showBackupDrawer by rememberSaveable { mutableStateOf(false) }
 
     // Live API Tester state
-    var testInput by remember { mutableStateOf(DEFAULT_LIVE_TEST_INPUT) }
+    var testInput by remember { mutableStateOf(defaultLiveTestInput(appLang)) }
+    LaunchedEffect(appLang) {
+        if (testInput in ALL_DEFAULT_TEST_INPUTS) {
+            testInput = defaultLiveTestInput(appLang)
+        }
+    }
     var isTestingApi by remember { mutableStateOf(false) }
     var testSuccessResult by remember { mutableStateOf<PipelineExecutionResult?>(null) }
     var testErrorMessage by remember { mutableStateOf<String?>(null) }
@@ -260,23 +287,95 @@ fun ApiSettingsScreen(
     ): String {
         val parts = mutableListOf<String>()
         val merge: FullBackupMergeSummary = outcome.mergeSummary
-        if (merge.mergedDailyStatsDays > 0) parts.add("每日统计 ${merge.mergedDailyStatsDays} 天")
-        if (merge.mergedHistoryCount > 0) parts.add("历史 +${merge.mergedHistoryCount} 条")
-        val predTotal = merge.mergedBigramCount + merge.mergedTrigramCount
-        if (predTotal > 0) parts.add("L2 连词库 $predTotal 条")
-        if (merge.mergedPinnedClipboardCount > 0) parts.add("置顶剪贴板 +${merge.mergedPinnedClipboardCount} 条")
-        outcome.memorySummary?.let {
-            parts.add("军师记忆 ${it.importedSessions} 会话 / ${it.mergedBuckets} 风格组")
+        if (merge.mergedDailyStatsDays > 0) {
+            parts.add(
+                AppStrings.pick(
+                    appLang,
+                    "每日统计 ${merge.mergedDailyStatsDays} 天",
+                    "Daily stats (${merge.mergedDailyStatsDays}d)",
+                    "每日統計 ${merge.mergedDailyStatsDays} 天"
+                )
+            )
         }
-        val extra = if (parts.isNotEmpty()) "；无损合并：${parts.joinToString(" · ")}" else ""
-        val skipNote = if (skippedEncryptedMemory) "（已按要求跳过加密军师记忆）" else ""
-        return "✓ 全量配置与数据导入成功！已同步密钥库、短语与个人词典$extra$skipNote"
+        if (merge.mergedHistoryCount > 0) {
+            parts.add(
+                AppStrings.pick(
+                    appLang,
+                    "历史 +${merge.mergedHistoryCount} 条",
+                    "History +${merge.mergedHistoryCount}",
+                    "歷史 +${merge.mergedHistoryCount} 筆"
+                )
+            )
+        }
+        val predTotal = merge.mergedBigramCount + merge.mergedTrigramCount
+        if (predTotal > 0) {
+            parts.add(
+                AppStrings.pick(
+                    appLang,
+                    "L2 连词库 $predTotal 条",
+                    "L2 predictions ($predTotal)",
+                    "L2 連詞庫 $predTotal 筆"
+                )
+            )
+        }
+        if (merge.mergedPinnedClipboardCount > 0) {
+            parts.add(
+                AppStrings.pick(
+                    appLang,
+                    "置顶剪贴板 +${merge.mergedPinnedClipboardCount} 条",
+                    "Pinned clips +${merge.mergedPinnedClipboardCount}",
+                    "置頂剪貼簿 +${merge.mergedPinnedClipboardCount} 筆"
+                )
+            )
+        }
+        outcome.memorySummary?.let {
+            parts.add(
+                AppStrings.pick(
+                    appLang,
+                    "军师记忆 ${it.importedSessions} 会话 / ${it.mergedBuckets} 风格组",
+                    "Copilot memory (${it.importedSessions} sessions / ${it.mergedBuckets} style groups)",
+                    "軍師記憶 ${it.importedSessions} 會話 / ${it.mergedBuckets} 風格組"
+                )
+            )
+        }
+        val joined = parts.joinToString(" · ")
+        val extra = if (parts.isNotEmpty()) {
+            AppStrings.pick(
+                appLang,
+                "；无损合并：$joined",
+                "; losslessly merged: $joined",
+                "；無損合併：$joined"
+            )
+        } else {
+            ""
+        }
+        val skipNote = if (skippedEncryptedMemory) {
+            AppStrings.pick(
+                appLang,
+                "（已按要求跳过加密军师记忆）",
+                " (skipped encrypted Copilot memory as requested)",
+                "（已按要求略過加密軍師記憶）"
+            )
+        } else {
+            ""
+        }
+        return AppStrings.pick(
+            appLang,
+            "✓ 全量配置与数据导入成功！已同步密钥库、短语与个人词典$extra$skipNote",
+            "✓ Full backup imported! Synced API vault, snippets, and personal dictionary$extra$skipNote",
+            "✓ 全量設定與資料匯入成功！已同步金鑰庫、片語與個人詞典$extra$skipNote"
+        )
     }
 
     fun executeImportJsonPayload(rawJson: String, skipMemoryIfNoPassphrase: Boolean) {
         if (rawJson.isBlank()) {
             backupIsError = true
-            backupStatusMsg = "✕ 未检测到可导入的备份 JSON 内容"
+            backupStatusMsg = AppStrings.pick(
+                appLang,
+                "✕ 未检测到可导入的备份 JSON 内容",
+                "✕ No valid backup JSON content found",
+                "✕ 未偵測到可匯入的備份 JSON 內容"
+            )
             return
         }
         val hasEncryptedMemory = ApiConfigBackupHelper.hasEncryptedJevMemoryArchive(rawJson)
@@ -284,7 +383,12 @@ fun ApiSettingsScreen(
             pendingImportJson = rawJson
             showImportMemorySkipAction = true
             backupIsError = true
-            backupStatusMsg = "检测到备份内含加密的军师记忆：请输入密码后点击「解锁并导入」，或点击「跳过记忆仅导其余数据」"
+            backupStatusMsg = AppStrings.pick(
+                appLang,
+                "检测到备份内含加密的军师记忆：请输入密码后点击「解锁并导入」，或点击「跳过记忆仅导其余数据」",
+                "Encrypted Copilot memory detected: enter your passphrase and tap \"Unlock & Import\", or tap \"Skip Memory & Import Rest\"",
+                "偵測到備份內含加密的軍師記憶：請輸入密碼後點擊「解鎖並匯入」，或點擊「略過記憶僅匯入其餘資料」"
+            )
             return
         }
         coroutineScope.launch {
@@ -315,7 +419,8 @@ fun ApiSettingsScreen(
                 )
             }.onFailure { err ->
                 backupIsError = true
-                backupStatusMsg = "✕ ${err.message ?: "导入备份失败"}"
+                val fallbackErr = AppStrings.pick(appLang, "导入备份失败", "Failed to import backup", "匯入備份失敗")
+                backupStatusMsg = "✕ ${err.message ?: fallbackErr}"
             }
         }
     }
@@ -354,7 +459,9 @@ fun ApiSettingsScreen(
                     )
                     val bytes = json.toByteArray(Charsets.UTF_8)
                     val out = context.contentResolver.openOutputStream(uri)
-                        ?: throw IllegalStateException("无法写入所选文件")
+                        ?: throw IllegalStateException(
+                            AppStrings.pick(appLang, "无法写入所选文件", "Cannot write to selected file", "無法寫入所選檔案")
+                        )
                     out.use { it.write(bytes) }
                     bytes.size
                 }
@@ -366,10 +473,21 @@ fun ApiSettingsScreen(
             writeRes.onSuccess { byteCount ->
                 val kb = String.format(Locale.US, "%.1f KB", byteCount / 1024.0)
                 backupIsError = false
-                backupStatusMsg = "✓ 全量数据备份已导出为 .json 文件（$kb，包含所选数据与密钥库，请妥善保管）"
+                backupStatusMsg = AppStrings.pick(
+                    appLang,
+                    "✓ 全量数据备份已导出为 .json 文件（$kb，包含所选数据与密钥库，请妥善保管）",
+                    "✓ Full backup exported to .json ($kb, includes API keys & selected data — keep it safe)",
+                    "✓ 全量資料備份已匯出為 .json 檔案（$kb，包含所選資料與金鑰庫，請妥善保管）"
+                )
             }.onFailure { err ->
                 backupIsError = true
-                backupStatusMsg = "✕ 导出 .json 文件失败：${err.message ?: "未知错误"}"
+                val unknownErr = AppStrings.pick(appLang, "未知错误", "Unknown error", "未知錯誤")
+                backupStatusMsg = AppStrings.pick(
+                    appLang,
+                    "✕ 导出 .json 文件失败：${err.message ?: unknownErr}",
+                    "✕ Failed to export .json file: ${err.message ?: unknownErr}",
+                    "✕ 匯出 .json 檔案失敗：${err.message ?: unknownErr}"
+                )
             }
         }
     }
@@ -383,7 +501,9 @@ fun ApiSettingsScreen(
             val readRes = withContext(Dispatchers.IO) {
                 runCatching {
                     val input = context.contentResolver.openInputStream(uri)
-                        ?: throw IllegalStateException("无法读取所选文件")
+                        ?: throw IllegalStateException(
+                            AppStrings.pick(appLang, "无法读取所选文件", "Cannot read selected file", "無法讀取所選檔案")
+                        )
                     input.bufferedReader(Charsets.UTF_8).use { it.readText() }
                 }
             }
@@ -392,7 +512,13 @@ fun ApiSettingsScreen(
                 executeImportJsonPayload(rawJson = raw, skipMemoryIfNoPassphrase = false)
             }.onFailure { err ->
                 backupIsError = true
-                backupStatusMsg = "✕ 读取 .json 文件失败：${err.message ?: "未知错误"}"
+                val unknownErr = AppStrings.pick(appLang, "未知错误", "Unknown error", "未知錯誤")
+                backupStatusMsg = AppStrings.pick(
+                    appLang,
+                    "✕ 读取 .json 文件失败：${err.message ?: unknownErr}",
+                    "✕ Failed to read .json file: ${err.message ?: unknownErr}",
+                    "✕ 讀取 .json 檔案失敗：${err.message ?: unknownErr}"
+                )
             }
         }
     }
@@ -452,7 +578,8 @@ fun ApiSettingsScreen(
                 discoveredModels = list
                 pickerDialogSlot = slot
             }.onFailure { err ->
-                modelFetchErrors = modelFetchErrors + (slot to (err.message ?: "拉取模型列表失败"))
+                val fallback = AppStrings.pick(appLang, "拉取模型列表失败", "Failed to fetch model list", "拉取模型列表失敗")
+                modelFetchErrors = modelFetchErrors + (slot to (err.message ?: fallback))
             }
         }
     }
@@ -554,12 +681,20 @@ fun ApiSettingsScreen(
         if (showScreenHeader) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    text = "统一 API 服务商与模型路由",
+                    text = tr(
+                        "统一 API 服务商与模型路由",
+                        "Unified API Providers & Model Routing",
+                        "統一 API 服務商與模型路由"
+                    ),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.ExtraBold
                 )
                 Text(
-                    text = "同一服务商只需填写一次 Key，一键切换 Google Gemini 0.5s 流式、DeepSeek 单 Key 方案、百炼、豆包或自由混搭",
+                    text = tr(
+                        "同一服务商只需填写一次 Key，一键切换 Google Gemini 0.5s 流式、DeepSeek 单 Key 方案、百炼、豆包或自由混搭",
+                        "Enter one API key per provider — switch between Google Gemini ~0.5s Live, DeepSeek 1-Key, Bailian, Doubao, or custom mix-and-match",
+                        "同一服務商只需填寫一次 Key，一鍵切換 Google Gemini 0.5s 串流、DeepSeek 單 Key 方案、百煉、豆包或自由混搭"
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -600,12 +735,18 @@ fun ApiSettingsScreen(
                     )
                     Text(
                         text = when (readiness) {
-                            is ReadinessState.Ready ->
-                                "引擎就绪 · ${SetupStatsHelper.formatActivePipelineBadge(settings, registrySnapshot)}"
-                            is ReadinessState.DegradedRawOnly ->
-                                "仅转写 · ${readiness.badge.shortLabel}"
-                            is ReadinessState.NotReady ->
-                                "待配置 · ${readiness.reason}"
+                            is ReadinessState.Ready -> {
+                                val badgeText = formatLocalizedPipelineBadge(settings, registrySnapshot, appLang)
+                                tr("引擎就绪 · $badgeText", "Ready · $badgeText", "引擎就緒 · $badgeText")
+                            }
+                            is ReadinessState.DegradedRawOnly -> {
+                                val shortLbl = localizeRouteShortLabel(readiness.badge.shortLabel, appLang)
+                                tr("仅转写 · $shortLbl", "Raw ASR · $shortLbl", "僅轉寫 · $shortLbl")
+                            }
+                            is ReadinessState.NotReady -> {
+                                val reasonLbl = localizeNotReadyReason(readiness.reason, appLang)
+                                tr("待配置 · $reasonLbl", "Setup Needed · $reasonLbl", "待設定 · $reasonLbl")
+                            }
                         },
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold,
@@ -616,9 +757,9 @@ fun ApiSettingsScreen(
                 }
                 Text(
                     text = when {
-                        dictatePlan.badge.isPureOffline -> "纯离线零出网"
-                        dictatePlan.badge.isHybrid -> "端云混合路由"
-                        else -> "本地加密直连"
+                        dictatePlan.badge.isPureOffline -> tr("纯离线零出网", "Zero Network", "純離線零連網")
+                        dictatePlan.badge.isHybrid -> tr("端云混合路由", "Hybrid Route", "端雲混合路由")
+                        else -> tr("本地加密直连", "Direct TLS", "本地加密直連")
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -676,16 +817,31 @@ fun ApiSettingsScreen(
                 }
                 testSuccessResult = null
                 testErrorMessage = null
-                val spec = UnifiedProviderCatalog.specFor(providerId)
+                val spec = localizedProviderSpec(UnifiedProviderCatalog.specFor(providerId), appLang)
                 Toast.makeText(
                     context,
                     when {
                         providerId == UnifiedProviderCatalog.ID_DEEPSEEK && keepExistingThirdPartyStt ->
-                            "✓ 已将 DeepSeek 设为文本大脑（保留当前听音引擎）"
+                            AppStrings.pick(
+                                appLang,
+                                "✓ 已将 DeepSeek 设为文本大脑（保留当前听音引擎）",
+                                "✓ Set DeepSeek as text brain (kept current speech engine)",
+                                "✓ 已將 DeepSeek 設為文字大腦（保留目前聽音引擎）"
+                            )
                         providerId == UnifiedProviderCatalog.ID_DEEPSEEK ->
-                            "✓ 已启用 DeepSeek 单 Key 方案（语音识别 + 润色与军师）"
+                            AppStrings.pick(
+                                appLang,
+                                "✓ 已启用 DeepSeek 单 Key 方案（语音识别 + 润色与军师）",
+                                "✓ Enabled DeepSeek 1-Key suite (ASR + Polish & Copilot)",
+                                "✓ 已啟用 DeepSeek 單 Key 方案（語音識別 + 潤飾與軍師）"
+                            )
                         else ->
-                            "🚀 已切换主力方案：${spec.name}"
+                            AppStrings.pick(
+                                appLang,
+                                "🚀 已切换主力方案：${spec.name}",
+                                "🚀 Switched primary provider: ${spec.name}",
+                                "🚀 已切換主力方案：${spec.name}"
+                            )
                     },
                     Toast.LENGTH_SHORT
                 ).show()
@@ -694,7 +850,16 @@ fun ApiSettingsScreen(
                 val installedAsr = OfflineModelCatalog.asrModels.firstOrNull { registrySnapshot.isInstalled(it.id) }
                 val installedSlm = OfflineModelCatalog.slmModels.firstOrNull { registrySnapshot.isInstalled(it.id) }
                 if (installedAsr == null) {
-                    Toast.makeText(context, "请先下载至少一个本机听音模型（推荐 SenseVoiceSmall）", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        context,
+                        AppStrings.pick(
+                            appLang,
+                            "请先下载至少一个本机听音模型（推荐 SenseVoiceSmall）",
+                            "Please download at least one local ASR model first (SenseVoiceSmall recommended)",
+                            "請先下載至少一個本機聽音模型（推薦 SenseVoiceSmall）"
+                        ),
+                        Toast.LENGTH_SHORT
+                    ).show()
                     showOfflineModelsScreen = true
                 } else {
                     repository.updateSettings { curr ->
@@ -722,9 +887,19 @@ fun ApiSettingsScreen(
                     Toast.makeText(
                         context,
                         if (installedSlm != null && registrySnapshot.slmEngineAvailable) {
-                            "🔒 已切换纯离线零出网（本机听音 + 本机净写）"
+                            AppStrings.pick(
+                                appLang,
+                                "🔒 已切换纯离线零出网（本机听音 + 本机净写）",
+                                "🔒 Switched to Offline Lock (Local ASR + Local Polish)",
+                                "🔒 已切換純離線零連網（本機聽音 + 本機淨寫）"
+                            )
                         } else {
-                            "🔒 已切换纯离线零出网（本机听音直出）"
+                            AppStrings.pick(
+                                appLang,
+                                "🔒 已切换纯离线零出网（本机听音直出）",
+                                "🔒 Switched to Offline Lock (Local ASR raw output)",
+                                "🔒 已切換純離線零連網（本機聽音直出）"
+                            )
                         },
                         Toast.LENGTH_SHORT
                     ).show()
@@ -738,7 +913,16 @@ fun ApiSettingsScreen(
                         curr.copy(mode = OfflineMode.OFF)
                     }
                 }
-                Toast.makeText(context, "已解除纯离线零出网锁（保留当前本机模型）", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    AppStrings.pick(
+                        appLang,
+                        "已解除纯离线零出网锁（保留当前本机模型）",
+                        "Unlocked Offline Lock (local models kept active)",
+                        "已解除純離線零連網鎖（保留目前本機模型）"
+                    ),
+                    Toast.LENGTH_SHORT
+                ).show()
             },
             onOpenOfflineModels = { showOfflineModelsScreen = true },
             onPasteClipboard = { readFromClipboard(context) }
@@ -753,17 +937,31 @@ fun ApiSettingsScreen(
             (settings.pipelineMode == PipelineMode.DUAL_STAGE &&
                 settings.llmConfig.enabled &&
                 activePrimaryProviderId != activeLlmProviderId)
-        val mixDrawerSubtitle = remember(settings, registrySnapshot, isMixedSetup) {
-            val activeLabel = SetupStatsHelper.formatActivePipelineBadge(settings, registrySnapshot)
+        val mixDrawerSubtitle = remember(settings, registrySnapshot, isMixedSetup, appLang) {
+            val activeLabel = formatLocalizedPipelineBadge(settings, registrySnapshot, appLang)
             if (isMixedSetup) {
-                "混搭中 · 当前：$activeLabel · 点击调整多平台混搭"
+                AppStrings.pick(
+                    appLang,
+                    "混搭中 · 当前：$activeLabel · 点击调整多平台混搭",
+                    "Mixed Routing · Current: $activeLabel · Tap to customize",
+                    "混搭中 · 目前：$activeLabel · 點擊調整多平台混搭"
+                )
             } else {
-                "当前：$activeLabel · 点击自定义双阶段、多模态或军师独立模型"
+                AppStrings.pick(
+                    appLang,
+                    "当前：$activeLabel · 点击自定义双阶段、多模态或军师独立模型",
+                    "Current: $activeLabel · Tap to configure Dual-Stage, Multimodal, or Copilot model",
+                    "目前：$activeLabel · 點擊自訂雙階段、多模態或軍師獨立模型"
+                )
             }
         }
 
         CollapsibleStudioDrawer(
-            title = "🔀 进阶：工作流与多平台混搭",
+            title = tr(
+                "🔀 进阶：工作流与多平台混搭",
+                "🔀 Advanced: Workflow & Multi-Provider Mix",
+                "🔀 進階：工作流與多平台混搭"
+            ),
             subtitle = mixDrawerSubtitle,
             expanded = showMixRoutingDrawer,
             onToggle = { showMixRoutingDrawer = !showMixRoutingDrawer }
@@ -837,7 +1035,16 @@ fun ApiSettingsScreen(
                         ModelDownloadWorker.enqueueDownload(context, modelId, allowDeleteExistingFirst = false)
                     }.getOrNull()
                     if (workId != null) {
-                        Toast.makeText(context, "已开始后台下载，正在打开模型管理查看进度…", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            AppStrings.pick(
+                                appLang,
+                                "已开始后台下载，正在打开模型管理查看进度…",
+                                "Background download started — opening model manager…",
+                                "已開始背景下載，正在開啟模型管理查看進度…"
+                            ),
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                     showOfflineModelsScreen = true
                 },
@@ -870,7 +1077,16 @@ fun ApiSettingsScreen(
                         }
                     }
                     if (wasLocked) {
-                        Toast.makeText(context, "已自动解除纯离线锁，切为端云混合/云端听音", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            AppStrings.pick(
+                                appLang,
+                                "已自动解除纯离线锁，切为端云混合/云端听音",
+                                "Unlocked Offline Lock — switched to Hybrid / Cloud ASR",
+                                "已自動解除純離線鎖，切為端雲混合/雲端聽音"
+                            ),
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 },
                 onSelectLlmProvider = { pid ->
@@ -901,7 +1117,16 @@ fun ApiSettingsScreen(
                         }
                     }
                     if (wasLocked) {
-                        Toast.makeText(context, "已自动解除纯离线锁，切为端云混合润色", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            AppStrings.pick(
+                                appLang,
+                                "已自动解除纯离线锁，切为端云混合润色",
+                                "Unlocked Offline Lock — switched to Hybrid Cloud Polish",
+                                "已自動解除純離線鎖，切為端雲混合潤飾"
+                            ),
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 },
                 onSelectMultimodalProvider = { pid ->
@@ -931,8 +1156,16 @@ fun ApiSettingsScreen(
 
         // Layer 3A: Collapsible Advanced Tuning Drawer
         CollapsibleStudioDrawer(
-            title = "⚙️ 高级协议与路由参数",
-            subtitle = "思考模式开关、采样温度、自定义 Base URL 反代地址与火山 Resource ID",
+            title = tr(
+                "⚙️ 高级协议与路由参数",
+                "⚙️ Advanced Protocol & Routing",
+                "⚙️ 進階協定與路由參數"
+            ),
+            subtitle = tr(
+                "思考模式开关、采样温度、自定义 Base URL 反代地址与火山 Resource ID",
+                "Thinking mode, sampling temperature, custom Base URL / reverse proxy, and Volcengine Resource ID",
+                "思考模式開關、取樣溫度、自訂 Base URL 反向代理位址與火山 Resource ID"
+            ),
             expanded = showAdvancedDrawer,
             onToggle = { showAdvancedDrawer = !showAdvancedDrawer }
         ) {
@@ -954,16 +1187,24 @@ fun ApiSettingsScreen(
         }
 
         CollapsibleStudioDrawer(
-            title = "🩺 连通性实测与毫秒级诊断日志",
-            subtitle = "模拟带口癖与改口的真实句子，一键验证首包与全链路耗时",
+            title = tr(
+                "🩺 连通性实测与毫秒级诊断日志",
+                "🩺 Live Connectivity & Latency Tester",
+                "🩺 連通性實測與毫秒級診斷日誌"
+            ),
+            subtitle = tr(
+                "模拟带口癖与改口的真实句子，一键验证首包与全链路耗时",
+                "Test a sample sentence with fillers and self-corrections to verify end-to-end latency",
+                "模擬帶口頭禪與改口的真實句子，一鍵驗證首包與全鏈路耗時"
+            ),
             expanded = showTesterDrawer,
             onToggle = { showTesterDrawer = !showTesterDrawer }
         ) {
             LiveApiTesterContent(
                 testInput = testInput,
                 onTestInputChange = { testInput = it },
-                onResetDefaultInput = { testInput = DEFAULT_LIVE_TEST_INPUT },
-                activeStyleLabel = "${activeStyle.emoji} ${activeStyle.name}",
+                onResetDefaultInput = { testInput = defaultLiveTestInput(appLang) },
+                activeStyleLabel = "${activeStyle.emoji} ${AppStrings.toneStyleName(activeStyle, appLang)}",
                 activeDictionaryCount = activeDictCount,
                 isTesting = isTestingApi,
                 successResult = testSuccessResult,
@@ -978,7 +1219,12 @@ fun ApiSettingsScreen(
                     !settings.llmConfig.enabled,
                 onRunTest = {
                     if (testInput.isBlank()) {
-                        testErrorMessage = "请先输入一段待润色的测试文字"
+                        testErrorMessage = AppStrings.pick(
+                            appLang,
+                            "请先输入一段待润色的测试文字",
+                            "Please enter sample text to test first",
+                            "請先輸入一段待潤飾的測試文字"
+                        )
                         testSuccessResult = null
                         return@LiveApiTesterContent
                     }
@@ -995,7 +1241,7 @@ fun ApiSettingsScreen(
                             activeStyle = styleNow,
                             rawOrSelectedText = testInput,
                             explicitInstruction = null,
-                            targetAppName = "API 实测台"
+                            targetAppName = AppStrings.pick(appLang, "API 实测台", "API Live Tester", "API 實測台")
                         )
                         isTestingApi = false
                         res.onSuccess { exec ->
@@ -1010,7 +1256,12 @@ fun ApiSettingsScreen(
                             }
                             testSuccessResult = exec
                         }.onFailure { err ->
-                            testErrorMessage = err.message ?: "请求失败，请检查网络连接与接口地址"
+                            testErrorMessage = err.message ?: AppStrings.pick(
+                                appLang,
+                                "请求失败，请检查网络连接与接口地址",
+                                "Request failed — please check your network connection and Base URL",
+                                "請求失敗，請檢查網路連線與介面位址"
+                            )
                         }
                     }
                 },
@@ -1027,8 +1278,16 @@ fun ApiSettingsScreen(
 
         // Layer 3C: Collapsible Full Data Backup / Cross-Package Migration Drawer
         CollapsibleStudioDrawer(
-            title = "📦 全量数据备份与跨机迁移",
-            subtitle = "支持 .json 文件与剪贴板无损迁移：密钥、词典、短语、历史、每日统计、Token、连词库、置顶剪贴板与军师记忆",
+            title = tr(
+                "📦 全量数据备份与跨机迁移",
+                "📦 Full Data Backup & Device Migration",
+                "📦 全量資料備份與跨機遷移"
+            ),
+            subtitle = tr(
+                "支持 .json 文件与剪贴板无损迁移：密钥、词典、短语、历史、每日统计、Token、连词库、置顶剪贴板与军师记忆",
+                "Lossless .json file & clipboard migration: API keys, dictionary, snippets, history, stats, tokens, predictions, pinned clips & Copilot memory",
+                "支援 .json 檔案與剪貼簿無損遷移：金鑰、詞典、片語、歷史、每日統計、Token、連詞庫、置頂剪貼簿與軍師記憶"
+            ),
             expanded = showBackupDrawer,
             onToggle = { showBackupDrawer = !showBackupDrawer }
         ) {
@@ -1062,7 +1321,12 @@ fun ApiSettingsScreen(
                 onExportToJsonFile = {
                     if (includeEncryptedJevMemory && backupMemoryPassphrase.isBlank()) {
                         backupIsError = true
-                        backupStatusMsg = "✕ 请先输入军师记忆加密密码再导出文件"
+                        backupStatusMsg = AppStrings.pick(
+                            appLang,
+                            "✕ 请先输入军师记忆加密密码再导出文件",
+                            "✕ Please enter a passphrase for Copilot memory encryption before exporting",
+                            "✕ 請先輸入軍師記憶加密密碼再匯出檔案"
+                        )
                     } else {
                         val stamp = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE)
                         exportBackupFileLauncher.launch("typefree-backup-$stamp.json")
@@ -1082,7 +1346,12 @@ fun ApiSettingsScreen(
                 onExportFullJsonToClipboard = {
                     if (includeEncryptedJevMemory && backupMemoryPassphrase.isBlank()) {
                         backupIsError = true
-                        backupStatusMsg = "✕ 请先输入军师记忆加密密码再导出"
+                        backupStatusMsg = AppStrings.pick(
+                            appLang,
+                            "✕ 请先输入军师记忆加密密码再导出",
+                            "✕ Please enter a passphrase for Copilot memory encryption first",
+                            "✕ 請先輸入軍師記憶加密密碼再匯出"
+                        )
                     } else {
                         coroutineScope.launch {
                             isBackupBusy = true
@@ -1120,12 +1389,22 @@ fun ApiSettingsScreen(
                             if (byteSize > ApiConfigBackupHelper.CLIPBOARD_SAFE_MAX_BYTES) {
                                 val kb = String.format(Locale.US, "%.1f KB", byteSize / 1024.0)
                                 backupIsError = true
-                                backupStatusMsg = "全量备份体积约 $kb，超过系统剪贴板安全上限，请点「导出 .json 文件」进行无损迁移"
+                                backupStatusMsg = AppStrings.pick(
+                                    appLang,
+                                    "全量备份体积约 $kb，超过系统剪贴板安全上限，请点「导出 .json 文件」进行无损迁移",
+                                    "Full backup is ~$kb, exceeding the safe Android clipboard limit — please use \"Export .json File\" instead",
+                                    "全量備份體積約 $kb，超過系統剪貼簿安全上限，請點「匯出 .json 檔案」進行無損遷移"
+                                )
                             } else {
                                 writeToClipboard(context, "TypeFree Full Backup", json)
                                 val kb = String.format(Locale.US, "%.1f KB", byteSize / 1024.0)
                                 backupIsError = false
-                                backupStatusMsg = "✓ 全量备份 JSON（$kb）已复制到剪贴板（包含密钥与所选数据，请妥善保管）"
+                                backupStatusMsg = AppStrings.pick(
+                                    appLang,
+                                    "✓ 全量备份 JSON（$kb）已复制到剪贴板（包含密钥与所选数据，请妥善保管）",
+                                    "✓ Full backup JSON ($kb) copied to clipboard (contains API keys & selected data — keep it safe)",
+                                    "✓ 全量備份 JSON（$kb）已複製到剪貼簿（包含金鑰與所選資料，請妥善保管）"
+                                )
                             }
                         }
                     }
@@ -1144,7 +1423,12 @@ fun ApiSettingsScreen(
                     )
                     writeToClipboard(context, "TypeFree Config Share", json)
                     backupIsError = false
-                    backupStatusMsg = "✓ 脱敏配置 JSON 已复制到剪贴板（已隐藏所有 API Key，不含历史/剪贴板/记忆，可安全分享）"
+                    backupStatusMsg = AppStrings.pick(
+                        appLang,
+                        "✓ 脱敏配置 JSON 已复制到剪贴板（已隐藏所有 API Key，不含历史/剪贴板/记忆，可安全分享）",
+                        "✓ Redacted config JSON copied to clipboard (all API keys & personal data stripped — safe to share)",
+                        "✓ 去識別化設定 JSON 已複製到剪貼簿（已隱藏所有 API Key，不含歷史/剪貼簿/記憶，可安全分享）"
+                    )
                 },
                 onImportFromClipboard = {
                     pendingImportJson = null
@@ -1206,12 +1490,16 @@ private fun UnifiedProviderVaultCard(
     onOpenOfflineModels: () -> Unit,
     onPasteClipboard: () -> String
 ) {
+    val appLang = LocalAppLanguage.current
     val isLocalSelected = selectedProviderId == ID_LOCAL_OFFLINE_PROVIDER
-    val selectedSpec = remember(selectedProviderId) {
+    val offlineCfg = settings.offlineConfig
+    val isLocalActive = offlineCfg.mode != OfflineMode.OFF && (offlineCfg.asrSlotOn || offlineCfg.slmSlotOn)
+    val isPureOfflineLocked = offlineCfg.mode == OfflineMode.OFFLINE_ONLY
+    val selectedSpec = remember(selectedProviderId, isPureOfflineLocked, appLang) {
         if (selectedProviderId == ID_LOCAL_OFFLINE_PROVIDER) {
-            LOCAL_OFFLINE_VAULT_SPEC
+            localizedLocalVaultSpec(isPureOfflineLocked, appLang)
         } else {
-            UnifiedProviderCatalog.specFor(selectedProviderId)
+            localizedProviderSpec(UnifiedProviderCatalog.specFor(selectedProviderId), appLang)
         }
     }
     val selectedCred = vault[selectedSpec.id] ?: ProviderCredential(providerId = selectedSpec.id)
@@ -1224,9 +1512,6 @@ private fun UnifiedProviderVaultCard(
         OfflineModelCatalog.slmModels.filter { registrySnapshot.isInstalled(it.id) }
     }
     val isLocalAnyInstalled = installedAsrModels.isNotEmpty() || installedSlmModels.isNotEmpty()
-    val offlineCfg = settings.offlineConfig
-    val isLocalActive = offlineCfg.mode != OfflineMode.OFF && (offlineCfg.asrSlotOn || offlineCfg.slmSlotOn)
-    val isPureOfflineLocked = offlineCfg.mode == OfflineMode.OFFLINE_ONLY
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1247,19 +1532,31 @@ private fun UnifiedProviderVaultCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "快速接入：本机离线与服务商密钥",
+                        text = tr(
+                            "快速接入：本机离线与服务商密钥",
+                            "Quick Setup: On-Device & Cloud Keys",
+                            "快速接入：本機離線與服務商金鑰"
+                        ),
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp)
                     )
                     val readyCount = UnifiedProviderCatalog.providers.count { spec ->
                         UnifiedProviderCatalog.isCredentialReady(spec.id, vault[spec.id])
                     } + if (isLocalAnyInstalled) 1 else 0
+                    val totalProviders = UnifiedProviderCatalog.providers.size + 1
                     Surface(
                         shape = RoundedCornerShape(50),
                         color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Text(
-                            text = "已就绪 $readyCount / ${UnifiedProviderCatalog.providers.size + 1}",
+                            text = tr(
+                                "已就绪 $readyCount / $totalProviders",
+                                "Ready $readyCount/$totalProviders",
+                                "已就緒 $readyCount / $totalProviders"
+                            ),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
@@ -1267,19 +1564,21 @@ private fun UnifiedProviderVaultCard(
                     }
                 }
                 Text(
-                    text = "本机离线免 Key 零费用；云端每个平台只需填一次 API Key，听音与润色自动共享",
+                    text = tr(
+                        "本机离线免 Key 零费用；云端每个平台只需填一次 API Key，听音与润色自动共享",
+                        "On-device models require no key and cost $0; cloud providers share a single API key across speech and text",
+                        "本機離線免 Key 零費用；雲端每個平台只需填一次 API Key，聽音與潤飾自動共享"
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             // Local Offline (1st tile) + Channel-Ordered Cloud Providers in clean 2-column grid
-            val allVaultSpecs = remember(isPureOfflineLocked) {
-                listOf(
-                    LOCAL_OFFLINE_VAULT_SPEC.copy(
-                        badge = if (isPureOfflineLocked) "纯离线零出网" else "免Key/零费用"
-                    )
-                ) + OnboardingProviderOrderHelper.orderedCloudProviders()
+            val allVaultSpecs = remember(isPureOfflineLocked, appLang) {
+                listOf(localizedLocalVaultSpec(isPureOfflineLocked, appLang)) +
+                    OnboardingProviderOrderHelper.orderedCloudProviders(preferDomesticOrder = appLang == AppLang.ZH_CN)
+                        .map { localizedProviderSpec(it, appLang) }
             }
             allVaultSpecs.chunked(2).forEach { rowSpecs ->
                 Row(
@@ -1332,14 +1631,21 @@ private fun UnifiedProviderVaultCard(
                 )
             ) {
                 if (isLocalSelected) {
+                    val notInstalledText = tr("未安装", "Not Installed", "未安裝")
                     val activeAsrName = OfflineModelCatalog.findById(offlineCfg.selectedAsrModelId)
-                        ?.takeIf { registrySnapshot.isInstalled(it.id) }?.displayName
-                        ?: installedAsrModels.firstOrNull()?.displayName
-                        ?: "未安装"
+                        ?.takeIf { registrySnapshot.isInstalled(it.id) }
+                        ?.let { offlineModelDisplayName(it, appLang) }
+                        ?: installedAsrModels.firstOrNull()?.let { offlineModelDisplayName(it, appLang) }
+                        ?: notInstalledText
                     val activeSlmName = OfflineModelCatalog.findById(offlineCfg.selectedSlmModelId)
-                        ?.takeIf { registrySnapshot.isInstalled(it.id) }?.displayName
-                        ?: installedSlmModels.firstOrNull()?.displayName
-                        ?: if (registrySnapshot.slmEngineAvailable) "未安装" else "仅听音版"
+                        ?.takeIf { registrySnapshot.isInstalled(it.id) }
+                        ?.let { offlineModelDisplayName(it, appLang) }
+                        ?: installedSlmModels.firstOrNull()?.let { offlineModelDisplayName(it, appLang) }
+                        ?: if (registrySnapshot.slmEngineAvailable) {
+                            notInstalledText
+                        } else {
+                            tr("仅听音版", "ASR-Only Build", "僅聽音版")
+                        }
 
                     Column(
                         modifier = Modifier
@@ -1353,7 +1659,7 @@ private fun UnifiedProviderVaultCard(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "📱 本机离线引擎",
+                                text = tr("📱 本机离线引擎", "📱 On-Device Engine", "📱 本機離線引擎"),
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
@@ -1367,9 +1673,13 @@ private fun UnifiedProviderVaultCard(
                             ) {
                                 Text(
                                     text = when {
-                                        isPureOfflineLocked -> "🔒 纯离线零出网"
-                                        isLocalAnyInstalled -> "已装 ${installedAsrModels.size} 听音 / ${installedSlmModels.size} 净写"
-                                        else -> "尚未下载模型"
+                                        isPureOfflineLocked -> tr("🔒 纯离线零出网", "🔒 Offline Lock", "🔒 純離線零連網")
+                                        isLocalAnyInstalled -> tr(
+                                            "已装 ${installedAsrModels.size} 听音 / ${installedSlmModels.size} 净写",
+                                            "Installed: ${installedAsrModels.size} ASR / ${installedSlmModels.size} SLM",
+                                            "已裝 ${installedAsrModels.size} 聽音 / ${installedSlmModels.size} 淨寫"
+                                        )
+                                        else -> tr("尚未下载模型", "No Models Yet", "尚未下載模型")
                                     },
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.SemiBold,
@@ -1398,7 +1708,7 @@ private fun UnifiedProviderVaultCard(
                                     verticalArrangement = Arrangement.spacedBy(2.dp)
                                 ) {
                                     Text(
-                                        text = "本机听音",
+                                        text = tr("本机听音", "Local Speech (ASR)", "本機聽音"),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -1422,7 +1732,7 @@ private fun UnifiedProviderVaultCard(
                                     verticalArrangement = Arrangement.spacedBy(2.dp)
                                 ) {
                                     Text(
-                                        text = "端侧净写",
+                                        text = tr("端侧净写", "Local Brain (SLM)", "端側淨寫"),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -1449,7 +1759,11 @@ private fun UnifiedProviderVaultCard(
                                     border = BorderStroke(1.2.dp, TypeFreeEmerald.copy(alpha = 0.65f))
                                 ) {
                                     Text(
-                                        text = "✓ 纯离线锁定（点击解锁）",
+                                        text = tr(
+                                            "✓ 纯离线锁定（点击解锁）",
+                                            "✓ Offline Locked (Unlock)",
+                                            "✓ 純離線鎖定（點擊解鎖）"
+                                        ),
                                         style = MaterialTheme.typography.labelMedium,
                                         fontWeight = FontWeight.Bold,
                                         color = TypeFreeEmerald,
@@ -1464,10 +1778,15 @@ private fun UnifiedProviderVaultCard(
                                     shape = RoundedCornerShape(12.dp)
                                 ) {
                                     Text(
-                                        text = "🔒 一键切换纯离线",
+                                        text = tr(
+                                            "🔒 一键切换纯离线",
+                                            "🔒 Enable Offline Lock",
+                                            "🔒 一鍵切換純離線"
+                                        ),
                                         style = MaterialTheme.typography.labelMedium,
                                         fontWeight = FontWeight.Bold,
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -1477,7 +1796,7 @@ private fun UnifiedProviderVaultCard(
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                             ) {
                                 Text(
-                                    text = "管理 / 下载 →",
+                                    text = tr("管理 / 下载 →", "Models →", "管理 / 下載 →"),
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.SemiBold
                                 )
@@ -1485,7 +1804,11 @@ private fun UnifiedProviderVaultCard(
                         }
 
                         Text(
-                            text = "开启「纯离线」后全部任务严禁联网；若在下方混搭区改选任意云端服务商，将自动解锁并切回端云混合。",
+                            text = tr(
+                                "开启「纯离线」后全部任务严禁联网；若在下方混搭区改选任意云端服务商，将自动解锁并切回端云混合。",
+                                "Offline Lock blocks all network traffic across every AI task. Picking a cloud provider in the Workflow Mix drawer below automatically switches back to Hybrid.",
+                                "開啟「純離線」後全部任務嚴禁連網；若在下方混搭區改選任意雲端服務商，將自動解鎖並切回端雲混合。"
+                            ),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 16.sp
@@ -1517,7 +1840,11 @@ private fun UnifiedProviderVaultCard(
                             }
                         ) {
                             Text(
-                                text = if (isSelectedReady) "✓ 密钥已就绪" else selectedSpec.badge,
+                                text = if (isSelectedReady) {
+                                    tr("✓ 密钥已就绪", "✓ Key Ready", "✓ 金鑰已就緒")
+                                } else {
+                                    selectedSpec.badge
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (isSelectedReady) {
@@ -1543,16 +1870,36 @@ private fun UnifiedProviderVaultCard(
                             onValueCommit = { url ->
                                 onUpdateCredential(selectedCred.copy(customBaseUrl = url.trim()))
                             },
-                            label = "聚合网关 / 本地服务 Base URL",
-                            placeholder = "https://api.openai.com/v1 或 http://192.168.1.10:11434/v1"
+                            label = tr(
+                                "聚合网关 / 本地服务 Base URL",
+                                "OpenAI-Compatible / Local Base URL",
+                                "聚合閘道 / 本地服務 Base URL"
+                            ),
+                            placeholder = tr(
+                                "https://api.openai.com/v1 或 http://192.168.1.10:11434/v1",
+                                "https://api.openai.com/v1 or http://192.168.1.10:11434/v1",
+                                "https://api.openai.com/v1 或 http://192.168.1.10:11434/v1"
+                            )
                         )
                     }
 
                     val primaryKeyLabel = when (selectedSpec.id) {
                         UnifiedProviderCatalog.ID_GOOGLE -> "Google AI Studio API Key (AIza...)"
-                        UnifiedProviderCatalog.ID_ALIYUN -> "阿里云百炼 API Key (sk-...)"
-                        UnifiedProviderCatalog.ID_VOLCENGINE -> "火山方舟 API Key（豆包 LLM 润色 / 单 Key）"
-                        UnifiedProviderCatalog.ID_SILICONFLOW -> "硅基流动 API Key (sk-...)"
+                        UnifiedProviderCatalog.ID_ALIYUN -> tr(
+                            "阿里云百炼 API Key (sk-...)",
+                            "Alibaba Bailian API Key (sk-...)",
+                            "阿里雲百煉 API Key (sk-...)"
+                        )
+                        UnifiedProviderCatalog.ID_VOLCENGINE -> tr(
+                            "火山方舟 API Key（豆包 LLM 润色 / 单 Key）",
+                            "Volcengine Ark API Key (Doubao LLM / Single Key)",
+                            "火山方舟 API Key（豆包 LLM 潤飾 / 單 Key）"
+                        )
+                        UnifiedProviderCatalog.ID_SILICONFLOW -> tr(
+                            "硅基流动 API Key (sk-...)",
+                            "SiliconFlow API Key (sk-...)",
+                            "矽基流動 API Key (sk-...)"
+                        )
                         UnifiedProviderCatalog.ID_DEEPSEEK -> "DeepSeek API Key (sk-...)"
                         else -> "API Key"
                     }
@@ -1574,7 +1921,11 @@ private fun UnifiedProviderVaultCard(
                             onKeyCommit = { tok ->
                                 onUpdateCredential(selectedCred.copy(sttApiKey = tok.trim()))
                             },
-                            label = "火山语音豆包流式 Access Token（与上方同 Key 可留空）",
+                            label = tr(
+                                "火山语音豆包流式 Access Token（与上方同 Key 可留空）",
+                                "Volcengine Speech Access Token (leave empty if using single key above)",
+                                "火山語音豆包串流 Access Token（與上方同 Key 可留空）"
+                            ),
                             isLocalUrl = false,
                             onPasteClipboard = onPasteClipboard
                         )
@@ -1583,8 +1934,12 @@ private fun UnifiedProviderVaultCard(
                             onValueCommit = { app ->
                                 onUpdateCredential(selectedCred.copy(appId = app.trim()))
                             },
-                            label = "火山语音 AppID（新版单 X-Api-Key 可留空）",
-                            placeholder = "选填，如 1234567890"
+                            label = tr(
+                                "火山语音 AppID（新版单 X-Api-Key 可留空）",
+                                "Volcengine Speech AppID (optional for single X-Api-Key)",
+                                "火山語音 AppID（新版單 X-Api-Key 可留空）"
+                            ),
+                            placeholder = tr("选填，如 1234567890", "Optional, e.g. 1234567890", "選填，如 1234567890")
                         )
                     }
 
@@ -1626,14 +1981,26 @@ private fun UnifiedProviderVaultCard(
                         )
                     ) {
                         val btnText = when {
-                            isDeepSeekFullLoop ->
-                                "✓ 已启用 DeepSeek 单 Key 方案（语音识别 + 润色与军师）"
-                            selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK ->
-                                "🚀 一键启用 DeepSeek 单 Key 方案（语音识别 + 润色与军师）"
-                            isAlreadyPrimary ->
-                                "✓ 当前已是主力方案（点击重置为官方推荐模型）"
-                            else ->
-                                "🚀 一键设为当前主力方案"
+                            isDeepSeekFullLoop -> tr(
+                                "✓ 已启用 DeepSeek 单 Key 方案（语音识别 + 润色与军师）",
+                                "✓ DeepSeek 1-Key Active (ASR + Polish & Copilot)",
+                                "✓ 已啟用 DeepSeek 單 Key 方案（語音識別 + 潤飾與軍師）"
+                            )
+                            selectedSpec.id == UnifiedProviderCatalog.ID_DEEPSEEK -> tr(
+                                "🚀 一键启用 DeepSeek 单 Key 方案（语音识别 + 润色与军师）",
+                                "🚀 Enable DeepSeek 1-Key (ASR + Polish & Copilot)",
+                                "🚀 一鍵啟用 DeepSeek 單 Key 方案（語音識別 + 潤飾與軍師）"
+                            )
+                            isAlreadyPrimary -> tr(
+                                "✓ 当前已是主力方案（点击重置为官方推荐模型）",
+                                "✓ Active Primary (Tap to Reset Default Models)",
+                                "✓ 目前已是主力方案（點擊重置為官方推薦模型）"
+                            )
+                            else -> tr(
+                                "🚀 一键设为当前主力方案",
+                                "🚀 Set as Primary Provider",
+                                "🚀 一鍵設為目前主力方案"
+                            )
                         }
                         Text(
                             text = btnText,
@@ -1649,9 +2016,17 @@ private fun UnifiedProviderVaultCard(
                         ) {
                             Text(
                                 text = if (isDeepSeekLlmWithThirdPartyStt) {
-                                    "✓ 当前混搭中：保留第三方听音 + DeepSeek 文本大脑"
+                                    tr(
+                                        "✓ 当前混搭中：保留第三方听音 + DeepSeek 文本大脑",
+                                        "✓ Mixed Active: Current ASR + DeepSeek Text Brain",
+                                        "✓ 目前混搭中：保留第三方聽音 + DeepSeek 文字大腦"
+                                    )
                                 } else {
-                                    "🧠 保留当前第三方听音引擎，仅将 DeepSeek 设为文本大脑"
+                                    tr(
+                                        "🧠 保留当前第三方听音引擎，仅将 DeepSeek 设为文本大脑",
+                                        "🧠 Keep Current ASR & Use DeepSeek for Text Brain Only",
+                                        "🧠 保留目前第三方聽音引擎，僅將 DeepSeek 設為文字大腦"
+                                    )
                                 },
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.SemiBold
@@ -1724,7 +2099,11 @@ private fun ProviderVaultTile(
                 )
             }
             Text(
-                text = if (isActiveRole) "正在使用 · ${spec.badge}" else spec.badge,
+                text = if (isActiveRole) {
+                    tr("正在使用 · ${spec.badge}", "In Use · ${spec.badge}", "正在使用 · ${spec.badge}")
+                } else {
+                    spec.badge
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = if (isActiveRole) {
                     TypeFreeEmerald
@@ -1769,6 +2148,7 @@ private fun UnifiedWorkflowRoutingCard(
     onUpdateJev: (LlmConfig) -> Unit,
     onFetchModels: (ModelCapabilitySlot) -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val activeSttPid = remember(settings.sttConfig) {
         UnifiedProviderCatalog.inferSttProviderId(settings.sttConfig)
     }
@@ -1807,12 +2187,20 @@ private fun UnifiedWorkflowRoutingCard(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = "2. 工作流与模型自由混搭",
+                    text = tr(
+                        "2. 工作流与模型自由混搭",
+                        "2. Workflow & Multi-Provider Mix",
+                        "2. 工作流與模型自由混搭"
+                    ),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "无需手动填写底层 WS/HTTP 协议地址，点选服务商即可自动挂载对应密钥",
+                    text = tr(
+                        "无需手动填写底层 WS/HTTP 协议地址，点选服务商即可自动挂载对应密钥",
+                        "Tap any provider chip to auto-bind its stored key and protocol endpoint — no manual URL setup needed",
+                        "無需手動填寫底層 WS/HTTP 協定位址，點選服務商即可自動掛載對應金鑰"
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1831,13 +2219,13 @@ private fun UnifiedWorkflowRoutingCard(
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     PipelineSegmentPill(
-                        title = "⚡ 实时流式 / 双阶段",
+                        title = tr("⚡ 实时流式 / 双阶段", "⚡ Live / Dual-Stage", "⚡ 即時串流 / 雙階段"),
                         selected = settings.pipelineMode == PipelineMode.DUAL_STAGE,
                         onClick = { onSelectMode(PipelineMode.DUAL_STAGE) },
                         modifier = Modifier.weight(1f)
                     )
                     PipelineSegmentPill(
-                        title = "🎙️ 多模态整包直出",
+                        title = tr("🎙️ 多模态整包直出", "🎙️ Multimodal Direct", "🎙️ 多模態整包直出"),
                         selected = settings.pipelineMode == PipelineMode.MULTIMODAL_DIRECT,
                         onClick = { onSelectMode(PipelineMode.MULTIMODAL_DIRECT) },
                         modifier = Modifier.weight(1f)
@@ -1861,7 +2249,11 @@ private fun UnifiedWorkflowRoutingCard(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Text(
-                                text = "👂 听音转写引擎（边说边传 / 声学热词）",
+                                text = tr(
+                                    "👂 听音转写引擎（边说边传 / 声学热词）",
+                                    "👂 Speech Engine (Live Stream / Hotwords)",
+                                    "👂 聽音轉寫引擎（邊說邊傳 / 聲學熱詞）"
+                                ),
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
@@ -1881,13 +2273,17 @@ private fun UnifiedWorkflowRoutingCard(
 
                             if (isLocalAsrSelected) {
                                 LocalRoleModelSelectorPanel(
-                                    title = "已下载的本机听音模型",
+                                    title = tr("已下载的本机听音模型", "Installed Local ASR Models", "已下載的本機聽音模型"),
                                     installedModels = installedAsrModels,
                                     selectedModelId = settings.offlineConfig.selectedAsrModelId,
-                                    emptyTitle = "尚未下载本机听音模型",
-                                    emptySubtitle = "推荐 SenseVoiceSmall（226MB，0.24s 极速中英混说）",
+                                    emptyTitle = tr("尚未下载本机听音模型", "No Local ASR Model Downloaded", "尚未下載本機聽音模型"),
+                                    emptySubtitle = tr(
+                                        "推荐 SenseVoiceSmall（226MB，0.24s 极速中英混说）",
+                                        "SenseVoiceSmall recommended (~163 MB, 0.24s fast multilingual ASR)",
+                                        "推薦 SenseVoiceSmall（226MB，0.24s 極速中英混說）"
+                                    ),
                                     quickDownloadModelId = OfflineModelCatalog.ID_ASR_SENSEVOICE_SMALL,
-                                    quickDownloadLabel = "一键下载",
+                                    quickDownloadLabel = tr("一键下载", "Download", "一鍵下載"),
                                     onSelectModel = onSelectLocalAsrModel,
                                     onQuickDownload = onQuickDownloadLocalModel,
                                     onOpenManager = onOpenOfflineModels
@@ -1901,7 +2297,11 @@ private fun UnifiedWorkflowRoutingCard(
                                     border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.42f))
                                 ) {
                                     Text(
-                                        text = "✨ Gemini 3.5 Live SMART 已激活：边说边实时出字，松手 ~0.5s 秒出净稿，原生自带去口癖与改口自纠！日常口述无需开启二阶段润色；使用「帮我写 / 改写 / 快译 / 🔍 问AI」时会自动共享同一把 Gemini Key 调用 Flash-Lite。",
+                                        text = tr(
+                                            "✨ Gemini 3.5 Live SMART 已激活：边说边实时出字，松手 ~0.5s 秒出净稿，原生自带去口癖与改口自纠！日常口述无需开启二阶段润色；使用「帮我写 / 改写 / 快译 / 🔍 问AI」时会自动共享同一把 Gemini Key 调用 Flash-Lite。",
+                                            "✨ Gemini 3.5 Live SMART Active: Real-time streaming as you speak and ~0.5s clean text on release — natively strips fillers and merges self-corrections! Stage-2 polish stays off for speed, while Help Write, Edit, Translate & 🔍 Ask AI share the same Gemini key via Flash-Lite.",
+                                            "✨ Gemini 3.5 Live SMART 已啟用：邊說邊即時出字，放開 ~0.5s 秒出淨稿，原生自帶去口頭禪與改口自糾！日常口述無需開啟二階段潤飾；使用「幫我寫 / 改寫 / 快譯 / 🔍 問AI」時會自動共享同一把 Gemini Key 呼叫 Flash-Lite。"
+                                        ),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurface,
                                         lineHeight = 16.sp,
@@ -1918,7 +2318,11 @@ private fun UnifiedWorkflowRoutingCard(
                                     border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.42f))
                                 ) {
                                     Text(
-                                        text = "🎙️ DeepSeek 官方语音识别已激活：与 DeepSeek 文本润色共用单 Key，自动检测中/粤/英/日/韩等语种。",
+                                        text = tr(
+                                            "🎙️ DeepSeek 官方语音识别已激活：与 DeepSeek 文本润色共用单 Key，自动检测中/粤/英/日/韩等语种。",
+                                            "🎙️ Official DeepSeek ASR Active: Shares a single API key with DeepSeek text polish and auto-detects ZH/YUE/EN/JA/KO.",
+                                            "🎙️ DeepSeek 官方語音識別已啟用：與 DeepSeek 文字潤飾共用單 Key，自動偵測中/粵/英/日/韓等語種。"
+                                        ),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurface,
                                         lineHeight = 16.sp,
@@ -1937,7 +2341,7 @@ private fun UnifiedWorkflowRoutingCard(
                                 ProviderModelFieldSection(
                                     externalModel = settings.sttConfig.model,
                                     onModelCommit = { m -> onUpdateStt(settings.sttConfig.copy(model = m)) },
-                                    label = "听音模型名称 (Model)",
+                                    label = tr("听音模型名称 (Model)", "Speech Model ID (Model)", "聽音模型名稱 (Model)"),
                                     placeholder = "FunAudioLLM/SenseVoiceSmall",
                                     suggestions = sttSuggestions,
                                     isFetching = fetchingSlot == ModelCapabilitySlot.STT,
@@ -1948,7 +2352,7 @@ private fun UnifiedWorkflowRoutingCard(
                                 SyncedOutlinedField(
                                     externalValue = settings.sttConfig.model,
                                     onValueCommit = { m -> onUpdateStt(settings.sttConfig.copy(model = m)) },
-                                    label = "流式听音模型 (Model)",
+                                    label = tr("流式听音模型 (Model)", "Streaming Speech Model (Model)", "串流聽音模型 (Model)"),
                                     placeholder = sttSuggestions.firstOrNull().orEmpty()
                                 )
                                 QuickModelChipsRow(
@@ -1985,18 +2389,31 @@ private fun UnifiedWorkflowRoutingCard(
                                         .padding(end = 8.dp)
                                 ) {
                                     Text(
-                                        text = "🧠 二阶段语义润色 & 写作快译模型",
+                                        text = tr(
+                                            "🧠 二阶段语义润色 & 写作快译模型",
+                                            "🧠 Stage-2 Polish, Writing & Translation LLM",
+                                            "🧠 二階段語義潤飾 & 寫作快譯模型"
+                                        ),
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text(
                                         text = when {
-                                            settings.llmConfig.enabled ->
-                                                "日常口述也会经过该模型按应用语气深度润色"
-                                            settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS ->
-                                                "日常口述由 Gemini Live 单阶直出；帮我写/快译自动用下方模型"
-                                            else ->
-                                                "日常口述直出原始识别词；仅帮我写/编辑/快译调用下方模型"
+                                            settings.llmConfig.enabled -> tr(
+                                                "日常口述也会经过该模型按应用语气深度润色",
+                                                "Dictation transcripts are polished by this model using your app-aware tone style",
+                                                "日常口述也會經過該模型按應用語氣深度潤飾"
+                                            )
+                                            settings.sttConfig.protocol == SttProtocol.GEMINI_LIVE_WS -> tr(
+                                                "日常口述由 Gemini Live 单阶直出；帮我写/快译自动用下方模型",
+                                                "Dictation outputs directly from Gemini Live; Help Write & Translate use the model below",
+                                                "日常口述由 Gemini Live 單階直出；幫我寫/快譯自動用下方模型"
+                                            )
+                                            else -> tr(
+                                                "日常口述直出原始识别词；仅帮我写/编辑/快译调用下方模型",
+                                                "Dictation outputs raw speech transcripts; only Help Write, Edit & Translate call the model below",
+                                                "日常口述直出原始識別詞；僅幫我寫/編輯/快譯呼叫下方模型"
+                                            )
                                         },
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -2028,13 +2445,17 @@ private fun UnifiedWorkflowRoutingCard(
                                     OfflineModelCatalog.ID_SLM_CORE_0_8B
                                 )
                                 LocalRoleModelSelectorPanel(
-                                    title = "已就绪的端侧净写模型",
+                                    title = tr("已就绪的端侧净写模型", "Installed Local Text Models", "已就緒的端側淨寫模型"),
                                     installedModels = installedSlmModels,
                                     selectedModelId = settings.offlineConfig.selectedSlmModelId,
-                                    emptyTitle = "尚未下载本机净写模型",
-                                    emptySubtitle = "推荐轻巧净写版（0.8B，官方底座 + 12MB 精调权重）",
+                                    emptyTitle = tr("尚未下载本机净写模型", "No Local Text Model Downloaded", "尚未下載本機淨寫模型"),
+                                    emptySubtitle = tr(
+                                        "推荐轻巧净写版（0.8B，官方底座 + 12MB 精调权重）",
+                                        "0.8B Compact Clean-Write recommended (base GGUF + 12 MB fine-tuned weights)",
+                                        "推薦輕巧淨寫版（0.8B，官方底座 + 12MB 精調權重）"
+                                    ),
                                     quickDownloadModelId = if (canQuickDownload08b) OfflineModelCatalog.ID_SLM_CORE_0_8B else null,
-                                    quickDownloadLabel = "一键下载 0.8B",
+                                    quickDownloadLabel = tr("一键下载 0.8B", "Get 0.8B", "一鍵下載 0.8B"),
                                     onSelectModel = onSelectLocalSlmModel,
                                     onQuickDownload = onQuickDownloadLocalModel,
                                     onOpenManager = onOpenOfflineModels
@@ -2046,7 +2467,11 @@ private fun UnifiedWorkflowRoutingCard(
                             ProviderModelFieldSection(
                                 externalModel = settings.llmConfig.model,
                                 onModelCommit = { m -> onUpdateLlm(settings.llmConfig.copy(model = m)) },
-                                label = "润色 / 写作 / 翻译模型 (Model)",
+                                label = tr(
+                                    "润色 / 写作 / 翻译模型 (Model)",
+                                    "Polish / Writing / Translation Model",
+                                    "潤飾 / 寫作 / 翻譯模型 (Model)"
+                                ),
                                 placeholder = "gemini-3.5-flash-lite",
                                 suggestions = llmSuggestions,
                                 isFetching = fetchingSlot == ModelCapabilitySlot.LLM,
@@ -2072,21 +2497,26 @@ private fun UnifiedWorkflowRoutingCard(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Text(
-                                text = "🎙️ 多模态音频一步直出",
+                                text = tr("🎙️ 多模态音频一步直出", "🎙️ Single-Pass Multimodal Audio", "🎙️ 多模態音訊一步直出"),
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
                             if (dictatePlan.asr is AsrRoute.Local || dictatePlan.text is TextRoute.Local) {
-                                val asrNote = (dictatePlan.asr as? AsrRoute.Local)?.let {
-                                    OfflineModelCatalog.findById(it.modelId)?.displayName ?: it.modelId
+                                val asrNote = (dictatePlan.asr as? AsrRoute.Local)?.let { route ->
+                                    OfflineModelCatalog.findById(route.modelId)
+                                        ?.let { offlineModelDisplayName(it, appLang) }
+                                        ?: route.modelId
                                 }
-                                val slmNote = (dictatePlan.text as? TextRoute.Local)?.let {
-                                    OfflineModelCatalog.findById(it.modelId)?.displayName ?: it.modelId
+                                val slmNote = (dictatePlan.text as? TextRoute.Local)?.let { route ->
+                                    OfflineModelCatalog.findById(route.modelId)
+                                        ?.let { offlineModelDisplayName(it, appLang) }
+                                        ?: route.modelId
                                 }
+                                val joiner = tr(" 与 ", " & ", " 與 ")
                                 val takeoverDesc = listOfNotNull(
-                                    asrNote?.let { "听音（$it）" },
-                                    slmNote?.let { "润色（$it）" }
-                                ).joinToString(" 与 ")
+                                    asrNote?.let { tr("听音（$it）", "ASR ($it)", "聽音（$it）") },
+                                    slmNote?.let { tr("润色（$it）", "Polish ($it)", "潤飾（$it）") }
+                                ).joinToString(joiner)
                                 Surface(
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(10.dp),
@@ -2094,7 +2524,11 @@ private fun UnifiedWorkflowRoutingCard(
                                     border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.42f))
                                 ) {
                                     Text(
-                                        text = "📱 本机离线接管中：当前由本机接管 $takeoverDesc；关闭离线开关即自动恢复下方多模态云端配置（绝不清空密钥）。",
+                                        text = tr(
+                                            "📱 本机离线接管中：当前由本机接管 $takeoverDesc；关闭离线开关即自动恢复下方多模态云端配置（绝不清空密钥）。",
+                                            "📱 Local Takeover Active: $takeoverDesc currently runs on device. Turning off offline mode restores the multimodal cloud setup below (keys are never erased).",
+                                            "📱 本機離線接管中：目前由本機接管 $takeoverDesc；關閉離線開關即自動恢復下方多模態雲端設定（絕不清空金鑰）。"
+                                        ),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurface,
                                         lineHeight = 16.sp,
@@ -2103,7 +2537,11 @@ private fun UnifiedWorkflowRoutingCard(
                                 }
                             }
                             Text(
-                                text = "录音结束后单次请求直接完成听音理解、语气适配与翻译（如需边说边出字，可在上方切换「实时流式」）。",
+                                text = tr(
+                                    "录音结束后单次请求直接完成听音理解、语气适配与翻译（如需边说边出字，可在上方切换「实时流式」）。",
+                                    "Processes audio, tone styling, and translation in a single request after recording ends (switch to \"Live / Dual-Stage\" above for real-time streaming).",
+                                    "錄音結束後單次請求直接完成聽音理解、語氣適配與翻譯（如需邊說邊出字，可在上方切換「即時串流」）。"
+                                ),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 lineHeight = 16.sp
@@ -2130,7 +2568,7 @@ private fun UnifiedWorkflowRoutingCard(
                                 onModelCommit = { m ->
                                     onUpdateMultimodal(settings.multimodalConfig.copy(model = m))
                                 },
-                                label = "多模态音频模型 (Model)",
+                                label = tr("多模态音频模型 (Model)", "Multimodal Audio Model", "多模態音訊模型 (Model)"),
                                 placeholder = "gemini-3.5-flash-lite",
                                 suggestions = mmSuggestions,
                                 isFetching = fetchingSlot == ModelCapabilitySlot.MULTIMODAL,
@@ -2173,15 +2611,27 @@ private fun UnifiedWorkflowRoutingCard(
                                 .padding(end = 8.dp)
                         ) {
                             Text(
-                                text = "✦ Jev 军师专用模型（高情商/多模态独立路由）",
+                                text = tr(
+                                    "✦ Jev 军师专用模型（高情商/多模态独立路由）",
+                                    "✦ Dedicated Jev Copilot Model (EQ & Vision)",
+                                    "✦ Jev 軍師專用模型（高情商/多模態獨立路由）"
+                                ),
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
                                 text = if (settings.jevUseDedicatedModel) {
-                                    "已开启：点按『✦ 军师』时固定调用下方高智商模型（日常语音仍走极速通道）"
+                                    tr(
+                                        "已开启：点按『✦ 军师』时固定调用下方高智商模型（日常语音仍走极速通道）",
+                                        "Enabled: Tapping ✦ Copilot routes to the flagship model below while keeping dictation on your fast lane",
+                                        "已開啟：點按『✦ 軍師』時固定呼叫下方高智商模型（日常語音仍走極速通道）"
+                                    )
                                 } else {
-                                    "默认关闭：跟随当前润色或多模态模型；开启后可单独指定旗舰模型做局势深算"
+                                    tr(
+                                        "默认关闭：跟随当前润色或多模态模型；开启后可单独指定旗舰模型做局势深算",
+                                        "Off by default: Follows your Polish or Multimodal model; enable to assign a dedicated flagship model for strategic replies",
+                                        "預設關閉：跟隨目前潤飾或多模態模型；開啟後可單獨指定旗艦模型做局勢深算"
+                                    )
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -2215,7 +2665,7 @@ private fun UnifiedWorkflowRoutingCard(
                             ProviderModelFieldSection(
                                 externalModel = settings.jevLlmConfig.model,
                                 onModelCommit = { m -> onUpdateJev(settings.jevLlmConfig.copy(model = m)) },
-                                label = "Jev 军师专用模型 (Model)",
+                                label = tr("Jev 军师专用模型 (Model)", "Jev Copilot Model ID", "Jev 軍師專用模型 (Model)"),
                                 placeholder = "gemini-3.8-flash / deepseek-chat",
                                 suggestions = jevSuggestions,
                                 isFetching = fetchingSlot == ModelCapabilitySlot.JEV_COPILOT,
@@ -2248,18 +2698,20 @@ private fun RoleProviderChipsRow(
     onSelectLocalOffline: (() -> Unit)? = null,
     onSelect: (String) -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         if (includeLocalOfflineChip && onSelectLocalOffline != null) {
             val localSelected = selectedId == ID_LOCAL_OFFLINE_PROVIDER
+            val localLabel = tr("📱 本机离线", "📱 On-Device", "📱 本機離線")
             FilterChip(
                 selected = localSelected,
                 onClick = onSelectLocalOffline,
                 label = {
                     Text(
-                        text = if (isLocalOfflineReady) "● 📱 本机离线" else "📱 本机离线",
+                        text = if (isLocalOfflineReady) "● $localLabel" else localLabel,
                         style = MaterialTheme.typography.labelMedium
                     )
                 },
@@ -2272,12 +2724,13 @@ private fun RoleProviderChipsRow(
         specs.forEach { spec ->
             val selected = spec.id == selectedId
             val ready = UnifiedProviderCatalog.isCredentialReady(spec.id, vault[spec.id])
+            val dispName = localizedProviderSpec(spec, appLang).name
             FilterChip(
                 selected = selected,
                 onClick = { onSelect(spec.id) },
                 label = {
                     Text(
-                        text = if (ready) "● ${spec.name}" else spec.name,
+                        text = if (ready) "● $dispName" else dispName,
                         style = MaterialTheme.typography.labelMedium
                     )
                 },
@@ -2304,6 +2757,7 @@ private fun LocalRoleModelSelectorPanel(
     onQuickDownload: (String) -> Unit,
     onOpenManager: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     if (installedModels.isNotEmpty()) {
         Column(
             modifier = Modifier.fillMaxWidth(),
@@ -2324,7 +2778,7 @@ private fun LocalRoleModelSelectorPanel(
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
                 ) {
                     Text(
-                        text = "管理更多 →",
+                        text = tr("管理更多 →", "Manage →", "管理更多 →"),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -2337,12 +2791,13 @@ private fun LocalRoleModelSelectorPanel(
                 installedModels.forEach { model ->
                     val selected = model.id == selectedModelId ||
                         (selectedModelId.isNullOrBlank() && model == installedModels.first())
+                    val dispName = offlineModelDisplayName(model, appLang)
                     FilterChip(
                         selected = selected,
                         onClick = { onSelectModel(model.id) },
                         label = {
                             Text(
-                                text = if (selected) "✓ ${model.displayName}" else model.displayName,
+                                text = if (selected) "✓ $dispName" else dispName,
                                 style = MaterialTheme.typography.labelMedium
                             )
                         },
@@ -2404,7 +2859,7 @@ private fun LocalRoleModelSelectorPanel(
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = "打开模型库",
+                            text = tr("打开模型库", "Model Hub", "開啟模型庫"),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold
                         )
@@ -2461,7 +2916,7 @@ private fun CollapsibleStudioDrawer(
                 }
                 Icon(
                     imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                    contentDescription = if (expanded) "收起" else "展开",
+                    contentDescription = if (expanded) tr("收起", "Collapse", "收起") else tr("展开", "Expand", "展開"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -2491,10 +2946,10 @@ private fun AdvancedParametersDrawerContent(
     onUpdateJev: (LlmConfig) -> Unit
 ) {
     val languageOptions = listOf(
-        "" to "自动识别",
-        "zh" to "中文 (zh)",
-        "en" to "英文 (en)",
-        "ja" to "日文 (ja)"
+        "" to tr("自动识别", "Auto Detect", "自動識別"),
+        "zh" to tr("中文 (zh)", "Chinese (zh)", "中文 (zh)"),
+        "en" to tr("英文 (en)", "English (en)", "英文 (en)"),
+        "ja" to tr("日文 (ja)", "Japanese (ja)", "日文 (ja)")
     )
 
     if (settings.pipelineMode == PipelineMode.DUAL_STAGE) {
@@ -2514,7 +2969,11 @@ private fun AdvancedParametersDrawerContent(
             SyncedOutlinedField(
                 externalValue = settings.sttConfig.baseUrl,
                 onValueCommit = { onUpdateStt(settings.sttConfig.copy(baseUrl = it.trim())) },
-                label = "听音引擎地址覆盖（反代 / 自建网关可在此修改）",
+                label = tr(
+                    "听音引擎地址覆盖（反代 / 自建网关可在此修改）",
+                    "Speech Base URL Override (Reverse Proxy / Custom Gateway)",
+                    "聽音引擎位址覆蓋（反向代理 / 自建閘道可在此修改）"
+                ),
                 placeholder = "https://generativelanguage.googleapis.com/v1beta"
             )
             EndpointPreviewCaption(endpoint = sttEndpoint)
@@ -2524,14 +2983,18 @@ private fun AdvancedParametersDrawerContent(
             SyncedOutlinedField(
                 externalValue = settings.sttConfig.resourceId,
                 onValueCommit = { onUpdateStt(settings.sttConfig.copy(resourceId = it.trim())) },
-                label = "火山豆包语音 Resource ID",
+                label = tr(
+                    "火山豆包语音 Resource ID",
+                    "Volcengine Doubao Speech Resource ID",
+                    "火山豆包語音 Resource ID"
+                ),
                 placeholder = VolcengineSaucAsrClient.DEFAULT_RESOURCE_ID
             )
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                text = "听音语言偏好",
+                text = tr("听音语言偏好", "Speech Language Hint", "聽音語言偏好"),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2556,7 +3019,11 @@ private fun AdvancedParametersDrawerContent(
             SyncedOutlinedField(
                 externalValue = settings.llmConfig.baseUrl,
                 onValueCommit = { onUpdateLlm(settings.llmConfig.copy(baseUrl = it.trim())) },
-                label = "LLM 润色/写作端点覆盖",
+                label = tr(
+                    "LLM 润色/写作端点覆盖",
+                    "LLM Polish / Writing Base URL Override",
+                    "LLM 潤飾/寫作端點覆蓋"
+                ),
                 placeholder = "https://generativelanguage.googleapis.com/v1beta"
             )
             EndpointPreviewCaption(
@@ -2596,7 +3063,7 @@ private fun AdvancedParametersDrawerContent(
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                text = "多模态音频协议格式",
+                text = tr("多模态音频协议格式", "Multimodal Audio Protocol", "多模態音訊協定格式"),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2611,7 +3078,15 @@ private fun AdvancedParametersDrawerContent(
                             settings.multimodalConfig.copy(protocol = MultimodalProtocol.GEMINI_NATIVE)
                         )
                     },
-                    label = { Text("Gemini 原生 (generateContent)") }
+                    label = {
+                        Text(
+                            tr(
+                                "Gemini 原生 (generateContent)",
+                                "Gemini Native (generateContent)",
+                                "Gemini 原生 (generateContent)"
+                            )
+                        )
+                    }
                 )
                 FilterChip(
                     selected = settings.multimodalConfig.protocol == MultimodalProtocol.OPENAI_AUDIO_CHAT,
@@ -2620,7 +3095,15 @@ private fun AdvancedParametersDrawerContent(
                             settings.multimodalConfig.copy(protocol = MultimodalProtocol.OPENAI_AUDIO_CHAT)
                         )
                     },
-                    label = { Text("OpenAI 音频兼容 (input_audio)") }
+                    label = {
+                        Text(
+                            tr(
+                                "OpenAI 音频兼容 (input_audio)",
+                                "OpenAI Audio Chat (input_audio)",
+                                "OpenAI 音訊相容 (input_audio)"
+                            )
+                        )
+                    }
                 )
             }
         }
@@ -2631,7 +3114,7 @@ private fun AdvancedParametersDrawerContent(
                 onValueCommit = {
                     onUpdateMultimodal(settings.multimodalConfig.copy(baseUrl = it.trim()))
                 },
-                label = "多模态网关地址覆盖",
+                label = tr("多模态网关地址覆盖", "Multimodal Base URL Override", "多模態閘道位址覆蓋"),
                 placeholder = "https://generativelanguage.googleapis.com/v1beta"
             )
             EndpointPreviewCaption(endpoint = mmPreview)
@@ -2660,7 +3143,11 @@ private fun AdvancedParametersDrawerContent(
             SyncedOutlinedField(
                 externalValue = settings.jevLlmConfig.baseUrl,
                 onValueCommit = { onUpdateJev(settings.jevLlmConfig.copy(baseUrl = it.trim())) },
-                label = "✦ Jev 军师端点覆盖 (Base URL)",
+                label = tr(
+                    "✦ Jev 军师端点覆盖 (Base URL)",
+                    "✦ Jev Copilot Base URL Override",
+                    "✦ Jev 軍師端點覆蓋 (Base URL)"
+                ),
                 placeholder = "https://generativelanguage.googleapis.com/v1beta"
             )
             EndpointPreviewCaption(
@@ -2741,23 +3228,30 @@ private fun LiveApiTesterContent(
     onCopyPolishedResult: (String) -> Unit,
     onCopyDiagnosticLog: (String) -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
+    val defaultInput = defaultLiveTestInput(appLang)
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = "当前风格：$activeStyleLabel · 启用词典：$activeDictionaryCount 条",
+            text = tr(
+                "当前风格：$activeStyleLabel · 启用词典：$activeDictionaryCount 条",
+                "Active Style: $activeStyleLabel · Dictionary: $activeDictionaryCount terms",
+                "目前風格：$activeStyleLabel · 啟用詞典：$activeDictionaryCount 條"
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f)
         )
-        if (testInput != DEFAULT_LIVE_TEST_INPUT) {
+        if (testInput != defaultInput) {
             TextButton(
                 onClick = onResetDefaultInput,
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
             ) {
-                Text("重置示例", style = MaterialTheme.typography.labelSmall)
+                Text(tr("重置示例", "Reset Sample", "重置範例"), style = MaterialTheme.typography.labelSmall)
             }
         }
     }
@@ -2769,7 +3263,11 @@ private fun LiveApiTesterContent(
             border = BorderStroke(1.dp, TypeFreeEmerald.copy(alpha = 0.4f))
         ) {
             Text(
-                text = "当前处于 Gemini Live SMART 单阶听写模式；点击下方按钮将验证同把 Gemini Key 驱动的写作/快译引擎连通性与响应延迟。",
+                text = tr(
+                    "当前处于 Gemini Live SMART 单阶听写模式；点击下方按钮将验证同把 Gemini Key 驱动的写作/快译引擎连通性与响应延迟。",
+                    "Gemini Live SMART single-stage mode is active; tapping below tests connectivity and latency of the writing/translation engine using the same Gemini key.",
+                    "目前處於 Gemini Live SMART 單階聽寫模式；點擊下方按鈕將驗證同把 Gemini Key 驅動的寫作/快譯引擎連通性與回應延遲。"
+                ),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.padding(10.dp)
@@ -2782,7 +3280,11 @@ private fun LiveApiTesterContent(
             border = BorderStroke(1.dp, TypeFreeAmber.copy(alpha = 0.4f))
         ) {
             Text(
-                text = "提示：二阶段润色开关当前已关闭，此按钮仍会验证已配置的写作/快译模型连通性。",
+                text = tr(
+                    "提示：二阶段润色开关当前已关闭，此按钮仍会验证已配置的写作/快译模型连通性。",
+                    "Note: Stage-2 Polish is currently off, so this test verifies your configured writing/translation LLM connectivity.",
+                    "提示：二階段潤飾開關目前已關閉，此按鈕仍會驗證已設定的寫作/快譯模型連通性。"
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = TypeFreeAmber,
                 modifier = Modifier.padding(10.dp)
@@ -2797,7 +3299,15 @@ private fun LiveApiTesterContent(
         minLines = 2,
         maxLines = 4,
         shape = RoundedCornerShape(12.dp),
-        label = { Text("模拟带口癖、改口与专有名词的口述原稿") }
+        label = {
+            Text(
+                tr(
+                    "模拟带口癖、改口与专有名词的口述原稿",
+                    "Sample transcript with fillers, self-corrections & custom terms",
+                    "模擬帶口頭禪、改口與專有名詞的口述原稿"
+                )
+            )
+        }
     )
 
     Button(
@@ -2815,33 +3325,89 @@ private fun LiveApiTesterContent(
                 color = MaterialTheme.colorScheme.onPrimary
             )
             Spacer(modifier = Modifier.width(10.dp))
-            Text("正在请求接口实测连通性...", fontWeight = FontWeight.Bold)
+            Text(
+                tr("正在请求接口实测连通性...", "Testing live endpoint connectivity...", "正在請求介面實測連通性..."),
+                fontWeight = FontWeight.Bold
+            )
         } else {
-            Text("一键发送真实连通性测试", fontWeight = FontWeight.Bold)
+            Text(
+                tr("一键发送真实连通性测试", "Run Live Connectivity Test", "一鍵發送真實連通性測試"),
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 
     AnimatedVisibility(visible = successResult != null) {
         successResult?.let { res ->
             val sourceLabel = when (res.executionSource) {
-                ExecutionSource.LOCAL -> "📱 本机离线推理"
-                ExecutionSource.HYBRID_LOCAL_ASR_CLOUD_LLM -> "⚡ 混合（本机听音 + 云端润色）"
-                ExecutionSource.LOCAL_RAW_PASSTHROUGH -> "📱 本机直出（未润色）"
-                ExecutionSource.CLOUD -> "☁️ 云端接口"
-                ExecutionSource.BLOCKED -> "🔒 已拦截"
+                ExecutionSource.LOCAL -> tr("📱 本机离线推理", "📱 On-Device Inference", "📱 本機離線推理")
+                ExecutionSource.HYBRID_LOCAL_ASR_CLOUD_LLM -> tr(
+                    "⚡ 混合（本机听音 + 云端润色）",
+                    "⚡ Hybrid (Local ASR + Cloud Polish)",
+                    "⚡ 混合（本機聽音 + 雲端潤飾）"
+                )
+                ExecutionSource.LOCAL_RAW_PASSTHROUGH -> tr(
+                    "📱 本机直出（未润色）",
+                    "📱 Local Raw Output (Unpolished)",
+                    "📱 本機直出（未潤飾）"
+                )
+                ExecutionSource.CLOUD -> tr("☁️ 云端接口", "☁️ Cloud API", "☁️ 雲端介面")
+                ExecutionSource.BLOCKED -> tr("🔒 已拦截", "🔒 Blocked", "🔒 已攔截")
             }
             val fullDiagnosticClipboard = buildString {
-                appendLine("TypeFree API 连通性诊断日志")
-                appendLine("总耗时: ${res.latencyMs} ms")
-                appendLine("执行路径: $sourceLabel (${res.executionSource.name})")
-                appendLine("响应模型: ${res.modeSummary}")
+                appendLine(
+                    AppStrings.pick(
+                        appLang,
+                        "TypeFree API 连通性诊断日志",
+                        "TypeFree API Connectivity Diagnostic Log",
+                        "TypeFree API 連通性診斷日誌"
+                    )
+                )
+                appendLine(
+                    AppStrings.pick(
+                        appLang,
+                        "总耗时: ${res.latencyMs} ms",
+                        "Total Latency: ${res.latencyMs} ms",
+                        "總耗時: ${res.latencyMs} ms"
+                    )
+                )
+                appendLine(
+                    AppStrings.pick(
+                        appLang,
+                        "执行路径: $sourceLabel (${res.executionSource.name})",
+                        "Route: $sourceLabel (${res.executionSource.name})",
+                        "執行路徑: $sourceLabel (${res.executionSource.name})"
+                    )
+                )
+                appendLine(
+                    AppStrings.pick(
+                        appLang,
+                        "响应模型: ${res.modeSummary}",
+                        "Model: ${res.modeSummary}",
+                        "回應模型: ${res.modeSummary}"
+                    )
+                )
                 if (res.localMetricsSummary.isNotBlank()) {
-                    appendLine("本机性能指标: ${res.localMetricsSummary}")
+                    appendLine(
+                        AppStrings.pick(
+                            appLang,
+                            "本机性能指标: ${res.localMetricsSummary}",
+                            "On-Device Metrics: ${res.localMetricsSummary}",
+                            "本機效能指標: ${res.localMetricsSummary}"
+                        )
+                    )
                 }
                 if (res.diagnosticLog.isNotBlank()) {
                     appendLine(res.diagnosticLog)
                 }
-                append("输出结果: ${res.finalOutput}")
+                append(
+                    AppStrings.pick(
+                        appLang,
+                        "输出结果: ${res.finalOutput}",
+                        "Output: ${res.finalOutput}",
+                        "輸出結果: ${res.finalOutput}"
+                    )
+                )
             }
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -2861,7 +3427,11 @@ private fun LiveApiTesterContent(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "✓ 接口连通成功 · ${res.latencyMs} ms",
+                            text = tr(
+                                "✓ 接口连通成功 · ${res.latencyMs} ms",
+                                "✓ Connected · ${res.latencyMs} ms",
+                                "✓ 介面連通成功 · ${res.latencyMs} ms"
+                            ),
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold,
                             color = TypeFreeEmerald
@@ -2872,7 +3442,11 @@ private fun LiveApiTesterContent(
                                 contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
                             ) {
                                 Text(
-                                    text = if (copiedDiagLog) "✓ 已复制日志" else "复制日志",
+                                    text = if (copiedDiagLog) {
+                                        tr("✓ 已复制日志", "✓ Log Copied", "✓ 已複製日誌")
+                                    } else {
+                                        tr("复制日志", "Copy Log", "複製日誌")
+                                    },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -2889,7 +3463,7 @@ private fun LiveApiTesterContent(
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = if (copiedResult) "已复制" else "复制",
+                                    text = if (copiedResult) tr("已复制", "Copied", "已複製") else tr("复制", "Copy", "複製"),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = TypeFreeEmerald
                                 )
@@ -2897,7 +3471,11 @@ private fun LiveApiTesterContent(
                         }
                     }
                     Text(
-                        text = "执行路径：$sourceLabel · 响应模型：${res.modeSummary}",
+                        text = tr(
+                            "执行路径：$sourceLabel · 响应模型：${res.modeSummary}",
+                            "Route: $sourceLabel · Model: ${res.modeSummary}",
+                            "執行路徑：$sourceLabel · 回應模型：${res.modeSummary}"
+                        ),
                         style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2909,7 +3487,11 @@ private fun LiveApiTesterContent(
                             border = BorderStroke(0.5.dp, TypeFreeEmerald.copy(alpha = 0.45f))
                         ) {
                             Text(
-                                text = "📊 本机指标：${res.localMetricsSummary}",
+                                text = tr(
+                                    "📊 本机指标：${res.localMetricsSummary}",
+                                    "📊 Local Metrics: ${res.localMetricsSummary}",
+                                    "📊 本機指標：${res.localMetricsSummary}"
+                                ),
                                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurface,
@@ -2963,7 +3545,11 @@ private fun LiveApiTesterContent(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "✕ 接口请求失败（诊断详情）",
+                            text = tr(
+                                "✕ 接口请求失败（诊断详情）",
+                                "✕ Request Failed (Diagnostics)",
+                                "✕ 介面請求失敗（診斷詳情）"
+                            ),
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold,
                             color = TypeFreeRose
@@ -2973,7 +3559,11 @@ private fun LiveApiTesterContent(
                             contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
                         ) {
                             Text(
-                                text = if (copiedDiagLog) "✓ 已复制日志" else "复制日志",
+                                text = if (copiedDiagLog) {
+                                    tr("✓ 已复制日志", "✓ Log Copied", "✓ 已複製日誌")
+                                } else {
+                                    tr("复制日志", "Copy Log", "複製日誌")
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = TypeFreeRose
                             )
@@ -3024,7 +3614,11 @@ private fun ConfigBackupContent(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
-            text = "包含的用户数据（默认全选，导入时自动无损合并去重）",
+            text = tr(
+                "包含的用户数据（默认全选，导入时自动无损合并去重）",
+                "Included User Data (all selected by default; losslessly deduplicated on import)",
+                "包含的使用者資料（預設全選，匯入時自動無損合併去重）"
+            ),
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface
@@ -3036,27 +3630,47 @@ private fun ConfigBackupContent(
         ) {
             BackupModuleFilterChip(
                 selected = includeHistory,
-                label = if (historyCount > 0) "识别历史 ($historyCount)" else "识别历史",
+                label = if (historyCount > 0) {
+                    tr("识别历史 ($historyCount)", "History ($historyCount)", "識別歷史 ($historyCount)")
+                } else {
+                    tr("识别历史", "History", "識別歷史")
+                },
                 onClick = { onIncludeHistoryChange(!includeHistory) }
             )
             BackupModuleFilterChip(
                 selected = includeDailyStats,
-                label = if (dailyStatsDaysCount > 0) "统计与 Token (${dailyStatsDaysCount}天)" else "统计与 Token",
+                label = if (dailyStatsDaysCount > 0) {
+                    tr(
+                        "统计与 Token (${dailyStatsDaysCount}天)",
+                        "Stats & Tokens (${dailyStatsDaysCount}d)",
+                        "統計與 Token (${dailyStatsDaysCount}天)"
+                    )
+                } else {
+                    tr("统计与 Token", "Stats & Tokens", "統計與 Token")
+                },
                 onClick = { onIncludeDailyStatsChange(!includeDailyStats) }
             )
             BackupModuleFilterChip(
                 selected = includePredictions,
-                label = "L2 私人连词库",
+                label = tr("L2 私人连词库", "L2 Predictions", "L2 私人連詞庫"),
                 onClick = { onIncludePredictionsChange(!includePredictions) }
             )
             BackupModuleFilterChip(
                 selected = includePinnedClipboard,
-                label = if (pinnedClipboardCount > 0) "置顶剪贴板 ($pinnedClipboardCount)" else "置顶剪贴板",
+                label = if (pinnedClipboardCount > 0) {
+                    tr("置顶剪贴板 ($pinnedClipboardCount)", "Pinned Clips ($pinnedClipboardCount)", "置頂剪貼簿 ($pinnedClipboardCount)")
+                } else {
+                    tr("置顶剪贴板", "Pinned Clips", "置頂剪貼簿")
+                },
                 onClick = { onIncludePinnedClipboardChange(!includePinnedClipboard) }
             )
         }
         Text(
-            text = "配置项（密钥库、短语、个人词典、风格、应用规则、手势）始终包含；脱敏导出仅保留配置结构并隐藏密钥与个人数据。",
+            text = tr(
+                "配置项（密钥库、短语、个人词典、风格、应用规则、手势）始终包含；脱敏导出仅保留配置结构并隐藏密钥与个人数据。",
+                "Core settings (API vault, snippets, dictionary, styles, app rules, gestures) are always included. Redacted export keeps structure only and strips all keys and personal data.",
+                "設定項（金鑰庫、片語、個人詞典、風格、應用規則、手勢）始終包含；去識別化匯出僅保留設定結構並隱藏金鑰與個人資料。"
+            ),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             lineHeight = 16.sp
@@ -3070,12 +3684,20 @@ private fun ConfigBackupContent(
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "附带端到端加密的 Jev 军师记忆",
+                text = tr(
+                    "附带端到端加密的 Jev 军师记忆",
+                    "Include End-to-End Encrypted Jev Copilot Memory",
+                    "附帶端到端加密的 Jev 軍師記憶"
+                ),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium
             )
             Text(
-                text = "使用密码 AES-GCM 加密打包关系与风格记忆；脱敏导出绝不包含记忆",
+                text = tr(
+                    "使用密码 AES-GCM 加密打包关系与风格记忆；脱敏导出绝不包含记忆",
+                    "Packs relationship & style memory using passphrase AES-GCM encryption; never included in redacted exports",
+                    "使用密碼 AES-GCM 加密打包關係與風格記憶；去識別化匯出絕不包含記憶"
+                ),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -3090,8 +3712,24 @@ private fun ConfigBackupContent(
         OutlinedTextField(
             value = memoryPassphrase,
             onValueChange = onMemoryPassphraseChange,
-            label = { Text("军师记忆加密 / 解锁密码") },
-            placeholder = { Text("仅在本地用于 PBKDF2-AES-256 加密，不会保存") },
+            label = {
+                Text(
+                    tr(
+                        "军师记忆加密 / 解锁密码",
+                        "Copilot Memory Encryption / Unlock Passphrase",
+                        "軍師記憶加密 / 解鎖密碼"
+                    )
+                )
+            },
+            placeholder = {
+                Text(
+                    tr(
+                        "仅在本地用于 PBKDF2-AES-256 加密，不会保存",
+                        "Used locally for PBKDF2-AES-256 only — never stored",
+                        "僅在本地用於 PBKDF2-AES-256 加密，不會儲存"
+                    )
+                )
+            },
             visualTransformation = PasswordVisualTransformation(),
             singleLine = true,
             modifier = Modifier
@@ -3111,7 +3749,13 @@ private fun ConfigBackupContent(
             enabled = !isBusy,
             shape = RoundedCornerShape(11.dp)
         ) {
-            Text(if (includeEncryptedJevMemory) "导出全量加密 .json 文件" else "导出全量 .json 文件")
+            Text(
+                if (includeEncryptedJevMemory) {
+                    tr("导出全量加密 .json 文件", "Export Encrypted .json", "匯出全量加密 .json 檔案")
+                } else {
+                    tr("导出全量 .json 文件", "Export Full .json File", "匯出全量 .json 檔案")
+                }
+            )
         }
 
         FilledTonalButton(
@@ -3119,7 +3763,7 @@ private fun ConfigBackupContent(
             enabled = !isBusy,
             shape = RoundedCornerShape(11.dp)
         ) {
-            Text("从 .json 文件导入")
+            Text(tr("从 .json 文件导入", "Import .json File", "從 .json 檔案匯入"))
         }
 
         if (showSkipMemoryImportButton && hasPendingFileImport) {
@@ -3128,7 +3772,7 @@ private fun ConfigBackupContent(
                 enabled = !isBusy && memoryPassphrase.isNotBlank(),
                 shape = RoundedCornerShape(11.dp)
             ) {
-                Text("密码解锁并导入")
+                Text(tr("密码解锁并导入", "Unlock & Import", "密碼解鎖並匯入"))
             }
         }
     }
@@ -3150,7 +3794,7 @@ private fun ConfigBackupContent(
                 modifier = Modifier.size(15.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
-            Text("复制全量 JSON")
+            Text(tr("复制全量 JSON", "Copy Full JSON", "複製全量 JSON"))
         }
 
         OutlinedButton(
@@ -3158,7 +3802,7 @@ private fun ConfigBackupContent(
             enabled = !isBusy,
             shape = RoundedCornerShape(11.dp)
         ) {
-            Text("从剪贴板导入")
+            Text(tr("从剪贴板导入", "Import Clipboard", "從剪貼簿匯入"))
         }
 
         OutlinedButton(
@@ -3166,7 +3810,7 @@ private fun ConfigBackupContent(
             enabled = !isBusy,
             shape = RoundedCornerShape(11.dp)
         ) {
-            Text("脱敏分享 (隐藏 Key)")
+            Text(tr("脱敏分享 (隐藏 Key)", "Share Redacted", "去識別化分享 (隱藏 Key)"))
         }
 
         if (showSkipMemoryImportButton) {
@@ -3175,7 +3819,7 @@ private fun ConfigBackupContent(
                 enabled = !isBusy,
                 shape = RoundedCornerShape(11.dp)
             ) {
-                Text("跳过记忆仅导其余数据")
+                Text(tr("跳过记忆仅导其余数据", "Skip Memory & Import Rest", "略過記憶僅匯入其餘資料"))
             }
         }
     }
@@ -3190,7 +3834,7 @@ private fun ConfigBackupContent(
                 strokeWidth = 2.dp
             )
             Text(
-                text = "正在处理全量备份数据…",
+                text = tr("正在处理全量备份数据…", "Processing backup archive…", "正在處理全量備份資料…"),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -3310,7 +3954,13 @@ private fun SecretApiKeyField(
             shape = RoundedCornerShape(12.dp),
             label = { Text(label) },
             placeholder = {
-                Text(if (isLocalUrl) "局域网本地服务可留空" else "粘贴或输入密钥…")
+                Text(
+                    if (isLocalUrl) {
+                        tr("局域网本地服务可留空", "Leave empty for LAN / local server", "區域網路本地服務可留空")
+                    } else {
+                        tr("粘贴或输入密钥…", "Paste or enter API key…", "貼上或輸入金鑰…")
+                    }
+                )
             },
             visualTransformation = if (keyVisible) {
                 VisualTransformation.None
@@ -3325,7 +3975,11 @@ private fun SecretApiKeyField(
                     IconButton(onClick = { keyVisible = !keyVisible }) {
                         Icon(
                             imageVector = if (keyVisible) TypeFreeIcons.EyeOff else TypeFreeIcons.Eye,
-                            contentDescription = if (keyVisible) "隐藏密钥" else "显示密钥",
+                            contentDescription = if (keyVisible) {
+                                tr("隐藏密钥", "Hide Key", "隱藏金鑰")
+                            } else {
+                                tr("显示密钥", "Show Key", "顯示金鑰")
+                            },
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -3339,14 +3993,18 @@ private fun SecretApiKeyField(
                         },
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                     ) {
-                        Text("粘贴", style = MaterialTheme.typography.labelMedium)
+                        Text(tr("粘贴", "Paste", "貼上"), style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
         )
         if (isLocalUrl && localKey.isBlank()) {
             Text(
-                text = "已识别局域网 / 本地推理端点，无需填写云端 API Key 即可直接请求",
+                text = tr(
+                    "已识别局域网 / 本地推理端点，无需填写云端 API Key 即可直接请求",
+                    "LAN / local inference endpoint detected — no cloud API key required",
+                    "已識別區域網路 / 本地推理端點，無需填寫雲端 API Key 即可直接請求"
+                ),
                 style = MaterialTheme.typography.labelSmall,
                 color = TypeFreeEmerald
             )
@@ -3357,7 +4015,7 @@ private fun SecretApiKeyField(
 @Composable
 private fun EndpointPreviewCaption(endpoint: String) {
     Text(
-        text = "实际请求端点: $endpoint",
+        text = tr("实际请求端点: $endpoint", "Resolved Endpoint: $endpoint", "實際請求端點: $endpoint"),
         style = MaterialTheme.typography.labelSmall.copy(
             fontFamily = FontFamily.Monospace,
             fontSize = 11.sp
@@ -3403,7 +4061,11 @@ private fun ProviderModelFieldSection(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "正在拉取可用模型列表...",
+                    text = tr(
+                        "正在拉取可用模型列表...",
+                        "Fetching available models...",
+                        "正在拉取可用模型清單..."
+                    ),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -3415,7 +4077,11 @@ private fun ProviderModelFieldSection(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "拉取可用模型并实测延迟 (ms)",
+                    text = tr(
+                        "拉取可用模型并实测延迟 (ms)",
+                        "Fetch Models & Benchmark Latency (ms)",
+                        "拉取可用模型並實測延遲 (ms)"
+                    ),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -3464,6 +4130,7 @@ private fun ProviderModelPickerDialog(
     onDismiss: () -> Unit,
     onSelectModel: (String) -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val dialogScope = rememberCoroutineScope()
     val recommendedCount = remember(models) { models.count { it.isRecommended } }
     val hasDistinctFilter = recommendedCount in 1 until models.size
@@ -3552,20 +4219,35 @@ private fun ProviderModelPickerDialog(
         )
     }
 
+    val slotDisp = modelSlotLabel(slot, appLang)
+    val thinkingDisp = AppStrings.thinkingModeLabel(thinkingMode, appLang)
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = "选择可用模型 · ${slot.label}",
+                    text = tr(
+                        "选择可用模型 · $slotDisp",
+                        "Select Model · $slotDisp",
+                        "選擇可用模型 · $slotDisp"
+                    ),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = if (slot == ModelCapabilitySlot.STT) {
-                        "共 ${models.size} 个模型 · 实测短音频耗时并按延迟从低到高排序"
+                        tr(
+                            "共 ${models.size} 个模型 · 实测短音频耗时并按延迟从低到高排序",
+                            "${models.size} models · Tested on short audio and sorted fastest first",
+                            "共 ${models.size} 個模型 · 實測短音訊耗時並按延遲從低到高排序"
+                        )
                     } else {
-                        "共 ${models.size} 个模型 · 实测 1-Token 首包延迟（${thinkingMode.label}）自动排最前"
+                        tr(
+                            "共 ${models.size} 个模型 · 实测 1-Token 首包延迟（$thinkingDisp）自动排最前",
+                            "${models.size} models · Sorted by live 1-token first-byte latency ($thinkingDisp)",
+                            "共 ${models.size} 個模型 · 實測 1-Token 首包延遲（$thinkingDisp）自動排最前"
+                        )
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -3583,7 +4265,15 @@ private fun ProviderModelPickerDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
-                    placeholder = { Text("搜索模型 ID（如 gemini / seed / qwen）") },
+                    placeholder = {
+                        Text(
+                            tr(
+                                "搜索模型 ID（如 gemini / seed / qwen）",
+                                "Search model ID (e.g. gemini / seed / qwen)",
+                                "搜尋模型 ID（如 gemini / seed / qwen）"
+                            )
+                        )
+                    },
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Default.Search,
@@ -3596,7 +4286,7 @@ private fun ProviderModelPickerDialog(
                             IconButton(onClick = { searchQuery = "" }) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
-                                    contentDescription = "清空搜索",
+                                    contentDescription = tr("清空搜索", "Clear search", "清空搜尋"),
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
@@ -3614,7 +4304,11 @@ private fun ProviderModelPickerDialog(
                             onClick = { showRecommendedOnly = true },
                             label = {
                                 Text(
-                                    "适配模型 ($recommendedCount)",
+                                    tr(
+                                        "适配模型 ($recommendedCount)",
+                                        "Compatible ($recommendedCount)",
+                                        "適配模型 ($recommendedCount)"
+                                    ),
                                     style = MaterialTheme.typography.labelMedium
                                 )
                             },
@@ -3637,7 +4331,7 @@ private fun ProviderModelPickerDialog(
                             onClick = { showRecommendedOnly = false },
                             label = {
                                 Text(
-                                    "全部 (${models.size})",
+                                    tr("全部 (${models.size})", "All (${models.size})", "全部 (${models.size})"),
                                     style = MaterialTheme.typography.labelMedium
                                 )
                             },
@@ -3668,9 +4362,13 @@ private fun ProviderModelPickerDialog(
                         label = {
                             Text(
                                 text = if (probingIds.isNotEmpty()) {
-                                    "⚡ 测速中 (${probingIds.size})..."
+                                    tr(
+                                        "⚡ 测速中 (${probingIds.size})...",
+                                        "⚡ Probing (${probingIds.size})...",
+                                        "⚡ 測速中 (${probingIds.size})..."
+                                    )
                                 } else {
-                                    "⚡ 测速当前列表"
+                                    tr("⚡ 测速当前列表", "⚡ Probe List", "⚡ 測速目前清單")
                                 },
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.SemiBold
@@ -3693,13 +4391,19 @@ private fun ProviderModelPickerDialog(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = "未找到匹配的模型",
+                                text = tr("未找到匹配的模型", "No matching models found", "未找到相符的模型"),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             if (showRecommendedOnly) {
                                 TextButton(onClick = { showRecommendedOnly = false }) {
-                                    Text("查看全部 ${models.size} 个模型")
+                                    Text(
+                                        tr(
+                                            "查看全部 ${models.size} 个模型",
+                                            "Show all ${models.size} models",
+                                            "查看全部 ${models.size} 個模型"
+                                        )
+                                    )
                                 }
                             }
                         }
@@ -3758,7 +4462,7 @@ private fun ProviderModelPickerDialog(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         val subMeta = buildList {
-                                            if (item.badge.isNotBlank()) add(item.badge)
+                                            if (item.badge.isNotBlank()) add(localizeDiscoveredBadge(item.badge, appLang))
                                             if (item.displayName.isNotBlank()) add(item.displayName)
                                             else if (item.ownedBy.isNotBlank()) add(item.ownedBy)
                                         }.joinToString(" · ")
@@ -3793,7 +4497,7 @@ private fun ProviderModelPickerDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("关闭")
+                Text(tr("关闭", "Close", "關閉"))
             }
         },
         dismissButton = {
@@ -3801,7 +4505,13 @@ private fun ProviderModelPickerDialog(
                 onClick = onRefresh,
                 enabled = !isRefreshing
             ) {
-                Text(if (isRefreshing) "刷新中..." else "重新拉取")
+                Text(
+                    if (isRefreshing) {
+                        tr("刷新中...", "Refreshing...", "重新整理中...")
+                    } else {
+                        tr("重新拉取", "Refresh", "重新拉取")
+                    }
+                )
             }
         }
     )
@@ -3813,15 +4523,16 @@ private fun ModelLatencyBadge(
     isProbing: Boolean,
     onTriggerProbe: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val latency = probeResult?.latencyMs
-    val error = probeResult?.errorSummary
+    val error = probeResult?.errorSummary?.let { localizeProbeError(it, appLang) }
 
     val (bgColor, borderColor, textColor, labelText) = when {
         isProbing -> Quad(
             MaterialTheme.colorScheme.surface,
             MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
             MaterialTheme.colorScheme.onSurfaceVariant,
-            "测速中"
+            tr("测速中", "Probing", "測速中")
         )
         latency != null && latency < 400L -> Quad(
             TypeFreeEmerald.copy(alpha = 0.14f),
@@ -3851,7 +4562,7 @@ private fun ModelLatencyBadge(
             MaterialTheme.colorScheme.surface.copy(alpha = 0.80f),
             MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
             MaterialTheme.colorScheme.primary,
-            "⚡ 测速"
+            tr("⚡ 测速", "⚡ Probe", "⚡ 測速")
         )
     }
 
@@ -3892,9 +4603,14 @@ private fun ThinkingModeSelectorSection(
     thinkingMode: ThinkingMode,
     onSelectMode: (ThinkingMode) -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
-            text = "深度思考开关 (Thinking / CoT)",
+            text = tr(
+                "深度思考开关 (Thinking / CoT)",
+                "Reasoning / Thinking Mode (CoT)",
+                "深度思考開關 (Thinking / CoT)"
+            ),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -3909,7 +4625,7 @@ private fun ThinkingModeSelectorSection(
                     onClick = { onSelectMode(mode) },
                     label = {
                         Text(
-                            text = mode.label,
+                            text = AppStrings.thinkingModeLabel(mode, appLang),
                             style = MaterialTheme.typography.labelMedium
                         )
                     },
@@ -3929,8 +4645,13 @@ private fun ThinkingModeSelectorSection(
                 )
             }
         }
+        val modeDesc = thinkingModeDescription(thinkingMode, appLang)
         Text(
-            text = "${thinkingMode.description}（若所选模型不支持该参数，将无感自动回退并记忆）",
+            text = tr(
+                "$modeDesc（若所选模型不支持该参数，将无感自动回退并记忆）",
+                "$modeDesc (automatically falls back and remembers if unsupported by the model)",
+                "$modeDesc（若所選模型不支援該參數，將無感自動回退並記憶）"
+            ),
             style = MaterialTheme.typography.labelSmall,
             color = if (thinkingMode == ThinkingMode.DISABLED) {
                 TypeFreeEmerald
@@ -3980,13 +4701,22 @@ private fun TemperatureSliderSection(
     val thinkingLevel = remember(model) {
         AiPipelineEngine.recommendedGeminiThinkingLevel(model)
     }
+    val cleanModel = model.trim()
 
     if (isTempDeprecated) {
         Text(
             text = if (thinkingLevel != null) {
-                "当前模型（${model.trim()}）自动管理采样温度与思考档位，无需手动调节。"
+                tr(
+                    "当前模型（$cleanModel）自动管理采样温度与思考档位，无需手动调节。",
+                    "Model ($cleanModel) manages sampling temperature and thinking level automatically.",
+                    "目前模型（$cleanModel）自動管理取樣溫度與思考檔位，無需手動調節。"
+                )
             } else {
-                "当前模型（${model.trim()}）自动管理采样参数，无需手动调节温度。"
+                tr(
+                    "当前模型（$cleanModel）自动管理采样参数，无需手动调节温度。",
+                    "Model ($cleanModel) manages sampling parameters automatically — no manual temperature tuning needed.",
+                    "目前模型（$cleanModel）自動管理取樣參數，無需手動調節溫度。"
+                )
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -3999,7 +4729,7 @@ private fun TemperatureSliderSection(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "采样温度 (Temperature)",
+                    text = tr("采样温度 (Temperature)", "Sampling Temperature", "取樣溫度 (Temperature)"),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -4023,12 +4753,237 @@ private fun TemperatureSliderSection(
                 )
             )
             Text(
-                text = "建议保持在 0.10 ~ 0.30，数值越低越忠实还原口述原意，避免模型自由发挥",
+                text = tr(
+                    "建议保持在 0.10 ~ 0.30，数值越低越忠实还原口述原意，避免模型自由发挥",
+                    "Keep around 0.10–0.30: lower values preserve your spoken intent faithfully without hallucinated edits",
+                    "建議保持在 0.10 ~ 0.30，數值越低越忠實還原口述原意，避免模型自由發揮"
+                ),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
+}
+
+private fun localizedLocalVaultSpec(
+    isPureOfflineLocked: Boolean,
+    lang: AppLang
+): UnifiedProviderSpec {
+    return LOCAL_OFFLINE_VAULT_SPEC.copy(
+        name = AppStrings.pick(lang, "📱 本机离线", "📱 On-Device", "📱 本機離線"),
+        badge = if (isPureOfflineLocked) {
+            AppStrings.pick(lang, "纯离线零出网", "Offline Lock", "純離線零連網")
+        } else {
+            AppStrings.pick(lang, "免Key/零费用", "No Key · Free", "免Key/零費用")
+        },
+        summary = AppStrings.pick(
+            lang,
+            "语音听音与端侧净写均在本机运行，不消耗 API 额度、断网可用。",
+            "Speech recognition and text cleanup run locally on device — zero API cost, works offline.",
+            "語音聽音與端側淨寫均在本機執行，不消耗 API 額度、斷網可用。"
+        )
+    )
+}
+
+private fun localizedProviderSpec(spec: UnifiedProviderSpec, lang: AppLang): UnifiedProviderSpec {
+    return when (spec.id) {
+        ID_LOCAL_OFFLINE_PROVIDER -> localizedLocalVaultSpec(isPureOfflineLocked = false, lang = lang)
+        UnifiedProviderCatalog.ID_GOOGLE -> spec.copy(
+            name = "Google Gemini",
+            badge = AppStrings.pick(lang, "实测 0.5s 旗舰推荐", "~0.5s Live Pick", "實測 0.5s 旗艦推薦"),
+            summary = AppStrings.pick(
+                lang,
+                "单 Key 通吃：Live 流式自带去口癖与改口合并 (~0.5s)，帮我写/快译自动调 Flash-Lite",
+                "Single key for all: ~0.5s Live streaming strips fillers & self-corrections; Help Write & Translate use Flash-Lite",
+                "單 Key 通吃：Live 串流自帶去口頭禪與改口合併 (~0.5s)，幫我寫/快譯自動調 Flash-Lite"
+            )
+        )
+        UnifiedProviderCatalog.ID_ALIYUN -> spec.copy(
+            name = AppStrings.pick(lang, "阿里云百炼", "Alibaba Bailian", "阿里雲百煉"),
+            badge = AppStrings.pick(lang, "国内直连单 Key", "CN Direct · 1 Key", "國內直連單 Key"),
+            summary = AppStrings.pick(
+                lang,
+                "单个 sk-Key 同时驱动 Paraformer 实时流式识别与 Qwen 极速润色",
+                "One sk-Key powers both Paraformer live streaming ASR and fast Qwen text polish",
+                "單個 sk-Key 同時驅動 Paraformer 即時串流識別與 Qwen 極速潤飾"
+            )
+        )
+        UnifiedProviderCatalog.ID_VOLCENGINE -> spec.copy(
+            name = AppStrings.pick(lang, "火山引擎豆包", "Volcengine Doubao", "火山引擎豆包"),
+            badge = AppStrings.pick(lang, "国内直连流式", "CN Streaming", "國內直連串流"),
+            summary = AppStrings.pick(
+                lang,
+                "豆包同源 SeedASR 2.0 实时流式 + 方舟 Seed-2.1-Lite 极速关思考润色",
+                "Doubao SeedASR 2.0 live streaming + Ark Seed-2.1-Lite fast non-thinking polish",
+                "豆包同源 SeedASR 2.0 即時串流 + 方舟 Seed-2.1-Lite 極速關思考潤飾"
+            )
+        )
+        UnifiedProviderCatalog.ID_SILICONFLOW -> spec.copy(
+            name = AppStrings.pick(lang, "硅基流动", "SiliconFlow", "矽基流動"),
+            badge = AppStrings.pick(lang, "免费高速", "Free & Fast", "免費高速"),
+            summary = AppStrings.pick(
+                lang,
+                "国内直连免费 SenseVoiceSmall 语音识别 + Qwen 系列高速推理",
+                "Free SenseVoiceSmall speech recognition + fast Qwen series inference",
+                "國內直連免費 SenseVoiceSmall 語音識別 + Qwen 系列高速推理"
+            )
+        )
+        UnifiedProviderCatalog.ID_DEEPSEEK -> spec.copy(
+            name = "DeepSeek",
+            badge = AppStrings.pick(lang, "单 Key 通用 / 润色标杆", "1-Key All-in-One", "單 Key 通用 / 潤飾標竿"),
+            summary = AppStrings.pick(
+                lang,
+                "单 Key 支持官方语音识别、二阶段中文润色与快译，以及 ✦ 军师、帮写和 🔍 问AI",
+                "One key powers official DeepSeek ASR, Stage-2 polish & translation, ✦ Copilot, Help Write, and 🔍 Ask AI",
+                "單 Key 支援官方語音識別、二階段中文潤飾與快譯，以及 ✦ 軍師、幫寫和 🔍 問AI"
+            )
+        )
+        UnifiedProviderCatalog.ID_CUSTOM -> spec.copy(
+            name = AppStrings.pick(lang, "自定义 / 聚合网关", "Custom / Gateway", "自訂 / 聚合閘道"),
+            badge = AppStrings.pick(lang, "NewAPI / OpenAI / 本地", "OpenAI / Local", "NewAPI / OpenAI / 本地"),
+            summary = AppStrings.pick(
+                lang,
+                "接入 OneAPI / NewAPI / OpenRouter / Groq / 智谱 GLM / 局域网 Ollama",
+                "Connect OpenAI, OpenRouter, Groq, OneAPI/NewAPI, Zhipu GLM, or LAN Ollama",
+                "接入 OneAPI / NewAPI / OpenRouter / Groq / 智譜 GLM / 區域網路 Ollama"
+            )
+        )
+        else -> spec
+    }
+}
+
+private fun formatLocalizedPipelineBadge(
+    settings: AppSettings,
+    registrySnapshot: LocalModelRegistrySnapshot,
+    lang: AppLang
+): String {
+    val raw = SetupStatsHelper.formatActivePipelineBadge(settings, registrySnapshot, lang)
+    return localizeRouteShortLabel(raw, lang)
+}
+
+private fun localizeShortModelTag(tag: String, lang: AppLang): String {
+    return tag
+        .replace("Zipformer 双语", AppStrings.pick(lang, "Zipformer 双语", "Zipformer ZH-EN", "Zipformer 雙語"))
+        .replace("Paraformer 流式", AppStrings.pick(lang, "Paraformer 流式", "Paraformer Stream", "Paraformer 串流"))
+}
+
+private fun localizeRouteShortLabel(raw: String, lang: AppLang): String {
+    if (lang == AppLang.ZH_CN) return raw
+    return when {
+        raw == "安全输入域禁用" -> AppStrings.pick(lang, raw, "Disabled in Secure Field", "安全輸入域停用")
+        raw == "纯离线不支持" -> AppStrings.pick(lang, raw, "Unsupported Offline", "純離線不支援")
+        raw == "纯离线未就绪" -> AppStrings.pick(lang, raw, "Offline Not Ready", "純離線未就緒")
+        raw == "本机模型不可用" -> AppStrings.pick(lang, raw, "Local Model Unavailable", "本機模型不可用")
+        raw == "未配置引擎" -> AppStrings.pick(lang, raw, "Setup Required", "未設定引擎")
+        raw == "⚡ 混合 · 本机净写 + 云端进阶" ->
+            AppStrings.pick(lang, raw, "⚡ Hybrid · Local Polish + Cloud", "⚡ 混合 · 本機淨寫 + 雲端進階")
+        raw == "⚡ 混合 · 本机听音 + 云端润色" ->
+            AppStrings.pick(lang, raw, "⚡ Hybrid · Local ASR + Cloud Polish", "⚡ 混合 · 本機聽音 + 雲端潤飾")
+        raw == "📱 本机听音 · 仅转写" ->
+            AppStrings.pick(lang, raw, "📱 Local ASR · Raw Only", "📱 本機聽音 · 僅轉寫")
+        raw == "☁️ 云端 · 双阶段" ->
+            AppStrings.pick(lang, raw, "☁️ Cloud · Dual-Stage", "☁️ 雲端 · 雙階段")
+        raw == "☁️ 云端 · Gemini 多模态" ->
+            AppStrings.pick(lang, raw, "☁️ Cloud · Gemini Multimodal", "☁️ 雲端 · Gemini 多模態")
+        raw == "☁️ 云端 · 音频直连" ->
+            AppStrings.pick(lang, raw, "☁️ Cloud · Direct Audio", "☁️ 雲端 · 音訊直連")
+        raw.startsWith("📱 纯离线 · 仅转写 (") && raw.endsWith(")") -> {
+            val inner = localizeShortModelTag(raw.removePrefix("📱 纯离线 · 仅转写 (").removeSuffix(")"), lang)
+            AppStrings.pick(lang, raw, "📱 Offline · Raw ($inner)", "📱 純離線 · 僅轉寫 ($inner)")
+        }
+        raw.startsWith("📱 纯离线 · ") -> {
+            val inner = localizeShortModelTag(raw.removePrefix("📱 纯离线 · "), lang)
+            AppStrings.pick(lang, raw, "📱 Offline · $inner", "📱 純離線 · $inner")
+        }
+        raw.startsWith("⚡ 混合 · 本机大脑 (") && raw.endsWith(")") -> {
+            val inner = localizeShortModelTag(raw.removePrefix("⚡ 混合 · 本机大脑 (").removeSuffix(")"), lang)
+            AppStrings.pick(lang, raw, "⚡ Hybrid · Local Brain ($inner)", "⚡ 混合 · 本機大腦 ($inner)")
+        }
+        raw.startsWith("⚡ 混合 · ") -> {
+            val inner = localizeShortModelTag(raw.removePrefix("⚡ 混合 · "), lang)
+            AppStrings.pick(lang, raw, "⚡ Hybrid · $inner", "⚡ 混合 · $inner")
+        }
+        else -> raw
+    }
+}
+
+private fun localizeNotReadyReason(raw: String, lang: AppLang): String {
+    if (lang == AppLang.ZH_CN) return raw
+    return when (raw) {
+        "当前为密码框或安全输入域，语音与 AI 已禁用" -> AppStrings.pick(
+            lang,
+            raw,
+            "Voice & AI are disabled in password or secure fields",
+            "目前為密碼框或安全輸入域，語音與 AI 已停用"
+        )
+        "纯离线锁已开启，当前任务不支持离线执行" -> AppStrings.pick(
+            lang,
+            raw,
+            "Offline Lock is enabled and this task is not supported offline",
+            "純離線鎖已開啟，目前任務不支援離線執行"
+        )
+        "纯离线锁已开启，请先下载并启用离线模型" -> AppStrings.pick(
+            lang,
+            raw,
+            "Offline Lock is on — download and enable a local model first",
+            "純離線鎖已開啟，請先下載並啟用離線模型"
+        )
+        "已选本机模型损坏或离线推理服务不可用，请重新校验或切换模型" -> AppStrings.pick(
+            lang,
+            raw,
+            "Selected local model is corrupted or unavailable — re-verify or switch models",
+            "已選本機模型損壞或離線推理服務不可用，請重新校驗或切換模型"
+        )
+        "尚未配置云端 API 或启用本机离线模型" -> AppStrings.pick(
+            lang,
+            raw,
+            "Configure a cloud API key or enable an on-device model",
+            "尚未設定雲端 API 或啟用本機離線模型"
+        )
+        else -> raw
+    }
+}
+
+private fun modelSlotLabel(slot: ModelCapabilitySlot, lang: AppLang): String = when (slot) {
+    ModelCapabilitySlot.STT -> AppStrings.pick(lang, "STT 语音识别", "Speech-to-Text (STT)", "STT 語音識別")
+    ModelCapabilitySlot.LLM -> AppStrings.pick(lang, "LLM 语义润色", "LLM Text Polish", "LLM 語義潤飾")
+    ModelCapabilitySlot.MULTIMODAL -> AppStrings.pick(lang, "多模态音频直出", "Multimodal Direct Audio", "多模態音訊直出")
+    ModelCapabilitySlot.JEV_COPILOT -> AppStrings.pick(lang, "Jev 军师专用", "Jev Copilot", "Jev 軍師專用")
+}
+
+private fun thinkingModeDescription(mode: ThinkingMode, lang: AppLang): String = when (mode) {
+    ThinkingMode.DISABLED -> AppStrings.pick(
+        lang,
+        "显式下发非思考指令，砍掉隐藏 CoT 推理空转，语音上屏最快",
+        "Explicitly disables hidden CoT reasoning for the fastest dictation latency",
+        "顯式下發非思考指令，砍掉隱藏 CoT 推理空轉，語音上屏最快"
+    )
+    ThinkingMode.AUTO -> AppStrings.pick(
+        lang,
+        "不额外注入思考开关字段，遵循服务端与模型原生默认行为",
+        "Omits thinking override fields and follows the model's native default behavior",
+        "不額外注入思考開關欄位，遵循伺服器與模型原生預設行為"
+    )
+    ThinkingMode.ENABLED -> AppStrings.pick(
+        lang,
+        "显式启用深度推理，适合长文「帮我写」但首字延迟会增加",
+        "Explicitly enables deep reasoning — best for long Help Write tasks, with higher first-token latency",
+        "顯式啟用深度推理，適合長文「幫我寫」但首字延遲會增加"
+    )
+}
+
+private fun localizeDiscoveredBadge(badge: String, lang: AppLang): String = when (badge) {
+    "🔊 语音转写" -> AppStrings.pick(lang, "🔊 语音转写", "🔊 Speech-to-Text", "🔊 語音轉寫")
+    "🧠 军师推荐" -> AppStrings.pick(lang, "🧠 军师推荐", "🧠 Copilot Pick", "🧠 軍師推薦")
+    "🎙 原生音频" -> AppStrings.pick(lang, "🎙 原生音频", "🎙 Native Audio", "🎙 原生音訊")
+    else -> badge
+}
+
+private fun localizeProbeError(err: String, lang: AppLang): String = when (err) {
+    "超时" -> AppStrings.pick(lang, "超时", "Timeout", "逾時")
+    "连接失败" -> AppStrings.pick(lang, "连接失败", "Conn Failed", "連線失敗")
+    "模型为空" -> AppStrings.pick(lang, "模型为空", "Empty Model", "模型為空")
+    else -> err
 }
 
 private fun readFromClipboard(context: Context): String {

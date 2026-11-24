@@ -2639,24 +2639,39 @@ class VoiceController(
         onResetComposing()
         val stateSnap = host.stateFlow.value
         val isPassword = ImeLogic.isPasswordEditorInputType(stateSnap.currentInputType)
-        val fullText = if (isPassword) "" else host.readFullEditorTextSafely().trim().ifBlank { stateSnap.currentEditorText.trim() }
-        if (fullText.isBlank()) return
+        val selectedText = if (isPassword) {
+            ""
+        } else {
+            host.readSelectedTextSafely().trim()
+                .ifBlank { stateSnap.effectiveSelectedText.trim() }
+                .ifBlank { stateSnap.rawSelectedText.trim() }
+        }
+        val fromSelection = selectedText.isNotBlank()
+        val queryText = if (fromSelection) {
+            selectedText
+        } else if (isPassword) {
+            ""
+        } else {
+            host.readFullEditorTextSafely().trim().ifBlank { stateSnap.currentEditorText.trim() }
+        }
+        if (queryText.isBlank()) return
 
         host.stateFlow.update {
             it.copy(
                 tabMode = KeyboardTabMode.VOICE,
                 voiceSubPanel = VoiceSubPanel.ASK_AI_CARD,
                 activeIntentMode = VoiceIntentMode.DICTATE,
-                askAiQuery = fullText,
+                askAiQuery = queryText,
                 askAiAnswer = "",
                 isAskAiLoading = true,
                 askAiErrorMessage = null,
+                askAiFromSelection = fromSelection,
                 isClipboardOpen = false,
                 isToolPanelOpen = false,
                 selectedHelpWritePreset = null
             )
         }
-        triggerAskAiInference(fullText)
+        triggerAskAiInference(queryText)
     }
 
     fun triggerAskAiInference(query: String) {
@@ -2724,12 +2739,17 @@ class VoiceController(
                 tabMode = KeyboardTabMode.QWERTY,
                 voiceSubPanel = VoiceSubPanel.NONE,
                 isAskAiLoading = false,
-                askAiErrorMessage = null
+                askAiErrorMessage = null,
+                askAiFromSelection = false
             )
         }
     }
 
     fun dismissAskAiAndClearEditor() {
+        if (host.stateFlow.value.askAiFromSelection) {
+            returnFromAskAiToQwerty()
+            return
+        }
         host.performKeyFeedback(strong = false)
         askAiJob?.cancel()
         val q = host.stateFlow.value.askAiQuery
@@ -2741,7 +2761,8 @@ class VoiceController(
                 currentEditorText = "",
                 undoSnapshot = host.peekTopUndoSnapshot(),
                 isAskAiLoading = false,
-                askAiErrorMessage = null
+                askAiErrorMessage = null,
+                askAiFromSelection = false
             )
         }
         host.showQuickActionToast(
@@ -2770,21 +2791,57 @@ class VoiceController(
     }
 
     fun commitAskAiAnswerToEditor() {
-        val answer = host.stateFlow.value.askAiAnswer
+        val snap = host.stateFlow.value
+        val answer = snap.askAiAnswer
         if (answer.isBlank()) return
         host.performKeyFeedback(strong = false)
         askAiJob?.cancel()
-        val q = host.stateFlow.value.askAiQuery
-        replaceFullEditorTextSafely(finalOutput = answer, originalText = q)
-        host.stateFlow.update {
-            it.copy(
-                tabMode = KeyboardTabMode.QWERTY,
-                voiceSubPanel = VoiceSubPanel.NONE,
-                currentEditorText = answer,
-                undoSnapshot = host.peekTopUndoSnapshot(),
-                isAskAiLoading = false,
-                askAiErrorMessage = null
+        val q = snap.askAiQuery
+        val fromSelection = snap.askAiFromSelection &&
+            (host.readSelectedTextSafely().isNotEmpty() || snap.rawSelectedText.isNotEmpty())
+        if (fromSelection) {
+            val ic = host.currentInputConnection()
+            if (ic != null) {
+                ic.beginBatchEdit()
+                ic.commitText(answer, 1)
+                ic.endBatchEdit()
+            }
+            host.clearAutoLearnBaseline()
+            host.performHaptic(strong = true)
+            onExternalCommitToEngine(answer)
+            host.pushUndoSnapshot(
+                ImeLogic.createUndoSnapshot(
+                    committedText = answer,
+                    replacedSelection = q
+                )
             )
+            val updatedFull = host.readFullEditorTextSafely().ifBlank { answer }
+            host.stateFlow.update {
+                it.copy(
+                    tabMode = KeyboardTabMode.QWERTY,
+                    voiceSubPanel = VoiceSubPanel.NONE,
+                    currentEditorText = updatedFull,
+                    rawSelectedText = "",
+                    ignoreSelectionForThisTurn = false,
+                    undoSnapshot = host.peekTopUndoSnapshot(),
+                    isAskAiLoading = false,
+                    askAiErrorMessage = null,
+                    askAiFromSelection = false
+                )
+            }
+        } else {
+            replaceFullEditorTextSafely(finalOutput = answer, originalText = q)
+            host.stateFlow.update {
+                it.copy(
+                    tabMode = KeyboardTabMode.QWERTY,
+                    voiceSubPanel = VoiceSubPanel.NONE,
+                    currentEditorText = answer,
+                    undoSnapshot = host.peekTopUndoSnapshot(),
+                    isAskAiLoading = false,
+                    askAiErrorMessage = null,
+                    askAiFromSelection = false
+                )
+            }
         }
         host.showQuickActionToast(
             AppStrings.pick(

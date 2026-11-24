@@ -238,7 +238,7 @@ fun AskAiCardPanel(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Button 1: ✓ 知道了（清空输入框）
+                // Button 1: ✓ 知道了（整框提问时清空输入框，选区提问时仅关闭保留原文）
                 Box(
                     modifier = Modifier
                         .weight(1.1f)
@@ -250,7 +250,11 @@ fun AskAiCardPanel(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = tr("✓ 知道了(清空)", "✓ Got it (Clear)", "✓ 知道了(清空)"),
+                        text = if (uiState.askAiFromSelection) {
+                            tr("✓ 知道了", "✓ Got it", "✓ 知道了")
+                        } else {
+                            tr("✓ 知道了(清空)", "✓ Got it (Clear)", "✓ 知道了(清空)")
+                        },
                         color = palette.keyTextPrimary,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
@@ -278,7 +282,7 @@ fun AskAiCardPanel(
                     )
                 }
 
-                // Button 3: 填入输入框 ↵
+                // Button 3: 填入输入框 / 替换选中 ↵
                 Box(
                     modifier = Modifier
                         .weight(1.1f)
@@ -289,7 +293,11 @@ fun AskAiCardPanel(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = tr("填入输入框 ↵", "Insert ↵", "填入輸入框 ↵"),
+                        text = if (uiState.askAiFromSelection) {
+                            tr("替换选中 ↵", "Replace ↵", "替換選取 ↵")
+                        } else {
+                            tr("填入输入框 ↵", "Insert ↵", "填入輸入框 ↵")
+                        },
                         color = Color.White,
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.Bold,

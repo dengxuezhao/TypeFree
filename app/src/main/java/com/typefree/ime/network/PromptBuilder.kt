@@ -612,7 +612,8 @@ Analyze <domain_profile>, <conversation_topology>, the redacted <chat_context> m
         chatTopology: ChatTopology = ChatTopology(),
         targetPackageName: String = "",
         memoryPayload: JevMemoryPromptPayload? = null,
-        isChineseLocale: Boolean = true
+        isChineseLocale: Boolean = true,
+        replyMatchesSystemLanguage: Boolean = false
     ): Pair<String, String> {
         val effectiveTopology = if (!chatTopology.isGroupChat && chatTopology.distinctOtherSenders.isEmpty()) {
             ChatScreenContextExtractor.inferTopologyFromFormattedMessages(chatContextMessages, chatTopology)
@@ -704,14 +705,19 @@ Analyze <domain_profile>, <conversation_topology>, the redacted <chat_context> m
             append(visionGuidePart)
             append(bottomLinePart)
             append(excludedPart)
-            val memoryBlock = memoryPayload?.toCompactXmlBlock().orEmpty()
+            val memoryBlock = memoryPayload?.toCompactXmlBlock(isChineseLocale).orEmpty()
             if (memoryBlock.isNotBlank()) {
                 append("\n")
                 append(memoryBlock)
                 append("\n")
             }
             if (isChineseLocale) {
-                append("\n请严格按以下 <jev> XML 结构输出（先写完 3 条 <opt> 正文，最后在 <weights> 中填入对应第 1、2、3 条的真实正整数权重 W1,W2,W3，三者相加严格等于 100 且不限制 W1/W2/W3 大小顺序；label 必须现起贴合剧情的 4 字鲜活战术词，严禁照抄理论轴名，严禁嵌套 <opt> 标签）：\n")
+                val replyLangRule = if (replyMatchesSystemLanguage) {
+                    "；且局势定性 <tag>、潜台词 <subtext>、3 个 label=\"...\" 以及 3 条 <opt> 回复正文全部使用中文撰写"
+                } else {
+                    "；局势定性 <tag>、潜台词 <subtext> 与 3 个 label=\"...\" 必须始终使用中文（跟随系统语言），<opt> 回复正文匹配 <chat_context> 聊天语种（无上下文时默认中文）"
+                }
+                append("\n请严格按以下 <jev> XML 结构输出（先写完 3 条 <opt> 正文，最后在 <weights> 中填入对应第 1、2、3 条的真实正整数权重 W1,W2,W3，三者相加严格等于 100 且不限制 W1/W2/W3 大小顺序；label 必须现起贴合剧情的 4 字鲜活战术词，严禁照抄理论轴名，严禁嵌套 <opt> 标签$replyLangRule）：\n")
                 append("<jev>\n")
                 append("<lv>1-9</lv>\n")
                 append("<tag>4-8字定性</tag>\n")
@@ -723,14 +729,20 @@ Analyze <domain_profile>, <conversation_topology>, the redacted <chat_context> m
                 append("<route>E或P或G或B</route>\n")
                 append("</jev>")
             } else {
-                append("\nOutput strictly using this <jev> XML structure (write all 3 <opt> replies first, then set integer weights W1,W2,W3 summing to 100 in <weights>; each label MUST be a fresh 2-3 word tactical phrase like \"Graceful Pivot\" or \"Firm Boundary\"; never nest <opt> tags):\n")
+                val replyLangRuleEn = if (replyMatchesSystemLanguage) {
+                    "Also write all 3 <opt> reply bodies strictly in natural English."
+                } else {
+                    "Write each <opt> reply body in the language of <chat_context> (defaulting to natural English when <chat_context> is empty)."
+                }
+                append("\nCRITICAL LANGUAGE RULE: Active system language is English — <tag>, <subtext>, and ALL THREE label=\"...\" attributes MUST be written strictly in English (fresh 2-3 word tactical phrase like \"Graceful Pivot\", \"Firm Boundary\", \"Counterexample\" — NEVER output Chinese inside <tag>, <subtext>, or label=\"...\" even when <chat_context> is Chinese!). $replyLangRuleEn\n")
+                append("Output strictly using this <jev> XML structure (write all 3 <opt> replies first, then set integer weights W1,W2,W3 summing to 100 in <weights>; never nest <opt> tags):\n")
                 append("<jev>\n")
                 append("<lv>1-9</lv>\n")
-                append("<tag>2-4 word tactical read</tag>\n")
-                append("<subtext>Concise subtext analysis (max 28 words)</subtext>\n")
-                append("<opt label=\"2-3 word label 1\">Plain-text reply 1</opt>\n")
-                append("<opt label=\"2-3 word label 2\">Plain-text reply 2</opt>\n")
-                append("<opt label=\"2-3 word label 3\">Plain-text reply 3</opt>\n")
+                append("<tag>2-4 word English tactical read</tag>\n")
+                append("<subtext>Concise English subtext analysis (max 28 words)</subtext>\n")
+                append("<opt label=\"2-3 word English label 1\">Plain-text reply 1</opt>\n")
+                append("<opt label=\"2-3 word English label 2\">Plain-text reply 2</opt>\n")
+                append("<opt label=\"2-3 word English label 3\">Plain-text reply 3</opt>\n")
                 append("<weights>W1,W2,W3</weights>\n")
                 append("<route>E or P or G or B</route>\n")
                 append("</jev>")

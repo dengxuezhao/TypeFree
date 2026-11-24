@@ -100,16 +100,17 @@ object JevResponseParser {
         usedVision: Boolean = false,
         redactionCount: Int = redactionSession?.redactionCount ?: 0,
         priorWeightFuser: ((List<Int>, String) -> List<Int>)? = null,
-        lockVisualOrder: Boolean = false
+        lockVisualOrder: Boolean = false,
+        preferEnglishUi: Boolean = false
     ): JevCopilotResult {
         val cleaned = sanitizeRawOutput(rawModelOutput)
+        val isLatin = preferEnglishUi || isPureLatinInput(cleaned)
 
-        val rawResult = parseXmlTier1(cleaned)
+        val rawResult = parseXmlTier1(cleaned, preferEnglishUi = isLatin)
             ?: parseJsonTier2(cleaned)
             ?: parsePlainTextTier3(cleaned)
 
-        val fbLabels = fallbackLabelsFor(cleaned)
-        val isLatin = isPureLatinInput(cleaned)
+        val fbLabels = if (isLatin) DEFAULT_FALLBACK_LABELS_EN else DEFAULT_FALLBACK_LABELS
         val cleanedOptions = rawResult.options.take(3).mapIndexed { index, opt ->
             val cleanLabel = capLabelLength(
                 opt.label
@@ -120,7 +121,7 @@ object JevResponseParser {
                     .removeSurrounding("'")
                     .trim()
                     .ifEmpty {
-                        fbLabels.getOrElse(index) { fallbackSlotLabel(cleaned, index) }
+                        fbLabels.getOrElse(index) { if (isLatin) "Option ${index + 1}" else "策略 ${index + 1}" }
                     }
             )
             val cleanReply = cleanOptionText(opt.replyText)
@@ -167,7 +168,8 @@ object JevResponseParser {
         usedVision: Boolean = false,
         redactionCount: Int = redactionSession?.redactionCount ?: 0,
         priorWeightFuser: ((List<Int>, String) -> List<Int>)? = null,
-        lockVisualOrder: Boolean = false
+        lockVisualOrder: Boolean = false,
+        preferEnglishUi: Boolean = false
     ): JevCopilotResult? {
         val cleaned = sanitizeRawOutput(rawPartialOutput)
         if (cleaned.isBlank()) return null
@@ -178,8 +180,8 @@ object JevResponseParser {
             return null
         }
 
-        val isLatin = isPureLatinInput(cleaned)
-        val fbLabels = fallbackLabelsFor(cleaned)
+        val isLatin = preferEnglishUi || isPureLatinInput(cleaned)
+        val fbLabels = if (isLatin) DEFAULT_FALLBACK_LABELS_EN else DEFAULT_FALLBACK_LABELS
         val level = LV_TAG_REGEX.find(cleaned)?.groupValues?.getOrNull(1)?.toIntOrNull()?.coerceIn(1, 9) ?: 4
         val tag = capTagLength(
             TAG_ELEM_REGEX.find(cleaned)?.groupValues?.getOrNull(1)
@@ -425,19 +427,21 @@ object JevResponseParser {
         return text.trim()
     }
 
-    internal fun parseXmlTier1(text: String): JevCopilotResult? {
+    internal fun parseXmlTier1(text: String, preferEnglishUi: Boolean = false): JevCopilotResult? {
         val optMatches = OPT_ELEM_REGEX.findAll(text).toList()
         if (optMatches.isEmpty()) return null
 
+        val isLatin = preferEnglishUi || isPureLatinInput(text)
+        val fbLabels = if (isLatin) DEFAULT_FALLBACK_LABELS_EN else DEFAULT_FALLBACK_LABELS
         val level = LV_TAG_REGEX.find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()?.coerceIn(1, 9) ?: 4
         val tag = TAG_ELEM_REGEX.find(text)?.groupValues?.getOrNull(1)?.trim()
             ?.replace("\n", " ")
             .orEmpty()
-            .ifEmpty { "局势分析" }
+            .ifEmpty { if (isLatin) "Tactical Read" else "局势分析" }
         val subtext = SUBTEXT_ELEM_REGEX.find(text)?.groupValues?.getOrNull(1)?.trim()
             ?.replace("\n", " ")
             .orEmpty()
-            .ifEmpty { "已拆解对方潜台词并生成差异化应对策略" }
+            .ifEmpty { if (isLatin) "Decoded subtext and drafted 3 reply strategies." else "已拆解对方潜台词并生成差异化应对策略" }
 
         val postHocWeights = extractPostHocWeights(text)
         val routeCode = extractRouteCode(text)
@@ -449,7 +453,7 @@ object JevResponseParser {
 
             val label = extractLabelFromAttrs(innerAttrs)
                 ?: extractLabelFromAttrs(outerAttrs)
-                ?: DEFAULT_FALLBACK_LABELS.getOrElse(idx) { "策略 ${idx + 1}" }
+                ?: fbLabels.getOrElse(idx) { if (isLatin) "Option ${idx + 1}" else "策略 ${idx + 1}" }
             val prob = extractProbFromAttrs(innerAttrs).takeIf { it > 0 }
                 ?: extractProbFromAttrs(outerAttrs)
             val body = cleanOptionText(m.groupValues[2])

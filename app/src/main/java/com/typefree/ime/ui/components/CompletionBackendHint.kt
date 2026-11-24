@@ -31,6 +31,9 @@ import com.typefree.core.offline.TextRoute
 import com.typefree.ime.TypeFreeApp
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.OfflineRouteBridge
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
 import com.typefree.ime.ui.theme.TypeFreeAmber
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 
@@ -49,7 +52,8 @@ data class CompletionBackendHintState(
 fun resolveCompletionBackendHintState(
     settings: AppSettings,
     registrySnapshot: LocalModelRegistrySnapshot = LocalModelRegistrySnapshot(),
-    isNetworkAvailable: Boolean = true
+    isNetworkAvailable: Boolean = true,
+    lang: AppLang = AppStrings.resolveLang(settings.appLanguage)
 ): CompletionBackendHintState {
     val plan = OfflineRouteBridge.resolvePlan(
         task = AiTask.SENTENCE_COMPLETION,
@@ -66,8 +70,13 @@ fun resolveCompletionBackendHintState(
                 else -> OfflineModelCatalog.findById(textRoute.modelId)?.displayName ?: textRoute.modelId
             }
             CompletionBackendHintState(
-                compactLabel = "本机 · 零流量",
-                detailedHint = "⚡ 本机毫秒补全 · 零流量（$shortName）",
+                compactLabel = AppStrings.pick(lang, "本机 · 零流量", "On-Device · Zero Data", "本機 · 零流量"),
+                detailedHint = AppStrings.pick(
+                    lang,
+                    "⚡ 本机毫秒补全 · 零流量（$shortName）",
+                    "⚡ On-Device Instant Completion · Zero Data ($shortName)",
+                    "⚡ 本機毫秒補全 · 零流量（$shortName）"
+                ),
                 tone = CompletionHintTone.LOCAL_EMERALD
             )
         }
@@ -75,8 +84,13 @@ fun resolveCompletionBackendHintState(
         is TextRoute.Cloud,
         is TextRoute.CloudMultimodalTextFallback -> {
             CompletionBackendHintState(
-                compactLabel = "云端补全",
-                detailedHint = "☁️ 当前补全后端：云端模型（按停顿按需发送光标前上文）",
+                compactLabel = AppStrings.pick(lang, "云端补全", "Cloud Completion", "雲端補全"),
+                detailedHint = AppStrings.pick(
+                    lang,
+                    "☁️ 当前补全后端：云端模型（按停顿按需发送光标前上文）",
+                    "☁️ Backend: Cloud Model (sends text before cursor on pause)",
+                    "☁️ 目前補全後端：雲端模型（依停頓按需傳送游標前上文）"
+                ),
                 tone = CompletionHintTone.CLOUD_NEUTRAL
             )
         }
@@ -84,33 +98,58 @@ fun resolveCompletionBackendHintState(
         is TextRoute.Blocked -> when (textRoute.reason) {
             RouteBlockReason.OFFLINE_ONLY_UNSUPPORTED_TASK,
             RouteBlockReason.OFFLINE_ONLY_NO_MODEL -> CompletionBackendHintState(
-                compactLabel = "纯离线不可用",
-                detailedHint = "🔒 纯离线锁已开启 · 当前无支持整句补全的本机大脑模型",
+                compactLabel = AppStrings.pick(lang, "纯离线不可用", "Offline Unavailable", "純離線不可用"),
+                detailedHint = AppStrings.pick(
+                    lang,
+                    "🔒 纯离线锁已开启 · 当前无支持整句补全的本机大脑模型",
+                    "🔒 Strict Offline Lock active · No on-device completion model installed",
+                    "🔒 純離線鎖已開啟 · 目前無支援整句補全的本機大腦模型"
+                ),
                 tone = CompletionHintTone.WARNING_AMBER
             )
 
             RouteBlockReason.LOCAL_MODEL_UNAVAILABLE -> CompletionBackendHintState(
-                compactLabel = "本机不可用",
-                detailedHint = "⚠️ 已选本机补全模型损坏或离线服务暂不可用",
+                compactLabel = AppStrings.pick(lang, "本机不可用", "Local Model Error", "本機不可用"),
+                detailedHint = AppStrings.pick(
+                    lang,
+                    "⚠️ 已选本机补全模型损坏或离线服务暂不可用",
+                    "⚠️ Selected on-device model is corrupted or temporarily unavailable",
+                    "⚠️ 已選本機補全模型損壞或離線服務暫不可用"
+                ),
                 tone = CompletionHintTone.WARNING_AMBER
             )
 
             RouteBlockReason.NO_CLOUD_OR_LOCAL_AVAILABLE -> CompletionBackendHintState(
-                compactLabel = "未配置引擎",
-                detailedHint = "⚠️ 尚未配置云端补全模型或本机离线大脑，开启后暂无法触发",
+                compactLabel = AppStrings.pick(lang, "未配置引擎", "Not Configured", "未設定引擎"),
+                detailedHint = AppStrings.pick(
+                    lang,
+                    "⚠️ 尚未配置云端补全模型或本机离线大脑，开启后暂无法触发",
+                    "⚠️ No cloud or on-device completion model configured yet",
+                    "⚠️ 尚未設定雲端補全模型或本機離線大腦，開啟後暫無法觸發"
+                ),
                 tone = CompletionHintTone.WARNING_AMBER
             )
 
             RouteBlockReason.SECURE_FIELD -> CompletionBackendHintState(
-                compactLabel = "安全域禁用",
-                detailedHint = "🔒 密码框与安全输入域永不触发整句补全",
+                compactLabel = AppStrings.pick(lang, "安全域禁用", "Disabled in Secure Field", "安全欄位停用"),
+                detailedHint = AppStrings.pick(
+                    lang,
+                    "🔒 密码框与安全输入域永不触发整句补全",
+                    "🔒 Never triggered in password or secure input fields",
+                    "🔒 密碼框與安全輸入欄位永不觸發整句補全"
+                ),
                 tone = CompletionHintTone.CLOUD_NEUTRAL
             )
         }
 
         is TextRoute.RawPassthrough -> CompletionBackendHintState(
-            compactLabel = "仅转写",
-            detailedHint = "当前仅启用语音转写，尚未配置整句补全后端",
+            compactLabel = AppStrings.pick(lang, "仅转写", "Transcribe Only", "僅轉寫"),
+            detailedHint = AppStrings.pick(
+                lang,
+                "当前仅启用语音转写，尚未配置整句补全后端",
+                "Voice transcription only — completion backend not configured",
+                "目前僅啟用語音轉寫，尚未設定整句補全後端"
+            ),
             tone = CompletionHintTone.WARNING_AMBER
         )
     }
@@ -118,10 +157,11 @@ fun resolveCompletionBackendHintState(
 
 fun resolveCompletionBackendCompactLabel(
     settings: AppSettings,
-    registrySnapshot: LocalModelRegistrySnapshot = LocalModelRegistrySnapshot()
+    registrySnapshot: LocalModelRegistrySnapshot = LocalModelRegistrySnapshot(),
+    lang: AppLang = AppStrings.resolveLang(settings.appLanguage)
 ): String {
-    if (!settings.aiCompletionEnabled) return "已关闭"
-    return resolveCompletionBackendHintState(settings, registrySnapshot).compactLabel
+    if (!settings.aiCompletionEnabled) return AppStrings.pick(lang, "已关闭", "Off", "已關閉")
+    return resolveCompletionBackendHintState(settings, registrySnapshot, lang = lang).compactLabel
 }
 
 @Composable
@@ -147,8 +187,9 @@ fun CompletionBackendHint(
     registrySnapshot: LocalModelRegistrySnapshot = rememberLocalModelRegistrySnapshot(),
     modifier: Modifier = Modifier
 ) {
-    val hint = remember(settings, registrySnapshot) {
-        resolveCompletionBackendHintState(settings, registrySnapshot)
+    val appLang = LocalAppLanguage.current
+    val hint = remember(settings, registrySnapshot, appLang) {
+        resolveCompletionBackendHintState(settings, registrySnapshot, lang = appLang)
     }
 
     val accentColor = when (hint.tone) {

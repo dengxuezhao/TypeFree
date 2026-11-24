@@ -570,6 +570,15 @@ class AppRepository(
                 chatContextDisclosureDismissed = resolvedChatContextDisclosureDismissed,
                 jevCopilotEnabled = resolvedJevCopilotEnabled,
                 chatContextSendScreenshot = resolvedChatContextSendScreenshot,
+                jevLanguageMode = if (raw.contains("\"jevLanguageMode\"")) {
+                    when (parsed.jevLanguageMode?.trim()?.lowercase()) {
+                        "chat" -> "chat"
+                        "strict_system" -> "strict_system"
+                        else -> "system"
+                    }
+                } else {
+                    "system"
+                },
                 jevMemoryEnabled = resolvedJevMemoryEnabled,
                 jevMaskTitleHintEnabled = resolvedJevMaskTitleHintEnabled,
                 manualIncognitoMode = resolvedManualIncognitoMode,

@@ -64,7 +64,8 @@ fun SpeakToEditPanel(
     onDismissError: () -> Unit,
     onHideKeyboard: () -> Unit,
     onSwitchKeyboard: () -> Unit,
-    onShowImePicker: () -> Unit
+    onShowImePicker: () -> Unit,
+    onAskAiSelection: (() -> Unit)? = null
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val s = LocalKeyboardMetrics.current.elementScale
@@ -178,6 +179,25 @@ fun SpeakToEditPanel(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         val appLang = LocalAppLanguage.current
+                        if (onAskAiSelection != null) {
+                            val askIndigo = Color(0xFF6366F1)
+                            val askFg = if (palette.isDark) Color(0xFFA5B4FC) else Color(0xFF4F46E5)
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(askIndigo.copy(alpha = if (palette.isDark) 0.18f else 0.12f))
+                                    .border(1.dp, askIndigo.copy(alpha = if (palette.isDark) 0.45f else 0.40f), RoundedCornerShape(12.dp))
+                                    .clickable(enabled = !isBusy) { onAskAiSelection() }
+                                    .padding(horizontal = 10.dp, vertical = (5f * s).dp)
+                            ) {
+                                Text(
+                                    text = tr("🔍 问AI", "🔍 Ask AI", "🔍 問AI"),
+                                    color = if (isBusy) palette.keyTextMuted else askFg,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                         ImeLogic.quickEditChips.forEach { chip ->
                             val chipDisplayLabel = when (chip.id) {
                                 "smart_polish" -> AppStrings.pick(appLang, chip.label, "✨ Polish", "✨ 智慧潤飾")

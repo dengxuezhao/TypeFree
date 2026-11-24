@@ -49,9 +49,17 @@ object AppStrings {
         }
     }
 
+    fun currentSystemLocale(): Locale {
+        return runCatching {
+            val cfg = android.content.res.Resources.getSystem()?.configuration
+            val list = cfg?.locales
+            if (list != null && !list.isEmpty) list[0] else null
+        }.getOrNull() ?: Locale.getDefault()
+    }
+
     fun resolveLang(
         appLanguage: String?,
-        systemLocale: Locale = Locale.getDefault()
+        systemLocale: Locale = currentSystemLocale()
     ): AppLang {
         return when (normalizeAppLanguage(appLanguage)) {
             LANG_EN -> AppLang.EN
@@ -76,7 +84,7 @@ object AppStrings {
 
     fun isChinese(
         appLanguage: String?,
-        systemLocale: Locale = Locale.getDefault()
+        systemLocale: Locale = currentSystemLocale()
     ): Boolean {
         return resolveLang(appLanguage, systemLocale) != AppLang.EN
     }
@@ -99,7 +107,7 @@ object AppStrings {
         zhCn: String,
         en: String,
         zhTw: String = zhCn,
-        systemLocale: Locale = Locale.getDefault()
+        systemLocale: Locale = currentSystemLocale()
     ): String {
         return pick(resolveLang(appLanguage, systemLocale), zhCn, en, zhTw)
     }

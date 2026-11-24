@@ -191,7 +191,8 @@ data class ImeUiState(
     val askAiQuery: String = "",
     val askAiAnswer: String = "",
     val isAskAiLoading: Boolean = false,
-    val askAiErrorMessage: String? = null
+    val askAiErrorMessage: String? = null,
+    val askAiFromSelection: Boolean = false
 ) {
     val hasActiveChatContext: Boolean
         get() = capturedChatContext.hasContext && !ignoreChatContextForThisTurn && !isIncognitoMode
@@ -220,7 +221,8 @@ data class ImeUiState(
 
     val isPredictionBarVisible: Boolean
         get() = tabMode == KeyboardTabMode.QWERTY &&
-            !isFlypyComposing && (
+            !isFlypyComposing &&
+            rawSelectedText.isBlank() && (
                 (isFlypyChineseMode && (
                     predictionCandidates.isNotEmpty() ||
                         !aiCompletionSuggestion.isNullOrBlank() ||

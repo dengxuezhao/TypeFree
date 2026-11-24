@@ -312,7 +312,7 @@ fun KeyboardScreen(
                             onDismissError = onDismissError,
                             onHideKeyboard = onHideKeyboard,
                             onSwitchKeyboard = onSwitchKeyboard,
-                            onShowImePicker = onShowImePicker
+                            onShowImePicker = onShowImePicker, onAskAiSelection = { onAction(ImeUiAction.OpenAskAiCard) }
                         )
                     }
 

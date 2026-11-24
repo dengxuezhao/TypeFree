@@ -509,9 +509,26 @@ class GlobalEnglishAndI18nTest {
         )
         assertTrue(askUsrEn.contains("<current_date>2026-11-24 (Tuesday)</current_date>"))
 
-        // English QWERTY top bar drops Ask AI on 360dp width instead of overlapping left icons
-        val enPlan360 = com.typefree.ime.ime.chrome.TopBarSlotPolicy.resolveQwertyBarLayout(
-            availableWidthDp = 360f,
+        // English QWERTY top bar fits all 4 pills (Ask AI, Copilot, Write/Edit, Voice) on 360dp phone (336dp inner width)
+        val enPlan336 = com.typefree.ime.ime.chrome.TopBarSlotPolicy.resolveQwertyBarLayout(
+            availableWidthDp = 336f,
+            showUndoButton = true,
+            showClipboardButton = true,
+            isIncognito = false,
+            hasPriorityBanner = false,
+            isClipboardBannerActive = false,
+            wantAskAi = true,
+            wantJevCopilot = true,
+            wantVoicePen = true,
+            lang = AppLang.EN
+        )
+        assertTrue(enPlan336.showRightAskAi)
+        assertTrue(enPlan336.showRightJevCopilot)
+        assertTrue(enPlan336.showRightVoicePen)
+
+        // Ultra-narrow split-screen (270dp) still gracefully drops Ask AI first without overlapping left icons
+        val enPlan270 = com.typefree.ime.ime.chrome.TopBarSlotPolicy.resolveQwertyBarLayout(
+            availableWidthDp = 270f,
             showUndoButton = false,
             showClipboardButton = true,
             isIncognito = false,
@@ -522,6 +539,41 @@ class GlobalEnglishAndI18nTest {
             wantVoicePen = true,
             lang = AppLang.EN
         )
-        assertFalse(enPlan360.showRightAskAi)
+        assertFalse(enPlan270.showRightAskAi)
+
+        // Selected text triggers Ask AI pill even when currentEditorText has not been synced yet
+        val selectedAskVisible = com.typefree.ime.ime.chrome.TopBarSlotPolicy.shouldShowTopBarAskAiPill(
+            settings = AppSettings(equalEqualAskAiEnabled = true),
+            activeTab = com.typefree.ime.ime.KeyboardTabMode.QWERTY,
+            isComposing = false,
+            isToolPanelOpen = false,
+            isClipboardOpen = false,
+            currentInputType = InputType.TYPE_CLASS_TEXT,
+            currentEditorText = "",
+            currentImeOptions = EditorInfo.IME_ACTION_SEARCH,
+            rawSelectedText = "RustDesk"
+        )
+        assertTrue(selectedAskVisible)
+
+        // English Jev prompt keeps <relationship_context> and closing <jev> instructions 100% free of Chinese leaks
+        val memPayload = com.typefree.ime.ime.jev.memory.JevMemoryPromptPayload(
+            relationLabel = com.typefree.ime.ime.jev.memory.GroupSceneTag.TECH_INTEREST_GROUP.shortLabel,
+            guideline = com.typefree.ime.ime.jev.memory.GroupSceneTag.TECH_INTEREST_GROUP.guideline,
+            externalBoundaryHint = "含[外部]协作标识，需注意跨组织说话口径",
+            deterministicStyleRules = listOf(com.typefree.ime.ime.jev.memory.StyleFeatureKey.DROP_TRAILING_PERIOD.defaultRuleText),
+            includesLengthCapRule = true,
+            axisTendencyHint = "用户在当前语境下常偏爱「同频升维」方向，可在保持三策差异化前提下适度贴合语感"
+        )
+        val (_, jevEnWithMem) = PromptBuilder.buildJevCopilotPrompts(
+            domainProfile = JevDomainProfile.IM_CHAT,
+            targetAppName = "WeChat",
+            chatContextMessages = listOf("[MemberA]: Switching Stage Manager drops frames"),
+            memoryPayload = memPayload,
+            isChineseLocale = false
+        )
+        assertTrue(jevEnWithMem.contains("CRITICAL LANGUAGE RULE: Active system language is English"))
+        assertTrue(jevEnWithMem.contains("Relationship: Tech / Hobby Group"))
+        assertFalse(jevEnWithMem.contains("语感倾向"))
+        assertFalse(jevEnWithMem.contains("关系："))
     }
 }

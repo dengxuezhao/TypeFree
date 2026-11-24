@@ -66,6 +66,7 @@ import com.typefree.ime.bubble.ChatSpeaker
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
 import com.typefree.ime.i18n.LocalAppLanguage
 import com.typefree.ime.i18n.tr
 import com.typefree.ime.ime.ImeUiAction
@@ -222,9 +223,9 @@ fun JevCopilotPanel(
                 val relationLabel = when {
                     uiState.jevMemoryBypassedByPrivacy -> tr("🔒无痕", "🔒Incog", "🔒無痕")
                     captured.topology.isGroupChat && uiState.jevGroupSceneTag != GroupSceneTag.UNSET ->
-                        "${uiState.jevGroupSceneTag.badgeEmoji}${uiState.jevGroupSceneTag.shortLabel.take(2)}"
+                        "${uiState.jevGroupSceneTag.badgeEmoji}${uiState.jevGroupSceneTag.compactBadgeFor(appLang)}"
                     !captured.topology.isGroupChat && uiState.jevPrivateRelationTag != PrivateRelationTag.UNSET ->
-                        "${uiState.jevPrivateRelationTag.badgeEmoji}${uiState.jevPrivateRelationTag.shortLabel.take(2)}"
+                        "${uiState.jevPrivateRelationTag.badgeEmoji}${uiState.jevPrivateRelationTag.compactBadgeFor(appLang)}"
                     else -> "${tr("⚡关系", "⚡Role", "⚡關係")}${if (uiState.isJevRelationOverlayOpen) "▴" else "▾"}"
                 }
                 val relationHasSelection = uiState.isJevRelationOverlayOpen ||
@@ -756,7 +757,7 @@ private fun JevPlaceholderCard(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = defaultTags.getOrElse(index) { "策略 ${index + 1}" },
+                text = defaultTags.getOrElse(index) { tr("策略 ${index + 1}", "Option ${index + 1}", "策略 ${index + 1}") },
                 style = TextStyle(
                     color = palette.keyTextMuted,
                     fontSize = 9.5.sp,
@@ -769,7 +770,11 @@ private fun JevPlaceholderCard(
             )
         }
         Text(
-            text = if (isLoading) defaultHints.getOrElse(index) { "推演中…" } else "正在读取上文并推演策略…",
+            text = if (isLoading) {
+                defaultHints.getOrElse(index) { tr("推演中…", "Drafting…", "推演中…") }
+            } else {
+                tr("正在读取上文并推演策略…", "Reading context & drafting options…", "正在讀取上文並推演策略…")
+            },
             style = TextStyle(
                 color = palette.keyTextMuted,
                 fontSize = 11.sp,
@@ -785,26 +790,47 @@ private fun JevPlaceholderCard(
 
 internal fun buildJevInspectorHeaderSummary(
     captured: CapturedChatContext,
-    usedVision: Boolean = false
+    usedVision: Boolean = false,
+    lang: AppLang = AppLang.ZH_CN
 ): String {
+    if (lang == AppLang.EN) {
+        val chatKind = if (captured.topology.isGroupChat) {
+            if (captured.topology.groupMemberCount > 0) {
+                "Group (${captured.topology.groupMemberCount})"
+            } else {
+                "Group Chat"
+            }
+        } else {
+            "1v1 Direct"
+        }
+        val roleEn = when (captured.topology.roleMode) {
+            com.typefree.ime.ime.jev.JevRoleMode.PRIVATE_1V1 -> "Direct"
+            com.typefree.ime.ime.jev.JevRoleMode.GROUP_INVOLVED_PARTY -> "Involved"
+            com.typefree.ime.ime.jev.JevRoleMode.GROUP_BYSTANDER -> "Bystander"
+        }
+        val base = "$chatKind · $roleEn · ${captured.messageCount} msgs"
+        val redactionPart = if (captured.redactionCount > 0) " · 🛡${captured.redactionCount} redacted" else ""
+        val visionPart = if (usedVision || captured.hasScreenshot) " · Vision" else ""
+        return base + redactionPart + visionPart
+    }
     val chatKind = if (captured.topology.isGroupChat) {
         if (captured.topology.groupMemberCount > 0) {
-            "多人聊天群(${captured.topology.groupMemberCount}人)"
+            AppStrings.pick(lang, "多人聊天群(${captured.topology.groupMemberCount}人)", "Group (${captured.topology.groupMemberCount})", "多人聊天群(${captured.topology.groupMemberCount}人)")
         } else {
-            "多人聊天群"
+            AppStrings.pick(lang, "多人聊天群", "Group Chat", "多人聊天群")
         }
     } else {
-        "双人私聊"
+        AppStrings.pick(lang, "双人私聊", "1v1 Direct", "雙人私聊")
     }
     val roleLabel = captured.topology.roleMode.label
     val base = "$chatKind · $roleLabel · 共${captured.messageCount}条"
     val redactionPart = if (captured.redactionCount > 0) {
-        " · 🛡脱敏${captured.redactionCount}处"
+        AppStrings.pick(lang, " · 🛡脱敏${captured.redactionCount}处", " · 🛡${captured.redactionCount}", " · 🛡去識別${captured.redactionCount}處")
     } else {
         ""
     }
     val visionPart = if (usedVision || captured.hasScreenshot) {
-        " · 含视觉"
+        AppStrings.pick(lang, " · 含视觉", " · Vision", " · 含視覺")
     } else {
         ""
     }
@@ -820,8 +846,9 @@ private fun JevContextInspectorCard(
     onTriggerFullScreenPeek: () -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
-    val summaryText = remember(captured, usedVision) {
-        buildJevInspectorHeaderSummary(captured = captured, usedVision = usedVision)
+    val appLang = LocalAppLanguage.current
+    val summaryText = remember(captured, usedVision, appLang) {
+        buildJevInspectorHeaderSummary(captured = captured, usedVision = usedVision, lang = appLang)
     }
 
     Column(
@@ -864,7 +891,7 @@ private fun JevContextInspectorCard(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "收起 ▴",
+                    text = tr("收起 ▴", "Hide ▴", "收合 ▴"),
                     style = TextStyle(
                         color = palette.keyTextMuted,
                         fontSize = 9.sp,
@@ -894,7 +921,11 @@ private fun JevContextInspectorCard(
                     contentAlignment = Alignment.CenterStart
                 ) {
                     Text(
-                        text = "当前未提取到聊天文本，可点击右下角「⛶ 全屏补抓更多上文」重新取景识别",
+                        text = tr(
+                            "当前未提取到聊天文本，可点击右下角「⛶ 全屏补抓更多上文」重新取景识别",
+                            "No chat messages captured yet — tap \"⛶ Full-Screen Scan\" below to re-scan the screen",
+                            "目前未擷取到對話文字，可點擊右下角「⛶ 全螢幕補抓更多上文」重新取景識別"
+                        ),
                         style = TextStyle(
                             color = palette.keyTextMuted,
                             fontSize = 10.sp,
@@ -910,6 +941,8 @@ private fun JevContextInspectorCard(
                     val isSelf = msg.speaker == ChatSpeaker.SELF
                     val roleBadgeText = if (msg.speaker == ChatSpeaker.OTHER && msg.senderAlias.isNotBlank()) {
                         "[${msg.senderAlias}]"
+                    } else if (appLang == AppLang.EN) {
+                        if (isSelf) "[Me]" else "[Them]"
                     } else {
                         msg.speaker.tag
                     }
@@ -968,7 +1001,7 @@ private fun JevContextInspectorCard(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "仅驻留内存 · 关面板即焚",
+                text = tr("仅驻留内存 · 关面板即焚", "RAM-only · Cleared on close", "僅駐留記憶體 · 關面板即焚"),
                 style = TextStyle(
                     color = palette.keyTextMuted,
                     fontSize = 9.sp,
@@ -992,7 +1025,7 @@ private fun JevContextInspectorCard(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "⛶ 全屏补抓更多上文",
+                    text = tr("⛶ 全屏补抓更多上文", "⛶ Full-Screen Scan", "⛶ 全螢幕補抓更多上文"),
                     style = TextStyle(
                         color = palette.primaryMicSolid,
                         fontSize = 9.5.sp,

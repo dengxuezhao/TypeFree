@@ -523,6 +523,7 @@ data class AppSettings(
         thinkingMode = ThinkingMode.AUTO
     ),
     val chatContextSendScreenshot: Boolean = true, // 读屏时允许附带脱敏视口截图（关闭或遇高危机密时仅传脱敏纯文本）
+    val jevLanguageMode: String = "system", // "system" (分析与策略标签跟随系统/界面，回复匹配聊天) | "chat" (全跟随聊天语境) | "strict_system" (分析与回复全跟随系统/界面)
     val jevMemoryEnabled: Boolean = true, // 启用「✦ Jev 军师」端侧关系记忆与语体习惯自学习
     val jevMaskTitleHintEnabled: Boolean = true, // 本机设置页展示脱敏会话缩写提示（如 大*群）
     val manualIncognitoMode: Boolean = false, // 手动无痕模式开关（开启后强制阻断个人词库/预测/剪贴板/历史音频/AI读屏）

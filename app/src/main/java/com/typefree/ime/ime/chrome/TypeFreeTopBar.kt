@@ -106,7 +106,7 @@ object TopBarSlotPolicy {
         lang: AppLang = AppLang.ZH_CN
     ): TopBarLeftSlotState {
         val penLabel = if (hasActiveSelection) {
-            AppStrings.pick(lang, "改写", "Rewrite", "改寫")
+            AppStrings.pick(lang, "改写", "Edit", "改寫")
         } else {
             AppStrings.pick(lang, "帮写", "Write", "幫寫")
         }
@@ -154,20 +154,24 @@ object TopBarSlotPolicy {
         isClipboardOpen: Boolean,
         currentInputType: Int,
         currentEditorText: String,
-        currentImeOptions: Int = 0
+        currentImeOptions: Int = 0,
+        rawSelectedText: String = ""
     ): Boolean {
         if (!settings.equalEqualAskAiEnabled) return false
         if (activeTab != KeyboardTabMode.QWERTY || isComposing || isToolPanelOpen || isClipboardOpen) return false
         if (ImeLogic.isPasswordEditorInputType(currentInputType)) return false
-        val imeAction = currentImeOptions and EditorInfo.IME_MASK_ACTION
-        if (imeAction == EditorInfo.IME_ACTION_SEARCH || imeAction == EditorInfo.IME_ACTION_GO) {
-            return false
-        }
         val inputClass = currentInputType and android.text.InputType.TYPE_MASK_CLASS
         if (inputClass == android.text.InputType.TYPE_CLASS_NUMBER ||
             inputClass == android.text.InputType.TYPE_CLASS_PHONE ||
             inputClass == android.text.InputType.TYPE_CLASS_DATETIME
         ) {
+            return false
+        }
+        if (rawSelectedText.trim().isNotEmpty()) {
+            return true
+        }
+        val imeAction = currentImeOptions and EditorInfo.IME_MASK_ACTION
+        if (imeAction == EditorInfo.IME_ACTION_SEARCH || imeAction == EditorInfo.IME_ACTION_GO) {
             return false
         }
         return currentEditorText.trim().length >= 2
@@ -194,16 +198,17 @@ object TopBarSlotPolicy {
         // clipboard icon on the left to maximize readable preview space (user can dismiss via ×).
         val effectiveClipboardIcon = showClipboardButton && !isClipboardBannerActive
         val isEn = lang == AppLang.EN
-        val voiceWidth = if (isEn) 76f else WIDTH_VOICE_CAPSULE_DP
-        val penWidth = if (isEn) 68f else WIDTH_RIGHT_PILL_SLOT_DP
-        val jevWidth = if (isEn) 76f else WIDTH_RIGHT_PILL_SLOT_DP
-        val askAiWidth = if (isEn) 70f else WIDTH_RIGHT_PILL_SLOT_DP
+        val voiceWidth = if (isEn) 58f else 58f
+        val penWidth = if (isEn) 56f else 54f
+        val jevWidth = if (isEn) 65f else 54f
+        val askAiWidth = if (isEn) 60f else 56f
+        val smallIconSlot = 30f
 
         val leftFixedWidth = WIDTH_TOOL_BUTTON_DP +
-            (if (showUndoButton) WIDTH_SMALL_ICON_SLOT_DP else 0f) +
-            (if (effectiveClipboardIcon) WIDTH_SMALL_ICON_SLOT_DP else 0f) +
+            (if (showUndoButton) smallIconSlot else 0f) +
+            (if (effectiveClipboardIcon) smallIconSlot else 0f) +
             (if (isIncognito) WIDTH_INCOGNITO_BADGE_DP else 0f) +
-            WIDTH_GAP_BETWEEN_CLUSTERS_DP + 8f
+            WIDTH_GAP_BETWEEN_CLUSTERS_DP
 
         if (hasPriorityBanner) {
             val remainingForBanner = availableWidthDp - leftFixedWidth - voiceWidth
@@ -358,7 +363,8 @@ fun TypeFreeTopBar(
             isClipboardOpen = uiState.isClipboardOpen,
             currentInputType = uiState.currentInputType,
             currentEditorText = uiState.currentEditorText,
-            currentImeOptions = uiState.currentImeOptions
+            currentImeOptions = uiState.currentImeOptions,
+            rawSelectedText = uiState.rawSelectedText
         )
     } else {
         false
@@ -733,10 +739,13 @@ fun TypeFreeTopBar(
         if (isQwertyRightCluster && qwertyPlan != null) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 if (qwertyPlan.showRightAskAi) {
-                    TopBarAskAiPill(onClick = onOpenAskAiCard)
+                    TopBarAskAiPill(
+                        isSelectionActive = uiState.rawSelectedText.isNotBlank(),
+                        onClick = onOpenAskAiCard
+                    )
                 }
                 if (qwertyPlan.showRightJevCopilot) {
                     TopBarJevCopilotPill(onClick = onOpenJevCopilot)
@@ -836,6 +845,7 @@ private fun TopBarVoicePenPill(
     onClick: () -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val isEn = LocalAppLanguage.current == AppLang.EN
     Row(
         modifier = Modifier
             .height(28.dp)
@@ -847,20 +857,20 @@ private fun TopBarVoicePenPill(
                 shape = RoundedCornerShape(14.dp)
             )
             .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = if (isEn) 6.5.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp)
+        horizontalArrangement = Arrangement.spacedBy(if (isEn) 2.5.dp else 3.dp)
     ) {
         Icon(
             imageVector = TypeFreeIcons.VoicePen,
             contentDescription = label,
             tint = if (isHighlighted) palette.onPrimaryMic else palette.keyTextPrimary,
-            modifier = Modifier.size(11.5.dp)
+            modifier = Modifier.size(11.dp)
         )
         Text(
             text = label,
             color = if (isHighlighted) palette.onPrimaryMic else palette.keyTextPrimary,
-            fontSize = 11.sp,
+            fontSize = if (isEn) 10.5.sp else 11.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1
         )
@@ -871,35 +881,37 @@ private val AskAiPillIndigo = Color(0xFF6366F1)
 
 @Composable
 fun TopBarAskAiPill(
+    isSelectionActive: Boolean = false,
     onClick: () -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val isEn = LocalAppLanguage.current == AppLang.EN
     val fgColor = if (palette.isDark) Color(0xFFA5B4FC) else Color(0xFF4F46E5)
     Row(
         modifier = Modifier
             .height(28.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(AskAiPillIndigo.copy(alpha = if (palette.isDark) 0.14f else 0.10f))
+            .background(AskAiPillIndigo.copy(alpha = if (isSelectionActive) 0.22f else if (palette.isDark) 0.14f else 0.10f))
             .border(
-                width = 1.dp,
-                color = AskAiPillIndigo.copy(alpha = if (palette.isDark) 0.38f else 0.35f),
+                width = if (isSelectionActive) 1.25.dp else 1.dp,
+                color = AskAiPillIndigo.copy(alpha = if (isSelectionActive) 0.65f else if (palette.isDark) 0.38f else 0.35f),
                 shape = RoundedCornerShape(14.dp)
             )
             .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = if (isEn) 6.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp)
+        horizontalArrangement = Arrangement.spacedBy(if (isEn) 2.5.dp else 3.dp)
     ) {
         Icon(
             imageVector = TypeFreeIcons.Search,
             contentDescription = tr("问AI", "Ask AI", "問AI"),
             tint = fgColor,
-            modifier = Modifier.size(11.dp)
+            modifier = Modifier.size(10.5.dp)
         )
         Text(
             text = tr("问AI", "Ask AI", "問AI"),
             color = fgColor,
-            fontSize = 11.sp,
+            fontSize = if (isEn) 10.5.sp else 11.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1
         )
@@ -911,6 +923,7 @@ private fun TopBarJevCopilotPill(
     onClick: () -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val isEn = LocalAppLanguage.current == AppLang.EN
     Row(
         modifier = Modifier
             .height(28.dp)
@@ -922,20 +935,20 @@ private fun TopBarJevCopilotPill(
                 shape = RoundedCornerShape(14.dp)
             )
             .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = if (isEn) 6.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp)
+        horizontalArrangement = Arrangement.spacedBy(if (isEn) 2.5.dp else 3.dp)
     ) {
         Icon(
             imageVector = TypeFreeIcons.CopilotStar,
             contentDescription = tr("军师", "Copilot", "軍師"),
             tint = palette.keyTextPrimary,
-            modifier = Modifier.size(11.dp)
+            modifier = Modifier.size(10.5.dp)
         )
         Text(
             text = tr("军师", "Copilot", "軍師"),
             color = palette.keyTextPrimary,
-            fontSize = 11.sp,
+            fontSize = if (isEn) 10.5.sp else 11.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1
         )
@@ -1001,20 +1014,20 @@ private fun QwertyTopBarHoldVoiceCapsule(
                     }
                 }
             }
-            .padding(horizontal = 9.dp),
+            .padding(horizontal = if (LocalAppLanguage.current == AppLang.EN) 7.dp else 8.5.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
     ) {
         Icon(
             imageVector = TypeFreeIcons.Mic,
             contentDescription = tr("轻点切语音 / 按住说上屏", "Tap for Voice / Hold to dictate", "輕點切語音 / 按住說上屏"),
             tint = fgColor,
-            modifier = Modifier.size(12.dp)
+            modifier = Modifier.size(11.5.dp)
         )
         Text(
             text = if (activeHighlight) tr("松手上屏", "Release", "放開上屏") else tr("语音", "Voice", "語音"),
             color = fgColor,
-            fontSize = 11.sp,
+            fontSize = if (LocalAppLanguage.current == AppLang.EN) 10.5.sp else 11.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1
         )

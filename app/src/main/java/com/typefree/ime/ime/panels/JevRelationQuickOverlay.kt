@@ -28,6 +28,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.ime.data.AppSettings
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ime.ImeUiAction
 import com.typefree.ime.ime.ImeUiState
 import com.typefree.ime.ime.jev.memory.GroupSceneTag
@@ -35,12 +38,18 @@ import com.typefree.ime.ime.jev.memory.PrivateRelationTag
 import com.typefree.ime.ime.jev.memory.TopologyKind
 import com.typefree.ime.ui.theme.LocalTypeFreeKeyboardPalette
 
+private data class QuickNoteChipItem(
+    val zhCn: String,
+    val en: String,
+    val zhTw: String
+)
+
 private val QUICK_NOTE_CHIPS = listOf(
-    "禁承诺排期",
-    "先给结论",
-    "多给台阶",
-    "不发语音",
-    "只聊正事"
+    QuickNoteChipItem("禁承诺排期", "No deadline promises", "禁承諾排期"),
+    QuickNoteChipItem("先给结论", "Lead with conclusion", "先給結論"),
+    QuickNoteChipItem("多给台阶", "Save face / polite buffer", "多給台階"),
+    QuickNoteChipItem("不发语音", "Text only, no voice", "不發語音"),
+    QuickNoteChipItem("只聊正事", "Strictly business", "只聊正事")
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -52,33 +61,34 @@ fun JevRelationQuickOverlay(
     onAction: (ImeUiAction) -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val appLang = LocalAppLanguage.current
     val isGroupChat = uiState.capturedChatContext.topology.isGroupChat
 
     val statusText: String
     val statusColor: Color
     when {
         !settings.jevMemoryEnabled -> {
-            statusText = "记忆已关闭·仅本轮"
+            statusText = tr("记忆已关闭·仅本轮", "Memory Off · Turn Only", "記憶已關閉·僅本輪")
             statusColor = palette.keyTextMuted
         }
         uiState.jevMemoryBypassedByPrivacy -> {
-            statusText = "隐私保护不落盘"
+            statusText = tr("隐私保护不落盘", "Privacy · No Disk Save", "隱私保護不落盤")
             statusColor = palette.keyTextMuted
         }
         uiState.jevIsEphemeralSession -> {
-            statusText = "泛化标题·仅本轮生效"
+            statusText = tr("泛化标题·仅本轮生效", "Generic Title · Turn Only", "泛化標題·僅本輪生效")
             statusColor = if (palette.isDark) Color(0xFFFBBF24) else Color(0xFFB45309)
         }
         !uiState.jevAutoRelinkedNotice.isNullOrBlank() -> {
-            statusText = "自动续接记忆"
+            statusText = tr("自动续接记忆", "Memory Relinked", "自動續接記憶")
             statusColor = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
         }
         uiState.jevActiveSessionUid != null -> {
-            statusText = "已记住当前会话"
+            statusText = tr("已记住当前会话", "Saved Locally", "已記住目前對話")
             statusColor = palette.primaryMicSolid
         }
         else -> {
-            statusText = "选择后即本地记住"
+            statusText = tr("选择后即本地记住", "Tap to Remember Locally", "選擇後即本機記住")
             statusColor = palette.keyTextMuted
         }
     }
@@ -104,7 +114,7 @@ fun JevRelationQuickOverlay(
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(
-                    text = "⚡ 会话关系与备忘",
+                    text = tr("⚡ 会话关系与备忘", "⚡ Role & Context Note", "⚡ 對話關係與備忘"),
                     style = TextStyle(
                         color = palette.keyTextPrimary,
                         fontSize = 11.5.sp,
@@ -140,7 +150,7 @@ fun JevRelationQuickOverlay(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "收起 ▴",
+                    text = tr("收起 ▴", "Hide ▴", "收合 ▴"),
                     style = TextStyle(
                         color = palette.keyTextPrimary,
                         fontSize = 9.5.sp,
@@ -155,7 +165,11 @@ fun JevRelationQuickOverlay(
 
         // Section 1: 1-tap Relation / Group Scene Chips
         Text(
-            text = if (isGroupChat) "群聊场景定位（轻点切换并重算）：" else "1v1 关系定位（轻点切换并重算）：",
+            text = if (isGroupChat) {
+                tr("群聊场景定位（轻点切换并重算）：", "Group Scene (tap to switch & refresh):", "群聊場景定位（輕點切換並重算）：")
+            } else {
+                tr("1v1 关系定位（轻点切换并重算）：", "1v1 Relationship (tap to switch & refresh):", "1v1 關係定位（輕點切換並重算）：")
+            },
             style = TextStyle(
                 color = palette.keyTextMuted,
                 fontSize = 10.sp,
@@ -180,9 +194,9 @@ fun JevRelationQuickOverlay(
                 scenes.forEach { scene ->
                     val selected = uiState.jevGroupSceneTag == scene && scene != GroupSceneTag.UNSET
                     val label = if (scene == GroupSceneTag.UNSET) {
-                        "清除定位"
+                        tr("清除定位", "Reset", "清除定位")
                     } else {
-                        "${scene.badgeEmoji} ${scene.shortLabel}"
+                        "${scene.badgeEmoji} ${scene.shortLabelFor(appLang)}"
                     }
                     OverlayActionChip(
                         text = label,
@@ -204,9 +218,9 @@ fun JevRelationQuickOverlay(
                 tags.forEach { tag ->
                     val selected = uiState.jevPrivateRelationTag == tag && tag != PrivateRelationTag.UNSET
                     val label = if (tag == PrivateRelationTag.UNSET) {
-                        "清除定位"
+                        tr("清除定位", "Reset", "清除定位")
                     } else {
-                        "${tag.badgeEmoji} ${tag.shortLabel}"
+                        "${tag.badgeEmoji} ${tag.shortLabelFor(appLang)}"
                     }
                     OverlayActionChip(
                         text = label,
@@ -225,7 +239,7 @@ fun JevRelationQuickOverlay(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "关系备忘（≤40字端侧自动脱敏）：",
+                text = tr("关系备忘（≤40字端侧自动脱敏）：", "Context Note (redacted locally):", "關係備忘（≤40字端側自動去識別）："),
                 style = TextStyle(
                     color = palette.keyTextMuted,
                     fontSize = 10.sp,
@@ -235,14 +249,14 @@ fun JevRelationQuickOverlay(
             )
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 OverlayActionChip(
-                    text = "📋 粘贴",
+                    text = tr("📋 粘贴", "📋 Paste", "📋 貼上"),
                     selected = false,
                     enabled = !isBusy,
                     onClick = { onAction(ImeUiAction.PasteJevNoteFromClipboard) }
                 )
                 if (uiState.jevCustomRelationNote.isNotBlank()) {
                     OverlayActionChip(
-                        text = "清空",
+                        text = tr("清空", "Clear", "清空"),
                         selected = false,
                         enabled = !isBusy,
                         onClick = { onAction(ImeUiAction.ClearJevRelationNote) }
@@ -260,7 +274,11 @@ fun JevRelationQuickOverlay(
         ) {
             Text(
                 text = uiState.jevCustomRelationNote.ifBlank {
-                    "可按住底部麦克风口述备忘，或轻点下方快捷标签追加"
+                    tr(
+                        "可按住底部麦克风口述备忘，或轻点下方快捷标签追加",
+                        "Hold bottom mic to dictate a note, or tap a quick chip below",
+                        "可按住底部麥克風口述備忘，或輕點下方快捷標籤追加"
+                    )
                 },
                 style = TextStyle(
                     color = if (uiState.jevCustomRelationNote.isNotBlank()) {
@@ -284,13 +302,15 @@ fun JevRelationQuickOverlay(
             horizontalArrangement = Arrangement.spacedBy(5.dp),
             verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-            QUICK_NOTE_CHIPS.forEach { chip ->
-                val alreadyIncluded = uiState.jevCustomRelationNote.contains(chip)
+            QUICK_NOTE_CHIPS.forEach { item ->
+                val chipText = AppStrings.pick(appLang, item.zhCn, item.en, item.zhTw)
+                val alreadyIncluded = uiState.jevCustomRelationNote.contains(chipText) ||
+                    uiState.jevCustomRelationNote.contains(item.zhCn)
                 OverlayActionChip(
-                    text = "+ $chip",
+                    text = "+ $chipText",
                     selected = alreadyIncluded,
                     enabled = !isBusy,
-                    onClick = { onAction(ImeUiAction.AppendJevNoteQuickChip(chip)) }
+                    onClick = { onAction(ImeUiAction.AppendJevNoteQuickChip(chipText)) }
                 )
             }
         }
@@ -299,7 +319,7 @@ fun JevRelationQuickOverlay(
         if (uiState.jevRecentReusableSessions.isNotEmpty() && !uiState.jevMemoryBypassedByPrivacy) {
             Spacer(modifier = Modifier.height(1.dp))
             Text(
-                text = "对方刚改过备注？可一键关联近期记忆：",
+                text = tr("对方刚改过备注？可一键关联近期记忆：", "Contact renamed? Relink to recent memory:", "對方剛改過備註？可一鍵關聯近期記憶："),
                 style = TextStyle(
                     color = palette.keyTextMuted,
                     fontSize = 10.sp,
@@ -314,11 +334,11 @@ fun JevRelationQuickOverlay(
             ) {
                 uiState.jevRecentReusableSessions.take(3).forEach { sess ->
                     val roleBadge = if (sess.topologyKind == TopologyKind.GRP) {
-                        "${sess.groupTag.badgeEmoji}${sess.groupTag.shortLabel}"
+                        "${sess.groupTag.badgeEmoji}${sess.groupTag.shortLabelFor(appLang)}"
                     } else {
-                        "${sess.privateTag.badgeEmoji}${sess.privateTag.shortLabel}"
+                        "${sess.privateTag.badgeEmoji}${sess.privateTag.shortLabelFor(appLang)}"
                     }
-                    val hintLabel = sess.maskedTitleHint ?: "近期会话"
+                    val hintLabel = sess.maskedTitleHint ?: tr("近期会话", "Recent Chat", "近期對話")
                     OverlayActionChip(
                         text = "$hintLabel · $roleBadge",
                         selected = false,

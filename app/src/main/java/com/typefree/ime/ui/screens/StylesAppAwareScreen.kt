@@ -81,6 +81,10 @@ import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppToneRule
 import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.ToneStyle
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.i18n.LocalAppLanguage
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ui.components.TypeFreeIcons
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -94,6 +98,44 @@ private val PRESET_EMOJIS = listOf(
     "✨", "💬", "💼", "📝", "💻", "🌐", "🎯", "🔥", "📚", "🎙️", "🤖", "💡"
 )
 
+private val FACTORY_STYLES_BY_ID: Map<String, ToneStyle> by lazy {
+    DefaultPresets.defaultStyles().associateBy { it.id }
+}
+
+private fun localizedStyleName(style: ToneStyle, lang: AppLang): String {
+    if (!style.isBuiltIn) return style.name
+    val factory = FACTORY_STYLES_BY_ID[style.id]
+    if (factory != null && style.name != factory.name) return style.name
+    return AppStrings.toneStyleName(style, lang)
+}
+
+private fun localizedStyleSummary(style: ToneStyle, lang: AppLang): String {
+    if (!style.isBuiltIn) {
+        return if (style.summary == "自定义场景润色风格") {
+            AppStrings.pick(lang, "自定义场景润色风格", "Custom tone polishing style", "自訂場景潤飾風格")
+        } else {
+            style.summary
+        }
+    }
+    val factory = FACTORY_STYLES_BY_ID[style.id]
+    if (factory != null && style.summary != factory.summary) return style.summary
+    return AppStrings.toneStyleSummary(style, lang)
+}
+
+private fun localizedRuleAppName(rule: AppToneRule, lang: AppLang): String {
+    return when (rule.appName.trim()) {
+        "微信" -> AppStrings.pick(lang, "微信", "WeChat", "微信")
+        "飞书" -> AppStrings.pick(lang, "飞书", "Feishu / Lark", "飛書")
+        "钉钉" -> AppStrings.pick(lang, "钉钉", "DingTalk", "釘釘")
+        "企业微信" -> AppStrings.pick(lang, "企业微信", "WeCom", "企業微信")
+        "小红书" -> AppStrings.pick(lang, "小红书", "Xiaohongshu", "小紅書")
+        "系统短信" -> AppStrings.pick(lang, "系统短信", "Messages (SMS)", "系統簡訊")
+        "网易邮箱大师" -> AppStrings.pick(lang, "网易邮箱大师", "NetEase Mail", "網易郵箱大師")
+        "QQ邮箱" -> AppStrings.pick(lang, "QQ邮箱", "QQ Mail", "QQ信箱")
+        else -> rule.appName
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun StylesAppAwareScreen(
@@ -104,6 +146,7 @@ fun StylesAppAwareScreen(
     headerSlot: (@Composable () -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val appLang = LocalAppLanguage.current
     val settings by repository.settings.collectAsState()
     val styles = settings.styles.ifEmpty { DefaultPresets.defaultStyles() }
     val appRules = settings.appRules
@@ -124,13 +167,14 @@ fun StylesAppAwareScreen(
     var showRestoreRulesConfirm by remember { mutableStateOf(false) }
     var showAddAppRuleDialog by remember { mutableStateOf(false) }
 
-    val filteredRules = remember(appRules, ruleSearchQuery) {
+    val filteredRules = remember(appRules, ruleSearchQuery, appLang) {
         val q = ruleSearchQuery.trim()
         if (q.isEmpty()) {
             appRules
         } else {
             appRules.filter {
                 it.appName.contains(q, ignoreCase = true) ||
+                    localizedRuleAppName(it, appLang).contains(q, ignoreCase = true) ||
                     it.packageName.contains(q, ignoreCase = true)
             }
         }
@@ -157,18 +201,24 @@ fun StylesAppAwareScreen(
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                            contentDescription = "返回",
+                            contentDescription = tr("返回", "Back", "返回"),
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(modifier = Modifier.width(2.dp))
-                        Text("返回 AI 助手", fontWeight = FontWeight.SemiBold)
+                        Text(tr("返回 AI 助手", "Back", "返回 AI 助手"), fontWeight = FontWeight.SemiBold, maxLines = 1)
                     }
                     Text(
-                        text = if (effectiveSubTab == 0) "语气风格库 (${styles.size})" else "应用自动匹配规则 (${appRules.size})",
+                        text = if (effectiveSubTab == 0) {
+                            tr("语气风格库 (${styles.size})", "Tone Styles (${styles.size})", "語氣風格庫 (${styles.size})")
+                        } else {
+                            tr("应用自动匹配规则 (${appRules.size})", "App Rules (${appRules.size})", "應用匹配規則 (${appRules.size})")
+                        },
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(modifier = Modifier.width(72.dp))
+                    Spacer(modifier = Modifier.width(56.dp))
                 }
             }
         }
@@ -194,13 +244,17 @@ fun StylesAppAwareScreen(
                             modifier = Modifier.size(24.dp)
                         )
                         Text(
-                            text = "场景风格与应用感知",
+                            text = tr("场景风格与应用感知", "Tone Styles & App-Awareness", "場景風格與應用感知"),
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold
                         )
                     }
                     Text(
-                        text = "自动识别宿主应用切换得体语气，亦可自由定制专属 System Prompt",
+                        text = tr(
+                            "自动识别宿主应用切换得体语气，亦可自由定制专属 System Prompt",
+                            "Automatically switch tone by active app, or customize your own System Prompts",
+                            "自動識別宿主應用程式切換得體語氣，亦可自由客製專屬 System Prompt"
+                        ),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -226,7 +280,7 @@ fun StylesAppAwareScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = "默认模式选择",
+                        text = tr("默认模式选择", "Default Mode", "預設模式選擇"),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -246,7 +300,7 @@ fun StylesAppAwareScreen(
                                         )
                                     }
                                 },
-                                label = { Text("🧭 自动匹配宿主应用") },
+                                label = { Text(tr("🧭 自动匹配宿主应用", "🧭 Auto-Match Active App", "🧭 自動匹配宿主應用")) },
                                 leadingIcon = if (isAutoMatched) {
                                     {
                                         Icon(
@@ -261,6 +315,7 @@ fun StylesAppAwareScreen(
 
                         items(styles, key = { "lock_${it.id}" }) { style ->
                             val isLocked = settings.selectedManualStyleId == style.id
+                            val dispName = localizedStyleName(style, appLang)
                             FilterChip(
                                 selected = isLocked,
                                 onClick = {
@@ -268,7 +323,15 @@ fun StylesAppAwareScreen(
                                         it.copy(selectedManualStyleId = style.id)
                                     }
                                 },
-                                label = { Text("${style.emoji} 锁定：${style.name}") },
+                                label = {
+                                    Text(
+                                        tr(
+                                            "${style.emoji} 锁定：$dispName",
+                                            "${style.emoji} Lock: $dispName",
+                                            "${style.emoji} 鎖定：$dispName"
+                                        )
+                                    )
+                                },
                                 leadingIcon = if (isLocked) {
                                     {
                                         Icon(
@@ -283,12 +346,26 @@ fun StylesAppAwareScreen(
                     }
 
                     val statusSummary = when {
-                        lockedStyle != null ->
-                            "已全局锁定「${lockedStyle.emoji} ${lockedStyle.name}」，所有应用固定使用该风格"
+                        lockedStyle != null -> {
+                            val lockedName = localizedStyleName(lockedStyle, appLang)
+                            tr(
+                                "已全局锁定「${lockedStyle.emoji} $lockedName」，所有应用固定使用该风格",
+                                "Globally locked to \"${lockedStyle.emoji} $lockedName\" across all apps",
+                                "已全域鎖定「${lockedStyle.emoji} $lockedName」，所有應用程式固定使用該風格"
+                            )
+                        }
                         settings.appAwareToneEnabled ->
-                            "自动匹配宿主应用（已启用 $enabledRuleCount 条规则，未命中时使用通用风格）"
+                            tr(
+                                "自动匹配宿主应用（已启用 $enabledRuleCount 条规则，未命中时使用通用风格）",
+                                "Auto-matching active app ($enabledRuleCount rules enabled; falls back to Smart Default)",
+                                "自動匹配宿主應用（已啟用 $enabledRuleCount 條規則，未命中時使用通用風格）"
+                            )
                         else ->
-                            "当前统一使用「✨ 通用灵动」风格，点选「自动匹配宿主应用」可恢复自动切换"
+                            tr(
+                                "当前统一使用「✨ 通用灵动」风格，点选「自动匹配宿主应用」可恢复自动切换",
+                                "Using \"✨ Smart Default\" everywhere. Select \"Auto-Match Active App\" to resume auto-switching.",
+                                "目前統一使用「✨ 通用靈動」風格，點選「自動匹配宿主應用」可恢復自動切換"
+                            )
                     }
 
                     Text(
@@ -319,13 +396,13 @@ fun StylesAppAwareScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         SegmentedTabButton(
-                            title = "语气风格库 (${styles.size})",
+                            title = tr("语气风格库 (${styles.size})", "Tone Styles (${styles.size})", "語氣風格庫 (${styles.size})"),
                             selected = selectedSubTab == 0,
                             onClick = { selectedSubTab = 0 },
                             modifier = Modifier.weight(1f)
                         )
                         SegmentedTabButton(
-                            title = "应用自动匹配规则 (${appRules.size})",
+                            title = tr("应用自动匹配规则 (${appRules.size})", "App Rules (${appRules.size})", "應用匹配規則 (${appRules.size})"),
                             selected = selectedSubTab == 1,
                             onClick = { selectedSubTab = 1 },
                             modifier = Modifier.weight(1f)
@@ -357,7 +434,7 @@ fun StylesAppAwareScreen(
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("新建风格", maxLines = 1)
+                        Text(tr("新建风格", "New Style", "新增風格"), maxLines = 1)
                     }
 
                     OutlinedButton(
@@ -370,7 +447,7 @@ fun StylesAppAwareScreen(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("恢复默认风格", maxLines = 1)
+                        Text(tr("恢复默认风格", "Reset Defaults", "恢復預設風格"), maxLines = 1)
                     }
                 }
             }
@@ -418,7 +495,7 @@ fun StylesAppAwareScreen(
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("添加应用规则")
+                            Text(tr("添加应用规则", "Add Rule", "新增應用規則"), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
 
                         OutlinedButton(
@@ -431,7 +508,7 @@ fun StylesAppAwareScreen(
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("恢复默认规则")
+                            Text(tr("恢复默认规则", "Reset Defaults", "恢復預設規則"), maxLines = 1)
                         }
                     }
 
@@ -441,7 +518,15 @@ fun StylesAppAwareScreen(
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         shape = RoundedCornerShape(12.dp),
-                        placeholder = { Text("搜索应用名称或包名（如 微信 / com.tencent.mm）") },
+                        placeholder = {
+                            Text(
+                                tr(
+                                    "搜索应用名称或包名（如 微信 / com.tencent.mm）",
+                                    "Search app name or package (e.g. Slack / com.Slack)",
+                                    "搜尋應用名稱或套件名（如 LINE / jp.naver.line.android）"
+                                )
+                            )
+                        },
                         leadingIcon = {
                             Icon(
                                 imageVector = Icons.Default.Search,
@@ -453,7 +538,7 @@ fun StylesAppAwareScreen(
                                 IconButton(onClick = { ruleSearchQuery = "" }) {
                                     Icon(
                                         imageVector = Icons.Default.Close,
-                                        contentDescription = "清除搜索"
+                                        contentDescription = tr("清除搜索", "Clear search", "清除搜尋")
                                     )
                                 }
                             }
@@ -479,12 +564,20 @@ fun StylesAppAwareScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = if (appRules.isEmpty()) "尚未配置应用自动匹配规则" else "未找到匹配「$ruleSearchQuery」的应用规则",
+                                text = if (appRules.isEmpty()) {
+                                    tr("尚未配置应用自动匹配规则", "No App Matching Rules Configured", "尚未設定應用程式自動匹配規則")
+                                } else {
+                                    tr("未找到匹配「$ruleSearchQuery」的应用规则", "No app rules matching \"$ruleSearchQuery\"", "未找到符合「$ruleSearchQuery」的應用規則")
+                                },
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "点击上方「+ 添加应用规则」可一键扫描本机已安装应用并绑定专属语气",
+                                text = tr(
+                                    "点击上方「+ 添加应用规则」可一键扫描本机已安装应用并绑定专属语气",
+                                    "Tap \"+ Add Rule\" above to scan installed apps and bind a dedicated tone style.",
+                                    "點選上方「+ 新增應用規則」可一鍵掃描本機已安裝應用並綁定專屬語氣"
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -515,12 +608,17 @@ fun StylesAppAwareScreen(
                             }
                         },
                         onDelete = {
+                            val dispName = localizedRuleAppName(rule, appLang).ifBlank { rule.packageName }
                             repository.updateSettings { current ->
                                 current.copy(
                                     appRules = current.appRules.filterNot { it.id == rule.id }
                                 )
                             }
-                            Toast.makeText(context, "已移除「${rule.appName}」规则", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(
+                                context,
+                                AppStrings.pick(appLang, "已移除「$dispName」规则", "Removed rule for \"$dispName\"", "已移除「$dispName」規則"),
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
                     )
                 }
@@ -548,9 +646,14 @@ fun StylesAppAwareScreen(
                     current.copy(styles = updatedList)
                 }
                 showStyleEditor = false
+                val dispSaved = localizedStyleName(savedStyle, appLang)
                 Toast.makeText(
                     context,
-                    if (editingStyle == null) "已创建风格「${savedStyle.name}」" else "已更新风格「${savedStyle.name}」",
+                    if (editingStyle == null) {
+                        AppStrings.pick(appLang, "已创建风格「$dispSaved」", "Created style \"$dispSaved\"", "已建立風格「$dispSaved」")
+                    } else {
+                        AppStrings.pick(appLang, "已更新风格「$dispSaved」", "Updated style \"$dispSaved\"", "已更新風格「$dispSaved」")
+                    },
                     Toast.LENGTH_SHORT
                 ).show()
             }
@@ -561,9 +664,15 @@ fun StylesAppAwareScreen(
     stylePendingDelete?.let { target ->
         AlertDialog(
             onDismissRequest = { stylePendingDelete = null },
-            title = { Text("删除自定义风格") },
+            title = { Text(tr("删除自定义风格", "Delete Custom Style", "刪除自訂風格")) },
             text = {
-                Text("确定要删除自定义风格「${target.emoji} ${target.name}」吗？关联到该风格的应用规则将自动回退为「通用灵动」。")
+                Text(
+                    tr(
+                        "确定要删除自定义风格「${target.emoji} ${target.name}」吗？关联到该风格的应用规则将自动回退为「通用灵动」。",
+                        "Delete custom style \"${target.emoji} ${target.name}\"? App rules bound to it will fall back to \"Smart Default\".",
+                        "確定要刪除自訂風格「${target.emoji} ${target.name}」嗎？關聯到該風格的應用規則將自動回退為「通用靈動」。"
+                    )
+                )
             },
             confirmButton = {
                 Button(
@@ -586,15 +695,19 @@ fun StylesAppAwareScreen(
                             )
                         }
                         stylePendingDelete = null
-                        Toast.makeText(context, "已删除风格「${target.name}」", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            AppStrings.pick(appLang, "已删除风格「${target.name}」", "Deleted style \"${target.name}\"", "已刪除風格「${target.name}」"),
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 ) {
-                    Text("确认删除")
+                    Text(tr("确认删除", "Delete", "確認刪除"))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { stylePendingDelete = null }) {
-                    Text("取消")
+                    Text(tr("取消", "Cancel", "取消"))
                 }
             }
         )
@@ -604,9 +717,15 @@ fun StylesAppAwareScreen(
     if (showRestoreStylesConfirm) {
         AlertDialog(
             onDismissRequest = { showRestoreStylesConfirm = false },
-            title = { Text("恢复默认内置风格") },
+            title = { Text(tr("恢复默认内置风格", "Reset Built-in Styles", "恢復預設內建風格")) },
             text = {
-                Text("这会将 6 种内置预设风格的名称、简介与 System Prompt 恢复为出厂默认配置；您自己新建的自定义风格将予以保留。")
+                Text(
+                    tr(
+                        "这会将 6 种内置预设风格的名称、简介与 System Prompt 恢复为出厂默认配置；您自己新建的自定义风格将予以保留。",
+                        "This resets the 6 built-in styles (names, summaries, and System Prompts) to factory defaults. Your custom styles will be kept.",
+                        "這會將 6 種內建預設風格的名稱、簡介與 System Prompt 恢復為出廠預設設定；您自己新增的自訂風格將予以保留。"
+                    )
+                )
             },
             confirmButton = {
                 Button(
@@ -618,15 +737,19 @@ fun StylesAppAwareScreen(
                             current.copy(styles = defaults + customStyles)
                         }
                         showRestoreStylesConfirm = false
-                        Toast.makeText(context, "已恢复默认内置风格指令", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            AppStrings.pick(appLang, "已恢复默认内置风格指令", "Restored built-in styles to defaults", "已恢復預設內建風格指令"),
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 ) {
-                    Text("立即恢复")
+                    Text(tr("立即恢复", "Reset Now", "立即恢復"))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showRestoreStylesConfirm = false }) {
-                    Text("取消")
+                    Text(tr("取消", "Cancel", "取消"))
                 }
             }
         )
@@ -636,9 +759,15 @@ fun StylesAppAwareScreen(
     if (showRestoreRulesConfirm) {
         AlertDialog(
             onDismissRequest = { showRestoreRulesConfirm = false },
-            title = { Text("恢复默认应用匹配规则") },
+            title = { Text(tr("恢复默认应用匹配规则", "Reset Default App Rules", "恢復預設應用匹配規則")) },
             text = {
-                Text("将补全并恢复微信、飞书、钉钉、Gmail、Notion、ChatGPT 等默认宿主应用绑定规则（已添加的其他自定义包名规则仍会保留）。")
+                Text(
+                    tr(
+                        "将补全并恢复微信、飞书、钉钉、Gmail、Notion、ChatGPT 等默认宿主应用绑定规则（已添加的其他自定义包名规则仍会保留）。",
+                        "Restores default app tone rules for messaging, work, email, docs, and AI apps. Your custom package rules will be kept.",
+                        "將補全並恢復微信、飛書、釘釘、Gmail、Notion、ChatGPT 等預設宿主應用綁定規則（已新增的其他自訂套件規則仍會保留）。"
+                    )
+                )
             },
             confirmButton = {
                 Button(
@@ -652,15 +781,19 @@ fun StylesAppAwareScreen(
                             current.copy(appRules = customRules + defaults)
                         }
                         showRestoreRulesConfirm = false
-                        Toast.makeText(context, "已恢复默认应用规则", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            AppStrings.pick(appLang, "已恢复默认应用规则", "Restored default app rules", "已恢復預設應用規則"),
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 ) {
-                    Text("确认恢复")
+                    Text(tr("确认恢复", "Reset", "確認恢復"))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showRestoreRulesConfirm = false }) {
-                    Text("取消")
+                    Text(tr("取消", "Cancel", "取消"))
                 }
             }
         )
@@ -705,7 +838,11 @@ fun StylesAppAwareScreen(
                     current.copy(appRules = nextRules)
                 }
                 showAddAppRuleDialog = false
-                Toast.makeText(context, "已绑定「$cleanName」语气规则", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    AppStrings.pick(appLang, "已绑定「$cleanName」语气规则", "Bound tone rule for \"$cleanName\"", "已綁定「$cleanName」語氣規則"),
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         )
     }
@@ -759,7 +896,10 @@ private fun ToneStyleCard(
     onToggleLock: () -> Unit,
     onDelete: (() -> Unit)?
 ) {
+    val appLang = LocalAppLanguage.current
     var promptExpanded by rememberSaveable(style.id) { mutableStateOf(false) }
+    val dispName = localizedStyleName(style, appLang)
+    val dispSummary = localizedStyleSummary(style, appLang)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -808,12 +948,12 @@ private fun ToneStyleCard(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
-                                text = style.name,
+                                text = dispName,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                             BadgePill(
-                                text = if (style.isBuiltIn) "内置" else "自定义",
+                                text = if (style.isBuiltIn) tr("内置", "Built-in", "內建") else tr("自定义", "Custom", "自訂"),
                                 containerColor = if (style.isBuiltIn) {
                                     MaterialTheme.colorScheme.primaryContainer
                                 } else {
@@ -827,7 +967,7 @@ private fun ToneStyleCard(
                             )
                             if (isLocked) {
                                 BadgePill(
-                                    text = "当前锁定",
+                                    text = tr("当前锁定", "Locked", "目前鎖定"),
                                     containerColor = MaterialTheme.colorScheme.primary,
                                     contentColor = MaterialTheme.colorScheme.onPrimary
                                 )
@@ -835,7 +975,7 @@ private fun ToneStyleCard(
                         }
 
                         Text(
-                            text = style.summary,
+                            text = dispSummary,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -846,7 +986,7 @@ private fun ToneStyleCard(
                     IconButton(onClick = onDelete) {
                         Icon(
                             imageVector = Icons.Default.Delete,
-                            contentDescription = "删除自定义风格",
+                            contentDescription = tr("删除自定义风格", "Delete custom style", "刪除自訂風格"),
                             tint = MaterialTheme.colorScheme.error
                         )
                     }
@@ -872,13 +1012,21 @@ private fun ToneStyleCard(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "System Prompt 润色指令",
+                            text = tr("System Prompt 润色指令", "System Prompt", "System Prompt 潤飾指令"),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary
                         )
                         Text(
-                            text = if (boundAppCount > 0) "已关联 $boundAppCount 个应用 · 点击展开" else "点击展开/收起",
+                            text = if (boundAppCount > 0) {
+                                tr(
+                                    "已关联 $boundAppCount 个应用 · 点击展开",
+                                    "$boundAppCount apps · Tap to toggle",
+                                    "已關聯 $boundAppCount 個應用 · 點擊展開"
+                                )
+                            } else {
+                                tr("点击展开/收起", "Tap to toggle", "點擊展開/收起")
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -899,7 +1047,7 @@ private fun ToneStyleCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TextButton(onClick = onToggleLock) {
-                    Text(if (isLocked) "解除全局锁定" else "设为全局固定")
+                    Text(if (isLocked) tr("解除全局锁定", "Unlock Global", "解除全域鎖定") else tr("设为全局固定", "Lock Globally", "設為全域固定"))
                 }
                 FilledTonalButton(
                     onClick = onEdit,
@@ -912,7 +1060,7 @@ private fun ToneStyleCard(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("编辑 Prompt")
+                    Text(tr("编辑 Prompt", "Edit Prompt", "編輯 Prompt"))
                 }
             }
         }
@@ -927,10 +1075,13 @@ private fun AppToneRuleCard(
     onChangeStyle: (String) -> Unit,
     onDelete: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     var styleDropdownExpanded by remember { mutableStateOf(false) }
     val boundStyle = styles.firstOrNull { it.id == rule.styleId }
         ?: styles.firstOrNull { it.id == "smart_default" }
         ?: styles.first()
+    val dispAppName = localizedRuleAppName(rule, appLang).ifBlank { rule.packageName }
+    val dispBoundStyleName = localizedStyleName(boundStyle, appLang)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -968,7 +1119,7 @@ private fun AppToneRuleCard(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = rule.appName.trim().take(1).uppercase().ifBlank { "A" },
+                            text = dispAppName.trim().take(1).uppercase().ifBlank { "A" },
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -977,7 +1128,7 @@ private fun AppToneRuleCard(
 
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = rule.appName.ifBlank { rule.packageName },
+                            text = dispAppName,
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -1005,7 +1156,7 @@ private fun AppToneRuleCard(
                     IconButton(onClick = onDelete) {
                         Icon(
                             imageVector = Icons.Default.Delete,
-                            contentDescription = "删除规则",
+                            contentDescription = tr("删除规则", "Delete rule", "刪除規則"),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -1019,7 +1170,7 @@ private fun AppToneRuleCard(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "自动匹配风格 ->",
+                    text = tr("自动匹配风格 ->", "Matched Style ->", "自動匹配風格 ->"),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1042,14 +1193,14 @@ private fun AppToneRuleCard(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
-                                text = "${boundStyle.emoji} ${boundStyle.name}",
+                                text = "${boundStyle.emoji} $dispBoundStyleName",
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer
                             )
                             Icon(
                                 imageVector = Icons.Default.KeyboardArrowDown,
-                                contentDescription = "切换绑定风格",
+                                contentDescription = tr("切换绑定风格", "Switch style", "切換綁定風格"),
                                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
                                 modifier = Modifier.size(18.dp)
                             )
@@ -1065,7 +1216,7 @@ private fun AppToneRuleCard(
                                 text = {
                                     Column {
                                         Text(
-                                            text = "${candidate.emoji} ${candidate.name}",
+                                            text = "${candidate.emoji} ${localizedStyleName(candidate, appLang)}",
                                             fontWeight = if (candidate.id == boundStyle.id) {
                                                 FontWeight.Bold
                                             } else {
@@ -1073,7 +1224,7 @@ private fun AppToneRuleCard(
                                             }
                                         )
                                         Text(
-                                            text = candidate.summary,
+                                            text = localizedStyleSummary(candidate, appLang),
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             maxLines = 1,
@@ -1110,14 +1261,18 @@ private fun ToneStyleEditorDialog(
     onDismiss: () -> Unit,
     onConfirm: (ToneStyle) -> Unit
 ) {
-    val isEditing = initialStyle != null
+    val appLang = LocalAppLanguage.current
     val factoryBuiltin = remember(initialStyle?.id) {
         DefaultPresets.defaultStyles().firstOrNull { it.id == initialStyle?.id }
     }
 
     var emoji by rememberSaveable(initialStyle?.id) { mutableStateOf(initialStyle?.emoji ?: "✨") }
-    var name by rememberSaveable(initialStyle?.id) { mutableStateOf(initialStyle?.name ?: "") }
-    var summary by rememberSaveable(initialStyle?.id) { mutableStateOf(initialStyle?.summary ?: "") }
+    var name by rememberSaveable(initialStyle?.id, appLang) {
+        mutableStateOf(initialStyle?.let { localizedStyleName(it, appLang) } ?: "")
+    }
+    var summary by rememberSaveable(initialStyle?.id, appLang) {
+        mutableStateOf(initialStyle?.let { localizedStyleSummary(it, appLang) } ?: "")
+    }
     var promptInstruction by rememberSaveable(initialStyle?.id) { mutableStateOf(initialStyle?.promptInstruction ?: "") }
 
     val canSave = name.trim().isNotEmpty() && promptInstruction.trim().isNotEmpty()
@@ -1127,9 +1282,12 @@ private fun ToneStyleEditorDialog(
         title = {
             Text(
                 text = when {
-                    initialStyle == null -> "新建自定义语气风格"
-                    initialStyle.isBuiltIn -> "编辑内置风格：${initialStyle.name}"
-                    else -> "编辑自定义风格"
+                    initialStyle == null -> tr("新建自定义语气风格", "New Custom Tone Style", "新增自訂語氣風格")
+                    initialStyle.isBuiltIn -> {
+                        val dispBuiltin = localizedStyleName(initialStyle, appLang)
+                        tr("编辑内置风格：$dispBuiltin", "Edit Built-in: $dispBuiltin", "編輯內建風格：$dispBuiltin")
+                    }
+                    else -> tr("编辑自定义风格", "Edit Custom Style", "編輯自訂風格")
                 }
             )
         },
@@ -1141,7 +1299,7 @@ private fun ToneStyleEditorDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "选择图标 Emoji",
+                    text = tr("选择图标 Emoji", "Choose Icon Emoji", "選擇圖示 Emoji"),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1184,8 +1342,8 @@ private fun ToneStyleEditorDialog(
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it },
-                        label = { Text("风格名称 *") },
-                        placeholder = { Text("如：小红书种草 / 学术严谨") },
+                        label = { Text(tr("风格名称 *", "Style Name *", "風格名稱 *")) },
+                        placeholder = { Text(tr("如：小红书种草 / 学术严谨", "e.g. Social Post / Academic", "如：社群分享 / 學術嚴謹")) },
                         singleLine = true,
                         modifier = Modifier.weight(1f)
                     )
@@ -1194,8 +1352,8 @@ private fun ToneStyleEditorDialog(
                 OutlinedTextField(
                     value = summary,
                     onValueChange = { summary = it },
-                    label = { Text("适用场景一句话简介") },
-                    placeholder = { Text("如：适合小红书与朋友圈，分段清爽、富有感染力") },
+                    label = { Text(tr("适用场景一句话简介", "One-Line Summary", "適用場景一句話簡介")) },
+                    placeholder = { Text(tr("如：适合小红书与朋友圈，分段清爽、富有感染力", "e.g. Clean paragraphs and engaging tone for social posts", "如：適合社群貼文，分段清爽、富有感染力")) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -1203,9 +1361,15 @@ private fun ToneStyleEditorDialog(
                 OutlinedTextField(
                     value = promptInstruction,
                     onValueChange = { promptInstruction = it },
-                    label = { Text("系统润色指令 (System Prompt) *") },
+                    label = { Text(tr("系统润色指令 (System Prompt) *", "System Prompt *", "系統潤飾指令 (System Prompt) *")) },
                     placeholder = {
-                        Text("描述大模型应当如何处理口语转写稿的语气、标点、分段与用词...")
+                        Text(
+                            tr(
+                                "描述大模型应当如何处理口语转写稿的语气、标点、分段与用词...",
+                                "Describe how the model should polish tone, punctuation, paragraphs, and wording...",
+                                "描述大模型應當如何處理口語轉寫稿的語氣、標點、分段與用詞..."
+                            )
+                        )
                     },
                     minLines = 4,
                     maxLines = 8,
@@ -1215,9 +1379,9 @@ private fun ToneStyleEditorDialog(
                 if (factoryBuiltin != null && promptInstruction != factoryBuiltin.promptInstruction) {
                     TextButton(
                         onClick = {
-                            name = factoryBuiltin.name
+                            name = localizedStyleName(factoryBuiltin, appLang)
                             emoji = factoryBuiltin.emoji
-                            summary = factoryBuiltin.summary
+                            summary = localizedStyleSummary(factoryBuiltin, appLang)
                             promptInstruction = factoryBuiltin.promptInstruction
                         },
                         modifier = Modifier.align(Alignment.End)
@@ -1228,7 +1392,7 @@ private fun ToneStyleEditorDialog(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("恢复此内置风格出厂 Prompt")
+                        Text(tr("恢复此内置风格出厂 Prompt", "Reset to Factory Prompt", "恢復此內建風格出廠 Prompt"))
                     }
                 }
             }
@@ -1237,18 +1401,33 @@ private fun ToneStyleEditorDialog(
             Button(
                 enabled = canSave,
                 onClick = {
+                    val cleanName = name.trim()
+                    val cleanSummary = summary.trim().ifBlank {
+                        AppStrings.pick(appLang, "自定义场景润色风格", "Custom tone polishing style", "自訂場景潤飾風格")
+                    }
+                    // Preserve factory Chinese baseline if user didn't customize built-in name/summary
+                    val storedName = if (factoryBuiltin != null && cleanName == AppStrings.toneStyleName(factoryBuiltin, appLang)) {
+                        factoryBuiltin.name
+                    } else {
+                        cleanName
+                    }
+                    val storedSummary = if (factoryBuiltin != null && cleanSummary == AppStrings.toneStyleSummary(factoryBuiltin, appLang)) {
+                        factoryBuiltin.summary
+                    } else {
+                        cleanSummary
+                    }
                     val result = if (initialStyle != null) {
                         initialStyle.copy(
                             emoji = emoji.trim().ifBlank { "✨" },
-                            name = name.trim(),
-                            summary = summary.trim().ifBlank { "自定义场景润色风格" },
+                            name = storedName,
+                            summary = storedSummary,
                             promptInstruction = promptInstruction.trim()
                         )
                     } else {
                         ToneStyle(
                             emoji = emoji.trim().ifBlank { "✨" },
-                            name = name.trim(),
-                            summary = summary.trim().ifBlank { "自定义场景润色风格" },
+                            name = storedName,
+                            summary = storedSummary,
                             promptInstruction = promptInstruction.trim(),
                             isBuiltIn = false
                         )
@@ -1256,12 +1435,12 @@ private fun ToneStyleEditorDialog(
                     onConfirm(result)
                 }
             ) {
-                Text("保存风格")
+                Text(tr("保存风格", "Save Style", "儲存風格"))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消")
+                Text(tr("取消", "Cancel", "取消"))
             }
         }
     )
@@ -1276,6 +1455,7 @@ private fun AddAppRuleDialog(
     onConfirmRule: (packageName: String, appName: String, styleId: String) -> Unit
 ) {
     val context = LocalContext.current
+    val appLang = LocalAppLanguage.current
 
     var inputMode by rememberSaveable { mutableIntStateOf(0) } // 0 = 从已安装应用选择, 1 = 手动输入
     var appSearchQuery by rememberSaveable { mutableStateOf("") }
@@ -1335,7 +1515,7 @@ private fun AddAppRuleDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("添加应用自动匹配规则") },
+        title = { Text(tr("添加应用自动匹配规则", "Add App Matching Rule", "新增應用自動匹配規則")) },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -1354,13 +1534,13 @@ private fun AddAppRuleDialog(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         SegmentedTabButton(
-                            title = "📱 本机已装应用",
+                            title = tr("📱 本机已装应用", "📱 Installed Apps", "📱 本機已裝應用"),
                             selected = inputMode == 0,
                             onClick = { inputMode = 0 },
                             modifier = Modifier.weight(1f)
                         )
                         SegmentedTabButton(
-                            title = "⌨️ 手动输入包名",
+                            title = tr("⌨️ 手动输入包名", "⌨️ Manual Package", "⌨️ 手動輸入套件名"),
                             selected = inputMode == 1,
                             onClick = { inputMode = 1 },
                             modifier = Modifier.weight(1f)
@@ -1375,7 +1555,7 @@ private fun AddAppRuleDialog(
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         shape = RoundedCornerShape(10.dp),
-                        placeholder = { Text("搜索本机应用名或包名...") },
+                        placeholder = { Text(tr("搜索本机应用名或包名...", "Search installed app or package...", "搜尋本機應用名或套件名...")) },
                         leadingIcon = {
                             Icon(
                                 imageVector = Icons.Default.Search,
@@ -1388,7 +1568,7 @@ private fun AddAppRuleDialog(
                                 IconButton(onClick = { appSearchQuery = "" }) {
                                     Icon(
                                         imageVector = Icons.Default.Close,
-                                        contentDescription = "清除",
+                                        contentDescription = tr("清除", "Clear", "清除"),
                                         modifier = Modifier.size(16.dp)
                                     )
                                 }
@@ -1415,7 +1595,7 @@ private fun AddAppRuleDialog(
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
                                         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                                        Text("正在扫描已安装应用...", style = MaterialTheme.typography.bodySmall)
+                                        Text(tr("正在扫描已安装应用...", "Scanning installed apps...", "正在掃描已安裝應用..."), style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
                             }
@@ -1429,9 +1609,17 @@ private fun AddAppRuleDialog(
                                 ) {
                                     Text(
                                         text = if (installedApps.isEmpty()) {
-                                            "未读取到启动器应用列表，可切换至「手动输入包名」直接添加"
+                                            tr(
+                                                "未读取到启动器应用列表，可切换至「手动输入包名」直接添加",
+                                                "Launcher app list unavailable. Switch to \"Manual Package\" to add directly.",
+                                                "未讀取到啟動器應用清單，可切換至「手動輸入套件名」直接新增"
+                                            )
                                         } else {
-                                            "没有找到匹配「$appSearchQuery」的已安装应用"
+                                            tr(
+                                                "没有找到匹配「$appSearchQuery」的已安装应用",
+                                                "No installed apps matching \"$appSearchQuery\"",
+                                                "沒有找到符合「$appSearchQuery」的已安裝應用"
+                                            )
                                         },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1487,7 +1675,7 @@ private fun AddAppRuleDialog(
                                                         )
                                                         if (alreadyConfigured != null) {
                                                             BadgePill(
-                                                                text = "已配置",
+                                                                text = tr("已配置", "Configured", "已設定"),
                                                                 containerColor = MaterialTheme.colorScheme.secondaryContainer,
                                                                 contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                                                             )
@@ -1506,7 +1694,7 @@ private fun AddAppRuleDialog(
                                                 if (isPicked) {
                                                     Icon(
                                                         imageVector = Icons.Default.Check,
-                                                        contentDescription = "已选中",
+                                                        contentDescription = tr("已选中", "Selected", "已選取"),
                                                         tint = MaterialTheme.colorScheme.primary,
                                                         modifier = Modifier.size(18.dp)
                                                     )
@@ -1525,7 +1713,11 @@ private fun AddAppRuleDialog(
                             color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
                         ) {
                             Text(
-                                text = "已选应用：${appName.ifBlank { packageName }} ($packageName)",
+                                text = tr(
+                                    "已选应用：${appName.ifBlank { packageName }} ($packageName)",
+                                    "Selected: ${appName.ifBlank { packageName }} ($packageName)",
+                                    "已選應用：${appName.ifBlank { packageName }} ($packageName)"
+                                ),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                                 modifier = Modifier
@@ -1538,23 +1730,23 @@ private fun AddAppRuleDialog(
                     OutlinedTextField(
                         value = appName,
                         onValueChange = { appName = it },
-                        label = { Text("应用显示名称") },
-                        placeholder = { Text("如：微信 / 飞书 / Obsidian") },
+                        label = { Text(tr("应用显示名称", "App Display Name", "應用顯示名稱")) },
+                        placeholder = { Text(tr("如：微信 / 飞书 / Obsidian", "e.g. Slack / WhatsApp / Obsidian", "如：LINE / Slack / Obsidian")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = packageName,
                         onValueChange = { packageName = it },
-                        label = { Text("应用包名 *") },
-                        placeholder = { Text("如：com.tencent.mm") },
+                        label = { Text(tr("应用包名 *", "Package Name *", "應用套件名 *")) },
+                        placeholder = { Text(tr("如：com.tencent.mm", "e.g. com.Slack", "如：jp.naver.line.android")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
 
                 Text(
-                    text = "绑定到此语气风格",
+                    text = tr("绑定到此语气风格", "Bind to Tone Style", "綁定到此語氣風格"),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -1573,7 +1765,7 @@ private fun AddAppRuleDialog(
                             FilterChip(
                                 selected = selectedStyleId == style.id,
                                 onClick = { selectedStyleId = style.id },
-                                label = { Text("${style.emoji} ${style.name}") }
+                                label = { Text("${style.emoji} ${localizedStyleName(style, appLang)}") }
                             )
                         }
                     }
@@ -1591,12 +1783,12 @@ private fun AddAppRuleDialog(
                     )
                 }
             ) {
-                Text("绑定规则")
+                Text(tr("绑定规则", "Bind Rule", "綁定規則"))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消")
+                Text(tr("取消", "Cancel", "取消"))
             }
         }
     )

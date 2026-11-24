@@ -700,6 +700,65 @@ private fun AiCopilotAndPrivacyCard(
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = tr("🌐 军师语言逻辑", "🌐 Copilot Language Mode", "🌐 軍師語言邏輯"),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = when (settings.jevLanguageMode) {
+                            "chat" -> tr(
+                                "潜台词分析、策略标签与待发回复全部跟随当前聊天窗口语言",
+                                "Subtext radar, strategy tags, and replies all match the active chat language",
+                                "潛台詞分析、策略標籤與待發回覆全部跟隨目前聊天視窗語言"
+                            )
+                            "strict_system" -> tr(
+                                "潜台词分析、策略标签与待发回复全部固定跟随系统/界面语言",
+                                "Subtext radar, strategy tags, and replies all use your system/UI language",
+                                "潛台詞分析、策略標籤與待發回覆全部固定跟隨系統/介面語言"
+                            )
+                            else -> tr(
+                                "潜台词分析与策略标签跟随系统/界面语言，待发回复自动匹配聊天对象语言",
+                                "Subtext radar & strategy tags follow system/UI language; reply drafts match the chat language",
+                                "潛台詞分析與策略標籤跟隨系統/介面語言，待發回覆自動比對聊天對象語言"
+                            )
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    val langModes = listOf(
+                        "system" to tr("跟随系统", "Follow System", "跟隨系統"),
+                        "chat" to tr("跟随聊天", "Match Chat", "跟隨聊天"),
+                        "strict_system" to tr("全量跟随系统", "All System Lang", "全量跟隨系統")
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(langModes, key = { "jev_lang_${it.first}" }) { (modeKey, modeLabel) ->
+                            val isSelected = settings.jevLanguageMode == modeKey ||
+                                (modeKey == "system" && settings.jevLanguageMode !in setOf("chat", "strict_system"))
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    repository.updateSettings { it.copy(jevLanguageMode = modeKey) }
+                                },
+                                label = { Text(modeLabel) },
+                                leadingIcon = if (isSelected) {
+                                    {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                } else null
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+
                 PreferenceSwitchRow(
                     title = tr("读取当前聊天上文", "Read Visible Chat Context", "讀取目前聊天上文"),
                     subtitle = tr(

@@ -2620,6 +2620,23 @@ class AiPipelineEngine(
                 redactionSession?.hasHighRiskCredentials != true
             val effectiveScreenshotB64 = if (allowScreenshot) chatContextScreenshotBase64 else ""
 
+            val systemIsZh = AppStrings.isChinese(settings.appLanguage)
+            val jevIsChineseLocale = when (settings.jevLanguageMode) {
+                "chat" -> {
+                    val sample = (chatContextMessages.joinToString(" ") + " " + resolvedBottomLine).trim()
+                    if (sample.isEmpty()) {
+                        systemIsZh
+                    } else {
+                        sample.any { ch ->
+                            val code = ch.code
+                            code in 0x4E00..0x9FFF || code in 0x3400..0x4DBF || code in 0xF900..0xFAFF
+                        }
+                    }
+                }
+                else -> systemIsZh
+            }
+            val jevReplyMatchesSystem = settings.jevLanguageMode == "strict_system"
+
             val (sysPrompt, usrPrompt) = PromptBuilder.buildJevCopilotPrompts(
                 domainProfile = domainProfile,
                 targetAppName = targetAppName,
@@ -2633,7 +2650,8 @@ class AiPipelineEngine(
                 chatTopology = chatTopology,
                 targetPackageName = targetPackageName,
                 memoryPayload = memoryPayload,
-                isChineseLocale = AppStrings.isChinese(settings.appLanguage)
+                isChineseLocale = jevIsChineseLocale,
+                replyMatchesSystemLanguage = jevReplyMatchesSystem
             )
 
             var lastSubtextClosed = false
@@ -2664,7 +2682,8 @@ class AiPipelineEngine(
                             usedVision = effectiveScreenshotB64.isNotBlank(),
                             redactionCount = redactionSession?.redactionCount ?: 0,
                             priorWeightFuser = priorWeightFuser,
-                            lockVisualOrder = shouldLockOptionOrder()
+                            lockVisualOrder = shouldLockOptionOrder(),
+                            preferEnglishUi = !jevIsChineseLocale
                         )?.let { preview ->
                             onPartialResult(preview)
                         }
@@ -2764,7 +2783,14 @@ class AiPipelineEngine(
 
             if (rawOutput.isBlank()) {
                 return@withContext Result.failure(
-                    IOException("模型返回内容为空，请点「↻ 换一批」重试")
+                    IOException(
+                        AppStrings.pick(
+                            settings.appLanguage,
+                            "模型返回内容为空，请点「↻ 换一批」重试",
+                            "Empty response from model — tap ↻ Refresh to retry",
+                            "模型回傳內容為空，請點「↻ 換一批」重試"
+                        )
+                    )
                 )
             }
 
@@ -2774,7 +2800,8 @@ class AiPipelineEngine(
                 usedVision = effectiveScreenshotB64.isNotBlank(),
                 redactionCount = redactionSession?.redactionCount ?: 0,
                 priorWeightFuser = priorWeightFuser,
-                lockVisualOrder = shouldLockOptionOrder()
+                lockVisualOrder = shouldLockOptionOrder(),
+                preferEnglishUi = !jevIsChineseLocale
             ).copy(
                 tokenUsage = jevOutcome.tokenUsage,
                 modelName = jevOutcome.modelName,
