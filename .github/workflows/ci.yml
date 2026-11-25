@@ -36,7 +36,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Enforce EULA & secret tracking guard
         run: |
@@ -60,13 +60,13 @@ jobs:
           echo "Repo hygiene verified: 0 forbidden private or signing files tracked."
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Setup Gradle cache
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Run :core JVM unit tests (if :core module present)
         run: |
@@ -78,7 +78,7 @@ jobs:
 
       - name: Upload :core test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: core-jvm-test-report
           path: core/build/reports/tests/test/
@@ -92,10 +92,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
@@ -107,10 +107,10 @@ jobs:
           fi
 
       - name: Setup Gradle cache
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Cache upstream librime 1.17.0 C++ dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             rime/src/main/cpp/librime
@@ -126,7 +126,7 @@ jobs:
         run: bash rime/src/main/cpp/fetch_librime_deps.sh
 
       - name: Cache offline AI dependencies (sherpa-onnx AAR & llama.cpp)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             app/libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar
@@ -162,7 +162,7 @@ jobs:
 
       - name: Upload Standard Debug APK & test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: TypeFree-standard-debug-apk
           path: |
