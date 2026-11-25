@@ -18,7 +18,7 @@ jobs:
     steps:
       - name: Auto-triage labels & post initial response
         id: triage
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const issue = context.payload.issue;
