@@ -89,6 +89,10 @@ data class PipelineExecutionResult(
     val modeSummary: String,
     val sttLatencyMs: Long = 0L,
     val llmLatencyMs: Long = 0L,
+    val sttProviderLabel: String = "",
+    val audioEncodeMs: Long = 0L,
+    val llmTtftMs: Long = 0L,
+    val llmGenMs: Long = 0L,
     val usedStreamingAsr: Boolean = false,
     val diagnosticLog: String = "",
     val executionSource: ExecutionSource = ExecutionSource.CLOUD,
@@ -101,7 +105,9 @@ internal data class ChatCallOutcome(
     val text: String,
     val diagnosticLog: String,
     val tokenUsage: TokenUsage? = null,
-    val modelName: String = ""
+    val modelName: String = "",
+    val ttftMs: Long = 0L,
+    val genMs: Long = 0L
 )
 
 class AiPipelineEngine(
@@ -525,19 +531,7 @@ class AiPipelineEngine(
                         }
                     }
 
-                    val sttBadge = when (sttCfg.protocol) {
-                        SttProtocol.OPENAI_HTTP -> if (EndpointResolver.isDeepSeekAsrEndpoint(sttCfg.baseUrl) ||
-                            sttCfg.presetId == "deepseek_asr" ||
-                            sttCfg.presetId == "deepseek"
-                        ) {
-                            "DeepSeek ASR"
-                        } else {
-                            sttCfg.model.substringAfterLast('/').ifBlank { "HTTP STT" }
-                        }
-                        SttProtocol.ALIYUN_DASHSCOPE_WS -> "百炼流式"
-                        SttProtocol.VOLCENGINE_SAUC_WS -> "豆包流式"
-                        SttProtocol.GEMINI_LIVE_WS -> "Gemini Live"
-                    }
+                    val sttBadge = resolveCloudSttDisplayBadge(sttCfg)
 
                     // If Speak-to-Edit / Help-me-write / Translate is active, LLM MUST run
                     if (!settings.llmConfig.enabled && !requiresGenerativeLlm) {
@@ -555,6 +549,7 @@ class AiPipelineEngine(
                                 modeSummary = directLabel,
                                 sttLatencyMs = sttElapsedMs,
                                 llmLatencyMs = 0L,
+                                sttProviderLabel = sttBadge,
                                 usedStreamingAsr = usedLiveStream
                             )
                         )
@@ -653,10 +648,13 @@ class AiPipelineEngine(
                                 isChineseLocale = isZh
                             )
                         }
+                        val streamTap: ((String) -> Unit)? =
+                            if (!EndpointResolver.isGeminiNativeHttpUrl(llmCfg.baseUrl)) ({}) else null
                         executeLlmChatWithDiagnostics(
                             config = llmCfg,
                             systemPrompt = sysPrompt,
-                            userPrompt = usrPrompt
+                            userPrompt = usrPrompt,
+                            onStreamingTextUpdate = streamTap
                         )
                     }
                     val polished = llmOutcome.text
@@ -664,7 +662,7 @@ class AiPipelineEngine(
                     val totalPostReleaseMs = (System.currentTimeMillis() - startMs) +
                         if (usedLiveStream) sttTailWaitMs else 0L
 
-                    val modePrefix = if (usedLiveStream) "$sttBadge" else "STT"
+                    val modePrefix = if (usedLiveStream) "$sttBadge" else "STT ($sttBadge)"
                     val fullDiag = buildString {
                         appendLine("STT [$sttBadge]: ${sttElapsedMs} ms (streaming=$usedLiveStream)")
                         append(llmOutcome.diagnosticLog)
@@ -677,6 +675,9 @@ class AiPipelineEngine(
                             modeSummary = "$modePrefix + ${llmCfg.model.substringAfterLast('/')}",
                             sttLatencyMs = sttElapsedMs,
                             llmLatencyMs = llmElapsedMs,
+                            sttProviderLabel = sttBadge,
+                            llmTtftMs = llmOutcome.ttftMs,
+                            llmGenMs = llmOutcome.genMs,
                             usedStreamingAsr = usedLiveStream,
                             diagnosticLog = fullDiag,
                             tokenUsage = llmOutcome.tokenUsage,
@@ -704,8 +705,11 @@ class AiPipelineEngine(
                         editorDraft = editorDraft,
                         isChineseLocale = AppStrings.isChinese(settings.appLanguage)
                     )
+                    var encodeElapsedMs = 0L
+                    val mmReqStartMs: Long
                     val mmOutcome = when (mmCfg.protocol) {
                         MultimodalProtocol.GEMINI_NATIVE -> {
+                            val encStart = System.currentTimeMillis()
                             val compressedM4a = AacAudioCompressor.compressWavToM4aOrNull(wavFile)
                             try {
                                 val (uploadBytes, uploadMime) = if (compressedM4a != null) {
@@ -714,6 +718,8 @@ class AiPipelineEngine(
                                     wavFile.readBytes() to "audio/wav"
                                 }
                                 val b64 = java.util.Base64.getEncoder().encodeToString(uploadBytes)
+                                encodeElapsedMs = (System.currentTimeMillis() - encStart).coerceAtLeast(1L)
+                                mmReqStartMs = System.currentTimeMillis()
                                 callGeminiMultimodalAudioWithDiagnostics(
                                     config = mmCfg,
                                     prompt = prompt,
@@ -727,7 +733,10 @@ class AiPipelineEngine(
                             }
                         }
                         MultimodalProtocol.OPENAI_AUDIO_CHAT -> {
+                            val encStart = System.currentTimeMillis()
                             val b64 = java.util.Base64.getEncoder().encodeToString(wavFile.readBytes())
+                            encodeElapsedMs = (System.currentTimeMillis() - encStart).coerceAtLeast(1L)
+                            mmReqStartMs = System.currentTimeMillis()
                             callOpenAiMultimodalAudioWithDiagnostics(
                                 config = mmCfg,
                                 prompt = prompt,
@@ -735,6 +744,7 @@ class AiPipelineEngine(
                             )
                         }
                     }
+                    val mmLlmElapsedMs = (System.currentTimeMillis() - mmReqStartMs).coerceAtLeast(1L)
                     val output = mmOutcome.text
 
                     if (output.isBlank() || output.contains("[EMPTY_SPEECH]")) {
@@ -754,6 +764,10 @@ class AiPipelineEngine(
                             finalOutput = output,
                             latencyMs = elapsed,
                             modeSummary = "多模态 (${mmCfg.model})",
+                            llmLatencyMs = mmLlmElapsedMs,
+                            audioEncodeMs = encodeElapsedMs,
+                            llmTtftMs = mmOutcome.ttftMs,
+                            llmGenMs = mmOutcome.genMs,
                             diagnosticLog = mmOutcome.diagnosticLog,
                             tokenUsage = mmOutcome.tokenUsage,
                             modelName = mmOutcome.modelName.ifBlank { mmCfg.model.trim() }
@@ -831,7 +845,7 @@ class AiPipelineEngine(
                         IllegalStateException(routeBlockMessage(RouteBlockReason.OFFLINE_ONLY_NO_MODEL, "纯离线锁已开启"))
                     )
                 }
-                asrLabel = "云端 STT"
+                asrLabel = resolveCloudSttDisplayBadge(resolveEffectiveSttConfig(settings))
                 if (!preTranscribedText.isNullOrBlank()) {
                     usedLiveStream = true
                     sttElapsedMs = sttTailWaitMs.coerceAtLeast(0L)
@@ -914,6 +928,9 @@ class AiPipelineEngine(
                 if (localRes.isSuccess) {
                     val polished = localRes.getOrThrow().ifBlank { rawTranscript }
                     val elapsed = (System.currentTimeMillis() - startMs) + if (usedLiveStream) sttTailWaitMs else 0L
+                    val rtMetrics = localAiClient?.getRuntimeMetrics()
+                    val slmTtft = (rtMetrics?.lastSlmTtftMs ?: 0L).coerceIn(0L, llmElapsedMs)
+                    val slmGen = (llmElapsedMs - slmTtft).coerceAtLeast(0L)
                     val metrics = formatLocalMetricsSummary(includeSlmMetrics = true)
                     val slmTag = shortLocalModelLabel(textRoute.modelId)
                     Result.success(
@@ -924,10 +941,14 @@ class AiPipelineEngine(
                             modeSummary = "$asrLabel + 本机 $slmTag",
                             sttLatencyMs = sttElapsedMs,
                             llmLatencyMs = llmElapsedMs,
+                            sttProviderLabel = asrLabel,
+                            llmTtftMs = slmTtft,
+                            llmGenMs = slmGen,
                             usedStreamingAsr = usedLiveStream,
                             diagnosticLog = "Local SLM [$slmTag]: ${llmElapsedMs} ms${if (metrics.isNotBlank()) " ($metrics)" else ""}",
                             executionSource = ExecutionSource.LOCAL,
-                            localMetricsSummary = metrics
+                            localMetricsSummary = metrics,
+                            modelName = slmTag
                         )
                     )
                 } else {
@@ -960,6 +981,9 @@ class AiPipelineEngine(
                                     modeSummary = "$asrLabel + $modelLabel (云端回退)",
                                     sttLatencyMs = sttElapsedMs,
                                     llmLatencyMs = (System.currentTimeMillis() - llmStart).coerceAtLeast(0L),
+                                    sttProviderLabel = asrLabel,
+                                    llmTtftMs = outcome.ttftMs,
+                                    llmGenMs = outcome.genMs,
                                     usedStreamingAsr = usedLiveStream,
                                     diagnosticLog = outcome.diagnosticLog,
                                     executionSource = if (asrUsedLocal) {
@@ -1035,6 +1059,9 @@ class AiPipelineEngine(
                                 modeSummary = "$asrLabel + $modelLabel",
                                 sttLatencyMs = sttElapsedMs,
                                 llmLatencyMs = llmElapsedMs,
+                                sttProviderLabel = asrLabel,
+                                llmTtftMs = outcome.ttftMs,
+                                llmGenMs = outcome.genMs,
                                 usedStreamingAsr = usedLiveStream,
                                 diagnosticLog = outcome.diagnosticLog,
                                 executionSource = if (asrUsedLocal) {
@@ -1340,10 +1367,13 @@ class AiPipelineEngine(
                                         surroundingBeforeCursor = chunkContext,
                                         isChineseLocale = AppStrings.isChinese(settings.appLanguage)
                                     )
+                                    val streamTap: ((String) -> Unit)? =
+                                        if (!EndpointResolver.isGeminiNativeHttpUrl(llmCfg.baseUrl)) ({}) else null
                                     executeLlmChatWithDiagnostics(
                                         config = llmCfg,
                                         systemPrompt = sysPrompt,
-                                        userPrompt = usrPrompt
+                                        userPrompt = usrPrompt,
+                                        onStreamingTextUpdate = streamTap
                                     )
                                 }
                             }
@@ -1356,7 +1386,10 @@ class AiPipelineEngine(
                         }.joinToString("\n"),
                         tokenUsage = sumTokenUsages(chunkOutcomes.map { it.tokenUsage }),
                         modelName = chunkOutcomes.firstOrNull { it.modelName.isNotBlank() }?.modelName
-                            ?: llmCfg.model.trim()
+                            ?: llmCfg.model.trim(),
+                        ttftMs = chunkOutcomes.minOfOrNull { it.ttftMs.takeIf { ms -> ms > 0L } ?: Long.MAX_VALUE }
+                            ?.takeIf { it < Long.MAX_VALUE } ?: 0L,
+                        genMs = chunkOutcomes.maxOfOrNull { it.genMs } ?: 0L
                     )
                 } else {
                     val (sysPrompt, usrPrompt) = buildCloudVoicePrompts(
@@ -1371,10 +1404,13 @@ class AiPipelineEngine(
                         attitudeInstruction = attitudeInstruction,
                         editorDraft = editorDraft
                     )
+                    val streamTap: ((String) -> Unit)? =
+                        if (!EndpointResolver.isGeminiNativeHttpUrl(llmCfg.baseUrl)) ({}) else null
                     executeLlmChatWithDiagnostics(
                         config = llmCfg,
                         systemPrompt = sysPrompt,
-                        userPrompt = usrPrompt
+                        userPrompt = usrPrompt,
+                        onStreamingTextUpdate = streamTap
                     )
                 }
                 outcome to llmCfg.model.substringAfterLast('/').ifBlank { "LLM" }
@@ -1472,6 +1508,23 @@ class AiPipelineEngine(
                 onThinkingStarted = onThinkingStarted,
                 onStreamingTextUpdate = onStreamingTextUpdate
             )
+        }
+    }
+
+    private fun resolveCloudSttDisplayBadge(sttCfg: SttConfig): String {
+        return when (sttCfg.protocol) {
+            SttProtocol.OPENAI_HTTP -> if (
+                EndpointResolver.isDeepSeekAsrEndpoint(sttCfg.baseUrl) ||
+                sttCfg.presetId == "deepseek_asr" ||
+                sttCfg.presetId == "deepseek"
+            ) {
+                "DeepSeek ASR"
+            } else {
+                sttCfg.model.substringAfterLast('/').ifBlank { "HTTP STT" }
+            }
+            SttProtocol.ALIYUN_DASHSCOPE_WS -> "百炼流式"
+            SttProtocol.VOLCENGINE_SAUC_WS -> "豆包流式"
+            SttProtocol.GEMINI_LIVE_WS -> "Gemini Live"
         }
     }
 
@@ -3043,24 +3096,26 @@ class AiPipelineEngine(
             val t0 = System.nanoTime()
             httpClient.newCall(reqBuilder.build()).execute().use { resp ->
                 if (resp.code !in 200..299 || !attemptStream) {
-                    val ms = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
+                    val headerMs = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
                     val text = resp.body?.string().orEmpty()
+                    val totalMs = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(headerMs)
                     if (resp.code in 200..299) {
-                        traceLines.add("#$attemptNo [$paramTag] -> HTTP ${resp.code} (${ms} ms)")
+                        traceLines.add("#$attemptNo [$paramTag] -> HTTP ${resp.code} (${totalMs} ms)")
                     } else {
-                        traceLines.add("#$attemptNo [$paramTag] -> HTTP ${resp.code} (${ms} ms): ${extractErrorDetail(text)}")
+                        traceLines.add("#$attemptNo [$paramTag] -> HTTP ${resp.code} (${totalMs} ms): ${extractErrorDetail(text)}")
                     }
                     return Triple(resp.code, text, null)
                 }
                 val streamRead = readOpenAiStreamOrBufferedJson(
                     reader = resp.body?.charStream()?.buffered(),
                     onThinkingStarted = onThinkingStarted,
-                    onStreamingTextUpdate = onStreamingTextUpdate
+                    onStreamingTextUpdate = onStreamingTextUpdate,
+                    requestStartNano = t0
                 )
                 val resolvedUsage = streamRead.tokenUsage
                     ?: TokenUsage.estimateFromTexts("$systemPrompt\n$userPrompt", streamRead.text)
                 val ms = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
-                traceLines.add("#$attemptNo [$paramTag] -> HTTP ${resp.code} (${ms} ms stream)")
+                traceLines.add("#$attemptNo [$paramTag] -> HTTP ${resp.code} (${ms} ms stream, ttft=${streamRead.ttftMs} ms)")
                 (streamRead.usageDiagnostic ?: formatTokenUsageDiagnostics(resolvedUsage))?.let {
                     traceLines.add(it)
                 }
@@ -3071,7 +3126,9 @@ class AiPipelineEngine(
                         text = streamRead.text,
                         diagnosticLog = traceLines.joinToString("\n"),
                         tokenUsage = resolvedUsage,
-                        modelName = config.model.trim()
+                        modelName = config.model.trim(),
+                        ttftMs = streamRead.ttftMs,
+                        genMs = streamRead.genMs
                     )
                 )
             }
@@ -3354,13 +3411,14 @@ class AiPipelineEngine(
                 val streamRead = readGeminiStreamOrBufferedJson(
                     reader = resp.body?.charStream()?.buffered(),
                     onThinkingStarted = onThinkingStarted,
-                    onStreamingTextUpdate = onStreamingTextUpdate
+                    onStreamingTextUpdate = onStreamingTextUpdate,
+                    requestStartNano = t0
                 )
                 val fallbackPromptText = extractTextFromGeminiParts(parts)
                 val resolvedUsage = streamRead.tokenUsage
                     ?: TokenUsage.estimateFromTexts(fallbackPromptText, streamRead.text)
                 val ms = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
-                traceLines.add("#$attemptNo [$label] -> HTTP ${resp.code} (${ms} ms stream)")
+                traceLines.add("#$attemptNo [$label] -> HTTP ${resp.code} (${ms} ms stream, ttft=${streamRead.ttftMs} ms)")
                 (streamRead.usageDiagnostic ?: formatTokenUsageDiagnostics(resolvedUsage))?.let {
                     traceLines.add(it)
                 }
@@ -3371,7 +3429,9 @@ class AiPipelineEngine(
                         text = streamRead.text,
                         diagnosticLog = traceLines.joinToString("\n"),
                         tokenUsage = resolvedUsage,
-                        modelName = config.model.trim()
+                        modelName = config.model.trim(),
+                        ttftMs = streamRead.ttftMs,
+                        genMs = streamRead.genMs
                     )
                 )
             }
@@ -3534,7 +3594,9 @@ class AiPipelineEngine(
         internal data class StreamReadOutcome(
             val text: String,
             val usageDiagnostic: String?,
-            val tokenUsage: TokenUsage?
+            val tokenUsage: TokenUsage?,
+            val ttftMs: Long = 0L,
+            val genMs: Long = 0L
         )
 
         private const val PREWARM_COOLDOWN_MS = 25_000L
@@ -4274,7 +4336,8 @@ class AiPipelineEngine(
         internal fun readOpenAiStreamOrBufferedJson(
             reader: java.io.BufferedReader?,
             onThinkingStarted: (() -> Unit)? = null,
-            onStreamingTextUpdate: ((String) -> Unit)? = null
+            onStreamingTextUpdate: ((String) -> Unit)? = null,
+            requestStartNano: Long = System.nanoTime()
         ): StreamReadOutcome {
             if (reader == null) throw IOException("模型返回结果为空")
             var firstNonBlank: String? = null
@@ -4286,18 +4349,28 @@ class AiPipelineEngine(
                 }
             }
             if (firstNonBlank == null) throw IOException("模型返回结果为空")
+            val firstLineNano = System.nanoTime()
             val trimmedStart = firstNonBlank.trimStart()
             if (trimmedStart.startsWith("{") || trimmedStart.startsWith("[")) {
                 val rest = reader.readText()
+                val totalMs = ((System.nanoTime() - requestStartNano) / 1_000_000L).coerceAtLeast(1L)
+                val firstMs = ((firstLineNano - requestStartNano) / 1_000_000L).coerceIn(1L, totalMs)
                 val fullBody = if (rest.isEmpty()) firstNonBlank else "$firstNonBlank\n$rest"
                 val parsed = parseOpenAiChatResponse(fullBody)
                 val usage = extractUsageDiagnostics(fullBody)
                 val tokenUsage = extractOpenAiTokenUsageFromBody(fullBody)
-                return StreamReadOutcome(parsed, usage, tokenUsage)
+                return StreamReadOutcome(
+                    text = parsed,
+                    usageDiagnostic = usage,
+                    tokenUsage = tokenUsage,
+                    ttftMs = firstMs,
+                    genMs = (totalMs - firstMs).coerceAtLeast(0L)
+                )
             }
 
             val rawAcc = StringBuilder()
             var thinkingEmitted = false
+            var firstVisibleContentNano = 0L
             var lastUsageChunk: JsonObject? = null
             var currLine: String? = firstNonBlank
             while (currLine != null) {
@@ -4338,6 +4411,9 @@ class AiPipelineEngine(
                                             accStr.replace(UNCLOSED_THINK_BLOCK_REGEX, "")
                                         )
                                         if (cleanSoFar.isNotEmpty()) {
+                                            if (firstVisibleContentNano == 0L) {
+                                                firstVisibleContentNano = System.nanoTime()
+                                            }
                                             onStreamingTextUpdate?.invoke(cleanSoFar)
                                         }
                                     }
@@ -4348,15 +4424,29 @@ class AiPipelineEngine(
                 }
                 currLine = reader.readLine()
             }
+            val endNano = System.nanoTime()
+            val totalMs = ((endNano - requestStartNano) / 1_000_000L).coerceAtLeast(1L)
+            val resolvedTtft = if (firstVisibleContentNano > 0L) {
+                ((firstVisibleContentNano - requestStartNano) / 1_000_000L).coerceIn(1L, totalMs)
+            } else {
+                ((firstLineNano - requestStartNano) / 1_000_000L).coerceIn(1L, totalMs)
+            }
             val parsedUsage = extractOpenAiTokenUsage(lastUsageChunk)
             val usageDiag = formatTokenUsageDiagnostics(parsedUsage)
-            return StreamReadOutcome(cleanModelOutput(rawAcc.toString()), usageDiag, parsedUsage)
+            return StreamReadOutcome(
+                text = cleanModelOutput(rawAcc.toString()),
+                usageDiagnostic = usageDiag,
+                tokenUsage = parsedUsage,
+                ttftMs = resolvedTtft,
+                genMs = (totalMs - resolvedTtft).coerceAtLeast(0L)
+            )
         }
 
         internal fun readGeminiStreamOrBufferedJson(
             reader: java.io.BufferedReader?,
             onThinkingStarted: (() -> Unit)? = null,
-            onStreamingTextUpdate: ((String) -> Unit)? = null
+            onStreamingTextUpdate: ((String) -> Unit)? = null,
+            requestStartNano: Long = System.nanoTime()
         ): StreamReadOutcome {
             if (reader == null) throw IOException("Gemini 未返回候选文本")
             var firstNonBlank: String? = null
@@ -4368,19 +4458,26 @@ class AiPipelineEngine(
                 }
             }
             if (firstNonBlank == null) throw IOException("Gemini 未返回候选文本")
+            val firstLineNano = System.nanoTime()
             val trimmedStart = firstNonBlank.trimStart()
             if (trimmedStart.startsWith("{")) {
                 val rest = reader.readText()
+                val totalMs = ((System.nanoTime() - requestStartNano) / 1_000_000L).coerceAtLeast(1L)
+                val firstMs = ((firstLineNano - requestStartNano) / 1_000_000L).coerceIn(1L, totalMs)
                 val fullBody = if (rest.isEmpty()) firstNonBlank else "$firstNonBlank\n$rest"
                 val parsedUsage = extractGeminiTokenUsageFromBody(fullBody)
                 return StreamReadOutcome(
                     text = parseGeminiResponse(fullBody),
                     usageDiagnostic = formatTokenUsageDiagnostics(parsedUsage),
-                    tokenUsage = parsedUsage
+                    tokenUsage = parsedUsage,
+                    ttftMs = firstMs,
+                    genMs = (totalMs - firstMs).coerceAtLeast(0L)
                 )
             }
             if (trimmedStart.startsWith("[")) {
                 val rest = reader.readText()
+                val totalMs = ((System.nanoTime() - requestStartNano) / 1_000_000L).coerceAtLeast(1L)
+                val firstMs = ((firstLineNano - requestStartNano) / 1_000_000L).coerceIn(1L, totalMs)
                 val fullBody = if (rest.isEmpty()) firstNonBlank else "$firstNonBlank\n$rest"
                 val arr = JsonParser.parseString(fullBody).asJsonArray
                 val sb = StringBuilder()
@@ -4405,12 +4502,15 @@ class AiPipelineEngine(
                 return StreamReadOutcome(
                     text = cleanModelOutput(sb.toString()),
                     usageDiagnostic = formatTokenUsageDiagnostics(lastUsage),
-                    tokenUsage = lastUsage
+                    tokenUsage = lastUsage,
+                    ttftMs = firstMs,
+                    genMs = (totalMs - firstMs).coerceAtLeast(0L)
                 )
             }
 
             val accText = StringBuilder()
             var thinkingEmitted = false
+            var firstVisibleContentNano = 0L
             var thoughtsTok = 0L
             var candTok = 0L
             var promptTok = 0L
@@ -4455,6 +4555,9 @@ class AiPipelineEngine(
                                             accText.append(txt)
                                             val cleanSoFar = cleanModelOutput(accText.toString())
                                             if (cleanSoFar.isNotEmpty()) {
+                                                if (firstVisibleContentNano == 0L) {
+                                                    firstVisibleContentNano = System.nanoTime()
+                                                }
                                                 onStreamingTextUpdate?.invoke(cleanSoFar)
                                             }
                                         }
@@ -4465,6 +4568,13 @@ class AiPipelineEngine(
                     }
                 }
                 currLine = reader.readLine()
+            }
+            val endNano = System.nanoTime()
+            val totalMs = ((endNano - requestStartNano) / 1_000_000L).coerceAtLeast(1L)
+            val resolvedTtft = if (firstVisibleContentNano > 0L) {
+                ((firstVisibleContentNano - requestStartNano) / 1_000_000L).coerceIn(1L, totalMs)
+            } else {
+                ((firstLineNano - requestStartNano) / 1_000_000L).coerceIn(1L, totalMs)
             }
             val parsedUsage = if (promptTok > 0L || thoughtsTok > 0L || candTok > 0L || totalTok > 0L) {
                 TokenUsage(
@@ -4481,7 +4591,9 @@ class AiPipelineEngine(
             return StreamReadOutcome(
                 text = cleanModelOutput(accText.toString()),
                 usageDiagnostic = formatTokenUsageDiagnostics(parsedUsage),
-                tokenUsage = parsedUsage
+                tokenUsage = parsedUsage,
+                ttftMs = resolvedTtft,
+                genMs = (totalMs - resolvedTtft).coerceAtLeast(0L)
             )
         }
 

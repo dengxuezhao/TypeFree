@@ -16,6 +16,7 @@ import com.typefree.ime.data.stats.TokenUsage
 import com.typefree.ime.i18n.AppStrings
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PipelineStage
+import com.typefree.ime.network.VoiceLatencyTraceAssembler
 import com.typefree.ime.network.asr.StreamingAsrSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -40,6 +41,10 @@ class VoiceController(
     private var streamingPreviewJob: Job? = null
     private var handsFreeSilenceJob: Job? = null
     private var toastDismissJob: Job? = null
+    private var lastSessionMicInitMs: Long = 0L
+    private var lastSessionRecStartNano: Long = 0L
+    private var lastSessionFirstPartialMs: Long = 0L
+    private var lastSessionHadStreaming: Boolean = false
     private var activeComposer: StreamingComposer? = null
     private var preSessionSurroundingContext: String = ""
     private var lastKnownSelectionStart: Int = 0
@@ -304,6 +309,12 @@ class VoiceController(
             )
         }
 
+        val pressStartNano = System.nanoTime()
+        lastSessionMicInitMs = 0L
+        lastSessionRecStartNano = 0L
+        lastSessionFirstPartialMs = 0L
+        lastSessionHadStreaming = false
+
         val audioRecorder = audioRecorderProvider()
         if (!audioRecorder.hasRecordPermission()) {
             micPressDownTimeMs = 0L
@@ -396,6 +407,11 @@ class VoiceController(
         )
         startRes.fold(
             onSuccess = {
+                val readyNano = System.nanoTime()
+                lastSessionMicInitMs = ((readyNano - pressStartNano) / 1_000_000L).coerceAtLeast(1L)
+                lastSessionRecStartNano = readyNano
+                lastSessionFirstPartialMs = 0L
+                lastSessionHadStreaming = streamSession != null
                 micPressDownTimeMs = System.currentTimeMillis()
                 activeStreamingSession = streamSession
                 if (enableLiveWrite) {
@@ -420,6 +436,10 @@ class VoiceController(
                 if (streamSession != null) {
                     streamingPreviewJob = host.scope.launch {
                         streamSession.transcript.collect { liveTranscript ->
+                            if (lastSessionFirstPartialMs == 0L && liveTranscript.fullText.isNotBlank()) {
+                                lastSessionFirstPartialMs =
+                                    ((System.nanoTime() - lastSessionRecStartNano) / 1_000_000L).coerceAtLeast(1L)
+                            }
                             val composer = activeComposer
                             if (composer != null && composer.isActive) {
                                 composer.onTranscriptUpdate(liveTranscript)
@@ -609,6 +629,7 @@ class VoiceController(
         intentOverride: VoiceIntentMode? = null,
         translateLangOverride: String? = null
     ) {
+        val releaseStartNano = System.nanoTime()
         val liveSession = activeStreamingSession
         activeStreamingSession = null
         streamingPreviewJob?.cancel()
@@ -619,7 +640,9 @@ class VoiceController(
         val audioRecorder = audioRecorderProvider()
         activePipelineJob?.cancel()
         activePipelineJob = host.scope.launch {
+            val stopIoStartNano = System.nanoTime()
             val stopResult = audioRecorder.stopRecording()
+            val stopIoMs = ((System.nanoTime() - stopIoStartNano) / 1_000_000L).coerceAtLeast(1L)
             stopResult.fold(
                 onSuccess = { recorded ->
                     var preTranscribed: String? = null
@@ -693,7 +716,9 @@ class VoiceController(
                         intentOverride = intentOverride,
                         translateLangOverride = translateLangOverride,
                         preTranscribedText = preTranscribed,
-                        sttTailWaitMs = tailWaitMs
+                        sttTailWaitMs = tailWaitMs,
+                        stopIoMs = stopIoMs,
+                        releaseStartNano = releaseStartNano
                     )
                 },
                 onFailure = { err ->
@@ -728,7 +753,9 @@ class VoiceController(
         intentOverride: VoiceIntentMode? = null,
         translateLangOverride: String? = null,
         preTranscribedText: String? = null,
-        sttTailWaitMs: Long = 0L
+        sttTailWaitMs: Long = 0L,
+        stopIoMs: Long = 0L,
+        releaseStartNano: Long = 0L
     ) {
         val settings = host.repository.settings.value
         val snapshot = host.stateFlow.value
@@ -855,6 +882,7 @@ class VoiceController(
                     pipelineLatencyMs = exec.latencyMs,
                     recordingDurationMs = durationMs
                 )
+                val commitStartNano = System.nanoTime()
                 val activeComp = activeComposer
                 activeComposer = null
                 if (activeComp != null) {
@@ -896,12 +924,30 @@ class VoiceController(
                         )
                     }
                 }
+                val commitDoneNano = System.nanoTime()
+                val commitMs = ((commitDoneNano - commitStartNano) / 1_000_000L).coerceAtLeast(1L)
+                val postReleaseE2eMs = if (releaseStartNano > 0L) {
+                    ((commitDoneNano - releaseStartNano) / 1_000_000L).coerceAtLeast(1L)
+                } else {
+                    exec.latencyMs
+                }
                 val isIncognito = host.stateFlow.value.isIncognitoMode ||
                     settings.manualIncognitoMode ||
                     ImeLogic.isPasswordEditorInputType(host.stateFlow.value.currentInputType)
                 if (isIncognito) {
                     runCatching { wavFile.delete() }
                 } else {
+                    val voiceTrace = VoiceLatencyTraceAssembler.assemble(
+                        micInitMs = lastSessionMicInitMs,
+                        recordingDurationMs = durationMs,
+                        firstPartialMs = lastSessionFirstPartialMs,
+                        hadStreamingSession = lastSessionHadStreaming,
+                        stopIoMs = stopIoMs,
+                        commitMs = commitMs,
+                        measuredPostReleaseMs = postReleaseE2eMs,
+                        exec = exec,
+                        hostAppName = targetAppName
+                    )
                     recordTokenUsageIfAllowed(
                         usage = exec.tokenUsage,
                         modelName = exec.modelName,
@@ -924,10 +970,11 @@ class VoiceController(
                             rawTranscript = exec.rawTranscript,
                             polishedText = finalOutput,
                             durationMs = durationMs,
-                            latencyMs = exec.latencyMs,
+                            latencyMs = voiceTrace.postReleaseTotalMs,
                             modeLabel = exec.modeSummary,
                             audioFilePath = historyAudioFile.absolutePath,
-                            executionSource = exec.executionSource.name
+                            executionSource = exec.executionSource.name,
+                            voiceTrace = voiceTrace
                         )
                     )
                 }

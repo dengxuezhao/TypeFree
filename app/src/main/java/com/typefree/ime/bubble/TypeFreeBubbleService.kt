@@ -1,5 +1,7 @@
 package com.typefree.ime.bubble
 
+import com.typefree.ime.network.VoiceLatencyTraceAssembler
+
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -509,12 +511,15 @@ class TypeFreeBubbleService :
 
     private fun finishBubbleRecordingAndInject() {
         if (_phase.value !is BubblePhase.Recording) return
+        val releaseStartNano = System.nanoTime()
         val liveSession = activeStreamingSession
         activeStreamingSession = null
         vibrate(strong = true)
         pipelineJob?.cancel()
         pipelineJob = serviceScope.launch {
+            val stopIoStartNano = System.nanoTime()
             val stopRes = audioRecorder.stopRecording()
+            val stopIoMs = ((System.nanoTime() - stopIoStartNano) / 1_000_000L).coerceAtLeast(1L)
             demoteFromForeground()
             stopRes.fold(
                 onSuccess = { recorded ->
@@ -591,11 +596,15 @@ class TypeFreeBubbleService :
                     result.fold(
                         onSuccess = { exec ->
                             val finalOut = exec.finalOutput
+                            val commitStartNano = System.nanoTime()
                             val a11y = TypeFreeAccessibilityService.activeInstance
                             val inserted = a11y?.insertPolishedText(finalOut) ?: false
                             if (!inserted) {
                                 copyToClipboard(finalOut)
                             }
+                            val commitDoneNano = System.nanoTime()
+                            val commitMs = ((commitDoneNano - commitStartNano) / 1_000_000L).coerceAtLeast(1L)
+                            val postReleaseE2eMs = ((commitDoneNano - releaseStartNano) / 1_000_000L).coerceAtLeast(1L)
                             val isIncognito = settings.manualIncognitoMode ||
                                 liveSnap.isSensitivePassword ||
                                 ImeLogic.isIncognitoImeOptions(
@@ -606,6 +615,18 @@ class TypeFreeBubbleService :
                             if (isIncognito) {
                                 runCatching { recorded.wavFile.delete() }
                             } else {
+                                val resolvedHostName = if (appName == "未知应用") "悬浮胶囊" else appName
+                                val voiceTrace = VoiceLatencyTraceAssembler.assemble(
+                                    micInitMs = 0L,
+                                    recordingDurationMs = recorded.durationMs,
+                                    firstPartialMs = 0L,
+                                    hadStreamingSession = liveSession != null,
+                                    stopIoMs = stopIoMs,
+                                    commitMs = commitMs,
+                                    measuredPostReleaseMs = postReleaseE2eMs,
+                                    exec = exec,
+                                    hostAppName = resolvedHostName
+                                )
                                 if (settings.inputStatsEnabled) {
                                     repository.dailyStatsStore.recordTokenUsage(
                                         usage = exec.tokenUsage,
@@ -625,7 +646,7 @@ class TypeFreeBubbleService :
                                 )
                                 repository.addHistory(
                                     HistoryRecord(
-                                        targetAppName = if (appName == "未知应用") "悬浮胶囊" else appName,
+                                        targetAppName = resolvedHostName,
                                         targetPackage = pkg,
                                         styleName = activeStyle.name,
                                         isSpeakToEdit = selectedText.isNotBlank(),
@@ -634,10 +655,11 @@ class TypeFreeBubbleService :
                                         rawTranscript = exec.rawTranscript,
                                         polishedText = finalOut,
                                         durationMs = recorded.durationMs,
-                                        latencyMs = exec.latencyMs,
+                                        latencyMs = voiceTrace.postReleaseTotalMs,
                                         modeLabel = "胶囊 · ${exec.modeSummary}",
                                         audioFilePath = archivedWav.absolutePath,
-                                        executionSource = exec.executionSource.name
+                                        executionSource = exec.executionSource.name,
+                                        voiceTrace = voiceTrace
                                     )
                                 )
                             }

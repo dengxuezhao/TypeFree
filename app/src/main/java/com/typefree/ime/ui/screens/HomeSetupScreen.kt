@@ -122,6 +122,7 @@ import com.typefree.ime.i18n.tr
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.EndpointResolver
 import com.typefree.ime.network.PipelineStage
+import com.typefree.ime.network.VoiceLatencyTraceAssembler
 import com.typefree.ime.network.asr.StreamingAsrSession
 import com.typefree.ime.ui.AppDestinations
 import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
@@ -1018,6 +1019,17 @@ fun HomeSetupScreen(
                                 incognito = false
                             )
                         }
+                        val sandboxTrace = VoiceLatencyTraceAssembler.assemble(
+                            micInitMs = 0L,
+                            recordingDurationMs = recorded.durationMs,
+                            firstPartialMs = 0L,
+                            hadStreamingSession = exec.usedStreamingAsr,
+                            stopIoMs = 12L,
+                            commitMs = 4L,
+                            measuredPostReleaseMs = exec.latencyMs,
+                            exec = exec,
+                            hostAppName = "沙盒"
+                        )
                         repository.addHistory(
                             HistoryRecord(
                                 targetAppName = "TypeFree 沙盒",
@@ -1034,10 +1046,11 @@ fun HomeSetupScreen(
                                 rawTranscript = exec.rawTranscript,
                                 polishedText = exec.finalOutput,
                                 durationMs = recorded.durationMs,
-                                latencyMs = exec.latencyMs,
+                                latencyMs = sandboxTrace.postReleaseTotalMs,
                                 modeLabel = exec.modeSummary,
                                 audioFilePath = recorded.wavFile.absolutePath,
-                                executionSource = exec.executionSource.name
+                                executionSource = exec.executionSource.name,
+                                voiceTrace = sandboxTrace
                             )
                         )
                     }.onFailure { err ->

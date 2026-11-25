@@ -4,10 +4,25 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +31,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -72,12 +88,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.ime.data.AppRepository
@@ -86,6 +109,8 @@ import com.typefree.ime.data.HistoryRecord
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.data.VoiceLatencyTrace
+import com.typefree.ime.data.VoiceTraceStage
 import com.typefree.ime.data.stats.TokenFeatureKeys
 import com.typefree.ime.i18n.AppLang
 import com.typefree.ime.i18n.AppStrings
@@ -94,7 +119,13 @@ import com.typefree.ime.i18n.tr
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PipelineExecutionResult
 import com.typefree.ime.network.PipelineStage
+import com.typefree.ime.network.VoiceLatencyTraceAssembler
+import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
+import com.typefree.ime.ui.components.RollingDigitCounter
+import com.typefree.ime.ui.components.SmoothDisclosure
 import com.typefree.ime.ui.components.TypeFreeIcons
+import com.typefree.ime.ui.components.springPressScale
+import com.typefree.ime.ui.theme.LocalTypeFreeKeyboardPalette
 import com.typefree.ime.ui.theme.TypeFreeEmerald
 import kotlinx.coroutines.launch
 import java.io.File
@@ -103,6 +134,29 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.roundToInt
+
+// Plan A: Obsidian × Emerald cohesive 5-step tonal scale (Dark & Light)
+private val PlanADarkShades = listOf(
+    Color(0xFF52525E), // 0: Audio Stop / Flush / Encode
+    Color(0xFF0F766E), // 1: Stage-1 ASR / Streaming Tail
+    Color(0xFF10B981), // 2: Stage-2 LLM TTFT / Prefill
+    Color(0xFF6EE7B7), // 3: Stage-2 LLM Stream / Decode
+    Color(0xFFE4E4E7)  // 4: Editor InputConnection Commit
+)
+
+private val PlanALightShades = listOf(
+    Color(0xFFA1A1AA), // 0: Audio Stop / Flush / Encode
+    Color(0xFF0D9488), // 1: Stage-1 ASR / Streaming Tail
+    Color(0xFF059669), // 2: Stage-2 LLM TTFT / Prefill
+    Color(0xFF34D399), // 3: Stage-2 LLM Stream / Decode
+    Color(0xFF27272A)  // 4: Editor InputConnection Commit
+)
+
+private fun resolvePlanAToneColor(toneStep: Int, isDark: Boolean): Color {
+    val shades = if (isDark) PlanADarkShades else PlanALightShades
+    return shades[toneStep.coerceIn(0, shades.lastIndex)]
+}
 
 private data class RepolishDialogState(
     val sourceRecord: HistoryRecord,
@@ -997,7 +1051,19 @@ fun HistoryScreen(
                             "重潤飾 (${dialogState.executionResult.modeSummary})"
                         )
                     },
-                    audioFilePath = src.audioFilePath
+                    audioFilePath = src.audioFilePath,
+                    voiceTrace = VoiceLatencyTraceAssembler.assemble(
+                        micInitMs = 0L,
+                        recordingDurationMs = if (dialogState.fromAudioRetry) src.durationMs else 0L,
+                        firstPartialMs = 0L,
+                        hadStreamingSession = false,
+                        stopIoMs = 0L,
+                        commitMs = 0L,
+                        measuredPostReleaseMs = dialogState.executionResult.latencyMs,
+                        exec = dialogState.executionResult,
+                        hostAppName = src.targetAppName,
+                        commitTargetLabelZh = ""
+                    )
                 )
                 repository.addHistory(newRecord)
                 copyTextToClipboard(
@@ -1149,6 +1215,9 @@ private fun HistoryTimelineCard(
     val metricsText = remember(record.durationMs, record.latencyMs, record.modeLabel, appLang) {
         formatMetricsLabel(record.durationMs, record.latencyMs, record.modeLabel, appLang)
     }
+    val activeVoiceTrace = remember(record.voiceTrace) {
+        record.voiceTrace?.takeIf { it.stages.isNotEmpty() }
+    }
     val localWavFile = remember(record.audioFilePath) {
         record.audioFilePath
             .takeIf { it.isNotBlank() }
@@ -1239,6 +1308,26 @@ private fun HistoryTimelineCard(
                             )
                         }
                     }
+
+                    if (activeVoiceTrace != null && record.modeLabel.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Color.Transparent,
+                            border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                        ) {
+                            Text(
+                                text = localizeModeLabel(record.modeLabel, appLang),
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 10.sp
+                                ),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 6.5.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                 }
 
                 IconButton(
@@ -1264,9 +1353,19 @@ private fun HistoryTimelineCard(
                 )
             }
 
-            // Expandable Original Transcript / Selected Text Details
+            // Expandable Original Transcript / Full-Chain Voice Latency Waterfall (Plan A)
             val hasRawOrSelected = record.rawTranscript.isNotBlank() || record.originalSelectedText.isNotBlank()
-            if (hasRawOrSelected || metricsText.isNotBlank()) {
+            if (activeVoiceTrace != null) {
+                VoiceLatencyWaterfallSubCard(
+                    record = record,
+                    trace = activeVoiceTrace,
+                    resolvedIntent = resolvedIntent,
+                    timeOnlyText = timeOnlyText,
+                    expanded = rawExpanded,
+                    onToggleExpand = { rawExpanded = !rawExpanded },
+                    onCopyRaw = onCopyRaw
+                )
+            } else if (hasRawOrSelected || metricsText.isNotBlank()) {
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1335,36 +1434,40 @@ private fun HistoryTimelineCard(
                             }
                         }
 
-                        if (rawExpanded) {
-                            if (record.originalSelectedText.isNotBlank()) {
-                                Text(
-                                    text = tr("选区原文：${record.originalSelectedText}", "Selected text: ${record.originalSelectedText}", "選區原文：${record.originalSelectedText}"),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            if (record.rawTranscript.isNotBlank()) {
-                                Text(
-                                    text = if (resolvedIntent == VoiceIntentMode.SPEAK_TO_EDIT ||
-                                        resolvedIntent == VoiceIntentMode.HELP_ME_WRITE
+                        SmoothDisclosure(expanded = rawExpanded) {
+                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                if (record.originalSelectedText.isNotBlank()) {
+                                    Text(
+                                        text = tr("选区原文：${record.originalSelectedText}", "Selected text: ${record.originalSelectedText}", "選區原文：${record.originalSelectedText}"),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (record.rawTranscript.isNotBlank()) {
+                                    Text(
+                                        text = if (resolvedIntent == VoiceIntentMode.SPEAK_TO_EDIT ||
+                                            resolvedIntent == VoiceIntentMode.HELP_ME_WRITE
+                                        ) {
+                                            tr("口述指令：${record.rawTranscript}", "Spoken instruction: ${record.rawTranscript}", "口述指令：${record.rawTranscript}")
+                                        } else {
+                                            tr("原始转写：${record.rawTranscript}", "Raw transcript: ${record.rawTranscript}", "原始轉寫：${record.rawTranscript}")
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (hasRawOrSelected) {
+                                    TextButton(
+                                        onClick = onCopyRaw,
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
                                     ) {
-                                        tr("口述指令：${record.rawTranscript}", "Spoken instruction: ${record.rawTranscript}", "口述指令：${record.rawTranscript}")
-                                    } else {
-                                        tr("原始转写：${record.rawTranscript}", "Raw transcript: ${record.rawTranscript}", "原始轉寫：${record.rawTranscript}")
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            if (hasRawOrSelected) {
-                                TextButton(
-                                    onClick = onCopyRaw,
-                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                                ) {
-                                    Text(tr("复制原稿文本", "Copy Raw Text", "複製原稿文字"), style = MaterialTheme.typography.labelSmall)
+                                        Text(tr("复制原稿文本", "Copy Raw Text", "複製原稿文字"), style = MaterialTheme.typography.labelSmall)
+                                    }
                                 }
                             }
-                        } else if (record.rawTranscript.isNotBlank()) {
+                        }
+
+                        if (!rawExpanded && record.rawTranscript.isNotBlank()) {
                             Text(
                                 text = record.rawTranscript,
                                 style = MaterialTheme.typography.bodySmall,
@@ -1674,6 +1777,23 @@ private fun resolveStyleDisplayLabel(styleName: String, styles: List<ToneStyle>,
         .replace("直出地道英文", AppStrings.pick(lang, "直出地道英文", "Native English Output", "直出地道英文"))
 }
 
+private fun localizeModeLabel(modeLabel: String, lang: AppLang): String {
+    if (lang == AppLang.ZH_CN) return modeLabel
+    return modeLabel
+        .replace("胶囊 · ", AppStrings.pick(lang, "胶囊 · ", "Bubble · ", "膠囊 · "))
+        .replace("录音重跑 (", AppStrings.pick(lang, "录音重跑 (", "Audio Retry (", "錄音重跑 ("))
+        .replace("重润色 (", AppStrings.pick(lang, "重润色 (", "Repolished (", "重潤飾 ("))
+        .replace("多模态 (", AppStrings.pick(lang, "多模态 (", "Multimodal (", "多模態 ("))
+        .replace("(云端回退)", AppStrings.pick(lang, "(云端回退)", "(Cloud Fallback)", "(雲端回退)"))
+        .replace("本机离线", AppStrings.pick(lang, "本机离线", "Local Offline", "本機離線"))
+        .replace("本机 ", AppStrings.pick(lang, "本机 ", "Local ", "本機 "))
+        .replace("Zipformer 双语", AppStrings.pick(lang, "Zipformer 双语", "Zipformer Bilingual", "Zipformer 雙語"))
+        .replace("Paraformer 流式", AppStrings.pick(lang, "Paraformer 流式", "Paraformer Stream", "Paraformer 串流"))
+        .replace("豆包流式", AppStrings.pick(lang, "豆包流式", "Doubao Stream", "豆包串流"))
+        .replace("百炼流式", AppStrings.pick(lang, "百炼流式", "Bailian Stream", "百煉串流"))
+        .replace("硅基 SenseVoice", AppStrings.pick(lang, "硅基 SenseVoice", "SiliconFlow SenseVoice", "矽基 SenseVoice"))
+}
+
 private fun formatMetricsLabel(durationMs: Long, latencyMs: Long, modeLabel: String, lang: AppLang): String {
     val parts = mutableListOf<String>()
     if (durationMs > 0L) {
@@ -1683,14 +1803,714 @@ private fun formatMetricsLabel(durationMs: Long, latencyMs: Long, modeLabel: Str
         parts += "${latencyMs}ms"
     }
     if (modeLabel.isNotBlank()) {
-        val localizedMode = if (lang == AppLang.ZH_CN) {
-            modeLabel
-        } else {
-            modeLabel
-                .replace("录音重跑 (", AppStrings.pick(lang, "录音重跑 (", "Audio Retry (", "錄音重跑 ("))
-                .replace("重润色 (", AppStrings.pick(lang, "重润色 (", "Repolished (", "重潤飾 ("))
-        }
-        parts += localizedMode
+        parts += localizeModeLabel(modeLabel, lang)
     }
     return parts.joinToString(" · ")
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun VoiceLatencyWaterfallSubCard(
+    record: HistoryRecord,
+    trace: VoiceLatencyTrace,
+    resolvedIntent: VoiceIntentMode,
+    timeOnlyText: String,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onCopyRaw: () -> Unit
+) {
+    val context = LocalContext.current
+    val appLang = LocalAppLanguage.current
+    val isDark = LocalTypeFreeKeyboardPalette.current.isDark
+    val hasRawOrSelected = record.rawTranscript.isNotBlank() || record.originalSelectedText.isNotBlank()
+
+    var selectedStageIdx by remember(record.id) { mutableStateOf<Int?>(null) }
+    var barUnfurled by remember(record.id) { mutableStateOf(expanded) }
+    val cometProgress = remember(record.id) { Animatable(-0.35f) }
+
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            barUnfurled = true
+            cometProgress.snapTo(-0.35f)
+            cometProgress.animateTo(
+                targetValue = 1.35f,
+                animationSpec = tween(durationMillis = 860, easing = FastOutSlowInEasing)
+            )
+        } else {
+            barUnfurled = false
+            selectedStageIdx = null
+        }
+    }
+
+    val outerShape = remember { ContinuousRoundedCornerShape(14.dp) }
+    val outerContainerColor = if (isDark) {
+        Color(0xFF121318)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.52f)
+    }
+    val outerBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = if (isDark) 0.55f else 0.48f)
+
+    val recMs = if (trace.recordingDurationMs > 0L) trace.recordingDurationMs else record.durationMs
+    val dotColor = when {
+        trace.isSlowWarning -> Color(0xFFF59E0B)
+        isDark -> Color(0xFF34D399)
+        else -> Color(0xFF059669)
+    }
+    val monoPillStyle = MaterialTheme.typography.labelSmall.copy(
+        fontFamily = FontFamily.Monospace,
+        fontSize = 10.5.sp,
+        lineHeight = 13.sp
+    )
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = spring(dampingRatio = 0.68f, stiffness = Spring.StiffnessMedium),
+        label = "traceChevronRotation"
+    )
+    val headerInteraction = remember { MutableInteractionSource() }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = outerShape,
+        color = outerContainerColor,
+        border = BorderStroke(0.8.dp, outerBorderColor)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Header Row (Collapsed by default; click to smoothly expand Plan A waterfall)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .springPressScale(pressedScale = 0.985f, interactionSource = headerInteraction)
+                    .clickable(
+                        interactionSource = headerInteraction,
+                        indication = null,
+                        onClick = onToggleExpand
+                    )
+                    .padding(horizontal = 11.dp, vertical = 8.5.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (resolvedIntent == VoiceIntentMode.SPEAK_TO_EDIT) {
+                            tr("选区 & 耗时拆解", "Selection & Latency", "選區 & 耗時拆解")
+                        } else {
+                            tr("原稿 & 耗时拆解", "Raw & Latency", "原稿 & 耗時拆解")
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+
+                    if (!expanded && record.rawTranscript.isNotBlank()) {
+                        Text(
+                            text = record.rawTranscript,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (recMs > 0L) {
+                        Text(
+                            text = String.format(Locale.US, "%.1fs", recMs / 1000.0),
+                            style = monoPillStyle,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.58f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 7.5.dp, vertical = 2.5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(5.5.dp)
+                                    .clip(CircleShape)
+                                    .background(dotColor)
+                            )
+                            Spacer(modifier = Modifier.width(4.5.dp))
+                            Text(
+                                text = tr("松手 ", "Rel ", "鬆手 "),
+                                style = monoPillStyle,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            RollingDigitCounter(
+                                text = "${trace.postReleaseTotalMs}",
+                                style = monoPillStyle,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "ms",
+                                style = monoPillStyle,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (expanded) tr("收起", "Collapse", "收起") else tr("展开", "Expand", "展開"),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .size(16.dp)
+                            .graphicsLayer { rotationZ = chevronRotation }
+                    )
+                }
+            }
+
+            // Expandable Body
+            SmoothDisclosure(expanded = expanded) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    HorizontalDivider(
+                        thickness = 0.6.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                    )
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 11.dp, vertical = 9.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // 1. Caption + Slender 10.5dp Obsidian × Emerald Tonal Waterfall Bar
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = tr(
+                                        "松手 → 上屏关键路径（点按分段查看详情）",
+                                        "Release → Commit path (tap segment to inspect)",
+                                        "鬆手 → 上屏關鍵路徑（點按分段查看詳情）"
+                                    ),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+
+                                if (selectedStageIdx != null) {
+                                    Text(
+                                        text = tr("返回总览 ↺", "Overview ↺", "返回總覽 ↺"),
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .clickable { selectedStageIdx = null }
+                                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
+
+                            val trackBg = if (isDark) Color(0xFF23252E) else Color(0xFFE4E5EC)
+                            val totalPostMs = trace.postReleaseTotalMs.coerceAtLeast(1L).toFloat()
+                            val stageCount = trace.stages.size.coerceAtLeast(1)
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp)
+                                    .height(10.5.dp)
+                                    .clip(CircleShape)
+                                    .background(trackBg)
+                                    .padding(1.5.dp)
+                                    .drawWithContent {
+                                        drawContent()
+                                        val p = cometProgress.value
+                                        if (p > -0.3f && p < 1.3f && size.width > 0f) {
+                                            val bandHalf = size.width * 0.22f
+                                            val center = size.width * p
+                                            val fadeAlpha = (1f - ((p - 0.85f).coerceAtLeast(0f) / 0.45f))
+                                                .coerceIn(0f, 1f) * (if (isDark) 0.52f else 0.65f)
+                                            drawRect(
+                                                brush = Brush.horizontalGradient(
+                                                    colors = listOf(
+                                                        Color.Transparent,
+                                                        Color.White.copy(alpha = fadeAlpha),
+                                                        Color.Transparent
+                                                    ),
+                                                    startX = center - bandHalf,
+                                                    endX = center + bandHalf
+                                                )
+                                            )
+                                        }
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxSize(),
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    trace.stages.forEachIndexed { idx, stage ->
+                                        val rawShare = (stage.durationMs.toFloat() / totalPostMs).coerceIn(0.055f, 1f)
+                                        val targetWeight = if (barUnfurled) rawShare else (1f / stageCount)
+                                        val animatedWeight by animateFloatAsState(
+                                            targetValue = targetWeight,
+                                            animationSpec = spring(dampingRatio = 0.76f, stiffness = 360f),
+                                            label = "waterfallWeight_$idx"
+                                        )
+                                        val isSelected = selectedStageIdx == idx
+                                        val targetAlpha = if (selectedStageIdx == null || isSelected) 1f else 0.28f
+                                        val animatedAlpha by animateFloatAsState(
+                                            targetValue = targetAlpha,
+                                            animationSpec = spring(stiffness = Spring.StiffnessMedium),
+                                            label = "waterfallAlpha_$idx"
+                                        )
+                                        val segScaleY by animateFloatAsState(
+                                            targetValue = if (isSelected) 1.24f else 1f,
+                                            animationSpec = spring(
+                                                dampingRatio = 0.62f,
+                                                stiffness = Spring.StiffnessMedium
+                                            ),
+                                            label = "waterfallScaleY_$idx"
+                                        )
+                                        val segShape = remember(idx, stageCount) {
+                                            RoundedCornerShape(
+                                                topStart = if (idx == 0) 99.dp else 2.5.dp,
+                                                bottomStart = if (idx == 0) 99.dp else 2.5.dp,
+                                                topEnd = if (idx == stageCount - 1) 99.dp else 2.5.dp,
+                                                bottomEnd = if (idx == stageCount - 1) 99.dp else 2.5.dp
+                                            )
+                                        }
+                                        val segColor = resolvePlanAToneColor(stage.toneStep, isDark)
+                                        val segInteraction = remember { MutableInteractionSource() }
+
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(animatedWeight.coerceAtLeast(0.04f))
+                                                .fillMaxHeight()
+                                                .graphicsLayer {
+                                                    scaleY = segScaleY
+                                                    alpha = animatedAlpha
+                                                }
+                                                .clip(segShape)
+                                                .background(segColor)
+                                                .drawWithContent {
+                                                    drawContent()
+                                                    drawLine(
+                                                        color = Color.White.copy(alpha = 0.22f),
+                                                        start = Offset(0f, 0.5f),
+                                                        end = Offset(size.width, 0.5f),
+                                                        strokeWidth = 1f
+                                                    )
+                                                }
+                                                .clickable(
+                                                    interactionSource = segInteraction,
+                                                    indication = null
+                                                ) {
+                                                    selectedStageIdx = if (selectedStageIdx == idx) null else idx
+                                                }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2. SINGLE Unified Focus Card (Overview when null; Stage Detail when tapped)
+                        val focusCardShape = remember { ContinuousRoundedCornerShape(11.dp) }
+                        Surface(
+                            shape = focusCardShape,
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            AnimatedContent(
+                                targetState = selectedStageIdx,
+                                transitionSpec = {
+                                    val enter = fadeIn(tween(180)) + slideInVertically(
+                                        animationSpec = spring(
+                                            dampingRatio = 0.82f,
+                                            stiffness = Spring.StiffnessMedium
+                                        )
+                                    ) { height -> height / 6 }
+                                    val exit = fadeOut(tween(120)) + slideOutVertically(
+                                        animationSpec = tween(120)
+                                    ) { height -> -height / 8 }
+                                    (enter togetherWith exit).using(SizeTransform(clip = false))
+                                },
+                                label = "singleFocusLatencyCard"
+                            ) { focusedIdx ->
+                                val focusedStage = focusedIdx?.let { trace.stages.getOrNull(it) }
+                                if (focusedStage == null) {
+                                    val fullSpanMs = trace.micInitMs + recMs + trace.postReleaseTotalMs
+                                    val badgeText = AppStrings.pick(
+                                        appLang,
+                                        trace.summaryBadgeZh,
+                                        trace.summaryBadgeEn,
+                                        trace.summaryBadgeTw
+                                    )
+                                    val wsLabel = AppStrings.pick(
+                                        appLang,
+                                        trace.wsSetupZh,
+                                        trace.wsSetupEn,
+                                        trace.wsSetupTw
+                                    )
+                                    val streamHint = AppStrings.pick(
+                                        appLang,
+                                        trace.streamHintZh,
+                                        trace.streamHintEn,
+                                        trace.streamHintTw
+                                    )
+
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 10.dp, vertical = 8.5.dp),
+                                        verticalArrangement = Arrangement.spacedBy(5.5.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = tr("全流程耗时总览", "Full-Chain Overview", "全流程耗時總覽"),
+                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.5.sp),
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                                softWrap = false
+                                            )
+
+                                            if (badgeText.isNotBlank()) {
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Surface(
+                                                    shape = RoundedCornerShape(5.dp),
+                                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                                                    border = BorderStroke(
+                                                        0.6.dp,
+                                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)
+                                                    ),
+                                                    modifier = Modifier.weight(1f, fill = false)
+                                                ) {
+                                                    Text(
+                                                        text = badgeText,
+                                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.5.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        val primaryColor = MaterialTheme.colorScheme.onSurface
+                                        val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                        Text(
+                                            text = buildAnnotatedString {
+                                                if (recMs > 0L || trace.micInitMs > 0L) {
+                                                    withStyle(SpanStyle(color = mutedColor)) {
+                                                        append(tr("① 启动 ", "① Init ", "① 啟動 "))
+                                                    }
+                                                    withStyle(SpanStyle(color = primaryColor, fontWeight = FontWeight.SemiBold)) {
+                                                        append("${trace.micInitMs}ms")
+                                                    }
+                                                    if (wsLabel.isNotBlank()) {
+                                                        withStyle(SpanStyle(color = mutedColor)) {
+                                                            append(" ($wsLabel)  /  ")
+                                                        }
+                                                    } else {
+                                                        withStyle(SpanStyle(color = mutedColor)) { append("  /  ") }
+                                                    }
+
+                                                    withStyle(SpanStyle(color = mutedColor)) {
+                                                        append(tr("② 录音 ", "② Rec ", "② 錄音 "))
+                                                    }
+                                                    withStyle(SpanStyle(color = primaryColor, fontWeight = FontWeight.SemiBold)) {
+                                                        append(String.format(Locale.US, "%.2fs", recMs / 1000.0))
+                                                    }
+                                                    if (streamHint.isNotBlank()) {
+                                                        withStyle(SpanStyle(color = mutedColor)) {
+                                                            append(" ($streamHint)  /  ")
+                                                        }
+                                                    } else {
+                                                        withStyle(SpanStyle(color = mutedColor)) { append("  /  ") }
+                                                    }
+
+                                                    withStyle(SpanStyle(color = mutedColor)) {
+                                                        append(tr("③ 松手等待 ", "③ Post-Release ", "③ 鬆手等待 "))
+                                                    }
+                                                    withStyle(SpanStyle(color = primaryColor, fontWeight = FontWeight.SemiBold)) {
+                                                        append("${trace.postReleaseTotalMs}ms")
+                                                    }
+                                                    withStyle(SpanStyle(color = mutedColor)) {
+                                                        append(
+                                                            tr(
+                                                                "  ·  按下→上屏 ${String.format(Locale.US, "%.2fs", fullSpanMs / 1000.0)}",
+                                                                "  ·  Total ${String.format(Locale.US, "%.2fs", fullSpanMs / 1000.0)}",
+                                                                "  ·  按下→上屏 ${String.format(Locale.US, "%.2fs", fullSpanMs / 1000.0)}"
+                                                            )
+                                                        )
+                                                    }
+                                                } else {
+                                                    withStyle(SpanStyle(color = mutedColor)) {
+                                                        append(tr("文本直调耗时 ", "Direct Text Pass ", "文字直調耗時 "))
+                                                    }
+                                                    withStyle(SpanStyle(color = primaryColor, fontWeight = FontWeight.SemiBold)) {
+                                                        append("${trace.postReleaseTotalMs}ms")
+                                                    }
+                                                    if (streamHint.isNotBlank()) {
+                                                        withStyle(SpanStyle(color = mutedColor)) {
+                                                            append(" ($streamHint)")
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            style = monoPillStyle.copy(lineHeight = 15.sp)
+                                        )
+
+                                        HorizontalDivider(
+                                            thickness = 0.5.dp,
+                                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                                        )
+
+                                        // Compact Tonal Dot Legend (tappable as easy finger targets for each stage)
+                                        FlowRow(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            trace.stages.forEachIndexed { idx, st ->
+                                                val stLabel = AppStrings.pick(appLang, st.labelZh, st.labelEn, st.labelTw)
+                                                val stColor = resolvePlanAToneColor(st.toneStep, isDark)
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(4.dp))
+                                                        .clickable { selectedStageIdx = idx }
+                                                        .padding(vertical = 1.dp)
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(6.5.dp)
+                                                            .clip(CircleShape)
+                                                            .background(stColor)
+                                                    )
+                                                    Text(
+                                                        text = "$stLabel ${st.durationMs}ms",
+                                                        style = monoPillStyle.copy(fontSize = 10.sp),
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    val stLabel = AppStrings.pick(
+                                        appLang,
+                                        focusedStage.labelZh,
+                                        focusedStage.labelEn,
+                                        focusedStage.labelTw
+                                    )
+                                    val stDetail = AppStrings.pick(
+                                        appLang,
+                                        focusedStage.detailZh,
+                                        focusedStage.detailEn,
+                                        focusedStage.detailTw
+                                    )
+                                    val pct = ((focusedStage.durationMs * 100.0) /
+                                        trace.postReleaseTotalMs.coerceAtLeast(1L).toDouble())
+                                        .roundToInt()
+                                        .coerceIn(1, 100)
+                                    val stColor = resolvePlanAToneColor(focusedStage.toneStep, isDark)
+
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { selectedStageIdx = null }
+                                            .padding(horizontal = 10.dp, vertical = 8.5.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.5.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(8.5.dp)
+                                                        .clip(CircleShape)
+                                                        .background(stColor)
+                                                )
+                                                Text(
+                                                    text = stLabel,
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.5.sp),
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                RollingDigitCounter(
+                                                    text = "${focusedStage.durationMs}",
+                                                    style = monoPillStyle.copy(fontSize = 11.sp),
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Text(
+                                                    text = "ms",
+                                                    style = monoPillStyle.copy(fontSize = 11.sp),
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                                Text(
+                                                    text = tr(
+                                                        "（占松手等待 $pct%）",
+                                                        " ($pct% of wait)",
+                                                        "（佔鬆手等待 $pct%）"
+                                                    ),
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+
+                                        if (stDetail.isNotBlank()) {
+                                            Text(
+                                                text = stDetail,
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    fontSize = 11.5.sp,
+                                                    lineHeight = 16.sp
+                                                ),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. Raw Transcript / Selected Text + Copy Raw / Copy Trace Log Actions
+                        if (record.originalSelectedText.isNotBlank()) {
+                            SelectionContainer {
+                                Text(
+                                    text = tr(
+                                        "选区原文：${record.originalSelectedText}",
+                                        "Selected text: ${record.originalSelectedText}",
+                                        "選區原文：${record.originalSelectedText}"
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp, lineHeight = 16.sp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        if (record.rawTranscript.isNotBlank()) {
+                            SelectionContainer {
+                                Text(
+                                    text = if (resolvedIntent == VoiceIntentMode.SPEAK_TO_EDIT ||
+                                        resolvedIntent == VoiceIntentMode.HELP_ME_WRITE
+                                    ) {
+                                        tr(
+                                            "口述指令：${record.rawTranscript}",
+                                            "Spoken instruction: ${record.rawTranscript}",
+                                            "口述指令：${record.rawTranscript}"
+                                        )
+                                    } else {
+                                        tr(
+                                            "原始转写：${record.rawTranscript}",
+                                            "Raw transcript: ${record.rawTranscript}",
+                                            "原始轉寫：${record.rawTranscript}"
+                                        )
+                                    },
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp, lineHeight = 16.sp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (hasRawOrSelected) {
+                                TextButton(
+                                    onClick = onCopyRaw,
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                    modifier = Modifier.height(26.dp)
+                                ) {
+                                    Text(
+                                        text = tr("复制原稿文本", "Copy Raw Text", "複製原稿文字"),
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            } else {
+                                Spacer(modifier = Modifier.width(1.dp))
+                            }
+
+                            val copyTraceInteraction = remember { MutableInteractionSource() }
+                            Surface(
+                                shape = RoundedCornerShape(7.dp),
+                                color = MaterialTheme.colorScheme.surface,
+                                border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)),
+                                modifier = Modifier
+                                    .springPressScale(pressedScale = 0.96f, interactionSource = copyTraceInteraction)
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .clickable(
+                                        interactionSource = copyTraceInteraction,
+                                        indication = null
+                                    ) {
+                                        val diag = trace.formatClipboardDiagnostic(
+                                            clockTime = timeOnlyText,
+                                            hostApp = localizeHistoryTargetAppName(record.targetAppName, appLang).ifBlank { "TypeFree" },
+                                            routeSummary = record.modeLabel.ifBlank { "Default" }
+                                        )
+                                        copyTextToClipboard(
+                                            context = context,
+                                            label = "TypeFree Voice Trace",
+                                            text = diag,
+                                            toastMessage = AppStrings.pick(
+                                                appLang,
+                                                "已复制全链路耗时日志",
+                                                "Copied latency trace log",
+                                                "已複製全鏈路耗時日誌"
+                                            )
+                                        )
+                                    }
+                            ) {
+                                Text(
+                                    text = tr("复制耗时日志", "Copy Trace Log", "複製耗時日誌"),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(horizontal = 8.5.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

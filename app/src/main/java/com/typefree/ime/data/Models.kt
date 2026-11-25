@@ -399,6 +399,54 @@ data class DictionaryEntry(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+data class VoiceTraceStage(
+    val key: String = "",
+    val toneStep: Int = 0,
+    val labelZh: String = "",
+    val labelEn: String = "",
+    val labelTw: String = "",
+    val durationMs: Long = 0L,
+    val detailZh: String = "",
+    val detailEn: String = "",
+    val detailTw: String = ""
+)
+
+data class VoiceLatencyTrace(
+    val micInitMs: Long = 0L,
+    val wsSetupZh: String = "",
+    val wsSetupEn: String = "",
+    val wsSetupTw: String = "",
+    val recordingDurationMs: Long = 0L,
+    val firstPartialMs: Long = 0L,
+    val streamHintZh: String = "",
+    val streamHintEn: String = "",
+    val streamHintTw: String = "",
+    val postReleaseTotalMs: Long = 0L,
+    val summaryBadgeZh: String = "",
+    val summaryBadgeEn: String = "",
+    val summaryBadgeTw: String = "",
+    val isSlowWarning: Boolean = false,
+    val stages: List<VoiceTraceStage> = emptyList()
+) {
+    fun formatClipboardDiagnostic(
+        clockTime: String,
+        hostApp: String,
+        routeSummary: String
+    ): String {
+        val stagePart = stages.joinToString(" + ") { "${it.key}:${it.durationMs}ms" }
+        return buildString {
+            appendLine("[TypeFree Voice Trace] $clockTime · Host=${hostApp.ifBlank { "App" }} · Route=$routeSummary")
+            appendLine(
+                "Pre-Release : mic_init=${micInitMs}ms" +
+                    (if (wsSetupEn.isNotBlank()) " ($wsSetupEn)" else "") +
+                    " | rec=${recordingDurationMs}ms" +
+                    (if (streamHintEn.isNotBlank()) " ($streamHintEn)" else "")
+            )
+            append("Post-Release: E2E=${postReleaseTotalMs}ms = $stagePart")
+        }
+    }
+}
+
 data class HistoryRecord(
     val id: String = UUID.randomUUID().toString(),
     val timestamp: Long = System.currentTimeMillis(),
@@ -415,7 +463,8 @@ data class HistoryRecord(
     val latencyMs: Long = 0L,
     val modeLabel: String = "",
     val audioFilePath: String = "",
-    val executionSource: String = ""
+    val executionSource: String = "",
+    val voiceTrace: VoiceLatencyTrace? = null
 )
 
 data class ClipboardEntry(

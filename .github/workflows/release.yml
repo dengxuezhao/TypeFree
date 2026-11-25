@@ -9,6 +9,11 @@ on:
       tag:
         description: "Git tag to build and publish (e.g. v3.6.1)"
         required: true
+      skip_notify:
+        description: "Skip Issue, Feishu, and QQ group notifications"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -37,6 +42,7 @@ jobs:
         id: meta
         env:
           RAW_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          INPUT_SKIP_NOTIFY: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_notify || false }}
           KS_B64: ${{ secrets.TYPEFREE_KEYSTORE_BASE64 }}
           KS_PASS: ${{ secrets.TYPEFREE_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.TYPEFREE_KEY_ALIAS }}
@@ -63,11 +69,18 @@ jobs:
             IS_SIGNED="true"
           fi
 
+          TAG_CONTENTS=$(git for-each-ref --format='%(contents)' "refs/tags/${TAG}" 2>/dev/null || true)
+          SKIP_NOTIFY="false"
+          if [ "${INPUT_SKIP_NOTIFY:-false}" = "true" ] || [[ "$TAG_CONTENTS" == *"[skip-notify]"* ]] || [[ "$TAG_CONTENTS" == *"[silent]"* ]]; then
+            SKIP_NOTIFY="true"
+          fi
+
           {
             echo "tag=$TAG"
             echo "app_version=$APP_VERSION"
             echo "is_prerelease=$IS_PRERELEASE"
             echo "is_signed=$IS_SIGNED"
+            echo "skip_notify=$SKIP_NOTIFY"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -333,6 +346,7 @@ jobs:
 
       - name: Notify issues closed in this release
         id: notify_issues
+        if: steps.meta.outputs.skip_notify != 'true'
         uses: actions/github-script@v7
         env:
           RELEASE_TAG: ${{ steps.meta.outputs.tag }}
@@ -430,6 +444,7 @@ jobs:
             core.setOutput('notified_issues', notified.join(', '));
 
       - name: Notify Feishu bot on Release published (optional)
+        if: steps.meta.outputs.skip_notify != 'true'
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           RELEASE_TAG: ${{ steps.meta.outputs.tag }}
@@ -503,6 +518,7 @@ jobs:
           PYEOF
 
       - name: Notify QQ feedback group via Bridge (optional)
+        if: steps.meta.outputs.skip_notify != 'true'
         env:
           QQ_BRIDGE_URL: ${{ secrets.QQ_BRIDGE_URL }}
           QQ_BRIDGE_SECRET: ${{ secrets.QQ_BRIDGE_SECRET }}
