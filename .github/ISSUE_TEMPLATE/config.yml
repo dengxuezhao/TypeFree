@@ -1,8 +1,11 @@
 blank_issues_enabled: false
 contact_links:
-  - name: 查看最新版本与更新日志 (GitHub Releases)
+  - name: "📦 最新版本与更新日志 / Latest Releases & Changelog"
     url: https://github.com/dengxuezhao/TypeFree/releases
-    about: 下载最新公开版 APK，或在遇到问题前确认是否已在新版本中修复
-  - name: 项目主页与功能说明 (README)
-    url: https://github.com/dengxuezhao/TypeFree#readme
-    about: 查看核心快捷键、语音与 AI 帮写配置及小鹤/开源方案说明
+    about: "下载最新开源版 APK，并确认问题是否已在新版修复 / Download official open-source APKs and check recent fixes"
+  - name: "📘 完整功能使用手册 / Complete Feature Guide (EN)"
+    url: https://github.com/dengxuezhao/TypeFree/blob/main/docs/features-guide_EN.md
+    about: "查看智能英文、Rime 方案导入、26 键手势与隐私说明（顶部可切换简体中文）/ Full feature guide with a 简体中文 switch at the top"
+  - name: "🔌 BYOK 与离线模型配置指南 / BYOK & API Setup Guide (EN)"
+    url: https://github.com/dengxuezhao/TypeFree/blob/main/docs/api-setup-guide_EN.md
+    about: "Google Gemini、Groq、OpenAI、Ollama、DeepSeek、百炼与豆包配置教程（顶部可切换简体中文）/ Step-by-step cloud, LAN & offline setup (ZH switch at top)"

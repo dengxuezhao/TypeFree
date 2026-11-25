@@ -25,7 +25,8 @@
 </p>
 
 <p align="center">
-  📦 <a href="https://github.com/dengxuezhao/TypeFree/releases/latest"><b>GitHub Releases 下载（开源标准版）</b></a> ·
+  🏠 <a href="https://typefree.xuezhao.space"><b>官方网站 (typefree.xuezhao.space)</b></a> ·
+  📦 <a href="https://github.com/dengxuezhao/TypeFree/releases/latest"><b>GitHub Releases 下载</b></a> ·
   📘 <a href="docs/features-guide.md"><b>完整功能使用手册</b></a> ·
   🔌 <a href="docs/domestic-api-setup-guide.md"><b>国内 API / DeepSeek 配置指南</b></a> ·
   🌐 <a href="README_EN.md"><b>English README</b></a><br/>
@@ -158,6 +159,28 @@ TypeFree 内置原生 `librime 1.17.0` + `librime-lua` 引擎，兼顾开箱即�
 | [📘 详细功能使用手册](docs/features-guide.md) | 全功能操作说明、4 标签导航指引、26 键手势速查表、`o*` 指令表与 FAQ |
 | [🔌 国内直连 API 与 DeepSeek 配置指南](docs/domestic-api-setup-guide.md) | DeepSeek、豆包、百炼千问与硅基流动详细申请与混搭配置步骤 |
 | [⚙️ GitHub 自动化与构建指南](docs/github-automation-guide.md) | CI 门禁、Release 流水线与 Issue 分诊说明 |
+
+---
+
+## 📦 安装包选择与版本差异（Official Full vs. FOSS Libre）
+
+TypeFree 采用 **Open-Core（开源核心底座 + 官方增值扩展）** 模式：本仓库完整开源核心打字、离线推理、隐私脱敏与 BYOK 语音管线源码（GPL-3.0）；在 [GitHub Releases](https://github.com/dengxuezhao/TypeFree/releases/latest) 与[官方网站](https://typefree.xuezhao.space) 同时提供两款同签名安装包（可随时直接覆盖升级，保留全部词库与配置）：
+
+- **官方完整版（`TypeFree-vX.Y.Z.apk` · 默认推荐下载）**：与官网首页下载包完全一致（基于自有著作权构建，已预先排除第三方 GPL 传染插件）。永久免费包含全部核心打字、离线听音、`Qwen 0.8B` 净写与自有 API 直连，并内置 **14 天全功能早鸟体验** 与应用内 **TypeFree Pro 永久席位激活入口**，无需重装即可原地解锁进阶特性。
+- **纯开源构建版（`TypeFree-vX.Y.Z-foss-libre.apk` · 纯自由软件备选）**：100% 由本仓库公开 GPL-3.0 源码直接编译，不含任何闭源扩展或商业激活模块，专供 F-Droid 收录及纯 FOSS 环境选用。
+
+| 能力模块 | 纯开源版 (`foss-libre`) | 官方完整版（免费基础档） | 官方完整版（Pro 一次买断席位） |
+| :--- | :---: | :---: | :---: |
+| 全拼 / 双拼 / 九键 T9 / 音形码表 / 智能英文 QWERTY | ✅ 永久免费 | ✅ 永久免费 | ✅ 永久免费 |
+| 全部 8 款开源离线语音识别 + `Qwen 0.8B` 端侧离线净写 | ✅ 永久免费 | ✅ 永久免费 | ✅ 永久免费 |
+| 自有 API Key（BYOK）无限次流式语音、帮写、划词问 AI、耗时瀑布图 | ✅ 永久免费 | ✅ 永久免费 | ✅ 永久免费 |
+| 近 7 天零隐私表达洞察统计 + 曜石黑手账海报 | ✅ 永久免费 | ✅ 永久免费 | ✅ 永久免费 |
+| 场景回复建议助手、偏好记忆与脱敏截图理解（已实现） | — | 🎁 新装 14 天畅玩 + 30 次赠送 | ✅ 无限次永久解锁 |
+| `Qwen 2B` 端侧微调大模型在线一键直下（已实现） | —（支持手动导入 `.gguf`） | 🎁 新装 14 天畅玩 | ✅ 永久解锁 |
+| 长周期洞察账单（本月 / 本年 / 全部热力图）与高阶手账皮肤（已实现） | — | 🎁 新装 14 天畅玩 | ✅ 永久解锁 |
+| 后续规划：`Qwen 4B` 在线微调包、Mac/Win 伴侣、iOS 端与加密同步 | — | — | ⏳ 未实现 · 开发/规划中（上线后席位直接通用） |
+
+> 详细席位阶梯说明与公测共建免费领码通道见：[typefree.xuezhao.space/pro.html](https://typefree.xuezhao.space/pro.html)。
 
 ---
 

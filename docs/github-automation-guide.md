@@ -1,3 +1,5 @@
+简体中文 | [English](github-automation-guide_EN.md)
+
 # TypeFree GitHub 自动化流水线与运维指南
 
 ## 一、已配置自动化组件总览

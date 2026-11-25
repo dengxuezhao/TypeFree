@@ -1,19 +1,19 @@
-name: 💬 使用咨询与方案求助 (Question)
-description: 咨询编码配置、词库导入、API 配置或使用方式问题
+name: "💬 使用咨询与方案求助 / Question & Setup Help"
+description: "咨询编码配置、词库导入、端侧离线模型或 BYOK API 配置问题 / Ask about Rime schema import, offline models, BYOK API setup, or usage"
 title: "[Question]: "
 labels: ["question", "needs-triage"]
 body:
   - type: input
     id: app_version
     attributes:
-      label: 当前应用版本与安装类型
-      placeholder: "例如：v3.6.0 公开标准版"
+      label: "当前应用版本与安装来源 / App Version & APK Source"
+      placeholder: "例如：v3.9.0 GitHub Release / e.g., v3.9.0 Standard Release"
     validations:
       required: true
   - type: textarea
     id: question_detail
     attributes:
-      label: 问题描述
-      description: 请详细描述你的疑问或配置卡点（请勿粘贴个人 API Key）。
+      label: "问题描述 / Question Details"
+      description: "请详细描述你的疑问或配置卡点（切勿粘贴个人 API Key）/ Describe what you are trying to configure or resolve (never paste your personal API keys)."
     validations:
       required: true

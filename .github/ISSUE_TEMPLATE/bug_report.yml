@@ -1,73 +1,75 @@
-name: 🐛 问题反馈 (Bug Report)
-description: 反馈崩溃、按键/候选异常、语音识别或更新等故障
+name: "🐛 问题反馈 / Bug Report"
+description: "反馈崩溃、按键/候选异常、离线或云端语音识别及界面故障 / Report crashes, typing/candidate glitches, voice ASR, or UI bugs"
 title: "[Bug]: "
 labels: ["bug", "needs-triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        感谢反馈 TypeFree 问题！请尽量补充以下信息，便于我们快速定位复现。
+        感谢反馈 TypeFree 问题！请补充以下信息以便快速复现定位。
+        Thanks for reporting an issue in TypeFree! Sharing the details below helps us reproduce and fix it quickly.
   - type: input
     id: app_version
     attributes:
-      label: 应用版本
-      description: 可在 App「设置」右上角版本胶囊或「关于」卡片查看（例如 `v3.6.0`）
-      placeholder: "v3.6.0"
+      label: "应用版本 / App Version"
+      description: "可在 App「通用 → 关于」或顶栏版本胶囊查看（如 v3.9.0）/ Check in App → General → About (e.g., v3.9.0)"
+      placeholder: "v3.9.0"
     validations:
       required: true
   - type: dropdown
     id: edition
     attributes:
-      label: 安装包版本类型
-      description: 请选择你当前安装的 APK 类型
+      label: "安装包来源 / APK Build Source"
+      description: "请选择当前安装的 APK 来源 / Select how your APK was installed"
       options:
-        - GitHub Release 官方包
-        - 自行源码编译
-        - 不确定
+        - "GitHub Release 官方包 / Official GitHub Release APK"
+        - "自行源码编译 / Built from Source"
+        - "不确定 / Not Sure"
     validations:
       required: true
   - type: dropdown
     id: input_scheme
     attributes:
-      label: 当前使用的输入方案 / 场景
+      label: "输入方案或功能场景 / Input Schema or Feature Area"
       options:
-        - 小鹤音形（码表）
-        - 小鹤双拼
-        - 全拼
-        - 导入的第三方码表（星空键道 / 五笔等）
-        - 语音输入 / AI 帮写 / 问 AI
-        - 其它 / 通用界面
+        - "智能英文 QWERTY / Smart English QWERTY"
+        - "全拼（雾凇拼音）/ Full Pinyin (Rime Ice)"
+        - "九键拼音 (T9) / T9 9-Key Pinyin"
+        - "小鹤双拼 / Double Pinyin (Flypy)"
+        - "音形与五笔码表（小鹤音形 / 键道 / 五笔 / 虎码）/ Codetables (Flypy / XKJD6 / Wubi / Tiger)"
+        - "离线或云端语音 / AI 帮写 / 问 AI / Voice ASR, Help Me Write & Ask AI"
+        - "其它 / 通用界面与设置 / Other / General UI & Settings"
     validations:
       required: true
   - type: input
     id: device_info
     attributes:
-      label: 设备型号与 Android 版本
-      placeholder: "例如：Xiaomi 14 / Android 15 (HyperOS 2)"
+      label: "设备型号与系统版本 / Device Model & Android Version"
+      placeholder: "e.g. Pixel 9 / Android 15, Xiaomi 15 / Android 15 (HyperOS 2)"
     validations:
       required: true
   - type: textarea
     id: reproduce
     attributes:
-      label: 复现步骤
-      description: 请按顺序描述触发该问题的操作步骤
+      label: "复现步骤 / Steps to Reproduce"
+      description: "请按顺序描述触发问题的操作步骤 / List the exact steps to trigger the issue"
       placeholder: |
-        1. 打开微信输入框并切换到 TypeFree
-        2. 输入编码 `...` 或执行操作 `...`
-        3. 观察到异常现象
+        1. Open an input field in <App> and switch to TypeFree
+        2. Type `...` or trigger `...`
+        3. Observe `...`
     validations:
       required: true
   - type: textarea
     id: expected_vs_actual
     attributes:
-      label: 预期行为 vs 实际结果
+      label: "预期行为 vs 实际结果 / Expected vs. Actual Behavior"
       placeholder: |
-        预期：...
-        实际：...
+        预期 / Expected: ...
+        实际 / Actual: ...
     validations:
       required: true
   - type: textarea
     id: extra_context
     attributes:
-      label: 补充信息 / 截图 / 日志（可选）
-      description: 如果是编码或候选问题，请尽量附带具体编码串与期望候选字词；可粘贴截图。
+      label: "补充信息、截图或耗时日志（可选）/ Screenshots, Logs or Latency Trace (Optional)"
+      description: "编码异常请附具体编码串；语音延迟问题可粘贴「历史记录 → 复制耗时日志」（请勿粘贴 API Key）/ Attach keystroke codes, screenshots, or sanitized Voice Latency Trace logs (never include API keys)."

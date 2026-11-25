@@ -1,46 +1,47 @@
-name: ✨ 功能建议 (Feature Request)
-description: 提出新布局、按键手势、码表能力或 AI 交互改进建议
+name: "✨ 功能建议 / Feature Request"
+description: "提出新布局、按键手势、码表能力或 AI 交互改进建议 / Suggest keyboard layouts, gestures, codetable features, or AI UX improvements"
 title: "[Feature]: "
 labels: ["enhancement", "needs-triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        欢迎提出改进建议！清晰的使用场景描述能帮助我们更快评估交互方案与排期。
+        欢迎提出改进建议！清晰的使用场景有助于更快评估交互与排期。
+        Feature ideas are welcome! Describing your real-world workflow helps us evaluate ergonomics and design cleanly.
   - type: checkboxes
     id: check_existing
     attributes:
-      label: 提交前确认
+      label: "提交前确认 / Pre-submission Check"
       options:
-        - label: 我已浏览近期 Releases 与 Open Issues，确认未重复提交同类需求
+        - label: "我已浏览近期 Releases 与 Open Issues，确认未重复提交同类需求 / I checked recent Releases and Open Issues to avoid duplicates"
           required: true
   - type: dropdown
     id: area
     attributes:
-      label: 涉及功能模块
+      label: "涉及功能模块 / Target Module"
       options:
-        - 键盘布局与按键手势（如九键、底排、上滑/长按快捷操作）
-        - 码表引擎与词库管理（小鹤音形、双拼、导入方案、快符/造词）
-        - 语音输入 / AI 帮写 / 问 AI
-        - 设置界面 / 外观 / 检查更新
-        - 其它
+        - "键盘布局、智能英文与手势（九键/26键/底排/上滑长按）/ Keyboard Layouts, Smart English & Gestures"
+        - "码表引擎与词库管理（Rime 方案导入/双拼/音形/五笔/造词）/ Rime Engine, Codetables & Dictionaries"
+        - "端侧离线模型、BYOK 语音输入、帮写与问 AI / Offline Models, BYOK Voice, Help Write & Ask AI"
+        - "设置界面、多语言外观、剪贴板与表达洞察 / Settings, Trilingual UI, Clipboard & Insights"
+        - "其它 / Other"
     validations:
       required: true
   - type: textarea
     id: problem
     attributes:
-      label: 遇到什么痛点或使用场景？
-      description: 描述在什么场景下现有能力不够用，以及为什么会低效或不便。
-      placeholder: "例如：在单手打字或长句修改时……"
+      label: "使用场景与痛点 / Use Case & Pain Point"
+      description: "描述在什么场景下现有能力不够顺手 / Describe when the current workflow feels slow or inconvenient."
+      placeholder: "例如：在单手打字或中英混输切换时…… / e.g., When typing one-handed or switching between languages..."
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: 期望的实现方式（可选）
-      description: 你理想中的操作手势、快捷键或界面形态是什么样的？如有防误触顾虑也可以一并说明。
+      label: "期望的交互或实现方案（可选）/ Proposed UX or Solution (Optional)"
+      description: "理想中的手势、开关位置或界面形态是什么？/ How would your ideal gesture, toggle, or UI work?"
   - type: input
     id: app_version
     attributes:
-      label: 当前使用版本（可选）
-      placeholder: "例如：v3.7.1"
+      label: "当前使用版本（可选）/ Current App Version (Optional)"
+      placeholder: "e.g. v3.9.0"

@@ -25,9 +25,10 @@
 </p>
 
 <p align="center">
+  🏠 <a href="https://typefree.xuezhao.space/?lang=en"><b>Official Website</b></a> ·
   📦 <a href="https://github.com/dengxuezhao/TypeFree/releases/latest"><b>Download from GitHub Releases</b></a> ·
-  📘 <a href="docs/features-guide.md"><b>Feature Guide (ZH)</b></a> ·
-  🔌 <a href="docs/domestic-api-setup-guide.md"><b>API Setup Guide (ZH)</b></a> ·
+  📘 <a href="docs/features-guide_EN.md"><b>Feature Guide</b></a> ·
+  🔌 <a href="docs/api-setup-guide_EN.md"><b>BYOK &amp; API Setup Guide</b></a> ·
   🇨🇳 <a href="README.md"><b>简体中文 README</b></a>
 </p>
 
@@ -85,6 +86,8 @@ Most mobile keyboards force an unnecessary trade-off between **fast, private typ
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
+> For complete walkthroughs, the 26-key swipe-up/long-press lookup table, and `o*` commands, see the **[TypeFree Complete Feature Guide](docs/features-guide_EN.md)**.
+
 ---
 
 ## 🚀 Quick Start (5 Minutes)
@@ -104,6 +107,8 @@ Most mobile keyboards force an unnecessary trade-off between **fast, private typ
 | **CN Dual-Stage Streaming** | Aliyun Bailian / Volcengine `SeedASR 2.0` | `doubao-seed-2-1-lite` / `deepseek-chat` | Live streaming draft + instant finalize on release | Low-latency Mainland China direct routes |
 | **Self-Hosted LAN Offline** | Local `whisper.cpp` Server | Local `Ollama` (e.g. `qwen3:8b`) | Depends on host CPU / GPU | Zero cloud egress, $0 API cost |
 
+Step-by-step global, hybrid, local LAN, and China-direct recipes: 👉 **[BYOK & API Setup Guide](docs/api-setup-guide_EN.md)**.
+
 ---
 
 ## 📦 Built-In Input Engines & Rime Schema Import
@@ -121,6 +126,39 @@ TypeFree embeds native C++ **`librime 1.17.0`** + **`librime-lua`**:
   - Dual-track `.zip` importer supporting both plain-text schemas (`.schema.yaml` + `.dict.yaml` / `.tsv` / `.txt` + optional `.lua` / `opencc/`) and precompiled bundles (`build/*.table.bin` / `.prism.bin` / `.reverse.bin`).
   - Automatic schema archetype detection keeps schema-specific shortcuts strictly isolated between schemas.
   - Strictly complies with third-party EULA/copyright boundaries: no restricted proprietary codetables are bundled in this repository or public releases.
+
+---
+
+## 📚 Documentation
+
+| Document | Description |
+| :--- | :--- |
+| [🇨🇳 简体中文 README](README.md) | Simplified Chinese project overview |
+| [📘 Complete Feature Guide](docs/features-guide_EN.md) | Full v3.9.0 walkthrough, 4-tab navigation, 26-key gesture reference, `o*` commands, Voice Latency Waterfall & FAQ |
+| [🔌 BYOK & API Setup Guide](docs/api-setup-guide_EN.md) | Step-by-step setup for Google Gemini Live, Groq, OpenAI, LAN Ollama, Hybrid local ASR, DeepSeek, Bailian, Doubao & SiliconFlow |
+| [⚙️ GitHub Automation Guide](docs/github-automation-guide_EN.md) | CI hygiene gates, Release pipeline, label sync & Issue triage workflows |
+
+---
+
+## 📦 Editions & Open-Core Licensing (`Official Full` vs. `FOSS Libre`)
+
+TypeFree follows a transparent **Open-Core** model: the complete typing engine, on-device offline AI pipeline, PII redactor, and BYOK voice studio are open-sourced here under GPL-3.0. On [GitHub Releases](https://github.com/dengxuezhao/TypeFree/releases/latest) and the [Official Website](https://typefree.xuezhao.space/?lang=en), we publish two APKs signed with the same release certificate (you can cross-install/upgrade seamlessly without losing dictionaries or settings):
+
+- **Official Full Edition (`TypeFree-vX.Y.Z.apk` · Recommended Default)**: Identical to the website build (first-party copyright build with GPL-copyleft plugins excluded). Includes 100% of the free-forever core, plus a **14-day full-feature Early-Bird trial** and an **in-app TypeFree Pro lifetime seat activation panel** so you can unlock Pro features in place without reinstalling.
+- **Pure FOSS Libre Build (`TypeFree-vX.Y.Z-foss-libre.apk` · Pure Open-Source Alternative)**: Compiled 100% from the public GPL-3.0 source tree in this repository with zero proprietary extensions or licensing UI — tailored for F-Droid and strict FOSS environments.
+
+| Capability | Pure FOSS (`foss-libre`) | Official Full (Free Tier) | Official Full (Pro Lifetime Seat) |
+| :--- | :---: | :---: | :---: |
+| Smart English QWERTY + Pinyin / Shuangpin / T9 / Rime Codetables | ✅ Free Forever | ✅ Free Forever | ✅ Free Forever |
+| All 8 Open-Source Offline ASR Models + `Qwen 0.8B` Local Polish | ✅ Free Forever | ✅ Free Forever | ✅ Free Forever |
+| Unlimited BYOK Streaming Voice, Help Write, Ask AI & Latency Waterfall | ✅ Free Forever | ✅ Free Forever | ✅ Free Forever |
+| 7-Day Zero-PII Expression Insights & Obsidian Share Card | ✅ Free Forever | ✅ Free Forever | ✅ Free Forever |
+| Context-Aware Reply Assistant, Preference Memory & Redacted Vision *(Available Now)* | — | 🎁 14-Day Trial + 30 Free Runs | ✅ Unlimited Forever |
+| One-Tap `Qwen 2B` Fine-Tuned On-Device SLM Download *(Available Now)* | — *(manual `.gguf` import)* | 🎁 14-Day Trial | ✅ Unlocked Forever |
+| Long-Range Insights (Monthly / Yearly / All-Time Heatmaps) & Studio Themes *(Available Now)* | — | 🎁 14-Day Trial | ✅ Unlocked Forever |
+| Upcoming Roadmap: `Qwen 4B` One-Tap Pack, Mac/Win Companions, iOS & Encrypted Sync | — | — | ⏳ *In Dev / Planned* (Included for Seat Holders) |
+
+> Per-device seat plans (1 / 3 / 5 devices, one-time purchase with zero subscriptions) and community contributor free-license paths: [typefree.xuezhao.space/pro.html?lang=en](https://typefree.xuezhao.space/pro.html?lang=en).
 
 ---
 

@@ -1,13 +1,10 @@
-name: Release TypeFree Standard APK
+name: Build TypeFree FOSS Libre APK (Manual)
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Git tag to build and publish (e.g. v3.6.1)"
+        description: "Git tag to build and publish FOSS Libre APK (e.g. v3.9.0)"
         required: true
       skip_notify:
         description: "Skip Issue, Feishu, and QQ group notifications"
