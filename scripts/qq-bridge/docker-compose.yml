@@ -1,5 +1,8 @@
 services:
   napcat:
+    # 仅作旧版个人号 OneBot 备用通道；默认切换为官方机器人 Webhook 时不启动：
+    # 如需临时启用，运行：docker compose --profile onebot up -d
+    profiles: ["onebot"]
     image: lmq8267/napcat:v4.18.38
     container_name: typefree-napcat
     restart: unless-stopped
@@ -28,14 +31,12 @@ services:
     image: python:3.12-slim
     container_name: typefree-qq-bridge
     restart: unless-stopped
-    depends_on:
-      - napcat
     working_dir: /app
     command: ["python3", "bridge.py"]
     env_file:
       - .env
     ports:
-      # 仅绑定宿主机 127.0.0.1:8090，由宿主机 Nginx 反代 HTTPS 对外提供 /qq-bridge/notify
+      # 仅绑定宿主机 127.0.0.1:8090，由宿主机 Nginx 反代 HTTPS 提供 /qq-official/webhook 与 /qq-bridge/notify
       - "127.0.0.1:8090:8090"
     volumes:
       - ./bridge.py:/app/bridge.py:ro

@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-TypeFree QQ Group (OneBot 11 / NapCat) <-> GitHub Bidirectional Bridge.
+TypeFree QQ Group (QQ Official Bot Webhook + OneBot 11) <-> GitHub Bidirectional Bridge.
 
-Zero third-party dependencies (Python 3.10+ standard library only).
+Zero third-party dependencies (Python 3.9+ standard library only, including pure-Python RFC 8032 Ed25519).
 Handles:
-  1. OneBot 11 HTTP event webhooks (POST /onebot/event):
-     - /bug, #bug         -> Create GitHub bug issue with area auto-labels
-     - /建议, #建议, /feature -> Create GitHub enhancement issue
-     - /最新, /版本        -> Query latest GitHub Release (with TTL cache)
-     - /小鹤, /清空, /api, /faq -> Answer high-frequency TypeFree FAQs
-     - /帮助, /help       -> Show usage commands
-  2. GitHub Actions notifications (POST /github/notify):
-     - Forward release & optional issue events to target QQ groups via OneBot 11.
-  3. Health check (GET /healthz).
+  1. QQ Official Bot Webhook v2 (POST /qq-official/webhook):
+     - op 13 callback validation (Ed25519 signature)
+     - op 0 GROUP_AT_MESSAGE_CREATE / C2C_MESSAGE_CREATE (X-Signature-Ed25519 verified, fast op 12 ACK + async reply)
+     - /bug, #bug, /建议, #建议, /feature, /最新, /版本, /小鹤, /清空, /api, /faq, /帮助, /help
+  2. OneBot 11 HTTP event webhooks (POST /onebot/event):
+     - Legacy NapCat / OneBot compatibility with the same command handlers
+  3. GitHub Actions notifications (POST /github/notify):
+     - Forward release & optional issue events when an outbound push channel is configured
+  4. Health check (GET /healthz).
 """
 
 from __future__ import annotations
@@ -43,6 +43,143 @@ logger = logging.getLogger("typefree-qq-bridge")
 
 MAX_BODY_BYTES = 262_144
 CQ_CODE_RE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,([^\]]*))?\]")
+QQ_MENTION_TAG_RE = re.compile(r"<@!?[A-Za-z0-9_-]+>")
+
+# ---------------------------------------------------------------------------
+# Pure-Python RFC 8032 Ed25519 (zero third-party dependencies)
+# ---------------------------------------------------------------------------
+
+_ED_P = 2**255 - 19
+_ED_L = 2**252 + 27742317777372353535851937790883648493
+_ED_D = (-121665 * pow(121666, _ED_P - 2, _ED_P)) % _ED_P
+_ED_I = pow(2, (_ED_P - 1) // 4, _ED_P)
+
+
+def _ed_recover_x(y: int, sign: int) -> int | None:
+    if y >= _ED_P:
+        return None
+    x2 = ((y * y - 1) * pow((_ED_D * y * y + 1) % _ED_P, _ED_P - 2, _ED_P)) % _ED_P
+    if x2 == 0:
+        return 0 if sign == 0 else None
+    x = pow(x2, (_ED_P + 3) // 8, _ED_P)
+    if (x * x - x2) % _ED_P != 0:
+        x = (x * _ED_I) % _ED_P
+    if (x * x - x2) % _ED_P != 0:
+        return None
+    if (x & 1) != sign:
+        x = _ED_P - x
+    return x
+
+
+_ED_BY = (4 * pow(5, _ED_P - 2, _ED_P)) % _ED_P
+_ED_BX = _ed_recover_x(_ED_BY, 0)
+assert _ED_BX is not None
+_ED_B = (_ED_BX % _ED_P, _ED_BY % _ED_P, 1, (_ED_BX * _ED_BY) % _ED_P)
+_ED_IDENT = (0, 1, 1, 0)
+
+
+def _ed_point_add(
+    p: tuple[int, int, int, int],
+    q: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    x1, y1, z1, t1 = p
+    x2, y2, z2, t2 = q
+    a = ((y1 - x1) * (y2 - x2)) % _ED_P
+    b = ((y1 + x1) * (y2 + x2)) % _ED_P
+    c = (2 * _ED_D * t1 * t2) % _ED_P
+    d = (2 * z1 * z2) % _ED_P
+    e = (b - a) % _ED_P
+    f = (d - c) % _ED_P
+    g = (d + c) % _ED_P
+    h = (b + a) % _ED_P
+    return ((e * f) % _ED_P, (g * h) % _ED_P, (f * g) % _ED_P, (e * h) % _ED_P)
+
+
+def _ed_scalar_mult(p: tuple[int, int, int, int], e: int) -> tuple[int, int, int, int]:
+    acc = _ED_IDENT
+    cur = p
+    while e > 0:
+        if e & 1:
+            acc = _ed_point_add(acc, cur)
+        cur = _ed_point_add(cur, cur)
+        e >>= 1
+    return acc
+
+
+def _ed_point_encode(p: tuple[int, int, int, int]) -> bytes:
+    x, y, z, _ = p
+    z_inv = pow(z, _ED_P - 2, _ED_P)
+    xp = (x * z_inv) % _ED_P
+    yp = (y * z_inv) % _ED_P
+    return (yp | ((xp & 1) << 255)).to_bytes(32, "little")
+
+
+def _ed_point_decode(data: bytes) -> tuple[int, int, int, int] | None:
+    if len(data) != 32:
+        return None
+    raw_int = int.from_bytes(data, "little")
+    y = raw_int & ((1 << 255) - 1)
+    sign = raw_int >> 255
+    x = _ed_recover_x(y, sign)
+    if x is None:
+        return None
+    return (x, y, 1, (x * y) % _ED_P)
+
+
+def _ed_secret_expand(seed: bytes) -> tuple[int, bytes]:
+    if len(seed) != 32:
+        raise ValueError("Ed25519 seed must be 32 bytes")
+    h = hashlib.sha512(seed).digest()
+    a_bytes = bytearray(h[:32])
+    a_bytes[0] &= 248
+    a_bytes[31] &= 127
+    a_bytes[31] |= 64
+    return int.from_bytes(bytes(a_bytes), "little"), h[32:]
+
+
+def ed25519_seed_from_secret(app_secret: str) -> bytes:
+    """Derive 32-byte Ed25519 seed from QQ Official AppSecret per webhook v2 spec."""
+    raw = app_secret.encode("utf-8")
+    if not raw:
+        raise ValueError("QQ_OFFICIAL_APP_SECRET is empty")
+    while len(raw) < 32:
+        raw += raw
+    return raw[:32]
+
+
+def ed25519_public_key_from_seed(seed: bytes) -> bytes:
+    a, _ = _ed_secret_expand(seed)
+    return _ed_point_encode(_ed_scalar_mult(_ED_B, a))
+
+
+def ed25519_sign(seed: bytes, message: bytes) -> bytes:
+    a, prefix = _ed_secret_expand(seed)
+    pub = _ed_point_encode(_ed_scalar_mult(_ED_B, a))
+    r = int.from_bytes(hashlib.sha512(prefix + message).digest(), "little") % _ED_L
+    r_enc = _ed_point_encode(_ed_scalar_mult(_ED_B, r))
+    k = int.from_bytes(hashlib.sha512(r_enc + pub + message).digest(), "little") % _ED_L
+    s = (r + k * a) % _ED_L
+    return r_enc + s.to_bytes(32, "little")
+
+
+def ed25519_verify(public_key: bytes, message: bytes, signature: bytes) -> bool:
+    if len(public_key) != 32 or len(signature) != 64:
+        return False
+    a_pt = _ed_point_decode(public_key)
+    r_pt = _ed_point_decode(signature[:32])
+    s = int.from_bytes(signature[32:], "little")
+    if a_pt is None or r_pt is None or s >= _ED_L:
+        return False
+    k = int.from_bytes(hashlib.sha512(signature[:32] + public_key + message).digest(), "little") % _ED_L
+    lhs = _ed_scalar_mult(_ED_B, s)
+    rhs = _ed_point_add(r_pt, _ed_scalar_mult(a_pt, k))
+    return _ed_point_encode(lhs) == _ed_point_encode(rhs)
+
+
+def parse_qq_official_content(content: str) -> str:
+    """Strip QQ Official mention tags (<@...>) and normalize whitespace."""
+    cleaned = QQ_MENTION_TAG_RE.sub("", content or "")
+    return html.unescape(cleaned).replace("\r\n", "\n").strip()
 
 
 def _unescape_cq(text: str) -> str:
@@ -132,6 +269,12 @@ class BridgeConfig:
     release_cache_ttl_seconds: float = 60.0
     include_qq_id_in_issue: bool = False
     official_site_origin: str = "https://typefree.xuezhao.space"
+    qq_official_app_id: str = ""
+    qq_official_app_secret: str = ""
+    qq_official_api_base: str = "https://api.sgroup.qq.com"
+    qq_official_token_url: str = "https://bots.qq.com/app/getAppAccessToken"
+    qq_official_verify_sig: bool = True
+    qq_official_group_openid: str = ""
 
     @classmethod
     def from_env(cls) -> BridgeConfig:
@@ -149,7 +292,7 @@ class BridgeConfig:
             listen_port=int(os.environ.get("BRIDGE_PORT", "8090")),
             github_repo=os.environ.get("GITHUB_REPO", "dengxuezhao/TypeFree").strip(),
             github_token=os.environ.get("GITHUB_TOKEN", "").strip(),
-            onebot_http_url=os.environ.get("ONEBOT_HTTP_URL", "http://127.0.0.1:3000").rstrip("/"),
+            onebot_http_url=os.environ.get("ONEBOT_HTTP_URL", "http://127.0.0.1:3000").strip().rstrip("/"),
             onebot_access_token=os.environ.get("ONEBOT_ACCESS_TOKEN", "").strip(),
             onebot_event_secret=os.environ.get("ONEBOT_EVENT_SECRET", "").strip(),
             bridge_secret=os.environ.get("BRIDGE_SECRET", "").strip(),
@@ -161,6 +304,12 @@ class BridgeConfig:
             release_cache_ttl_seconds=float(os.environ.get("RELEASE_CACHE_TTL_SECONDS", "60")),
             include_qq_id_in_issue=os.environ.get("INCLUDE_QQ_ID_IN_ISSUE", "false").lower() == "true",
             official_site_origin=os.environ.get("OFFICIAL_SITE_ORIGIN", "https://typefree.xuezhao.space").strip().rstrip("/"),
+            qq_official_app_id=os.environ.get("QQ_OFFICIAL_APP_ID", "").strip(),
+            qq_official_app_secret=os.environ.get("QQ_OFFICIAL_APP_SECRET", "").strip(),
+            qq_official_api_base=os.environ.get("QQ_OFFICIAL_API_BASE", "https://api.sgroup.qq.com").strip().rstrip("/"),
+            qq_official_token_url=os.environ.get("QQ_OFFICIAL_TOKEN_URL", "https://bots.qq.com/app/getAppAccessToken").strip(),
+            qq_official_verify_sig=os.environ.get("QQ_OFFICIAL_VERIFY_SIG", "true").lower() != "false",
+            qq_official_group_openid=os.environ.get("QQ_OFFICIAL_GROUP_OPENID", "").strip(),
         )
 
 
@@ -203,11 +352,11 @@ class RateLimiter:
         self._group_cap = group_max_replies_per_min
         self._daily_issue_cap = max_issues_per_user_per_day
         self._clock = clock
-        self._last_user_reply: dict[tuple[int, int], float] = {}
-        self._group_reply_times: dict[int, list[float]] = {}
-        self._user_issue_times: dict[int, list[float]] = {}
+        self._last_user_reply: dict[tuple[int | str, int | str], float] = {}
+        self._group_reply_times: dict[int | str, list[float]] = {}
+        self._user_issue_times: dict[int | str, list[float]] = {}
 
-    def allow_reply(self, group_id: int, user_id: int) -> bool:
+    def allow_reply(self, group_id: int | str, user_id: int | str) -> bool:
         now = self._clock()
         with self._lock:
             last = self._last_user_reply.get((group_id, user_id), 0.0)
@@ -222,7 +371,7 @@ class RateLimiter:
             self._last_user_reply[(group_id, user_id)] = now
             return True
 
-    def allow_issue_creation(self, user_id: int) -> bool:
+    def allow_issue_creation(self, user_id: int | str) -> bool:
         now = self._clock()
         with self._lock:
             history = [t for t in self._user_issue_times.get(user_id, []) if now - t < 86_400.0]
@@ -325,6 +474,95 @@ class OneBotClient:
                     raise RuntimeError(f"OneBot send_group_msg error: {parsed}")
 
 
+class QQOfficialClient:
+    """Minimal QQ Official Open Platform Bot API v2 client with AppAccessToken cache."""
+
+    def __init__(
+        self,
+        app_id: str,
+        app_secret: str,
+        api_base: str = "https://api.sgroup.qq.com",
+        token_url: str = "https://bots.qq.com/app/getAppAccessToken",
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.app_id = app_id
+        self.app_secret = app_secret
+        self.api_base = api_base.rstrip("/")
+        self.token_url = token_url
+        self._clock = clock
+        self._token_lock = threading.Lock()
+        self._cached_token: tuple[float, str] | None = None
+        self._seq_lock = threading.Lock()
+        self._msg_seqs: dict[str, int] = {}
+
+    def get_access_token(self) -> str:
+        if not self.app_id or not self.app_secret:
+            raise RuntimeError("QQ_OFFICIAL_APP_ID / QQ_OFFICIAL_APP_SECRET not configured")
+        now = self._clock()
+        with self._token_lock:
+            if self._cached_token is not None:
+                expires_at, token = self._cached_token
+                if expires_at - 120.0 > now:
+                    return token
+
+            req_body = json.dumps(
+                {"appId": self.app_id, "clientSecret": self.app_secret},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            req = urllib.request.Request(
+                self.token_url,
+                data=req_body,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            token = str(data.get("access_token") or "").strip()
+            if not token:
+                raise RuntimeError(f"Failed to obtain QQ AppAccessToken: {data}")
+            expires_in = int(data.get("expires_in") or 7200)
+            self._cached_token = (now + max(expires_in, 180), token)
+            return token
+
+    def _next_msg_seq(self, msg_id: str) -> int:
+        with self._seq_lock:
+            if len(self._msg_seqs) > 2048:
+                self._msg_seqs.clear()
+            seq = self._msg_seqs.get(msg_id, 0) + 1
+            self._msg_seqs[msg_id] = seq
+            return seq
+
+    def _post_message(self, path: str, text: str, msg_id: str | None = None) -> dict[str, Any]:
+        token = self.get_access_token()
+        body: dict[str, Any] = {"content": text, "msg_type": 0}
+        if msg_id:
+            body["msg_id"] = msg_id
+            body["msg_seq"] = self._next_msg_seq(msg_id)
+        raw_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.api_base}{path}",
+            data=raw_body,
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "Authorization": f"QQBot {token}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"QQ Official API HTTP {exc.code}: {err_body}") from exc
+
+    def send_group_msg(self, group_openid: str, text: str, msg_id: str | None = None) -> dict[str, Any]:
+        return self._post_message(f"/v2/groups/{group_openid}/messages", text, msg_id=msg_id)
+
+    def send_c2c_msg(self, user_openid: str, text: str, msg_id: str | None = None) -> dict[str, Any]:
+        return self._post_message(f"/v2/users/{user_openid}/messages", text, msg_id=msg_id)
+
+
 class BridgeService:
     """Core command router and GitHub notification formatter."""
 
@@ -334,6 +572,7 @@ class BridgeService:
         github_client: GitHubClient | None = None,
         onebot_client: OneBotClient | None = None,
         rate_limiter: RateLimiter | None = None,
+        qq_official_client: QQOfficialClient | None = None,
     ) -> None:
         self.config = config
         self.github = github_client or GitHubClient(
@@ -344,6 +583,16 @@ class BridgeService:
         self.onebot = onebot_client or OneBotClient(
             config.onebot_http_url,
             config.onebot_access_token,
+        )
+        self.qq_official = qq_official_client or (
+            QQOfficialClient(
+                config.qq_official_app_id,
+                config.qq_official_app_secret,
+                api_base=config.qq_official_api_base,
+                token_url=config.qq_official_token_url,
+            )
+            if (config.qq_official_app_id and config.qq_official_app_secret)
+            else None
         )
         self.limiter = rate_limiter or RateLimiter(
             config.user_cooldown_seconds,
@@ -387,6 +636,159 @@ class BridgeService:
         )
         return reply_text
 
+    def _sanitize_official_reply(self, text: str) -> str:
+        """Remove bare HTTP URLs and common domain TLDs rejected by QQ Official Bot filters."""
+        cleaned = re.sub(
+            r"https?://github\.com/([^/\s]+/[^/\s]+)/blob/[^/\s]+/([^\s]+)",
+            r"GitHub 仓库 \1 中的 \2",
+            text,
+        )
+        cleaned = re.sub(r"https?://\S+", "", cleaned)
+        cleaned = re.sub(r"([A-Za-z0-9-]+)\.(space|com|cn|org|net|io|md)\b", r"\1·\2", cleaned, flags=re.IGNORECASE)
+        return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+    def handle_qq_official_webhook(
+        self,
+        raw_body: bytes,
+        headers: Any,
+        *,
+        async_dispatch: bool = True,
+    ) -> tuple[int, dict[str, Any]]:
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except Exception:
+            return HTTPStatus.BAD_REQUEST, {"error": "invalid json"}
+        if not isinstance(payload, dict):
+            return HTTPStatus.BAD_REQUEST, {"error": "json object required"}
+
+        op = payload.get("op")
+        if op == 13:
+            if not self.config.qq_official_app_secret:
+                return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "QQ_OFFICIAL_APP_SECRET not configured"}
+            d = payload.get("d") or {}
+            plain_token = str(d.get("plain_token") or "")
+            event_ts = str(d.get("event_ts") or "")
+            if not plain_token or not event_ts:
+                return HTTPStatus.BAD_REQUEST, {"error": "missing plain_token or event_ts"}
+            seed = ed25519_seed_from_secret(self.config.qq_official_app_secret)
+            sig_hex = ed25519_sign(seed, (event_ts + plain_token).encode("utf-8")).hex()
+            logger.info("Answered QQ Official webhook op=13 validation challenge")
+            return HTTPStatus.OK, {"plain_token": plain_token, "signature": sig_hex}
+
+        if self.config.qq_official_verify_sig:
+            if not self.config.qq_official_app_secret:
+                return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "QQ_OFFICIAL_APP_SECRET not configured"}
+            sig_hex = str(headers.get("X-Signature-Ed25519") or "").strip()
+            ts = str(headers.get("X-Signature-Timestamp") or "").strip()
+            if not sig_hex or not ts:
+                return HTTPStatus.UNAUTHORIZED, {"error": "missing signature headers"}
+            try:
+                sig_bytes = bytes.fromhex(sig_hex)
+            except ValueError:
+                return HTTPStatus.UNAUTHORIZED, {"error": "malformed signature hex"}
+            seed = ed25519_seed_from_secret(self.config.qq_official_app_secret)
+            pub_key = ed25519_public_key_from_seed(seed)
+            if not ed25519_verify(pub_key, ts.encode("utf-8") + raw_body, sig_bytes):
+                return HTTPStatus.UNAUTHORIZED, {"error": "invalid ed25519 signature"}
+
+        if op == 0:
+            if async_dispatch:
+                threading.Thread(
+                    target=self._safe_process_qq_official_dispatch,
+                    args=(payload,),
+                    daemon=True,
+                ).start()
+            else:
+                self._safe_process_qq_official_dispatch(payload)
+            return HTTPStatus.OK, {"op": 12}
+
+        return HTTPStatus.OK, {"op": 12}
+
+    def _safe_process_qq_official_dispatch(self, payload: dict[str, Any]) -> str | None:
+        try:
+            return self.process_qq_official_dispatch(payload)
+        except Exception:
+            logger.exception("Error processing QQ Official dispatch event")
+            return None
+
+    def process_qq_official_dispatch(self, payload: dict[str, Any]) -> str | None:
+        event_type = str(payload.get("t") or "")
+        d = payload.get("d") or {}
+        if not isinstance(d, dict):
+            return None
+
+        if event_type == "GROUP_AT_MESSAGE_CREATE":
+            group_openid = str(d.get("group_openid") or "").strip()
+            author = d.get("author") or {}
+            member_openid = str(author.get("member_openid") or author.get("id") or "").strip()
+            msg_id = str(d.get("id") or "").strip()
+            text = parse_qq_official_content(str(d.get("content") or ""))
+            if not group_openid or not member_openid or not text:
+                return None
+
+            logger.info("QQ Official GROUP_AT_MESSAGE_CREATE group_openid=%s msg_id=%s", group_openid, msg_id)
+            intent = self._parse_intent(text, mentioned_bot=True)
+            if intent is None:
+                return None
+
+            rate_group = f"qqo:{group_openid}"
+            rate_user = f"qqo:{member_openid}"
+            if not self.limiter.allow_reply(rate_group, rate_user):
+                logger.info("Rate-limited QQ Official reply for group=%s user=%s", group_openid, member_openid[:8])
+                return None
+
+            short_gid = group_openid[:8]
+            short_uid = member_openid[:8]
+            reporter_uid = member_openid if self.config.include_qq_id_in_issue else f"{short_uid}…"
+            synth_payload = {
+                "qq_official": True,
+                "user_key": rate_user,
+                "channel_desc": f"QQ 官方机器人群（`{short_gid}…`）",
+                "reporter_str": f"QQ群友 (OpenID: {reporter_uid})",
+            }
+            reply_text = self._sanitize_official_reply(self._execute_intent(synth_payload, intent, official=True))
+            if not reply_text:
+                return None
+            if self.qq_official is None:
+                raise RuntimeError("QQOfficialClient is not configured")
+            self.qq_official.send_group_msg(group_openid, reply_text, msg_id=msg_id or None)
+            return reply_text
+
+        if event_type == "C2C_MESSAGE_CREATE":
+            author = d.get("author") or {}
+            user_openid = str(author.get("user_openid") or author.get("id") or "").strip()
+            msg_id = str(d.get("id") or "").strip()
+            text = parse_qq_official_content(str(d.get("content") or ""))
+            if not user_openid or not text:
+                return None
+
+            intent = self._parse_intent(text, mentioned_bot=True)
+            if intent is None:
+                return None
+
+            rate_user = f"qqo:{user_openid}"
+            if not self.limiter.allow_reply(f"qqo-c2c:{user_openid}", rate_user):
+                logger.info("Rate-limited QQ Official C2C reply for user=%s", user_openid[:8])
+                return None
+
+            short_uid = user_openid[:8]
+            reporter_uid = user_openid if self.config.include_qq_id_in_issue else f"{short_uid}…"
+            synth_payload = {
+                "qq_official": True,
+                "user_key": rate_user,
+                "channel_desc": "QQ 官方机器人私聊",
+                "reporter_str": f"QQ用户 (OpenID: {reporter_uid})",
+            }
+            reply_text = self._sanitize_official_reply(self._execute_intent(synth_payload, intent, official=True))
+            if not reply_text:
+                return None
+            if self.qq_official is None:
+                raise RuntimeError("QQOfficialClient is not configured")
+            self.qq_official.send_c2c_msg(user_openid, reply_text, msg_id=msg_id or None)
+            return reply_text
+
+        return None
+
     @staticmethod
     def _parse_intent(text: str, mentioned_bot: bool) -> tuple[str, str] | None:
         cmd_match = re.match(
@@ -409,12 +811,18 @@ class BridgeService:
 
         return None
 
-    def _execute_intent(self, payload: dict[str, Any], intent: tuple[str, str]) -> str:
+    def _execute_intent(
+        self,
+        payload: dict[str, Any],
+        intent: tuple[str, str],
+        *,
+        official: bool = False,
+    ) -> str:
         cmd, rest = intent
         if cmd in ("bug", "建议", "feature"):
-            return self._handle_issue_command(payload, cmd, rest)
+            return self._handle_issue_command(payload, cmd, rest, official=official)
         if cmd in ("最新", "版本"):
-            return self._handle_latest_release()
+            return self._handle_latest_release(official=official)
         if cmd == "faq":
             return self._format_faq_index()
         if cmd in ("帮助", "help"):
@@ -423,7 +831,14 @@ class BridgeService:
             return self._match_faq(f"{cmd} {rest}".strip()) or self._format_faq_index()
         return self._match_faq(rest) or self._format_help()
 
-    def _handle_issue_command(self, payload: dict[str, Any], cmd: str, content: str) -> str:
+    def _handle_issue_command(
+        self,
+        payload: dict[str, Any],
+        cmd: str,
+        content: str,
+        *,
+        official: bool = False,
+    ) -> str:
         is_bug = cmd == "bug"
         tag_label = "Bug" if is_bug else "建议"
         cmd_hint = "/bug" if is_bug else "/建议"
@@ -434,23 +849,32 @@ class BridgeService:
                 f"{cmd_hint} v3.7.1 小米14 小鹤音形 候选栏在横屏下被遮挡..."
             )
 
-        user_id = int(payload.get("user_id") or 0)
-        if not self.limiter.allow_issue_creation(user_id):
-            return f"你今天提交的反馈已达上限（{self.config.max_issues_per_user_per_day} 条/天），请稍后再试或直接前往 GitHub Issues 补充。"
+        if payload.get("qq_official"):
+            user_key: int | str = str(payload.get("user_key") or "")
+            channel_desc = str(payload.get("channel_desc") or "QQ 官方机器人")
+            reporter_str = str(payload.get("reporter_str") or "QQ群友")
+        else:
+            user_id = int(payload.get("user_id") or 0)
+            user_key = user_id
+            sender = payload.get("sender") or {}
+            nickname = str(sender.get("card") or sender.get("nickname") or "QQ群友").strip()
+            nickname = re.sub(r"[\r\n@`]", "", nickname)[:32] or "QQ群友"
+            group_id = int(payload.get("group_id") or 0)
+            channel_desc = f"QQ 群（`{group_id}`）"
+            reporter_str = f"{nickname} (QQ: {user_id})" if self.config.include_qq_id_in_issue else f"{nickname} (QQ群 {group_id})"
 
-        sender = payload.get("sender") or {}
-        nickname = str(sender.get("card") or sender.get("nickname") or "QQ群友").strip()
-        nickname = re.sub(r"[\r\n@`]", "", nickname)[:32] or "QQ群友"
-        group_id = int(payload.get("group_id") or 0)
+        if not self.limiter.allow_issue_creation(user_key):
+            if official:
+                return f"你今天提交的反馈已达上限（{self.config.max_issues_per_user_per_day} 条/天），请稍后再试或直接前往 GitHub 仓库 {self.config.github_repo} 提交。"
+            return f"你今天提交的反馈已达上限（{self.config.max_issues_per_user_per_day} 条/天），请稍后再试或直接前往 GitHub Issues 补充。"
 
         first_line = next((line.strip() for line in content.splitlines() if line.strip()), content)
         short_title = first_line[:60] + ("..." if len(first_line) > 60 else "")
         issue_title = f"[QQ反馈][{tag_label}] {short_title}"
 
-        reporter_str = f"{nickname} (QQ: {user_id})" if self.config.include_qq_id_in_issue else f"{nickname} (QQ群 {group_id})"
         issue_body = (
             f"### 来源\n"
-            f"- 反馈渠道：QQ 群（`{group_id}`）\n"
+            f"- 反馈渠道：{channel_desc}\n"
             f"- 提交人：{reporter_str}\n\n"
             f"### 反馈内容\n"
             f"{content}\n"
@@ -465,9 +889,16 @@ class BridgeService:
             created = self.github.create_issue(issue_title, issue_body, labels)
             number = created.get("number")
             html_url = created.get("html_url")
+            if official:
+                return (
+                    f"✅ 已为你登记到 GitHub Issue #{number}（仓库 {self.config.github_repo} Issues）。\n"
+                    f"后续修复并随新版本发布后，可随时 @我 发送 /最新 获取新版动态。"
+                )
             return f"✅ 已为你登记到 GitHub Issue #{number}：\n{html_url}\n后续修复并随新版本发布后，群里也会同步通知。"
         except Exception as exc:
             logger.exception("Failed to create GitHub issue from QQ")
+            if official:
+                return f"⚠️ 自动提交 Issue 暂时失败（{type(exc).__name__}），请稍后重试或前往 GitHub 仓库 {self.config.github_repo} 手动提交。"
             return f"⚠️ 自动提交 Issue 暂时失败（{type(exc).__name__}），可先在 GitHub 手动提交：https://github.com/{self.config.github_repo}/issues/new/choose"
 
     def _derive_official_apk_url(self, tag: str) -> str:
@@ -541,11 +972,13 @@ class BridgeService:
                 break
         return items
 
-    def _handle_latest_release(self) -> str:
+    def _handle_latest_release(self, *, official: bool = False) -> str:
         try:
             release = self.github.get_latest_release()
         except Exception as exc:
             logger.exception("Failed to fetch latest release")
+            if official:
+                return f"暂时无法查询 GitHub 最新版本（{type(exc).__name__}），请稍后重试或前往 GitHub 仓库 {self.config.github_repo} 查看 Releases。"
             return f"暂时无法查询 GitHub 最新版本（{type(exc).__name__}），请直接查看：https://github.com/{self.config.github_repo}/releases"
 
         tag = release.get("tag_name") or "未知版本"
@@ -557,6 +990,13 @@ class BridgeService:
         lines = [f"📦 TypeFree 最新公开版：{tag}"]
         if highlights:
             lines.extend(f"• {item}" for item in highlights)
+        if official:
+            lines.append(
+                f"⬇️ 下载与更新：可在手机浏览器打开 typefree·xuezhao·space（将 · 换为小数点）进入官网，"
+                f"或前往 GitHub 仓库 {self.config.github_repo} Releases 页下载 {tag} 安装包"
+            )
+            lines.append("💡 小鹤专享版请勿用公开版覆盖")
+            return "\n".join(lines)
         if official_apk_url:
             lines.append(f"🌐 官网直链：{official_apk_url}")
         elif apk_asset:
@@ -648,8 +1088,22 @@ class BridgeService:
         else:
             raise ValueError(f"Unsupported event type: {event_type!r}")
 
-        self.onebot.send_group_msg(group_id=group_id, text=message)
-        return {"ok": True, "group_id": group_id, "event": event_type}
+        if self.config.onebot_http_url:
+            self.onebot.send_group_msg(group_id=group_id, text=message)
+            return {"ok": True, "group_id": group_id, "event": event_type, "channel": "onebot"}
+        if self.qq_official and self.config.qq_official_group_openid:
+            self.qq_official.send_group_msg(
+                self.config.qq_official_group_openid,
+                self._sanitize_official_reply(message),
+            )
+            return {
+                "ok": True,
+                "group_openid": self.config.qq_official_group_openid,
+                "event": event_type,
+                "channel": "qq-official",
+            }
+        logger.info("Skipped /github/notify outbound push (event=%s): no active outbound push channel", event_type)
+        return {"ok": True, "skipped": "no active outbound push channel", "event": event_type}
 
 
 def verify_onebot_signature(secret: str, header_sig: str, body: bytes) -> bool:
@@ -731,19 +1185,21 @@ def create_http_handler(service: BridgeService) -> type[BaseHTTPRequestHandler]:
                     return None
             return b"".join(chunks)
 
-        def _read_json_body(self) -> tuple[bytes, dict[str, Any]] | None:
+        def _read_raw_body(self) -> bytes | None:
             te = (self.headers.get("Transfer-Encoding") or "").lower()
             if "chunked" in te:
-                raw = self._read_chunked_body()
-                if raw is None:
-                    return None
-            else:
-                length = int(self.headers.get("Content-Length") or "0")
-                if length <= 0 or length > MAX_BODY_BYTES:
-                    self.close_connection = True
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid content-length"})
-                    return None
-                raw = self.rfile.read(length)
+                return self._read_chunked_body()
+            length = int(self.headers.get("Content-Length") or "0")
+            if length <= 0 or length > MAX_BODY_BYTES:
+                self.close_connection = True
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid content-length"})
+                return None
+            return self.rfile.read(length)
+
+        def _read_json_body(self) -> tuple[bytes, dict[str, Any]] | None:
+            raw = self._read_raw_body()
+            if raw is None:
+                return None
             try:
                 parsed = json.loads(raw.decode("utf-8"))
             except Exception:
@@ -761,6 +1217,14 @@ def create_http_handler(service: BridgeService) -> type[BaseHTTPRequestHandler]:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if self.path == "/qq-official/webhook":
+                raw = self._read_raw_body()
+                if raw is None:
+                    return
+                status, body = service.handle_qq_official_webhook(raw, self.headers)
+                self._send_json(status, body)
+                return
+
             if self.path == "/onebot/event":
                 read_res = self._read_json_body()
                 if read_res is None:
