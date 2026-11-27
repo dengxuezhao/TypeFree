@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dengxuezhao/TypeFree/releases/latest"><img src="https://img.shields.io/badge/Release-v3.9.0-10B981?style=flat-square&logo=github" alt="Release v3.9.0" /></a>
+  <a href="https://github.com/dengxuezhao/TypeFree/releases/latest"><img src="https://img.shields.io/badge/Release-v3.9.1-10B981?style=flat-square&logo=github" alt="Release v3.9.1" /></a>
   <img src="https://img.shields.io/badge/Engine-librime_1.17.0_+_Lua-0EA5E9?style=flat-square" alt="librime 1.17.0" />
   <img src="https://img.shields.io/badge/Local_AI-sherpa--onnx_+_llama.cpp-F59E0B?style=flat-square" alt="Local AI" />
   <img src="https://img.shields.io/badge/UI-简体中文_%7C_English_%7C_繁體中文-6366F1?style=flat-square" alt="Trilingual UI" />
@@ -46,23 +46,27 @@ Most mobile keyboards force an unnecessary trade-off between **fast, private typ
 
 ---
 
-## 🆕 What's New in v3.9.0
+## 🆕 What's New in v3.9.1
 
-- **🔤 Smart English QWERTY (100% On-Device & Offline)**
-  - Built-in offline English frequency dictionary with **swipe-to-type gesture trail**, **auto-correction** (with 1-tap revert), **next-word bigram prediction**, **smart auto-capitalization**, and **double-space period**.
-  - Automatically suppresses auto-correction and auto-cap in password, email, URL, and search fields.
-- **🌐 Full Trilingual UI (`简体中文` / `English` / `繁體中文`)**
-  - Every screen, onboarding flow, settings panel, Insights chart, playground sheet, and keyboard sub-panel supports instant switching between Simplified Chinese, English, and Traditional Chinese — with locale-aligned AI prompts.
-- **📐 Measured Adaptive Icon-Collapse Top Bar**
-  - Measures available viewport width and localized pill widths dynamically: full `[🔍 Ask AI]`, `[✍️ Write/Edit]`, and `[🎙 Voice]` capsules render on standard widths, smoothly collapsing secondary pills into `28dp` circular icon buttons on narrow split-screens or crowded bars without truncating labels or losing reachability.
-- **🔍 Selected-Text `Ask AI` In-Keyboard Card**
-  - Highlight any text (or type `≥2` characters in a normal text field) to light up the top-bar **🔍 Ask AI** pill. Answers stream safely inside the keyboard card without accidentally sending to a chat — with 1-tap **Copy**, **Insert**, or **Done (Clear + Undoable)**.
-- **✍️ Zero-Screen-Read `Help Me Write`**
-  - Pure drafting & rewrite studio with **zero screen-reading and zero screenshots**: pick a creative genre template on an empty field or 1-tap polish/expand/condense existing draft text directly in place.
-- **🧠 On-Device Offline AI (`sherpa-onnx` + `llama.cpp`) & BYOK Cloud Streaming**
-  - Isolated `:local_ai` process bundles `sherpa-onnx` (8 downloadable open-source offline ASR models) and `llama.cpp` (`Qwen 0.8B` local dictation polish & basic rewrite), plus seamless hybrid routing and BYOK cloud streaming (`Gemini Live`, `OpenAI`, `Groq`, `DeepSeek`, `Bailian`, `Volcengine`, `Ollama`).
-- **📊 Local Zero-PII Expression Insights & Token Observability**
-  - On-device numeric-only daily rollups (zero text stored; auto-skipped in passwords and Incognito mode) with voice × keyboard totals, 56-day activity heatmap, 24-hour rhythm, cloud vs. offline voice duration split, cloud token & prompt-cache tracking, and lossless v2 JSON backup/restore.
+- **🀄 6 Mainstream Shuangpin (Double Pinyin) Layouts & Auto 27-Key `;` Row**
+  - Built-in **Xiaohe (default), Ziranma, Microsoft, Sogou, Intelligent ABC, and Ziguang Shuangpin**, all sharing the open-source Rime Ice dictionary and mixed CN-EN tables.
+  - Automatically renders a 27-key layout (adding `;` next to `L`) in Chinese mode for Microsoft, Sogou, and Ziguang Shuangpin, restoring standard 26-key in English mode.
+- **🎛️ 1-Tap Tool Panel Scheme Switcher & 3-in-1 Keyboard Adjust**
+  - Tap **Input Scheme** in the keyboard Tool Panel to expand an inline strip switching instantly across Full Pinyin, T9, all 6 Shuangpin layouts, and imported Rime codetables without leaving your chat.
+  - Live **Keyboard Adjust** sliders combine **Key Height (5 presets)**, **Bottom Lift (0–56dp)**, and **Candidate Font Size (3 tiers)**, with unified panel heights across 26-key, T9, English, and numeric boards for zero layout jump.
+- **📱 T9 Ergonomics, Built-in Emoji/Kaomoji Panel, Tiered Haptics & Hold-Space Voice**
+  - Rebalanced T9 columns for a wider centered `3×3` keypad, idle `1`-key punctuation cycling (`， 。 @ ？ ！`), and direct Emoji access.
+  - Built-in **Emoji / Kaomoji / Symbol Panel** (skin-tone picker + Incognito-safe), **hold-spacebar to speak**, **zero-latency tiered haptic engine**, and **375dp-referenced adaptive font scaling**.
+- **🔐 Android 11+ Inline Password Autofill & Multi-Mirror Resilience**
+  - Native Android 11+ inline autofill suggestions in the top bar (Google Password Manager, Bitwarden, 1Password, etc.).
+  - Optional multi-mirror lexicon setup during onboarding with automatic fallback to built-in lexicons when offline, plus Android 15/16 bottom system-bar inset fixes (OriginOS 7 / MagicOS 11) and OriginOS onboarding IME picker focus fixes.
+
+<details>
+<summary>📖 Previous Milestones (v3.9.0)</summary>
+
+- **v3.9.0**: 100% offline Smart English QWERTY (swipe-to-type, auto-correction, next-word bigram prediction); full Trilingual UI (`简体中文` / `English` / `繁體中文`); Measured Adaptive Icon-Collapse Top Bar; Selected-Text `Ask AI` in-keyboard card & zero-screen-read `Help Me Write`; local zero-PII Expression Insights & cloud token observability.
+
+</details>
 
 ---
 
@@ -70,18 +74,18 @@ Most mobile keyboards force an unnecessary trade-off between **fast, private typ
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                               TypeFree v3.9.0                                │
+│                               TypeFree v3.9.1                                │
 ├──────────────────────────────────────┬───────────────────────────────────────┤
 │  ⌨️ Smart English + librime 1.17.0    │   🎙️ Offline + BYOK AI Voice Studio    │
 │  • Smart EN: swipe/autocorrect/bigram│  • On-device: sherpa-onnx + llama.cpp │
-│  • Built-in ZH: Rime Ice / T9 / Flypy│  • Cloud BYOK: Gemini/OpenAI/DeepSeek │
-│  • 1-Tap Presets: XKJD6/Wubi86/Tiger │  • Streaming dictation + >60s seamless│
+│  • Built-in ZH: Pinyin/T9/6 Shuangpin│  • Cloud BYOK: Gemini/OpenAI/DeepSeek │
+│  • 1-Tap Presets: XKJD6/Wubi86/Tiger │  • Streaming dictation + Hold-Space   │
 │  • Custom Rime .zip (plain & bin)    │  • Global Floating Voice Bubble       │
-│  • 26-Key 3-Way Gestures + T9 Strip  │  • 🔍 Selected-Text Ask AI Card       │
-│  • Measured Adaptive Icon-Collapse   │  • ✍️ Zero-Screen-Read Help Me Write  │
+│  • 1-Tap Scheme Strip + 3-in-1 Adjust│  • 🔍 Selected-Text Ask AI Card       │
+│  • Adaptive TopBar + Emoji Panel     │  • ✍️ Zero-Screen-Read Help Me Write  │
 │  • L1+L2 Word Learning + o* Commands │  • 🪄 Speak-to-Edit + 🌐 Live Translate│
 ├──────────────────────────────────────┴───────────────────────────────────────┤
-│   ⚡ Core Foundation: Trilingual UI · Inline Calc · 200-Item Smart Clipboard  │
+│   ⚡ Core Foundation: Trilingual UI · Inline Autofill · 200-Item Clipboard    │
 │      Isolated :local_ai · LocalPiiRedactor · Incognito · Lossless v2 Backup   │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -92,7 +96,7 @@ Most mobile keyboards force an unnecessary trade-off between **fast, private typ
 
 ## 🚀 Quick Start (5 Minutes)
 
-1. **Install & Enable**: Download the latest open-source Standard APK (`TypeFree-v*-standard-release.apk`) from **[GitHub Releases](https://github.com/dengxuezhao/TypeFree/releases/latest)**, launch TypeFree, and follow the 4-step setup wizard to enable and switch to TypeFree (optional: grant Accessibility Service only if you want the Global Floating Voice Bubble).
+1. **Install & Enable**: Download the latest APK (`TypeFree-vX.Y.Z.apk` Official Full Edition or `TypeFree-vX.Y.Z-foss-libre.apk` Pure FOSS Build) from **[GitHub Releases](https://github.com/dengxuezhao/TypeFree/releases/latest)** or the **[Official Website](https://typefree.xuezhao.space/?lang=en)**, launch TypeFree, and follow the setup wizard to enable and switch to TypeFree (optional: grant Accessibility Service only if you want the Global Floating Voice Bubble).
 2. **Type & Dictate Offline (Zero API Keys)**: Smart English QWERTY, Rime Chinese input, 26-key gestures, Smart Clipboard 2.0, inline calculator, and custom `.zip` Rime schemas work immediately offline. To dictate offline with zero keys, download a `sherpa-onnx` voice model and `Qwen 0.8B` inside **Voice & AI → Offline Models**.
 3. **Connect Cloud AI via BYOK (Optional)**: Go to **Voice & AI → Models & API**, store your own API key in the encrypted **Provider Vault**, pick a 1-tap preset, and run **⚡ 1-Token Speed Test** to rank models by real latency on your network.
 
@@ -117,7 +121,7 @@ TypeFree embeds native C++ **`librime 1.17.0`** + **`librime-lua`**:
 - **Built-in Open-Source Engines**:
   - **Smart English QWERTY**: Offline English dictionary, swipe-to-type, auto-correct, bigram next-word prediction, auto-cap, and double-space period.
   - **Rime Ice Full Pinyin (`rime_ice`)** & **Native T9 9-Key Pinyin (`t9`)**: Full-sentence Pinyin sharing the open-source Rime Ice dictionary (plus 1-tap SHA-256 verified full 580k lexicon download).
-  - **Double Pinyin (`double_pinyin_flypy`)**: Community double-pinyin key mapping reusing the open-source Rime Ice dictionary.
+  - **6 Shuangpin (Double Pinyin) Layouts**: Built-in **Xiaohe (`double_pinyin_flypy`), Ziranma (`double_pinyin`), Microsoft (`double_pinyin_mspy`), Sogou (`double_pinyin_sogou`), Intelligent ABC (`double_pinyin_abc`), and Ziguang (`double_pinyin_ziguang`)** reusing the open-source Rime Ice dictionary, with automatic 27-key `;` row switching in Chinese mode for Microsoft, Sogou, and Ziguang.
 - **1-Tap Open-Source Codetable Presets** (`Keyboard → Lexicon`):
   - **Xingkong Jiandao 6 (`xkjd6`, GPL-3.0)** with native `librime-lua` `topup_processor`
   - **Wubi 86 (`wubi86`, LGPL-3.0)** fixed 4-code shape table
@@ -134,7 +138,7 @@ TypeFree embeds native C++ **`librime 1.17.0`** + **`librime-lua`**:
 | Document | Description |
 | :--- | :--- |
 | [🇨🇳 简体中文 README](README.md) | Simplified Chinese project overview |
-| [📘 Complete Feature Guide](docs/features-guide_EN.md) | Full v3.9.0 walkthrough, 4-tab navigation, 26-key gesture reference, `o*` commands, Voice Latency Waterfall & FAQ |
+| [📘 Complete Feature Guide](docs/features-guide_EN.md) | Full v3.9.1 walkthrough, 4-tab navigation, 26-key gesture reference, `o*` commands, Voice Latency Waterfall & FAQ |
 | [🔌 BYOK & API Setup Guide](docs/api-setup-guide_EN.md) | Step-by-step setup for Google Gemini Live, Groq, OpenAI, LAN Ollama, Hybrid local ASR, DeepSeek, Bailian, Doubao & SiliconFlow |
 | [⚙️ GitHub Automation Guide](docs/github-automation-guide_EN.md) | CI hygiene gates, Release pipeline, label sync & Issue triage workflows |
 
