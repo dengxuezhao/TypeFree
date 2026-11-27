@@ -12,15 +12,67 @@ import com.typefree.ime.TypeFreeApp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlin.math.abs
+
+enum class BubbleTargetKind {
+    NONE,
+    FOCUSED,
+    INFERRED
+}
+
+enum class BubbleInsertOutcome {
+    INSERTED,
+    TARGET_MISMATCH_COPIED,
+    COPIED_FALLBACK
+}
+
+data class InputTargetFingerprint(
+    val packageName: String = "",
+    val windowId: Int = -1,
+    val viewIdResourceName: String = "",
+    val boundsLeft: Int = 0,
+    val boundsTop: Int = 0,
+    val boundsRight: Int = 0,
+    val boundsBottom: Int = 0
+) {
+    fun isValid(): Boolean = packageName.isNotBlank() &&
+        (windowId >= 0 || viewIdResourceName.isNotBlank() || (boundsRight > boundsLeft && boundsBottom > boundsTop))
+
+    fun matches(
+        other: InputTargetFingerprint?,
+        maxHorizontalDriftPx: Int = 48,
+        maxVerticalDriftPx: Int = 180
+    ): Boolean {
+        if (other == null || !isValid() || !other.isValid()) return false
+        if (packageName != other.packageName) return false
+        if (windowId >= 0 && other.windowId >= 0 && windowId != other.windowId) return false
+        if (viewIdResourceName.isNotBlank() && other.viewIdResourceName.isNotBlank()) {
+            if (viewIdResourceName != other.viewIdResourceName) return false
+        }
+        val selfHasBounds = boundsRight > boundsLeft && boundsBottom > boundsTop
+        val otherHasBounds = other.boundsRight > other.boundsLeft && other.boundsBottom > other.boundsTop
+        if (selfHasBounds && otherHasBounds) {
+            if (abs(boundsLeft - other.boundsLeft) > maxHorizontalDriftPx) return false
+            if (abs(boundsRight - other.boundsRight) > maxHorizontalDriftPx) return false
+            if (abs(boundsBottom - other.boundsBottom) > maxVerticalDriftPx) return false
+        }
+        return true
+    }
+}
 
 data class FocusedInputSnapshot(
     val hasEditableFocus: Boolean = false,
+    val targetKind: BubbleTargetKind = BubbleTargetKind.NONE,
+    val targetFingerprint: InputTargetFingerprint? = null,
     val isSensitivePassword: Boolean = false,
     val packageName: String = "",
     val inputType: Int = 0,
     val selectedText: String = "",
     val surroundingBeforeCursor: String = ""
-)
+) {
+    val hasBubbleTarget: Boolean
+        get() = hasEditableFocus || targetKind == BubbleTargetKind.INFERRED
+}
 
 object TypeFreeBubbleController {
 

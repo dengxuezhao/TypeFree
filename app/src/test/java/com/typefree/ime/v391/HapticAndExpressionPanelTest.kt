@@ -1,11 +1,14 @@
 package com.typefree.ime.v391
 
 import android.os.VibrationEffect
+import android.text.InputType
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ExpressionTab
 import com.typefree.ime.data.HapticPreset
+import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InMemoryKeyValueStore
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.JvmAesGcmCipher
 import com.typefree.ime.data.SecretVault
 import com.typefree.ime.i18n.AppLang
@@ -15,19 +18,38 @@ import com.typefree.ime.ime.HapticPulsePlan
 import com.typefree.ime.ime.HapticTier
 import com.typefree.ime.ime.HapticTouchDeduper
 import com.typefree.ime.ime.HardwarePrimitiveKind
+import com.typefree.ime.ime.ImeHostCallbacks
+import com.typefree.ime.ime.ImeLogic
+import com.typefree.ime.ime.ImeUiState
+import com.typefree.ime.ime.KeyboardTabMode
 import com.typefree.ime.ime.SystemHapticConstantKind
+import com.typefree.ime.ime.TypingController
+import com.typefree.ime.ime.UndoSnapshot
+import com.typefree.ime.ime.engine.EngineResult
+import com.typefree.ime.ime.engine.InputEngine
+import com.typefree.ime.ime.engine.EngineState
+import com.typefree.ime.ime.engine.KeyInput
 import com.typefree.ime.ime.expression.EmojiCategory
+import com.typefree.ime.ime.expression.EmojiSuggestionEngine
 import com.typefree.ime.ime.expression.ExpressionCatalog
 import com.typefree.ime.ime.expression.KaomojiCategory
 import com.typefree.ime.ime.expression.SymbolCategory
+import com.typefree.ime.ime.flypy.FlypyCandidate
+import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.ui.screens.ApiConfigBackupHelper
 import com.typefree.ime.ui.screens.HapticSettingsUiHelper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.io.FileInputStream
 
 class HapticAndExpressionPanelTest {
 
@@ -204,7 +226,8 @@ class HapticAndExpressionPanelTest {
         ) as HapticPulsePlan.ShortOneShot
         assertEquals(VibrationEffect.DEFAULT_AMPLITUDE, fallback.amplitude)
 
-        assertEquals(0.05f, HapticFeedbackPlanner.resolveSoundVolumeFloat(0), 0.0001f)
+        assertEquals(0.00f, HapticFeedbackPlanner.resolveSoundVolumeFloat(-10), 0.0001f)
+        assertEquals(0.00f, HapticFeedbackPlanner.resolveSoundVolumeFloat(0), 0.0001f)
         assertEquals(0.50f, HapticFeedbackPlanner.resolveSoundVolumeFloat(50), 0.0001f)
         assertEquals(1.00f, HapticFeedbackPlanner.resolveSoundVolumeFloat(140), 0.0001f)
     }
@@ -390,6 +413,12 @@ class HapticAndExpressionPanelTest {
             AppLang.ZH_TW
         )
         assertEquals("關閉 · 音效 30%", offSummaryTw)
+
+        val zeroVolSummaryZh = HapticSettingsUiHelper.formatCollapsedSummary(
+            AppSettings(hapticPreset = HapticPreset.CRISP, interactionSounds = true, keySoundVolume = 0),
+            AppLang.ZH_CN
+        )
+        assertEquals("清脆 · 静音", zeroVolSummaryZh)
     }
 
     @Test
@@ -419,5 +448,279 @@ class HapticAndExpressionPanelTest {
         assertTrue(t9Src.contains("T9SymbolEmojiKey"))
         assertTrue(t9Src.contains("LocalKeyFeedbackTrigger.current"))
         assertTrue(t9Src.contains("ExpressionTab.SYMBOL"))
+    }
+
+    // =========================================================================
+    // 6. Expanded Emoji Catalog & Pinyin / Double-Pinyin Emoji Suggestion Engine
+    // =========================================================================
+
+    @Test
+    fun `Expanded ExpressionCatalog covers 800+ unique mainstream emojis with valid ZWJ skin tones`() {
+        val all = ExpressionCatalog.ALL_SEARCHABLE_EMOJIS
+        assertTrue("Expected >= 800 curated emojis, actual=${all.size}", all.size >= 800)
+        assertEquals("Catalog must contain zero duplicate base glyphs", all.size, all.map { it.glyph }.distinct().size)
+
+        // Mainstream additions (facepalm, shrug, bow, burning heart, flags, travel)
+        assertTrue(ExpressionCatalog.searchEmojis("捂脸").any { it.glyph == "🤦" })
+        assertTrue(ExpressionCatalog.searchEmojis("摊手").any { it.glyph == "🤷" })
+        assertTrue(ExpressionCatalog.searchEmojis("中国").any { it.glyph == "🇨🇳" })
+        assertTrue(ExpressionCatalog.EMOJIS_BY_CATEGORY[EmojiCategory.TRAVEL_PLACES].orEmpty().any { it.glyph == "✈️" })
+
+        // ZWJ skin tone modifier MUST sit before U+200D (e.g. 🧑🏽‍💻, never 🧑‍💻🏽)
+        val coder = all.first { it.glyph == "🧑‍💻" }
+        assertEquals(6, coder.skinVariants.size)
+        assertTrue(
+            "ZWJ skin variant must place tone modifier before ZWJ",
+            coder.skinVariants.contains("🧑🏽\u200D💻")
+        )
+        assertEquals("🧑‍💻", ExpressionCatalog.resolveBaseGlyph("🧑🏽\u200D💻"))
+
+        // Non-Emoji_Modifier_Base / Android 12L+ multi-person glyphs MUST NOT carry broken single skinVariants
+        for (forbidden in listOf("👯", "💑", "🤝")) {
+            val item = all.first { it.glyph == forbidden }
+            assertTrue("$forbidden must not have single skinVariants", item.skinVariants.isEmpty())
+        }
+    }
+
+    @Test
+    fun `EmojiSuggestionEngine loads bundled CLDR Chinese lexicon and matches composing and post-commit accurately`() {
+        val root = resolveProjectRoot()
+        val lexiconFile = File(root, "app/src/main/assets/${EmojiSuggestionEngine.BUNDLED_LEXICON_ASSET_PATH}")
+        assertTrue("Bundled emoji lexicon asset must exist", lexiconFile.isFile)
+
+        // Cold start before IO load completes returns empty cleanly without touching ExpressionCatalog
+        val unloaded = EmojiSuggestionEngine()
+        assertTrue(unloaded.suggestForComposing(listOf(FlypyCandidate("哈哈"))).isEmpty())
+        assertTrue(unloaded.suggestForCommittedText("哈哈").isEmpty())
+
+        val engine = EmojiSuggestionEngine()
+        val loaded = FileInputStream(lexiconFile).use { engine.loadFromTsvStream(it) }
+        assertTrue("Expected >= 7000 SC+TC keywords loaded, actual=$loaded", loaded >= 7000)
+        assertTrue("Expected >= 350 Tier-1 suffix-eligible phrases, actual=${engine.suffixWhitelistCount}", engine.suffixWhitelistCount >= 350)
+
+        // Composing: exact match on short candidates works (Simplified & Traditional)
+        val laughComposing = engine.suggestForComposing(
+            candidates = listOf(FlypyCandidate("哈哈"), FlypyCandidate("哈")),
+            preedit = "ha ha"
+        )
+        assertTrue(laughComposing.contains("😂"))
+        assertTrue(engine.suggestForComposing(listOf(FlypyCandidate("捂脸")), preedit = "wu lian").contains("🤦"))
+        assertTrue(engine.suggestForComposing(listOf(FlypyCandidate("狗头")), preedit = "gou tou").contains("🐶"))
+        assertTrue(engine.suggestForComposing(listOf(FlypyCandidate("牛逼")), preedit = "niu bi").contains("👍"))
+        assertTrue(engine.suggestForComposing(listOf(FlypyCandidate("謝謝")), preedit = "xie xie").contains("🙏"))
+        assertTrue(engine.suggestForComposing(listOf(FlypyCandidate("開心")), preedit = "kai xin").contains("😄"))
+
+        // Rime multi-step selection guard: uncommitted CJK (incl. Ext-B) or selected English prefix suppresses composing emojis
+        assertTrue(EmojiSuggestionEngine.hasUncommittedSelectedPrefix("今天 ha ha", "jintianhaha"))
+        assertTrue(EmojiSuggestionEngine.hasUncommittedSelectedPrefix("𠀀 ha ha", "haha"))
+        assertTrue(EmojiSuggestionEngine.hasUncommittedSelectedPrefix("AI kai xin", "aikaixin"))
+        assertFalse(EmojiSuggestionEngine.hasUncommittedSelectedPrefix("ha ha", "haha"))
+        assertTrue(
+            "Must suppress composing emoji when preedit holds uncommitted Chinese prefix",
+            engine.suggestForComposing(
+                candidates = listOf(FlypyCandidate("哈哈")),
+                preedit = "今天 ha ha",
+                rawCode = "jintianhaha"
+            ).isEmpty()
+        )
+        assertTrue(
+            "Must suppress composing emoji when preedit holds already-selected English prefix",
+            engine.suggestForComposing(
+                candidates = listOf(FlypyCandidate("开心")),
+                preedit = "AI kai xin",
+                rawCode = "aikaixin"
+            ).isEmpty()
+        )
+
+        // Composing: long sentences & grammar stopwords MUST NOT trigger replacement emojis
+        assertTrue(engine.suggestForComposing(listOf(FlypyCandidate("今天天气真开心"))).isEmpty())
+        assertTrue(engine.suggestForComposing(listOf(FlypyCandidate("我们"))).isEmpty())
+        assertTrue(engine.suggestForComposing(listOf(FlypyCandidate("什么"))).isEmpty())
+
+        // Post-commit: exact match (SC + TC), Tier-1 modal-particle stripping, and Tier-1 suffix match
+        assertTrue(engine.suggestForCommittedText("谢谢").contains("🙏"))
+        assertTrue(engine.suggestForCommittedText("謝謝").contains("🙏"))
+        assertTrue(engine.suggestForCommittedText("笑死了").any { it == "🤣" || it == "😂" })
+        assertTrue(engine.suggestForCommittedText("收到啦").any { it == "🫡" || it == "👌" })
+        assertTrue(engine.suggestForCommittedText("今天太开心了").any { it == "😄" || it == "😊" })
+        assertTrue(engine.suggestForCommittedText("今天太開心了").any { it == "😄" || it == "😊" })
+        assertTrue(engine.suggestForCommittedText("祝你生日快乐！").contains("🎂"))
+        assertTrue(engine.suggestForCommittedText("祝你生日快樂！").contains("🎂"))
+        // Broad CLDR Tier-2 words (like "不知道") work on exact match ONLY, never noisy suffix/modal-stripped sentences
+        assertTrue(engine.suggestForCommittedText("不知道").contains("🤷"))
+        assertTrue("Broad CLDR tag must NOT trigger via modal-stripped sentence", engine.suggestForCommittedText("我不知道呀").isEmpty())
+        assertTrue("Must not strip 鸭/哈 from ordinary words", engine.suggestForCommittedText("烤鸭").isEmpty())
+        // Exact negated CLDR entry ("不开心") suggests sad face (never smiley), while negated suffixes return empty
+        val unhappyHits = engine.suggestForCommittedText("不开心")
+        assertTrue("不开心 exact match should suggest sad face", unhappyHits.contains("🙁"))
+        assertFalse("不开心 must not suggest smiley", unhappyHits.any { it == "😄" || it == "😊" })
+        assertTrue("不太开心 must not suggest smiley", engine.suggestForCommittedText("不太开心").isEmpty())
+        assertTrue("没开心 must not suggest smiley", engine.suggestForCommittedText("没开心").isEmpty())
+        assertTrue("别生气 must not suggest angry suffix", engine.suggestForCommittedText("别生气").isEmpty())
+        // Mid-clause comma should not interrupt with emoji bar
+        assertTrue(engine.suggestForCommittedText("哈哈，").isEmpty())
+
+        // Respects user skin-tone prefs and falls back to base raw glyph when skin-tone glyph is unsupported
+        val skinResolved = engine.suggestForCommittedText(
+            committedText = "点赞",
+            skinTonePrefs = mapOf("👍" to "👍🏽")
+        )
+        assertEquals("👍🏽", skinResolved.first())
+
+        val skinFallbackToRaw = engine.suggestForCommittedText(
+            committedText = "点赞",
+            skinTonePrefs = mapOf("👍" to "👍🏽"),
+            isGlyphSupported = { it != "👍🏽" }
+        )
+        assertEquals("👍", skinFallbackToRaw.first())
+
+        val tofuFiltered = engine.suggestForCommittedText(
+            committedText = "哈哈",
+            isGlyphSupported = { it != "😂" }
+        )
+        assertFalse(tofuFiltered.contains("😂"))
+        assertTrue(tofuFiltered.contains("🤣"))
+    }
+
+    @Test
+    fun `TypingController enables emoji suggestions ONLY on Pinyin and Double Pinyin, never on codetable or custom schemes`() {
+        assertTrue(InputScheme.RIME_PINYIN.supportsEmojiSuggestions)
+        assertTrue(InputScheme.RIME_T9_PINYIN.supportsEmojiSuggestions)
+        assertTrue(InputScheme.RIME_DOUBLE_PINYIN_FLYPY.supportsEmojiSuggestions)
+        assertFalse(InputScheme.FLYPY_TABLE.supportsEmojiSuggestions)
+        assertFalse(InputScheme.RIME_CUSTOM.supportsEmojiSuggestions)
+
+        val root = resolveProjectRoot()
+        val lexiconFile = File(root, "app/src/main/assets/${EmojiSuggestionEngine.BUNDLED_LEXICON_ASSET_PATH}")
+        val emojiEngine = EmojiSuggestionEngine().apply {
+            FileInputStream(lexiconFile).use { loadFromTsvStream(it) }
+        }
+
+        val committedTexts = mutableListOf<String>()
+        val repo = newInMemoryRepository()
+        val stateFlow = MutableStateFlow(
+            ImeUiState(
+                tabMode = KeyboardTabMode.QWERTY,
+                isFlypyChineseMode = true,
+                activeInputScheme = InputScheme.RIME_PINYIN,
+                currentInputType = InputType.TYPE_CLASS_TEXT
+            )
+        )
+        var currentSettings = AppSettings(inputScheme = InputScheme.RIME_PINYIN, predictionEnabled = false)
+
+        val fakeRimeState = MutableStateFlow(EngineState())
+        val fakeRimeEngine = object : InputEngine {
+            override val state: StateFlow<EngineState> = fakeRimeState
+            override fun onKey(key: KeyInput): EngineResult = when (key) {
+                is KeyInput.CharKey -> {
+                    fakeRimeState.value = EngineState(
+                        rawCode = "haha",
+                        preedit = "ha ha",
+                        candidates = listOf(FlypyCandidate("哈哈"), FlypyCandidate("哈")),
+                        isComposing = true
+                    )
+                    EngineResult.Consumed
+                }
+                is KeyInput.Space -> {
+                    fakeRimeState.value = EngineState()
+                    EngineResult.Commit(text = "今天太开心了", remainComposing = false)
+                }
+                else -> EngineResult.PassThrough
+            }
+            override fun select(index: Int): EngineResult = EngineResult.PassThrough
+            override fun flush(): String = ""
+            override fun clear() {
+                fakeRimeState.value = EngineState()
+            }
+        }
+
+        val fakeHost = object : ImeHostCallbacks {
+            override val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            override val repository: AppRepository = repo
+            override val aiEngine: AiPipelineEngine = AiPipelineEngine()
+            override val stateFlow: MutableStateFlow<ImeUiState> = stateFlow
+            override fun currentInputConnection() = null
+            override fun performKeyFeedback(strong: Boolean) {}
+            override fun performHaptic(strong: Boolean) {}
+            override fun showQuickActionToast(message: String) {}
+            override fun commitDirectText(text: String, recordUndo: Boolean, markManualEdit: Boolean, playFeedback: Boolean) {
+                committedTexts.add(text)
+            }
+            override fun pushUndoSnapshot(snapshot: UndoSnapshot?) {}
+            override fun peekTopUndoSnapshot(): UndoSnapshot? = null
+            override fun recordManualEditTouch() {}
+            override fun tryAutoLearnFromRecentEdit() {}
+            override fun onDictationCommittedForAutoLearn(fullBufferAfterCommit: String) {}
+            override fun clearAutoLearnBaseline() {}
+            override fun readSelectedTextSafely(): String = ""
+            override fun readSurroundingBeforeCursor(maxChars: Int): String = ""
+            override fun readFullEditorTextSafely(): String = ""
+            override fun readSystemClipboardText(): String = ""
+            override fun syncSystemClipboardIfNeeded(allowFreshBanner: Boolean) {}
+            override fun archiveWavForHistory(wavFile: File, retention: HistoryRetention): File = wavFile
+            override fun getLastRecordingWavFile(): File = File("dummy.wav")
+            override fun hasRetryWavFile(): Boolean = false
+        }
+
+        val controller = TypingController(
+            host = fakeHost,
+            predictionIdleDismissMs = 0L,
+            settingsOverride = { currentSettings },
+            emojiSuggestionEngine = emojiEngine,
+            emojiGlyphSupportOverride = { true }
+        ).apply {
+            rimeInputEngine = fakeRimeEngine
+            isRimeReady = true
+        }
+
+        // 1. Pinyin composing shows emoji suggestions; tapping clears composing & commits emoji
+        controller.commitQwertyChar("h")
+        assertTrue(stateFlow.value.composingEmojiSuggestions.contains("😂"))
+        controller.selectComposingEmoji("😂")
+        assertEquals(listOf("😂"), committedTexts)
+        assertFalse(stateFlow.value.isFlypyComposing)
+        assertTrue(stateFlow.value.composingEmojiSuggestions.isEmpty())
+        assertEquals("😂", repo.settings.value.recentEmojis.first())
+
+        // 2. Double Pinyin post-commit shows emoji suggestions even when text prediction is off,
+        //    and multi-tap keeps post-commit emojis alive until dismissed or next typing
+        currentSettings = AppSettings(inputScheme = InputScheme.RIME_DOUBLE_PINYIN_FLYPY, predictionEnabled = false)
+        controller.commitQwertyChar("h")
+        controller.insertSpace()
+        assertEquals("今天太开心了", committedTexts.last())
+        assertTrue(stateFlow.value.postCommitEmojiSuggestions.any { it == "😄" || it == "😊" })
+        assertTrue("Prediction bar must become visible for post-commit emojis", stateFlow.value.isPredictionBarVisible)
+        controller.selectPostCommitEmoji("😄")
+        assertEquals("😄", committedTexts.last())
+        assertTrue("Multi-tap must keep post-commit emoji bar open", stateFlow.value.postCommitEmojiSuggestions.isNotEmpty())
+        controller.selectPostCommitEmoji("😄")
+        assertEquals(listOf("😂", "今天太开心了", "😄", "😄"), committedTexts)
+        controller.dismissPredictions()
+        assertTrue(stateFlow.value.postCommitEmojiSuggestions.isEmpty())
+
+        // 2b. TYPE_NULL / URI / Email / Filter editors MUST suppress emoji suggestions even in Pinyin mode
+        assertTrue(ImeLogic.isEmojiSuggestionBlockedEditor(InputType.TYPE_NULL))
+        assertTrue(ImeLogic.isEmojiSuggestionBlockedEditor(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI))
+        assertTrue(ImeLogic.isEmojiSuggestionBlockedEditor(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS))
+        assertTrue(ImeLogic.isEmojiSuggestionBlockedEditor(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_FILTER))
+        stateFlow.value = stateFlow.value.copy(
+            currentInputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        )
+        controller.commitQwertyChar("h")
+        assertTrue(stateFlow.value.composingEmojiSuggestions.isEmpty())
+        controller.insertSpace()
+        assertTrue(stateFlow.value.postCommitEmojiSuggestions.isEmpty())
+        stateFlow.value = stateFlow.value.copy(currentInputType = InputType.TYPE_CLASS_TEXT)
+
+        // 3. Shape-based codetable (小鹤音形) and Custom Rime MUST NOT emit composing or post-commit emojis
+        currentSettings = AppSettings(inputScheme = InputScheme.RIME_CUSTOM, predictionEnabled = false)
+        controller.commitQwertyChar("h")
+        assertTrue(stateFlow.value.composingEmojiSuggestions.isEmpty())
+        controller.insertSpace()
+        assertTrue(stateFlow.value.postCommitEmojiSuggestions.isEmpty())
+
+        currentSettings = AppSettings(inputScheme = InputScheme.FLYPY_TABLE, predictionEnabled = false)
+        controller.syncEngineStateToUi()
+        assertTrue(stateFlow.value.composingEmojiSuggestions.isEmpty())
     }
 }

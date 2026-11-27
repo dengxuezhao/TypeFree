@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dengxuezhao/TypeFree/releases/latest"><img src="https://img.shields.io/badge/Release-v3.9.1-10B981?style=flat-square&logo=github" alt="Release v3.9.1" /></a>
+  <a href="https://github.com/dengxuezhao/TypeFree/releases/latest"><img src="https://img.shields.io/badge/Release-v3.9.3-10B981?style=flat-square&logo=github" alt="Release v3.9.3" /></a>
   <img src="https://img.shields.io/badge/Engine-librime_1.17.0_+_Lua-0EA5E9?style=flat-square" alt="librime 1.17.0" />
   <img src="https://img.shields.io/badge/Local_AI-sherpa--onnx_+_llama.cpp-F59E0B?style=flat-square" alt="Local AI" />
   <img src="https://img.shields.io/badge/UI-简体中文_%7C_English_%7C_繁體中文-6366F1?style=flat-square" alt="Trilingual UI" />
@@ -46,7 +46,16 @@ Most mobile keyboards force an unnecessary trade-off between **fast, private typ
 
 ---
 
-## 🆕 What's New in v3.9.1
+## 🆕 What's New in v3.9.3
+
+- **😊 Pinyin & Shuangpin Emoji Suggestions + 827-Emoji Panel**
+  - Built-in 7,682-entry Simplified & Traditional Chinese offline Emoji lexicon (Unicode CLDR + curated daily chat phrases) powering both composing candidates and post-commit prediction bars on Full Pinyin, T9, and all 6 Shuangpin layouts (multi-tap consecutive emojis, skin-tone memory, Rime multi-step prefix guard, negation guard; strictly inactive on shape codetables/custom schemas and password/URI/email fields). Expression panel expanded from 187 to **827 mainstream emojis** with a new Travel category.
+- **🎙️ Instant Floating Voice Bubble & Background Accessibility Engine**
+  - Automatically surfaces in chat apps (WeChat/QQ/Feishu/Telegram) without requiring tap-input + dismiss-keyboard first; moved accessibility tree scanning to a dedicated background thread with deferred-collection scanning (zero main-thread jank in huge group chats), recording-start target fingerprint verification, whole-page password shield, and strict unfocused-text privacy isolation.
+- **🔧 Samsung One UI Bottom Nav Inset/Bleed-Through Fix & 0% Mute Key Sound**
+  - Eliminates double bottom lift padding and transparent bottom navigation bar bleed-through on Samsung One UI (Android 16) while preserving OriginOS / MagicOS bottom protection; lowers key click sound minimum from `5%` to `0%` (silent).
+
+### Earlier in v3.9.1
 
 - **🀄 6 Mainstream Shuangpin (Double Pinyin) Layouts & Auto 27-Key `;` Row**
   - Built-in **Xiaohe (default), Ziranma, Microsoft, Sogou, Intelligent ABC, and Ziguang Shuangpin**, all sharing the open-source Rime Ice dictionary and mixed CN-EN tables.

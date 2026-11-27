@@ -907,7 +907,7 @@ object ApiConfigBackupHelper {
                 ?.toInt()?.coerceIn(10, 100)
                 ?: existingSettings.hapticStrength
             val mergedKeySoundVolume = rootObj.optLong("keySoundVolume")
-                ?.toInt()?.coerceIn(5, 100)
+                ?.toInt()?.coerceIn(0, 100)
                 ?: existingSettings.keySoundVolume
             val mergedRecentEmojis = rootObj.getAsJsonArray("recentEmojis")?.let { arr ->
                 arr.mapNotNull { el -> runCatching { el.asString }.getOrNull()?.trim() }

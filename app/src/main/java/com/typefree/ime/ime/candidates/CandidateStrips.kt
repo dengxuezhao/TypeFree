@@ -81,7 +81,9 @@ fun PredictionCandidateBar(
     onAcceptPhraseSuggestion: (() -> Unit)? = null,
     onDismissPhraseSuggestion: (() -> Unit)? = null,
     englishSuggestions: List<String> = emptyList(),
-    onSelectEnglishSuggestion: ((String) -> Unit)? = null
+    onSelectEnglishSuggestion: ((String) -> Unit)? = null,
+    emojiSuggestions: List<String> = emptyList(),
+    onSelectEmojiSuggestion: ((String) -> Unit)? = null
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val metrics = LocalKeyboardMetrics.current
@@ -205,7 +207,47 @@ fun PredictionCandidateBar(
                 }
             }
 
-            predictions.forEachIndexed { idx, cand ->
+            // Keep top-2 next-word text predictions in their primary left slots, then place
+            // post-commit Emoji pills right after them (or directly at front when text predictions are empty).
+            val leadPredCount = minOf(2, predictions.size)
+            for (idx in 0 until leadPredCount) {
+                val cand = predictions[idx]
+                val visualText = if (cand.text.length > 16 || cand.text.contains('\n')) {
+                    cand.text.replace('\n', '↵').take(16) + "…"
+                } else {
+                    cand.text
+                }
+                Box(
+                    modifier = Modifier
+                        .height(metrics.candidateChipHeight)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(palette.keyCapBg)
+                        .border(1.dp, palette.keyBorder, RoundedCornerShape(8.dp))
+                        .clickable { onSelectPrediction(idx) }
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = visualText,
+                        color = palette.keyTextPrimary,
+                        fontSize = metrics.candidateFontSizeSp.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1
+                    )
+                }
+            }
+
+            emojiSuggestions.forEach { glyph ->
+                if (glyph.isNotBlank()) {
+                    EmojiSuggestionChip(
+                        glyph = glyph,
+                        onClick = { onSelectEmojiSuggestion?.invoke(glyph) }
+                    )
+                }
+            }
+
+            for (idx in leadPredCount until predictions.size) {
+                val cand = predictions[idx]
                 val visualText = if (cand.text.length > 16 || cand.text.contains('\n')) {
                     cand.text.replace('\n', '↵').take(16) + "…"
                 } else {
@@ -368,7 +410,9 @@ fun CandidateStrip(
     onBlockCandidate: (String) -> Unit = {},
     isOrqDateActive: Boolean = false,
     orqDateOffsetDays: Int = 0,
-    onStepOrqDate: ((Int) -> Unit)? = null
+    onStepOrqDate: ((Int) -> Unit)? = null,
+    emojiSuggestions: List<String> = emptyList(),
+    onSelectEmojiSuggestion: ((String) -> Unit)? = null
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val metrics = LocalKeyboardMetrics.current
@@ -425,7 +469,8 @@ fun CandidateStrip(
                 onBlock = { onBlockCandidate(firstCand.text) }
             )
 
-            // 2. Scrollable 2..N candidates
+            // 2. Scrollable 2..N candidates (with Pinyin/Double-Pinyin Emoji suggestion pills right after Candidate #2
+            //    so Candidate #1 (Space) and Candidate #2 (`;`) stay at exact muscle-memory positions)
             Row(
                 modifier = Modifier
                     .weight(1f)
@@ -434,8 +479,30 @@ fun CandidateStrip(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                candidates.drop(1).take(39).forEachIndexed { offsetIdx, cand ->
-                    val actualIdx = offsetIdx + 1
+                val secondCand = candidates.getOrNull(1)
+                if (secondCand != null) {
+                    CandidateChipItem(
+                        index = 1,
+                        cand = secondCand,
+                        isFirst = false,
+                        codetableEnhancerActive = codetableEnhancerActive,
+                        isPinned = secondCand.text in pinnedWordsForCurrentCode,
+                        onClick = { onSelectCandidate(1) },
+                        onPin = { onPinCandidate(secondCand.text) },
+                        onUnpin = { onUnpinCandidate(secondCand.text) },
+                        onBlock = { onBlockCandidate(secondCand.text) }
+                    )
+                }
+                emojiSuggestions.forEach { glyph ->
+                    if (glyph.isNotBlank()) {
+                        EmojiSuggestionChip(
+                            glyph = glyph,
+                            onClick = { onSelectEmojiSuggestion?.invoke(glyph) }
+                        )
+                    }
+                }
+                candidates.drop(2).take(38).forEachIndexed { offsetIdx, cand ->
+                    val actualIdx = offsetIdx + 2
                     CandidateChipItem(
                         index = actualIdx,
                         cand = cand,
@@ -541,6 +608,47 @@ fun CandidateStrip(
                 modifier = Modifier.size((13.5f * metrics.widthScale).dp)
             )
         }
+    }
+}
+
+@Composable
+private fun EmojiSuggestionChip(
+    glyph: String,
+    onClick: () -> Unit
+) {
+    val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
+    val hostView = LocalView.current
+    val chipShape = RoundedCornerShape(8.dp)
+
+    Box(
+        modifier = Modifier
+            .height(metrics.candidateChipHeight)
+            .widthIn(min = 36.dp)
+            .clip(chipShape)
+            .background(TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.13f else 0.08f))
+            .border(
+                width = 1.dp,
+                color = TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.42f else 0.34f),
+                shape = chipShape
+            )
+            .clickable {
+                keyFeedback.onTouchFeedback(HapticTier.CANDIDATE_TAP, hostView, KeySoundType.STANDARD, true)
+                onClick()
+            }
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = glyph,
+            style = TextStyle(
+                fontSize = (metrics.candidateFontSizeSp + 2.5f).sp,
+                lineHeight = (metrics.candidateFontSizeSp + 4.5f).sp,
+                platformStyle = PlatformTextStyle(includeFontPadding = false)
+            ),
+            maxLines = 1
+        )
     }
 }
 

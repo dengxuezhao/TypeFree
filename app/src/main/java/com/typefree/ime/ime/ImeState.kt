@@ -162,6 +162,8 @@ data class ImeUiState(
     val englishSuggestionReplaceLength: Int = 0,
     val englishAutoCapActive: Boolean = false,
     val isRimeDeploying: Boolean = false,
+    val composingEmojiSuggestions: List<String> = emptyList(),
+    val postCommitEmojiSuggestions: List<String> = emptyList(),
     val predictionCandidates: List<FlypyCandidate> = emptyList(),
     val aiCompletionSuggestion: String? = null,
     val isIncognitoMode: Boolean = false,
@@ -171,6 +173,7 @@ data class ImeUiState(
     val activeBottomLiftDp: Int = KeyboardMetrics.DEFAULT_BOTTOM_LIFT_DP,
     val activeCandidateFontScale: CandidateFontScale = CandidateFontScale.STANDARD,
     val systemBottomInsetPx: Int = 0,
+    val reservedSystemBottomInsetPx: Int = 0,
     val isT9QuickPunctuationOpen: Boolean = false,
     val activeT9CycleSymbol: String? = null,
     val inlineAutofillState: InlineAutofillUiState = InlineAutofillUiState(),
@@ -210,6 +213,7 @@ data class ImeUiState(
             rawSelectedText.isBlank() && (
                 (isFlypyChineseMode && (
                     predictionCandidates.isNotEmpty() ||
+                        postCommitEmojiSuggestions.isNotEmpty() ||
                         !aiCompletionSuggestion.isNullOrBlank() ||
                         !activePhraseSuggestionLabel.isNullOrBlank()
                     )) ||
@@ -407,6 +411,18 @@ object ImeLogic {
                 variation == InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS ||
                 variation == InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS
             )
+    }
+
+    /**
+     * Suppresses inline emoji suggestions in password, URI, email, filter, and non-text fields
+     * (numbers/phone/datetime) where emojis are never appropriate.
+     */
+    fun isEmojiSuggestionBlockedEditor(inputType: Int, imeOptions: Int = 0): Boolean {
+        if (isAsciiPreferredEditor(inputType, imeOptions)) return true
+        val cls = inputType and InputType.TYPE_MASK_CLASS
+        if (cls != InputType.TYPE_CLASS_TEXT) return true
+        val variation = inputType and InputType.TYPE_MASK_VARIATION
+        return variation == InputType.TYPE_TEXT_VARIATION_FILTER
     }
 
     fun isIncognitoImeOptions(

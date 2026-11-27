@@ -139,6 +139,10 @@ class TypeFreeBubbleService :
     private var pipelineJob: Job? = null
     private var activeStreamingSession: StreamingAsrSession? = null
     private var feedbackResetJob: Job? = null
+    @Volatile
+    private var lockedRecordingFingerprint: InputTargetFingerprint? = null
+    @Volatile
+    private var lockedRecordingTargetKind: BubbleTargetKind = BubbleTargetKind.NONE
 
     private val _phase = MutableStateFlow<BubblePhase>(BubblePhase.Idle)
     val phase = _phase.asStateFlow()
@@ -294,7 +298,7 @@ class TypeFreeBubbleService :
                     (currPhase != BubblePhase.Idle ||
                         forcePreview ||
                         (!hostInForeground && !a11yConnected) ||
-                        (!hostInForeground && focusedSnap.hasEditableFocus))
+                        (!hostInForeground && focusedSnap.hasBubbleTarget))
                 val showOrb = baseAllowed && !handoffHidden
 
                 LaunchedEffect(showOrb) {
@@ -472,8 +476,15 @@ class TypeFreeBubbleService :
             return
         }
 
-        // Refresh accessibility focus snapshot right before recording
-        TypeFreeAccessibilityService.activeInstance?.refreshFocusedInputState()
+        // Lock target fingerprint from the latest background-scanned snapshot so a mid-recording
+        // page/chat switch can never inject text into the wrong chat window.
+        val snapAtRecordStart = TypeFreeBubbleController.focusedInput.value
+        lockedRecordingFingerprint = snapAtRecordStart.targetFingerprint
+        lockedRecordingTargetKind = snapAtRecordStart.targetKind
+        TypeFreeAccessibilityService.activeInstance?.scheduleFocusedInputRefresh(
+            allowMultiWindowScan = true,
+            delayMs = 0L
+        )
         promoteToMicrophoneForeground()
 
         activeStreamingSession?.cancel()
@@ -552,12 +563,15 @@ class TypeFreeBubbleService :
                         return@launch
                     }
 
-                    val liveSnap = TypeFreeAccessibilityService.activeInstance?.refreshFocusedInputState()
+                    val lockedFingerprint = lockedRecordingFingerprint
+                    val lockedKind = lockedRecordingTargetKind
+                    val liveSnap = TypeFreeAccessibilityService.activeInstance?.refreshFocusedInputStateAsync()
                         ?: TypeFreeBubbleController.focusedInput.value
                     val pkg = liveSnap.packageName
                     val appName = repository.resolveAppName(pkg)
                     val (activeStyle, _) = repository.resolveActiveStyle(pkg, liveSnap.inputType)
-                    val selectedText = liveSnap.selectedText
+                    val selectedText = if (liveSnap.targetKind == BubbleTargetKind.FOCUSED) liveSnap.selectedText else ""
+                    val surroundingContext = if (liveSnap.targetKind == BubbleTargetKind.FOCUSED) liveSnap.surroundingBeforeCursor else ""
                     val intentMode = if (selectedText.isNotBlank()) {
                         VoiceIntentMode.SPEAK_TO_EDIT
                     } else {
@@ -578,7 +592,7 @@ class TypeFreeBubbleService :
                         activeStyle = activeStyle,
                         targetAppName = appName,
                         selectedText = selectedText,
-                        surroundingBeforeCursor = liveSnap.surroundingBeforeCursor,
+                        surroundingBeforeCursor = surroundingContext,
                         intentMode = intentMode,
                         preTranscribedText = preTranscribed,
                         sttTailWaitMs = tailWaitMs,
@@ -598,7 +612,12 @@ class TypeFreeBubbleService :
                             val finalOut = exec.finalOutput
                             val commitStartNano = System.nanoTime()
                             val a11y = TypeFreeAccessibilityService.activeInstance
-                            val inserted = a11y?.insertPolishedText(finalOut) ?: false
+                            val insertOutcome = a11y?.insertPolishedTextAsync(
+                                polishedText = finalOut,
+                                expectedFingerprint = lockedFingerprint,
+                                expectedTargetKind = lockedKind
+                            ) ?: BubbleInsertOutcome.COPIED_FALLBACK
+                            val inserted = insertOutcome == BubbleInsertOutcome.INSERTED
                             if (!inserted) {
                                 copyToClipboard(finalOut)
                             }
@@ -666,7 +685,11 @@ class TypeFreeBubbleService :
                             vibrate(strong = false)
                             runCatching { aiEngine.prewarmLiveStreamingIfNeeded(settings) }
                             showTemporaryFeedback(
-                                if (inserted) "✓ 已上屏" else "✓ 已复制剪贴板",
+                                when (insertOutcome) {
+                                    BubbleInsertOutcome.INSERTED -> "✓ 已上屏"
+                                    BubbleInsertOutcome.TARGET_MISMATCH_COPIED -> "已切页 · 已复制剪贴板"
+                                    BubbleInsertOutcome.COPIED_FALLBACK -> "✓ 已复制剪贴板"
+                                },
                                 isError = false
                             )
                         },

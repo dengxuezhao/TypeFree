@@ -116,7 +116,9 @@ internal object AboutDiagnosticsSnapshotHelper {
         "imeSelected" to imeSelected.toString(),
         "a11yEnabled" to accessibilityEnabled.toString(),
         "bubbleEnabled" to settings.bubbleEnabled.toString()
-    )
+    ).apply {
+        putAll(ImeDiagnosticLogger.snapshotRuntimeState())
+    }
 
     fun buildSnapshotText(
         settings: AppSettings,
@@ -214,8 +216,12 @@ internal object HapticSettingsUiHelper {
             else -> presetLabel(effective, lang)
         }
         val soundPart = if (settings.interactionSounds) {
-            val vol = settings.keySoundVolume.coerceIn(5, 100)
-            AppStrings.pick(lang, "音效 $vol%", "Sound $vol%", "音效 $vol%")
+            val vol = settings.keySoundVolume.coerceIn(0, 100)
+            if (vol == 0) {
+                AppStrings.pick(lang, "静音", "Muted", "靜音")
+            } else {
+                AppStrings.pick(lang, "音效 $vol%", "Sound $vol%", "音效 $vol%")
+            }
         } else {
             AppStrings.pick(lang, "静音", "Muted", "靜音")
         }
@@ -635,7 +641,7 @@ fun GeneralSettingsScreen(
                             mutableIntStateOf(settings.hapticStrength.coerceIn(10, 100))
                         }
                         var soundSliderValue by remember(settings.keySoundVolume) {
-                            mutableFloatStateOf(settings.keySoundVolume.coerceIn(5, 100).toFloat())
+                            mutableFloatStateOf(settings.keySoundVolume.coerceIn(0, 100).toFloat())
                         }
 
                         Surface(
@@ -777,7 +783,12 @@ fun GeneralSettingsScreen(
                                         )
                                         Text(
                                             text = if (settings.interactionSounds) {
-                                                "${soundSliderValue.roundToInt()}%"
+                                                val pct = soundSliderValue.roundToInt().coerceIn(0, 100)
+                                                if (pct == 0) {
+                                                    tr("0%（静音）", "0% (Muted)", "0%（靜音）")
+                                                } else {
+                                                    "$pct%"
+                                                }
                                             } else {
                                                 tr("请先开启上方提示音", "Enable sounds above", "請先開啟上方提示音")
                                             },
@@ -788,16 +799,16 @@ fun GeneralSettingsScreen(
                                     Slider(
                                         value = soundSliderValue,
                                         onValueChange = { raw ->
-                                            soundSliderValue = raw.roundToInt().coerceIn(5, 100).toFloat()
+                                            soundSliderValue = raw.roundToInt().coerceIn(0, 100).toFloat()
                                         },
                                         onValueChangeFinished = {
-                                            val finalVol = soundSliderValue.roundToInt().coerceIn(5, 100)
+                                            val finalVol = soundSliderValue.roundToInt().coerceIn(0, 100)
                                             repository.updateSettings { it.copy(keySoundVolume = finalVol) }
-                                            if (settings.interactionSounds) {
+                                            if (settings.interactionSounds && finalVol > 0) {
                                                 previewController.previewSoundInSettings(finalVol)
                                             }
                                         },
-                                        valueRange = 5f..100f,
+                                        valueRange = 0f..100f,
                                         enabled = settings.interactionSounds
                                     )
                                 }

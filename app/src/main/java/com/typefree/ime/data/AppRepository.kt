@@ -263,7 +263,7 @@ class AppRepository(
                 38
             }
             val resolvedKeySoundVolume = if (raw.contains("\"keySoundVolume\"")) {
-                parsed.keySoundVolume.coerceIn(5, 100)
+                parsed.keySoundVolume.coerceIn(0, 100)
             } else {
                 50
             }

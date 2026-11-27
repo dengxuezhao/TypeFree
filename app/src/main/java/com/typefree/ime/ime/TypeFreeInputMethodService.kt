@@ -19,9 +19,11 @@ import android.view.inputmethod.InputMethodManager
 import androidx.annotation.RequiresApi
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
@@ -47,6 +49,7 @@ import com.typefree.ime.ime.engine.CodetableEnhancedInputEngine
 import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.ui.AppDestinations
+import com.typefree.ime.ui.theme.LocalTypeFreeKeyboardPalette
 import com.typefree.ime.ui.theme.TypeFreeTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -166,6 +169,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         serviceScope.launch(Dispatchers.IO) {
             runCatching {
                 typingController.staticPredictor.loadFromContextIfAvailable(applicationContext)
+            }
+            runCatching {
+                typingController.emojiSuggestionEngine.loadFromContextIfAvailable(applicationContext)
             }
         }
         serviceScope.launch {
@@ -498,14 +504,23 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         )
     }
 
-    override fun onDecorSystemBottomInsetChanged(bottomPx: Int) {
-        val safePx = bottomPx.coerceAtLeast(0)
-        if (_imeState.value.systemBottomInsetPx != safePx) {
-            _imeState.update { it.copy(systemBottomInsetPx = safePx) }
+    override fun onDecorSystemBottomInsetGeometryChanged(geometry: ImeBottomInsetGeometry) {
+        val safeEffPx = geometry.effectiveBottomInsetPx.coerceAtLeast(0)
+        val safeReservedPx = geometry.reservedBelowInputPx.coerceAtLeast(0)
+        val prev = _imeState.value
+        val stateChanged = prev.systemBottomInsetPx != safeEffPx ||
+            prev.reservedSystemBottomInsetPx != safeReservedPx
+        if (stateChanged) {
+            _imeState.update {
+                it.copy(
+                    systemBottomInsetPx = safeEffPx,
+                    reservedSystemBottomInsetPx = safeReservedPx
+                )
+            }
             ImeDiagnosticLogger.record(
                 category = "IME_INSETS",
                 event = "system_bottom_inset",
-                detail = "bottomPx=$safePx"
+                detail = geometry.toDiagnosticDetail()
             )
             requestRefreshImeInsets()
         }
@@ -695,6 +710,10 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         tryAutoLearnFromRecentEdit()
         repository.dailyStatsStore.flushAsync()
         repository.setImeWindowVisible(false)
+        com.typefree.ime.bubble.TypeFreeAccessibilityService.activeInstance?.scheduleFocusedInputRefresh(
+            allowMultiWindowScan = true,
+            delayMs = 80L
+        )
         super.onWindowHidden()
         inlineAutofillController.onFinishInputSession()
         voiceController.stopRecordingOnTabSwitchOrWindowHidden()
@@ -811,6 +830,16 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             themePreference = settings.themePreference,
             appLanguage = settings.appLanguage
         ) {
+            val palette = LocalTypeFreeKeyboardPalette.current
+            val navBarColorArgb = palette.keyboardCanvas.toArgb()
+            val navBarLightIcons = !palette.isDark
+            SideEffect {
+                syncSoftInputNavigationBarAppearance(
+                    backgroundColorArgb = navBarColorArgb,
+                    isLightBackground = navBarLightIcons,
+                    hideBackdropForPeek = false
+                )
+            }
             CompositionLocalProvider(
                 LocalDensity provides lockedImeDensity,
                 LocalKeyboardMetrics provides keyboardMetrics,
@@ -928,6 +957,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             ImeUiAction.ToggleFlypyCandidateSheet -> typingController.toggleFlypyCandidateSheet()
             ImeUiAction.RequestMoreCandidates -> typingController.requestMoreCandidates()
             is ImeUiAction.SelectPredictionCandidate -> selectPredictionCandidate(action.index)
+            is ImeUiAction.SelectComposingEmoji -> typingController.selectComposingEmoji(action.glyph)
+            is ImeUiAction.SelectPostCommitEmoji -> typingController.selectPostCommitEmoji(action.glyph)
             is ImeUiAction.SelectAiCompletion -> selectAiCompletion(action.text)
             ImeUiAction.DismissPredictions -> dismissPredictions()
             is ImeUiAction.RunEditorShortcut -> typingController.handleEditorShortcutAction(action.action)

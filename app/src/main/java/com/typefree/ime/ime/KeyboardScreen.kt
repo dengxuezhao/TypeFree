@@ -198,7 +198,7 @@ fun KeyboardScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(palette.keyboardCanvas)
-                .padding(bottom = KeyboardMetrics.resolveImeSystemBottomInsetDp(uiState.systemBottomInsetPx))
+                .padding(bottom = KeyboardMetrics.resolveImeSystemBottomInsetDp(uiState.systemBottomInsetPx, uiState.reservedSystemBottomInsetPx) { com.typefree.ime.diagnostics.ImeDiagnosticLogger.updateRuntimeStateEntry("imeInsetComposePx", it.toString()) })
                 .height(metrics.frameHeight)
         ) {
         // Subtle 1.dp top divider (fixed across all height levels)
@@ -322,9 +322,9 @@ fun KeyboardScreen(
                                     onPinCandidate = { onAction(ImeUiAction.PinCandidate(it)) },
                                     onUnpinCandidate = { onAction(ImeUiAction.UnpinCandidate(it)) },
                                     onBlockCandidate = { onAction(ImeUiAction.BlockCandidate(it)) },
-                                    isOrqDateActive = uiState.isOrqDateActive,
-                                    orqDateOffsetDays = uiState.orqDateOffsetDays,
-                                    onStepOrqDate = { delta -> onAction(ImeUiAction.StepOrqDate(delta)) }
+                                    isOrqDateActive = uiState.isOrqDateActive, orqDateOffsetDays = uiState.orqDateOffsetDays,
+                                    onStepOrqDate = { delta -> onAction(ImeUiAction.StepOrqDate(delta)) },
+                                    emojiSuggestions = uiState.composingEmojiSuggestions, onSelectEmojiSuggestion = { onAction(ImeUiAction.SelectComposingEmoji(it)) }
                                 )
 
                                 !uiState.isToolPanelOpen && uiState.isT9QuickPunctuationOpen -> T9QuickPunctuationBar(
@@ -348,8 +348,8 @@ fun KeyboardScreen(
                                     phraseSuggestionLabel = uiState.activePhraseSuggestionLabel,
                                     onAcceptPhraseSuggestion = { onAction(ImeUiAction.AcceptPhraseSuggestion) },
                                     onDismissPhraseSuggestion = { onAction(ImeUiAction.DismissPhraseSuggestion) },
-                                    englishSuggestions = uiState.englishSuggestions,
-                                    onSelectEnglishSuggestion = { onAction(ImeUiAction.SelectEnglishSuggestion(it)) }
+                                    englishSuggestions = uiState.englishSuggestions, onSelectEnglishSuggestion = { onAction(ImeUiAction.SelectEnglishSuggestion(it)) },
+                                    emojiSuggestions = uiState.postCommitEmojiSuggestions, onSelectEmojiSuggestion = { onAction(ImeUiAction.SelectPostCommitEmoji(it)) }
                                 )
 
                                 else -> TypeFreeTopBar(

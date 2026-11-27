@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dengxuezhao/TypeFree/releases/latest"><img src="https://img.shields.io/badge/Release-v3.9.1-10B981?style=flat-square&logo=github" alt="Release v3.9.1" /></a>
+  <a href="https://github.com/dengxuezhao/TypeFree/releases/latest"><img src="https://img.shields.io/badge/Release-v3.9.3-10B981?style=flat-square&logo=github" alt="Release v3.9.3" /></a>
   <img src="https://img.shields.io/badge/Engine-librime_1.17.0_+_Lua-0EA5E9?style=flat-square" alt="librime 1.17.0" />
   <img src="https://img.shields.io/badge/Local_AI-sherpa--onnx_+_llama.cpp-F59E0B?style=flat-square" alt="Local AI" />
   <img src="https://img.shields.io/badge/UI-简体中文_%7C_English_%7C_繁體中文-6366F1?style=flat-square" alt="Trilingual UI" />
@@ -47,7 +47,16 @@
 
 ---
 
-## 🆕 v3.9.1 核心升级亮点
+## 🆕 v3.9.3 核心升级亮点
+
+- **😊 拼音 / 双拼 Emoji 智能提示 & 827 主流表情面板**
+  - 全拼、九键与 6 种双拼在中文拼写中和上屏后联想栏自动提示匹配 Emoji（基于 7,682 条简繁中文 Unicode CLDR + 聊天词表，支持连点连发、肤色偏好记忆、Rime 分步选词前缀保护与否定前缀防误触；形码/自定义方案与密码/网址/邮箱框零打扰）；内置 Emoji 面板扩充至 827 个主流表情并新增旅行分类。
+- **🎙️ 悬浮语音胶囊聊天页直出 & 后台防卡顿重构**
+  - 打开微信/QQ 等聊天页无需先点输入框收起键盘即可自动弹出胶囊；独立后台线程 + 延后列表两阶段扫描杜绝大群卡顿，录音锁目标指纹防切页误写，整页密码屏蔽且绝不上传未聚焦文本。
+- **🔧 三星 One UI 底部留白/透字修复 & 按键音效支持 0% 静音**
+  - 动态扣减系统预留导航栏空间并加装键盘同色不透明底垫，彻底修复三星 One UI（Android 16）底部双倍留白与漏字；按键音效音量下限降至 `0%`（静音）。
+
+### v3.9.1 亮点回顾
 
 - **🀄 内置 6 种主流双拼 + 自动 27 键 `;` 分号排布**
   - 开箱内置 **小鹤双拼（默认）、自然码、微软双拼、搜狗双拼、智能 ABC、紫光双拼**，全部共享雾凇开源词库与中英混输词表。

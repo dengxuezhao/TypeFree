@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -111,16 +112,142 @@ data class KeyboardMetrics(
         }
 
         /**
+         * Computes the uncovered bottom system-bar overlap for our IME [ComposeView] inside
+         * `SoftInputWindow`:
+         * - On ROMs like vivo OriginOS 7 / MagicOS 11 where the system earth/switcher bar overlays
+         *   the bottom of `inputArea` (`inputBottomInWindowPx == decorHeightPx`, `reserved == 0`),
+         *   returns the full [rawDecorBottomInsetPx] so bottom keys are never covered.
+         * - On ROMs like Samsung One UI where the framework already places `inputArea` (or the
+         *   entire IME window) above the bottom navigation bar (`reserved >= raw`), deducts the
+         *   already-reserved height so bottom padding is never double-counted.
+         * - Before the first layout pass (`!inputLaidOut || inputHeightPx <= 0`), retains
+         *   [previousEffectiveBottomInsetPx] clamped to `[0, raw]` so pre-layout zero bounds never
+         *   falsely wipe out real overlap or cause a transient jump.
+         */
+        fun resolveDecorOverlapBottomInset(
+            rawDecorBottomInsetPx: Int,
+            decorHeightPx: Int,
+            inputBottomInWindowPx: Int,
+            inputHeightPx: Int,
+            inputLaidOut: Boolean,
+            decorBottomOnScreenPx: Int = 0,
+            screenBottomPx: Int = 0,
+            previousEffectiveBottomInsetPx: Int = 0
+        ): ImeBottomInsetGeometry {
+            val safeRaw = rawDecorBottomInsetPx.coerceAtLeast(0)
+            val safeDecorH = decorHeightPx.coerceAtLeast(0)
+            val safeInputBot = inputBottomInWindowPx.coerceAtLeast(0)
+            val safeDecorScrBot = decorBottomOnScreenPx.coerceAtLeast(0)
+            val safeScrBot = screenBottomPx.coerceAtLeast(0)
+            if (safeRaw == 0) {
+                return ImeBottomInsetGeometry(
+                    rawDecorBottomInsetPx = 0,
+                    reservedBelowInputPx = 0,
+                    effectiveBottomInsetPx = 0,
+                    decorHeightPx = safeDecorH,
+                    inputBottomInWindowPx = safeInputBot,
+                    decorBottomOnScreenPx = safeDecorScrBot,
+                    screenBottomPx = safeScrBot,
+                    inputLaidOut = inputLaidOut
+                )
+            }
+            if (!inputLaidOut || inputHeightPx <= 0 || safeDecorH <= 0 || safeInputBot <= 0) {
+                val heldEffective = previousEffectiveBottomInsetPx.coerceIn(0, safeRaw)
+                return ImeBottomInsetGeometry(
+                    rawDecorBottomInsetPx = safeRaw,
+                    reservedBelowInputPx = 0,
+                    effectiveBottomInsetPx = heldEffective,
+                    decorHeightPx = safeDecorH,
+                    inputBottomInWindowPx = safeInputBot,
+                    decorBottomOnScreenPx = safeDecorScrBot,
+                    screenBottomPx = safeScrBot,
+                    inputLaidOut = false
+                )
+            }
+            val inWindowReservedPx = (safeDecorH - safeInputBot).coerceAtLeast(0)
+            val rawBelowDecorOnScreenPx = if (safeScrBot > 0 && safeDecorScrBot > 0 && safeScrBot > safeDecorScrBot) {
+                safeScrBot - safeDecorScrBot
+            } else {
+                0
+            }
+            // Ignore implausibly large screen-bottom gaps (e.g. unsynced WRAP_CONTENT mWindowTop == 0
+            // before WindowManager positions the IME window) so OriginOS/MagicOS overlap is never lost.
+            val belowDecorOnScreenPx = if (rawBelowDecorOnScreenPx <= safeRaw * 2) {
+                rawBelowDecorOnScreenPx
+            } else {
+                0
+            }
+            val totalReservedPx = inWindowReservedPx + belowDecorOnScreenPx
+            val effectivePx = (safeRaw - totalReservedPx).coerceAtLeast(0)
+            return ImeBottomInsetGeometry(
+                rawDecorBottomInsetPx = safeRaw,
+                reservedBelowInputPx = totalReservedPx,
+                inWindowReservedPx = inWindowReservedPx,
+                effectiveBottomInsetPx = effectivePx,
+                decorHeightPx = safeDecorH,
+                inputBottomInWindowPx = safeInputBot,
+                decorBottomOnScreenPx = safeDecorScrBot,
+                screenBottomPx = safeScrBot,
+                inputLaidOut = true
+            )
+        }
+
+        /**
+         * Resolves the height of the opaque bottom backdrop strip placed at index `0` of the IME
+         * `DecorView` (strictly below `inputView` and behind the system `NavigationBarFrame`).
+         * Prevents underlying app content (such as WeChat bottom links) from bleeding through a
+         * transparent navigation bar on Android 15/16 (`targetSdk = 35`) devices like Samsung
+         * One UI where `Window.setNavigationBarColor` is ignored and `inputArea` sits above the
+         * navigation bar, while staying `0` (`GONE`) on OriginOS 7 / MagicOS 11 or during Jev peek.
+         */
+        fun resolveNavBarBackdropHeightPx(
+            geometry: ImeBottomInsetGeometry,
+            isFullScreenPeekCapturing: Boolean
+        ): Int {
+            if (isFullScreenPeekCapturing || !geometry.inputLaidOut) return 0
+            return geometry.inWindowReservedPx.coerceAtLeast(0)
+        }
+
+        /**
+         * Combines Compose's own `WindowInsets.systemBars` bottom inset (with any already-reserved
+         * frame space below `ComposeView` deducted) and the overlap-deducted decor inset.
+         */
+        fun resolveEffectiveBottomInsetPx(
+            composeSystemBarsBottomPx: Int,
+            decorEffectiveBottomInsetPx: Int,
+            reservedBelowInputPx: Int = 0
+        ): Int {
+            val deductedComposePx = (
+                composeSystemBarsBottomPx.coerceAtLeast(0) - reservedBelowInputPx.coerceAtLeast(0)
+            ).coerceAtLeast(0)
+            return max(deductedComposePx, decorEffectiveBottomInsetPx.coerceAtLeast(0))
+        }
+
+        /**
          * Resolves the bottom safe-area inset for the IME window on Android 15/16 (`targetSdk = 35`)
          * including vivo OriginOS 7's `imeCaptionBar` / `NavigationBarFrame` (🌐 switcher bar) even
          * when `@android:layout/input_method` swallows child [ComposeView] `navigationBars` insets,
-         * using `max(...)` so normal gesture bars are never double-counted.
+         * while deducting any space already reserved below `ComposeView` (e.g. Samsung One UI's
+         * system IME navigation bar) so bottom bars are never double-counted.
          */
         @Composable
-        fun resolveImeSystemBottomInsetDp(decorBottomInsetPx: Int): Dp {
+        fun resolveImeSystemBottomInsetDp(
+            decorBottomInsetPx: Int,
+            reservedBelowInputPx: Int = 0,
+            onComposeSystemBarsBottomPx: ((Int) -> Unit)? = null
+        ): Dp {
             val density = LocalDensity.current
             val composeBottomPx = WindowInsets.systemBars.getBottom(density)
-            val effectivePx = max(composeBottomPx, decorBottomInsetPx.coerceAtLeast(0))
+            if (onComposeSystemBarsBottomPx != null) {
+                SideEffect {
+                    onComposeSystemBarsBottomPx(composeBottomPx)
+                }
+            }
+            val effectivePx = resolveEffectiveBottomInsetPx(
+                composeSystemBarsBottomPx = composeBottomPx,
+                decorEffectiveBottomInsetPx = decorBottomInsetPx,
+                reservedBelowInputPx = reservedBelowInputPx
+            )
             return with(density) { effectivePx.toDp() }
         }
 
@@ -406,6 +533,39 @@ data class KeyboardMetrics(
             )
         }
     }
+}
+
+@Immutable
+data class ImeBottomInsetGeometry(
+    val rawDecorBottomInsetPx: Int = 0,
+    val reservedBelowInputPx: Int = 0,
+    val inWindowReservedPx: Int = 0,
+    val effectiveBottomInsetPx: Int = 0,
+    val decorHeightPx: Int = 0,
+    val inputBottomInWindowPx: Int = 0,
+    val decorBottomOnScreenPx: Int = 0,
+    val screenBottomPx: Int = 0,
+    val inputLaidOut: Boolean = false
+) {
+    fun toDiagnosticDetail(): String =
+        "raw=${rawDecorBottomInsetPx}px reserved=${reservedBelowInputPx}px eff=${effectiveBottomInsetPx}px " +
+            "decorH=$decorHeightPx inputBot=$inputBottomInWindowPx decorScrBot=$decorBottomOnScreenPx " +
+            "scrBot=$screenBottomPx laidOut=$inputLaidOut"
+
+    fun toDiagnosticStateMap(composeSystemBarsBottomPx: Int? = null): Map<String, String> =
+        linkedMapOf<String, String>().apply {
+            put("imeInsetRawPx", rawDecorBottomInsetPx.toString())
+            put("imeInsetReservedPx", reservedBelowInputPx.toString())
+            put("imeInsetEffPx", effectiveBottomInsetPx.toString())
+            if (composeSystemBarsBottomPx != null) {
+                put("imeInsetComposePx", composeSystemBarsBottomPx.toString())
+            }
+            put("imeDecorH", decorHeightPx.toString())
+            put("imeInputBot", inputBottomInWindowPx.toString())
+            put("imeDecorScrBot", decorBottomOnScreenPx.toString())
+            put("imeScrBot", screenBottomPx.toString())
+            put("imeLaidOut", inputLaidOut.toString())
+        }
 }
 
 val LocalKeyboardMetrics = staticCompositionLocalOf {

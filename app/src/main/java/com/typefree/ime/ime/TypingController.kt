@@ -1,6 +1,7 @@
 package com.typefree.ime.ime
 
 import android.content.Context
+import android.graphics.Paint
 import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
@@ -25,6 +26,8 @@ import com.typefree.ime.ime.engine.EngineResult
 import com.typefree.ime.ime.engine.FlypyInputEngine
 import com.typefree.ime.ime.engine.InputEngine
 import com.typefree.ime.ime.engine.KeyInput
+import com.typefree.ime.ime.expression.EmojiSuggestionEngine
+import com.typefree.ime.ime.expression.ExpressionCatalog
 import com.typefree.ime.ime.flypy.FlypyDictionary
 import com.typefree.ime.ime.predict.AiSentenceCompleter
 import com.typefree.ime.ime.predict.EnglishWordSuggester
@@ -93,7 +96,9 @@ class TypingController(
     aiSentenceCompleter: AiSentenceCompleter? = null,
     predictionIdleDismissMs: Long = PredictionCoordinator.IDLE_DISMISS_MS,
     private val settingsOverride: (() -> AppSettings)? = null,
-    private val clock: () -> Long = { System.currentTimeMillis() }
+    private val clock: () -> Long = { System.currentTimeMillis() },
+    val emojiSuggestionEngine: EmojiSuggestionEngine = EmojiSuggestionEngine(),
+    private val emojiGlyphSupportOverride: ((String) -> Boolean)? = null
 ) {
     var isIncognitoMode: Boolean = false
         private set
@@ -332,6 +337,98 @@ class TypingController(
         recordSnippetHitIfEligible(savedChars)
     }
 
+    private val emojiGlyphSupportCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val emojiGlyphPaintLock = Any()
+    private val emojiGlyphPaint by lazy { runCatching { Paint() }.getOrNull() }
+    private val emojiGlyphPaintOperational by lazy {
+        synchronized(emojiGlyphPaintLock) {
+            runCatching { emojiGlyphPaint?.hasGlyph("a") == true }.getOrDefault(false)
+        }
+    }
+
+    private fun isEmojiGlyphSupported(glyph: String): Boolean {
+        emojiGlyphSupportOverride?.let { return it(glyph) }
+        if (!emojiGlyphPaintOperational) return true
+        emojiGlyphSupportCache[glyph]?.let { return it }
+        return synchronized(emojiGlyphPaintLock) {
+            emojiGlyphSupportCache[glyph]?.let { return@synchronized it }
+            val supported = runCatching { emojiGlyphPaint?.hasGlyph(glyph) ?: true }.getOrDefault(true)
+            emojiGlyphSupportCache[glyph] = supported
+            supported
+        }
+    }
+
+    private fun refreshPostCommitEmojiSuggestions(committedText: String) {
+        val currUi = host.stateFlow.value
+        val settingsSnap = safeSettings()
+        val emojis = if (
+            settingsSnap.inputScheme.supportsEmojiSuggestions &&
+            currUi.isFlypyChineseMode &&
+            !ImeLogic.isEmojiSuggestionBlockedEditor(currUi.currentInputType, currUi.currentImeOptions)
+        ) {
+            emojiSuggestionEngine.suggestForCommittedText(
+                committedText = committedText,
+                skinTonePrefs = settingsSnap.emojiSkinTonePrefs,
+                isGlyphSupported = ::isEmojiGlyphSupported
+            )
+        } else {
+            emptyList()
+        }
+        host.stateFlow.update {
+            if (it.postCommitEmojiSuggestions == emojis) it else it.copy(postCommitEmojiSuggestions = emojis)
+        }
+        if (emojis.isNotEmpty()) {
+            predictionCoordinator.ensureIdleDismissTimerRunning()
+        }
+    }
+
+    private fun recordEmojiRecentIfAllowed(glyph: String) {
+        val curr = host.stateFlow.value
+        val isPrivate = safeSettings().manualIncognitoMode ||
+            isIncognitoMode ||
+            curr.isIncognitoMode ||
+            ImeLogic.isPasswordEditorInputType(curr.currentInputType)
+        if (!isPrivate) {
+            runCatching {
+                host.repository.recordRecentEmoji(
+                    glyph = glyph,
+                    baseGlyph = ExpressionCatalog.resolveBaseGlyph(glyph)
+                )
+            }
+        }
+    }
+
+    fun selectComposingEmoji(glyph: String) {
+        if (glyph.isEmpty()) return
+        dismissT9QuickPunctuation()
+        predictionCoordinator.onUserKeyPressed()
+        host.performKeyFeedback(strong = false)
+        activeEngine.clear()
+        syncEngineStateToUi()
+        predictionCoordinator.dismissPredictions(resetChain = true)
+        host.commitDirectText(
+            text = glyph,
+            recordUndo = true,
+            markManualEdit = true,
+            playFeedback = false
+        )
+        recordEmojiRecentIfAllowed(glyph)
+    }
+
+    fun selectPostCommitEmoji(glyph: String) {
+        if (glyph.isEmpty()) return
+        dismissT9QuickPunctuation()
+        predictionCoordinator.clearTextPredictionsKeepEmojiAndRestartTimer()
+        host.performKeyFeedback(strong = false)
+        host.commitDirectText(
+            text = glyph,
+            recordUndo = true,
+            markManualEdit = true,
+            playFeedback = false
+        )
+        recordEmojiRecentIfAllowed(glyph)
+    }
+
     fun syncEngineStateToUi() {
         val engineState = activeEngine.state.value
         val code = engineState.rawCode
@@ -339,6 +436,23 @@ class TypingController(
         val cands = engineState.candidates
         val settingsSnap = safeSettings()
         val scheme = settingsSnap.inputScheme
+        val currUi = host.stateFlow.value
+        val composingEmojis = if (
+            scheme.supportsEmojiSuggestions &&
+            currUi.isFlypyChineseMode &&
+            engineState.isComposing &&
+            !ImeLogic.isEmojiSuggestionBlockedEditor(currUi.currentInputType, currUi.currentImeOptions)
+        ) {
+            emojiSuggestionEngine.suggestForComposing(
+                candidates = cands,
+                preedit = preedit,
+                rawCode = code,
+                skinTonePrefs = settingsSnap.emojiSkinTonePrefs,
+                isGlyphSupported = ::isEmojiGlyphSupported
+            )
+        } else {
+            emptyList()
+        }
         val expandThreshold = KeyboardMetrics.expandButtonCandidateThreshold(settingsSnap.candidateFontScale)
         host.stateFlow.update { prev ->
             prev.copy(
@@ -346,6 +460,8 @@ class TypingController(
                 preeditDisplay = preedit,
                 t9Syllables = engineState.t9Syllables,
                 flypyCandidates = cands,
+                composingEmojiSuggestions = composingEmojis,
+                postCommitEmojiSuggestions = if (engineState.isComposing) emptyList() else prev.postCommitEmojiSuggestions,
                 hasMoreCandidates = engineState.hasMore,
                 isOrqDateActive = engineState.isOrqDateActive,
                 orqDateOffsetDays = engineState.orqDateOffsetDays,
@@ -405,6 +521,7 @@ class TypingController(
                         isComposing = stillComposing
                     )
                     if (!stillComposing) {
+                        refreshPostCommitEmojiSuggestions(result.text)
                         refreshPassiveMathSuggestion()
                     }
                 } else if (stillComposing) {
@@ -849,6 +966,8 @@ class TypingController(
                 orqDateOffsetDays = 0,
                 isFlypyCandidateSheetExpanded = false,
                 predictionCandidates = emptyList(),
+                composingEmojiSuggestions = emptyList(),
+                postCommitEmojiSuggestions = emptyList(),
                 aiCompletionSuggestion = null,
                 englishSuggestions = emptyList(),
                 englishSuggestionReplaceLength = 0
@@ -893,6 +1012,7 @@ class TypingController(
                     committedText = combined,
                     isComposing = false
                 )
+                refreshPostCommitEmojiSuggestions(combined)
                 refreshPassiveMathSuggestion()
                 return
             }
@@ -1113,6 +1233,7 @@ class TypingController(
             committedText = picked,
             isComposing = false
         )
+        refreshPostCommitEmojiSuggestions(picked)
     }
 
     fun selectAiCompletion() {
@@ -1183,6 +1304,7 @@ class TypingController(
                 committedText = flushed,
                 isComposing = false
             )
+            refreshPostCommitEmojiSuggestions(flushed)
         } else {
             predictionCoordinator.dismissPredictions(resetChain = false)
         }

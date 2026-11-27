@@ -68,6 +68,7 @@ class PredictionCoordinator(
 
                 if (tabChanged || clipboardOpened || toolPanelOpened || exitedChinese) {
                     if (curr.predictionCandidates.isNotEmpty() ||
+                        curr.postCommitEmojiSuggestions.isNotEmpty() ||
                         curr.aiCompletionSuggestion != null ||
                         idleDismissJob?.isActive == true ||
                         aiSentenceCompleter.isPending
@@ -312,6 +313,40 @@ class PredictionCoordinator(
             lastCommittedWord = null
         }
         stateFlow.update {
+            if (
+                it.predictionCandidates.isEmpty() &&
+                it.postCommitEmojiSuggestions.isEmpty() &&
+                it.aiCompletionSuggestion == null
+            ) {
+                it
+            } else {
+                it.copy(
+                    predictionCandidates = emptyList(),
+                    postCommitEmojiSuggestions = emptyList(),
+                    aiCompletionSuggestion = null
+                )
+            }
+        }
+    }
+
+    /**
+     * Ensures the 4-second auto-dismiss idle timer is active (used when post-commit emoji
+     * suggestions appear even if text bigram predictions are empty).
+     */
+    fun ensureIdleDismissTimerRunning() {
+        restartIdleTimer()
+    }
+
+    /**
+     * Clears text predictions and breaks the Chinese n-gram chain while preserving
+     * `postCommitEmojiSuggestions` and resetting the 4s idle timer so users can tap
+     * multiple consecutive emojis (e.g. `😂😂😂`) before typing again or dismissing.
+     */
+    fun clearTextPredictionsKeepEmojiAndRestartTimer() {
+        aiSentenceCompleter.cancel()
+        secondLastCommittedWord = null
+        lastCommittedWord = null
+        stateFlow.update {
             if (it.predictionCandidates.isEmpty() && it.aiCompletionSuggestion == null) {
                 it
             } else {
@@ -321,6 +356,7 @@ class PredictionCoordinator(
                 )
             }
         }
+        restartIdleTimer()
     }
 
     /**

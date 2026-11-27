@@ -93,7 +93,7 @@ object HapticFeedbackPlanner {
     const val MIN_STRENGTH = 10
     const val MAX_STRENGTH = 100
     const val DEFAULT_STRENGTH = 38
-    const val MIN_SOUND_VOLUME = 5
+    const val MIN_SOUND_VOLUME = 0
     const val MAX_SOUND_VOLUME = 100
     const val DEFAULT_SOUND_VOLUME = 50
 
@@ -357,6 +357,7 @@ class KeyFeedbackController(
             KeySoundType.NONE -> return
         }
         val volume = HapticFeedbackPlanner.resolveSoundVolumeFloat(settings.keySoundVolume)
+        if (volume <= 0f) return
         runCatching { am.playSoundEffect(effect, volume) }
     }
 
@@ -401,6 +402,7 @@ class KeyFeedbackController(
     fun previewSoundInSettings(volumePercent: Int) {
         val am = audioManager ?: return
         val volume = HapticFeedbackPlanner.resolveSoundVolumeFloat(volumePercent)
+        if (volume <= 0f) return
         runCatching { am.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, volume) }
     }
 

@@ -35,6 +35,7 @@ object ImeDiagnosticLogger {
     private val buffer = arrayOfNulls<ImeDiagnosticEvent>(MAX_EVENTS)
     private var headIndex: Int = 0
     private var currentSize: Int = 0
+    private val runtimeState = LinkedHashMap<String, String>()
 
     private val whitespaceRegex = Regex("[\\r\\n\\t]+")
     private val multiSpaceRegex = Regex(" {2,}")
@@ -100,11 +101,39 @@ object ImeDiagnosticLogger {
 
     fun size(): Int = synchronized(lock) { currentSize }
 
+    fun updateRuntimeState(entries: Map<String, String>) {
+        if (entries.isEmpty()) return
+        synchronized(lock) {
+            for ((rawKey, rawVal) in entries) {
+                val key = sanitizeKeyToken(rawKey, maxLen = 40)
+                if (key.isNotEmpty()) {
+                    runtimeState[key] = sanitizeDetail(rawVal, maxLen = 96)
+                }
+            }
+        }
+    }
+
+    fun updateRuntimeStateEntry(key: String, value: String) {
+        val safeKey = sanitizeKeyToken(key, maxLen = 40)
+        if (safeKey.isEmpty()) return
+        val safeVal = sanitizeDetail(value, maxLen = 96)
+        synchronized(lock) {
+            if (runtimeState[safeKey] != safeVal) {
+                runtimeState[safeKey] = safeVal
+            }
+        }
+    }
+
+    fun snapshotRuntimeState(): Map<String, String> = synchronized(lock) {
+        LinkedHashMap(runtimeState)
+    }
+
     fun clear() {
         synchronized(lock) {
             buffer.fill(null)
             headIndex = 0
             currentSize = 0
+            runtimeState.clear()
         }
     }
 

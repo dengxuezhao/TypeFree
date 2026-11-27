@@ -110,6 +110,8 @@ sealed interface ImeUiAction {
     data object ToggleFlypyCandidateSheet : ImeUiAction
     data object RequestMoreCandidates : ImeUiAction
     data class SelectPredictionCandidate(val index: Int) : ImeUiAction
+    data class SelectComposingEmoji(val glyph: String) : ImeUiAction
+    data class SelectPostCommitEmoji(val glyph: String) : ImeUiAction
     data class SelectAiCompletion(val text: String) : ImeUiAction
     data object DismissPredictions : ImeUiAction
     data class RunEditorShortcut(val action: EditorShortcutAction) : ImeUiAction

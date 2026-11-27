@@ -506,4 +506,132 @@ class KeyboardMetricsAndAutofillCoreTest {
             }
         }
     }
+
+    @Test
+    fun `resolveDecorOverlapBottomInset preserves OriginOS_MagicOS overlap and removes Samsung One UI double padding`() {
+        // 1. vivo OriginOS 7 / MagicOS 11: ComposeView extends to decorView bottom (reserved == 0),
+        //    so the full 126px (~48dp) earth/switcher bar inset MUST be preserved.
+        val originOs = KeyboardMetrics.resolveDecorOverlapBottomInset(
+            rawDecorBottomInsetPx = 126,
+            decorHeightPx = 2400,
+            inputBottomInWindowPx = 2400,
+            inputHeightPx = 880,
+            inputLaidOut = true,
+            decorBottomOnScreenPx = 2400,
+            screenBottomPx = 2400
+        )
+        assertEquals(0, originOs.reservedBelowInputPx)
+        assertEquals(0, originOs.inWindowReservedPx)
+        assertEquals(126, originOs.effectiveBottomInsetPx)
+        assertEquals(0, KeyboardMetrics.resolveNavBarBackdropHeightPx(originOs, isFullScreenPeekCapturing = false))
+        assertEquals(
+            126,
+            KeyboardMetrics.resolveEffectiveBottomInsetPx(
+                composeSystemBarsBottomPx = 0,
+                decorEffectiveBottomInsetPx = originOs.effectiveBottomInsetPx,
+                reservedBelowInputPx = originOs.reservedBelowInputPx
+            )
+        )
+
+        // 2. Samsung W25 (One UI 8 / Android 16) same-window nav bar reservation:
+        //    decorView spans 2520px, while inputArea ends at 2394px (126px above bottom white nav bar).
+        val samsungSameWindow = KeyboardMetrics.resolveDecorOverlapBottomInset(
+            rawDecorBottomInsetPx = 126,
+            decorHeightPx = 2520,
+            inputBottomInWindowPx = 2394,
+            inputHeightPx = 880,
+            inputLaidOut = true,
+            decorBottomOnScreenPx = 2520,
+            screenBottomPx = 2520
+        )
+        assertEquals(126, samsungSameWindow.reservedBelowInputPx)
+        assertEquals(126, samsungSameWindow.inWindowReservedPx)
+        assertEquals(0, samsungSameWindow.effectiveBottomInsetPx)
+        assertEquals(126, KeyboardMetrics.resolveNavBarBackdropHeightPx(samsungSameWindow, isFullScreenPeekCapturing = false))
+        assertEquals(0, KeyboardMetrics.resolveNavBarBackdropHeightPx(samsungSameWindow, isFullScreenPeekCapturing = true))
+        // Even if Compose's own WindowInsets.systemBars wasn't consumed by parent, reserved 126px is deducted.
+        assertEquals(
+            0,
+            KeyboardMetrics.resolveEffectiveBottomInsetPx(
+                composeSystemBarsBottomPx = 126,
+                decorEffectiveBottomInsetPx = samsungSameWindow.effectiveBottomInsetPx,
+                reservedBelowInputPx = samsungSameWindow.reservedBelowInputPx
+            )
+        )
+
+        // 3. Whole SoftInputWindow shifted above system nav bar (decorBottomOnScreen = 2394 < screenBottom = 2520)
+        val samsungWholeWindowShift = KeyboardMetrics.resolveDecorOverlapBottomInset(
+            rawDecorBottomInsetPx = 126,
+            decorHeightPx = 880,
+            inputBottomInWindowPx = 880,
+            inputHeightPx = 880,
+            inputLaidOut = true,
+            decorBottomOnScreenPx = 2394,
+            screenBottomPx = 2520
+        )
+        assertEquals(126, samsungWholeWindowShift.reservedBelowInputPx)
+        assertEquals(0, samsungWholeWindowShift.effectiveBottomInsetPx)
+
+        // 4. Partial reservation (e.g. 42px gesture bar reserved, 110px switcher bar overlaid -> exact 68px delta)
+        val partialOverlap = KeyboardMetrics.resolveDecorOverlapBottomInset(
+            rawDecorBottomInsetPx = 110,
+            decorHeightPx = 2400,
+            inputBottomInWindowPx = 2358,
+            inputHeightPx = 820,
+            inputLaidOut = true,
+            decorBottomOnScreenPx = 2400,
+            screenBottomPx = 2400
+        )
+        assertEquals(42, partialOverlap.reservedBelowInputPx)
+        assertEquals(68, partialOverlap.effectiveBottomInsetPx)
+
+        // 5. Unsynced WRAP_CONTENT mWindowTop == 0 before WindowManager positions IME window:
+        //    must NOT falsely subtract 1520px and wipe out OriginOS 7 protection.
+        val unsyncedWrapContent = KeyboardMetrics.resolveDecorOverlapBottomInset(
+            rawDecorBottomInsetPx = 126,
+            decorHeightPx = 880,
+            inputBottomInWindowPx = 880,
+            inputHeightPx = 880,
+            inputLaidOut = true,
+            decorBottomOnScreenPx = 880,
+            screenBottomPx = 2400
+        )
+        assertEquals(0, unsyncedWrapContent.reservedBelowInputPx)
+        assertEquals(126, unsyncedWrapContent.effectiveBottomInsetPx)
+
+        // 6. Pre-layout first frame holds previous effective inset clamped to raw (never falsely subtracts)
+        val preLayoutCold = KeyboardMetrics.resolveDecorOverlapBottomInset(
+            rawDecorBottomInsetPx = 126,
+            decorHeightPx = 2400,
+            inputBottomInWindowPx = 0,
+            inputHeightPx = 0,
+            inputLaidOut = false,
+            previousEffectiveBottomInsetPx = 0
+        )
+        assertFalse(preLayoutCold.inputLaidOut)
+        assertEquals(0, preLayoutCold.reservedBelowInputPx)
+        assertEquals(0, preLayoutCold.effectiveBottomInsetPx)
+
+        val preLayoutWarm = KeyboardMetrics.resolveDecorOverlapBottomInset(
+            rawDecorBottomInsetPx = 126,
+            decorHeightPx = 2400,
+            inputBottomInWindowPx = 0,
+            inputHeightPx = 0,
+            inputLaidOut = false,
+            previousEffectiveBottomInsetPx = 110
+        )
+        assertEquals(110, preLayoutWarm.effectiveBottomInsetPx)
+
+        // 7. Dynamic shrink / landscape / hidden nav bar drops cleanly back to 0 (no monotonic latch)
+        val hiddenNavBar = KeyboardMetrics.resolveDecorOverlapBottomInset(
+            rawDecorBottomInsetPx = 0,
+            decorHeightPx = 1080,
+            inputBottomInWindowPx = 1080,
+            inputHeightPx = 520,
+            inputLaidOut = true,
+            previousEffectiveBottomInsetPx = 126
+        )
+        assertEquals(0, hiddenNavBar.effectiveBottomInsetPx)
+        assertEquals(0, hiddenNavBar.reservedBelowInputPx)
+    }
 }

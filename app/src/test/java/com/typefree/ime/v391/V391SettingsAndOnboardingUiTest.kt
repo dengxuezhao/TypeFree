@@ -205,6 +205,16 @@ class V391SettingsAndOnboardingUiTest {
             event = "onWindowShown",
             detail = "pkg=com.tencent.mm liftDp=24 chat=\"机密聊天正文\""
         )
+        val insetGeometry = KeyboardMetrics.resolveDecorOverlapBottomInset(
+            rawDecorBottomInsetPx = 126,
+            decorHeightPx = 2520,
+            inputBottomInWindowPx = 2394,
+            inputHeightPx = 880,
+            inputLaidOut = true,
+            decorBottomOnScreenPx = 2520,
+            screenBottomPx = 2520
+        )
+        ImeDiagnosticLogger.updateRuntimeState(insetGeometry.toDiagnosticStateMap(composeSystemBarsBottomPx = 0))
         val settings = AppSettings(
             bubbleEnabled = false
         )
@@ -224,6 +234,12 @@ class V391SettingsAndOnboardingUiTest {
         assertTrue(snapshot.contains("imeSelected=true"))
         assertTrue(snapshot.contains("a11yEnabled=true"))
         assertTrue(snapshot.contains("bubbleEnabled=false"))
+        assertTrue(snapshot.contains("imeInsetRawPx=126"))
+        assertTrue(snapshot.contains("imeInsetReservedPx=126"))
+        assertTrue(snapshot.contains("imeInsetEffPx=0"))
+        assertTrue(snapshot.contains("imeInsetComposePx=0"))
+        assertTrue(snapshot.contains("imeDecorH=2520"))
+        assertTrue(snapshot.contains("imeInputBot=2394"))
         assertTrue(snapshot.contains("IME_WINDOW | onWindowShown"))
         assertFalse("Zero-PII guarantee must strip quoted user chat text", snapshot.contains("机密聊天正文"))
 

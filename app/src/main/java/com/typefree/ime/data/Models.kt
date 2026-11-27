@@ -171,7 +171,17 @@ enum class InputScheme(
         usesRime = true,
         defaultFixedOrder = false,
         rimeSchemaId = "custom"
-    )
+    );
+
+    /**
+     * Emoji suggestions in composing candidate strip and post-commit prediction bar are enabled
+     * exclusively for built-in Pinyin (`全拼`, `九键拼音`) and Double Pinyin (`双拼`) schemes.
+     * Shape-based codetable (`小鹤音形`) and custom Rime schemas stay strictly unaffected.
+     */
+    val supportsEmojiSuggestions: Boolean
+        get() = this == RIME_PINYIN ||
+            this == RIME_T9_PINYIN ||
+            this == RIME_DOUBLE_PINYIN_FLYPY
 }
 
 /**
