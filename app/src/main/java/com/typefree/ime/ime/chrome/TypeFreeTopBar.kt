@@ -45,8 +45,16 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.os.Build
 import android.view.HapticFeedbackConstants
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.widget.FrameLayout
+import android.widget.inline.InlineContentView
+import androidx.annotation.RequiresApi
+import androidx.compose.runtime.key
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.i18n.AppLang
@@ -58,6 +66,7 @@ import com.typefree.ime.ime.ImeUiState
 import com.typefree.ime.ime.KeyboardTabMode
 import com.typefree.ime.ime.LocalKeyboardMetrics
 import com.typefree.ime.ime.VoicePhase
+import com.typefree.ime.ime.autofill.InlineAutofillUiState
 import com.typefree.ime.ime.clipboard.ClipboardSmartExtractor
 import com.typefree.ime.ime.clipboard.SmartClipKind
 import com.typefree.ime.ui.components.TypeFreeIcons
@@ -320,7 +329,8 @@ fun TypeFreeTopBar(
     onOpenAskAiCard: () -> Unit = {},
     onToggleClipboard: () -> Unit = {},
     onStartVoiceDictation: () -> Unit = {},
-    onStopVoiceDictation: () -> Unit = {}
+    onStopVoiceDictation: () -> Unit = {},
+    onDismissInlineAutofill: () -> Unit = {}
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val appLang = LocalAppLanguage.current
@@ -356,14 +366,22 @@ fun TypeFreeTopBar(
     val isQwertyRightCluster = slotState.showQwertyHoldVoiceCapsule && !uiState.isToolPanelOpen
     val isInPlaceQwertyVoiceActive = uiState.tabMode == KeyboardTabMode.QWERTY &&
         (uiState.voicePhase is VoicePhase.Recording || uiState.voicePhase is VoicePhase.Processing)
+    val isInlineAutofillBannerActive = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+        !uiState.isFlypyComposing &&
+        !isInPlaceQwertyVoiceActive &&
+        uiState.inlineAutofillState.hasVisibleSuggestions &&
+        (uiState.inlineAutofillState.regularChips.any { it.view != null } ||
+            uiState.inlineAutofillState.pinnedActionChips.any { it.view != null })
     val learnedTerm = uiState.autoLearnedToastTerm
     val quickToast = uiState.quickActionToast
     val isClipboardBannerActive = !isInPlaceQwertyVoiceActive &&
+        !isInlineAutofillBannerActive &&
         learnedTerm.isNullOrBlank() &&
         quickToast.isNullOrBlank() &&
         slotState.showClipboardQuickPaste &&
         freshClip != null
     val hasPriorityBanner = isInPlaceQwertyVoiceActive ||
+        isInlineAutofillBannerActive ||
         !learnedTerm.isNullOrBlank() ||
         !quickToast.isNullOrBlank() ||
         isClipboardBannerActive
@@ -427,7 +445,7 @@ fun TypeFreeTopBar(
                 showClipboardButton = slotState.showClipboardButton,
                 isIncognito = uiState.isIncognitoMode,
                 hasPriorityBanner = hasPriorityBanner,
-                isClipboardBannerActive = isClipboardBannerActive,
+                isClipboardBannerActive = isClipboardBannerActive || isInlineAutofillBannerActive,
                 wantAskAi = wantAskAi,
                 wantVoicePen = slotState.showVoicePenPill,
                 lang = appLang,
@@ -557,6 +575,13 @@ fun TypeFreeTopBar(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+            } else if (allowInlineBanner && isInlineAutofillBannerActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Api30InlineAutofillViewHost.InlineAutofillBannerRow(
+                    autofillState = uiState.inlineAutofillState,
+                    chipHeight = metrics.candidateChipHeight,
+                    onDismiss = onDismissInlineAutofill,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
             } else if (allowInlineBanner && !learnedTerm.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
@@ -597,13 +622,12 @@ fun TypeFreeTopBar(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-            } else if (allowInlineBanner && isClipboardBannerActive && freshClip != null) {
+            } else if (allowInlineBanner && isClipboardBannerActive) {
                 val smart = remember(freshClip.text) {
                     ClipboardSmartExtractor.extractPrimary(freshClip.text)
                 }
-                val hasDistinctSmartEntity = smart != null && smart.extractedValue != freshClip.text.trim()
                 val clipTint = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
-                if (hasDistinctSmartEntity && smart != null) {
+                if (smart != null && smart.extractedValue != freshClip.text.trim()) {
                     val smartIcon: ImageVector = when (smart.kind) {
                         SmartClipKind.OTP_CODE -> TypeFreeIcons.HashCode
                         SmartClipKind.PICKUP_CODE -> TypeFreeIcons.PackageBox
@@ -1272,6 +1296,114 @@ private fun StyleChoicePill(
             color = fgColor,
             fontSize = 11.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+        )
+    }
+}
+
+/**
+ * Isolated Android 11+ (`API 30+`) host for [InlineContentView] system autofill/OTP chips (`Issue #14`).
+ * Kept inside a `@RequiresApi(R)` object so pre-API-30 ART class verification never touches `InlineContentView`.
+ */
+@RequiresApi(Build.VERSION_CODES.R)
+private object Api30InlineAutofillViewHost {
+
+    @Composable
+    fun InlineAutofillBannerRow(
+        autofillState: InlineAutofillUiState,
+        chipHeight: Dp,
+        onDismiss: () -> Unit,
+        modifier: Modifier = Modifier
+    ) {
+        val palette = LocalTypeFreeKeyboardPalette.current
+        val scrollState = rememberScrollState()
+
+        Row(
+            modifier = modifier,
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            if (autofillState.regularChips.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .height(chipHeight)
+                        .horizontalScroll(scrollState),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    autofillState.regularChips.forEach { chip ->
+                        val inlineView = chip.view ?: return@forEach
+                        key(autofillState.sessionId, chip.descriptor.index) {
+                            InlineChipAndroidView(
+                                inlineView = inlineView,
+                                targetHeightPx = chip.heightPx
+                            )
+                        }
+                    }
+                }
+            }
+
+            autofillState.pinnedActionChips.forEach { chip ->
+                val inlineView = chip.view ?: return@forEach
+                key(autofillState.sessionId, chip.descriptor.index) {
+                    InlineChipAndroidView(
+                        inlineView = inlineView,
+                        targetHeightPx = chip.heightPx
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .requiredSize(22.dp)
+                    .clip(CircleShape)
+                    .background(palette.keyCapBg)
+                    .border(1.dp, palette.keyBorder, CircleShape)
+                    .clickable(onClick = onDismiss),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = TypeFreeIcons.Close,
+                    contentDescription = tr("关闭自动填充建议", "Dismiss autofill", "關閉自動填入建議"),
+                    tint = palette.keyTextMuted,
+                    modifier = Modifier.size(10.dp)
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun InlineChipAndroidView(
+        inlineView: InlineContentView,
+        targetHeightPx: Int
+    ) {
+        AndroidView(
+            factory = { ctx ->
+                FrameLayout(ctx).apply {
+                    clipChildren = true
+                    clipToPadding = true
+                    (inlineView.parent as? ViewGroup)?.removeView(inlineView)
+                    runCatching { inlineView.isZOrderedOnTop = true }
+                    val lp = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        if (targetHeightPx > 0) targetHeightPx else ViewGroup.LayoutParams.WRAP_CONTENT
+                    )
+                    addView(inlineView, lp)
+                }
+            },
+            update = { container ->
+                if (inlineView.parent !== container) {
+                    (inlineView.parent as? ViewGroup)?.removeView(inlineView)
+                    runCatching { inlineView.isZOrderedOnTop = true }
+                    val lp = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        if (targetHeightPx > 0) targetHeightPx else ViewGroup.LayoutParams.WRAP_CONTENT
+                    )
+                    container.addView(inlineView, lp)
+                } else {
+                    runCatching { inlineView.isZOrderedOnTop = true }
+                }
+            }
         )
     }
 }

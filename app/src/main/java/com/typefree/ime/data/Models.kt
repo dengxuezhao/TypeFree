@@ -76,6 +76,60 @@ enum class KeyboardHeightMode(val label: String) {
     LIFT("垫高")
 }
 
+/**
+ * Candidate bar font & strip height scale for v3.9.1+.
+ * Default [STANDARD] preserves exact v3.9.0 34.dp top bar / 29.dp chip / 14.5sp metrics.
+ */
+enum class CandidateFontScale(val level: Int) {
+    STANDARD(0),
+    LARGE(1),
+    EXTRA_LARGE(2)
+}
+
+/**
+ * One-handed compact docking mode for v3.9.1+.
+ * Default [OFF] keeps full-width layout unchanged.
+ */
+enum class OneHandedMode {
+    OFF,
+    LEFT,
+    RIGHT
+}
+
+/**
+ * Long-press gesture action on the primary spacebar for v3.9.1+.
+ * Defaults to [VOICE_HOLD] (`方案 A`: hold spacebar >= 240ms to dictate in-place, release to commit).
+ */
+enum class SpaceLongPressAction {
+    VOICE_HOLD,
+    TOGGLE_LANGUAGE
+}
+
+/**
+ * Tactile vibration preset for keyboard feedback:
+ * - [OFF]: Disables all keyboard haptics.
+ * - [SYSTEM]: Delegates to OS native `View.performHapticFeedback(KEYBOARD_PRESS/TAP)` for OEM linear-motor curves.
+ * - [SOFT] / [CRISP] / [STRONG] / [CUSTOM]: Uses Android 11+ active-braked `PRIMITIVE_LOW_TICK / CLICK / TICK`
+ *   with continuous scale (`10..100`) and short crisp fallback pulses (`4..12ms`) on legacy hardware.
+ */
+enum class HapticPreset(val defaultStrength: Int) {
+    OFF(0),
+    SYSTEM(38),
+    SOFT(25),
+    CRISP(45),
+    STRONG(75),
+    CUSTOM(45)
+}
+
+/**
+ * Unified Expression & Extended Symbol panel tabs.
+ */
+enum class ExpressionTab {
+    EMOJI,
+    KAOMOJI,
+    SYMBOL
+}
+
 enum class InputScheme(
     val label: String,
     val shortBadge: String,
@@ -118,6 +172,99 @@ enum class InputScheme(
         defaultFixedOrder = false,
         rimeSchemaId = "custom"
     )
+}
+
+/**
+ * Built-in `rime-ice` Double Pinyin (`双拼`) layout variants sharing the `rime_ice` lexicon.
+ */
+enum class DoublePinyinLayout(
+    val rimeSchemaId: String,
+    val labelZhCn: String,
+    val shortZhCn: String,
+    val labelEn: String,
+    val shortEn: String,
+    val labelZhTw: String,
+    val shortZhTw: String,
+    val usesSemicolonKey: Boolean,
+    val cnEnDictAsset: String
+) {
+    FLYPY(
+        rimeSchemaId = "double_pinyin_flypy",
+        labelZhCn = "小鹤双拼",
+        shortZhCn = "小鹤",
+        labelEn = "Flypy",
+        shortEn = "Flypy",
+        labelZhTw = "小鶴雙拼",
+        shortZhTw = "小鶴",
+        usesSemicolonKey = false,
+        cnEnDictAsset = "en_dicts/cn_en_flypy.txt"
+    ),
+    NATURAL(
+        rimeSchemaId = "double_pinyin",
+        labelZhCn = "自然码",
+        shortZhCn = "自然码",
+        labelEn = "Ziranma",
+        shortEn = "ZRM",
+        labelZhTw = "自然碼",
+        shortZhTw = "自然碼",
+        usesSemicolonKey = false,
+        cnEnDictAsset = "en_dicts/cn_en_double_pinyin.txt"
+    ),
+    MSPY(
+        rimeSchemaId = "double_pinyin_mspy",
+        labelZhCn = "微软双拼",
+        shortZhCn = "微软",
+        labelEn = "Microsoft",
+        shortEn = "MSPY",
+        labelZhTw = "微軟雙拼",
+        shortZhTw = "微軟",
+        usesSemicolonKey = true,
+        cnEnDictAsset = "en_dicts/cn_en_mspy.txt"
+    ),
+    SOGOU(
+        rimeSchemaId = "double_pinyin_sogou",
+        labelZhCn = "搜狗双拼",
+        shortZhCn = "搜狗",
+        labelEn = "Sogou",
+        shortEn = "Sogou",
+        labelZhTw = "搜狗雙拼",
+        shortZhTw = "搜狗",
+        usesSemicolonKey = true,
+        cnEnDictAsset = "en_dicts/cn_en_sogou.txt"
+    ),
+    ABC(
+        rimeSchemaId = "double_pinyin_abc",
+        labelZhCn = "智能ABC",
+        shortZhCn = "ABC",
+        labelEn = "Smart ABC",
+        shortEn = "ABC",
+        labelZhTw = "智慧ABC",
+        shortZhTw = "ABC",
+        usesSemicolonKey = false,
+        cnEnDictAsset = "en_dicts/cn_en_abc.txt"
+    ),
+    ZIGUANG(
+        rimeSchemaId = "double_pinyin_ziguang",
+        labelZhCn = "紫光双拼",
+        shortZhCn = "紫光",
+        labelEn = "Ziguang",
+        shortEn = "ZG",
+        labelZhTw = "紫光雙拼",
+        shortZhTw = "紫光",
+        usesSemicolonKey = true,
+        cnEnDictAsset = "en_dicts/cn_en_ziguang.txt"
+    );
+
+    val schemaFileName: String get() = "$rimeSchemaId.schema.yaml"
+
+    companion object {
+        val ALL_SCHEMA_IDS: Set<String> = entries.mapTo(LinkedHashSet()) { it.rimeSchemaId }
+        val ALL_SCHEMA_FILES: List<String> = entries.map { it.schemaFileName }
+        val ALL_CN_EN_ASSETS: List<String> = entries.map { it.cnEnDictAsset }
+
+        fun fromSchemaId(schemaId: String?): DoublePinyinLayout? =
+            entries.firstOrNull { it.rimeSchemaId == schemaId }
+    }
 }
 
 data class DiscoveredModelItem(
@@ -517,7 +664,12 @@ data class AppSettings(
     val appAwareToneEnabled: Boolean = true,
     val selectedManualStyleId: String = "auto", // "auto" 表示开启应用感知自动匹配，否则固定某风格
     val hapticFeedback: Boolean = true,
+    val hapticPreset: HapticPreset = HapticPreset.SYSTEM,
+    val hapticStrength: Int = 38,
     val interactionSounds: Boolean = true,
+    val keySoundVolume: Int = 50,
+    val recentEmojis: List<String> = emptyList(),
+    val emojiSkinTonePrefs: Map<String, String> = emptyMap(),
     val useSurroundingContext: Boolean = true,
     val autoLearnDictionary: Boolean = true,
     val flypyEnabled: Boolean = true,
@@ -536,8 +688,14 @@ data class AppSettings(
     val keyboardHeightLevel: Int = 0, // -2..+2，0 = 标准 252dp
     val keyboardHeightMode: KeyboardHeightMode = KeyboardHeightMode.LIFT, // 统一底部垫高体系（0/8/16/24/32dp）
     val keyboardLiftLevel: Int = 0, // 垫高档位 0..4 → 0 / 8 / 16 / 24 / 32dp
+    val keyboardBottomLiftDp: Int = -1, // < 0 表示未显式设置，自动从 keyboardHeightMode + keyboardLiftLevel 迁移至 0..56dp
+    val candidateFontScale: CandidateFontScale = CandidateFontScale.STANDARD,
+    val oneHandedMode: OneHandedMode = OneHandedMode.OFF,
+    val t9LeftHandedMirror: Boolean = false,
+    val spaceLongPressAction: SpaceLongPressAction = SpaceLongPressAction.VOICE_HOLD,
     val liveWriteToEditor: Boolean = true, // 实时写入输入框（v3.0 默认开启）
     val inputScheme: InputScheme = if (com.typefree.ime.BuildConfig.USE_PRIVATE_DICT) InputScheme.FLYPY_TABLE else InputScheme.RIME_PINYIN, // 音形专享版或老用户升级默认 FLYPY_TABLE；标准版新装默认 RIME_PINYIN (真实 librime 1.17.0)
+    val doublePinyinLayout: DoublePinyinLayout = DoublePinyinLayout.FLYPY, // 双拼子方案（默认小鹤双拼）
     val fixedCandidateOrder: Boolean? = null, // null = 按方案自动
     val englishPrefixVetoEnabled: Boolean = false,
     val codetableAutoEncodeEnabled: Boolean = false,
@@ -570,7 +728,24 @@ data class AppSettings(
     val styles: List<ToneStyle> = DefaultPresets.defaultStyles(),
     val appRules: List<AppToneRule> = DefaultPresets.defaultAppRules(),
     val dictionary: List<DictionaryEntry> = DefaultPresets.defaultDictionary()
-)
+) {
+    /**
+     * Resolves effective portrait bottom cushion (`0..56` dp).
+     * When [keyboardBottomLiftDp] `< 0`, smoothly migrates from legacy [keyboardHeightMode] + [keyboardLiftLevel].
+     */
+    fun resolvedBottomLiftDp(): Int {
+        return if (keyboardBottomLiftDp >= 0) {
+            keyboardBottomLiftDp.coerceIn(0, 56)
+        } else {
+            val legacyDp = if (keyboardHeightMode == KeyboardHeightMode.LIFT) {
+                keyboardLiftLevel.coerceIn(0, 4) * 8
+            } else {
+                0
+            }
+            legacyDp.coerceIn(0, 56)
+        }
+    }
+}
 
 object DefaultPresets {
     fun defaultTranslationTargets(): List<String> = listOf(

@@ -6,13 +6,17 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.media.AudioManager
 import android.os.Build
+import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
+import android.view.inputmethod.InlineSuggestionsRequest
+import android.view.inputmethod.InlineSuggestionsResponse
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
+import androidx.annotation.RequiresApi
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
@@ -24,14 +28,21 @@ import androidx.compose.ui.unit.Density
 import com.typefree.ime.TypeFreeApp
 import com.typefree.ime.audio.WavAudioRecorder
 import com.typefree.ime.data.AppRepository
+import com.typefree.ime.data.CandidateFontScale
+import com.typefree.ime.data.DoublePinyinLayout
+import com.typefree.ime.data.ExpressionTab
+import com.typefree.ime.i18n.AppStrings
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
+import com.typefree.ime.data.ThemePreference
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.data.stats.SchemeStatsKeys
+import com.typefree.ime.diagnostics.ImeDiagnosticLogger
 import com.typefree.core.ime.coordinator.DirectCommandType
 import com.typefree.ime.commit.AndroidCommitExecutor
+import com.typefree.ime.ime.autofill.InlineAutofillController
 import com.typefree.ime.ime.engine.CodetableEnhancedInputEngine
 import com.typefree.ime.ime.engine.RimeDeploymentState
 import com.typefree.ime.network.AiPipelineEngine
@@ -59,6 +70,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         get() = TypeFreeApp.instance.aiEngine
 
     private lateinit var audioRecorder: WavAudioRecorder
+    private lateinit var keyFeedbackController: KeyFeedbackController
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     override val scope: CoroutineScope
@@ -89,6 +101,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         get() = _imeState
     val imeState = _imeState.asStateFlow()
 
+    val inlineAutofillController = InlineAutofillController()
     val typingController = TypingController(host = this)
     val voiceController = VoiceController(
         host = this,
@@ -100,6 +113,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     override fun onCreate() {
         super.onCreate()
         audioRecorder = WavAudioRecorder(this)
+        keyFeedbackController = KeyFeedbackController(this) { repository.settings.value }
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         runCatching {
             clipboardManager?.addPrimaryClipChangedListener(primaryClipListener)
@@ -117,8 +131,15 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 activeInputScheme = initialSettings.inputScheme,
                 activeHeightLevel = initialSettings.keyboardHeightLevel,
                 activeHeightMode = initialSettings.keyboardHeightMode,
-                activeLiftLevel = initialSettings.keyboardLiftLevel
+                activeLiftLevel = initialSettings.keyboardLiftLevel,
+                activeBottomLiftDp = initialSettings.resolvedBottomLiftDp(),
+                activeCandidateFontScale = initialSettings.candidateFontScale
             )
+        }
+        serviceScope.launch {
+            inlineAutofillController.state.collect { autofillState ->
+                _imeState.update { it.copy(inlineAutofillState = autofillState) }
+            }
         }
         TypeFreeApp.instance.ensureFlypyDictionaryLoaded()
         typingController.rimeInputEngine = TypeFreeApp.instance.rimeInputEngine
@@ -149,29 +170,37 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         }
         serviceScope.launch {
             TypeFreeApp.instance.rimeDataManager.deploymentState.collect { deployState ->
+                val dm = TypeFreeApp.instance.rimeDataManager
                 val ready = deployState is RimeDeploymentState.Ready
-                typingController.isRimeReady = ready
+                val operational = ready || dm.isReady
+                typingController.isRimeReady = operational
                 if (ready) {
-                    val activeScheme = repository.settings.value.inputScheme
-                    val dm = TypeFreeApp.instance.rimeDataManager
+                    val curSettings = repository.settings.value
+                    val activeScheme = curSettings.inputScheme
                     if (dm.isSchemeHandledByEnhancedEngine(activeScheme)) {
                         dm.activateEnhancedSchemeSync(activeScheme)
                     }
                     bindCodetableEnhancedEngineIfAvailable()
                     if (!dm.isSchemeHandledByEnhancedEngine(activeScheme)) {
-                        TypeFreeApp.instance.rimeInputEngine.setInputScheme(activeScheme)
+                        TypeFreeApp.instance.rimeInputEngine.setInputScheme(activeScheme, curSettings.doublePinyinLayout)
                     }
-                    typingController.setFixedCandidateOrder(repository.settings.value.fixedCandidateOrder)
+                    typingController.setFixedCandidateOrder(curSettings.fixedCandidateOrder)
                     typingController.setIncognitoMode(_imeState.value.isIncognitoMode)
                     serviceScope.launch(Dispatchers.IO) {
                         runCatching {
                             typingController.staticPredictor.reloadFromRimeSharedDir(dm.sharedDir)
                         }
                     }
+                } else if (deployState is RimeDeploymentState.Error && operational) {
+                    val curSettings = repository.settings.value
+                    val activeScheme = curSettings.inputScheme
+                    if (!dm.isSchemeHandledByEnhancedEngine(activeScheme)) {
+                        TypeFreeApp.instance.rimeInputEngine.setInputScheme(activeScheme, curSettings.doublePinyinLayout)
+                    }
                 }
                 _imeState.update { prev ->
                     prev.copy(
-                        isRimeDeploying = prev.activeInputScheme.usesRime && !ready,
+                        isRimeDeploying = prev.activeInputScheme.usesRime && !operational,
                         codetableEnhancerActive = typingController.activeEngine is CodetableEnhancedInputEngine,
                         singleCharModeEnabled = typingController.codetableEnhancedEngine?.singleCharModeEnabled ?: false,
                         pinnedWordsForCurrentCode = typingController.codetableEnhancedEngine?.currentPinnedWordsForBuffer().orEmpty()
@@ -206,10 +235,26 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         serviceScope.launch {
             var lastFlypySetting: Boolean? = null
             var lastScheme = initialSettings.inputScheme
+            var lastDoublePinyinLayout = initialSettings.doublePinyinLayout
             repository.settings.collect { currentSettings ->
                 val dm = TypeFreeApp.instance.rimeDataManager
                 val schemeChanged = lastScheme != currentSettings.inputScheme
-                TypeFreeApp.instance.rimeInputEngine.setInputScheme(currentSettings.inputScheme)
+                val dpLayoutChanged = lastDoublePinyinLayout != currentSettings.doublePinyinLayout
+                if (dpLayoutChanged && currentSettings.inputScheme == InputScheme.RIME_DOUBLE_PINYIN_FLYPY) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        runCatching {
+                            TypeFreeApp.instance.rimeInputEngine.setInputScheme(
+                                currentSettings.inputScheme,
+                                currentSettings.doublePinyinLayout
+                            )
+                        }
+                    }
+                } else {
+                    TypeFreeApp.instance.rimeInputEngine.setInputScheme(
+                        currentSettings.inputScheme,
+                        currentSettings.doublePinyinLayout
+                    )
+                }
                 if (dm.isReady && dm.isSchemeHandledByEnhancedEngine(currentSettings.inputScheme)) {
                     val expectedSchemaId = if (currentSettings.inputScheme == InputScheme.FLYPY_TABLE) {
                         "flypy"
@@ -230,8 +275,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 typingController.codetableEnhancedEngine?.let { eng ->
                     applyCodetableV362Settings(eng, currentSettings)
                 }
-                if (schemeChanged) {
+                if (schemeChanged || dpLayoutChanged) {
                     lastScheme = currentSettings.inputScheme
+                    lastDoublePinyinLayout = currentSettings.doublePinyinLayout
                     typingController.resetComposing()
                 }
                 val nextIncognito = ImeLogic.isIncognitoImeOptions(
@@ -250,6 +296,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                         activeHeightLevel = currentSettings.keyboardHeightLevel,
                         activeHeightMode = currentSettings.keyboardHeightMode,
                         activeLiftLevel = currentSettings.keyboardLiftLevel,
+                        activeBottomLiftDp = currentSettings.resolvedBottomLiftDp(),
+                        activeCandidateFontScale = currentSettings.candidateFontScale,
                         isIncognitoMode = nextIncognito
                     )
                 }
@@ -283,6 +331,10 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             lastDictatedFullText = null
             lastDictatedAtMs = 0L
             hasManualEditSinceDictation = false
+            inlineAutofillController.onStartInputSession(
+                sdkInt = Build.VERSION.SDK_INT,
+                inputType = attribute?.inputType ?: 0
+            )
             typingController.resetComposing()
             undoStack.clear()
         }
@@ -293,19 +345,31 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         super.onStartInputView(info, restarting)
         currentEditorFieldId = info?.fieldId ?: 0
         repository.setImeWindowVisible(true)
-        val latestHeightLevel = repository.settings.value.keyboardHeightLevel
-        val latestHeightMode = repository.settings.value.keyboardHeightMode
-        val latestLiftLevel = repository.settings.value.keyboardLiftLevel
+        val latestSettings = repository.settings.value
+        val latestHeightLevel = latestSettings.keyboardHeightLevel
+        val latestHeightMode = latestSettings.keyboardHeightMode
+        val latestLiftLevel = latestSettings.keyboardLiftLevel
+        val latestBottomLiftDp = latestSettings.resolvedBottomLiftDp()
+        val latestCandFontScale = latestSettings.candidateFontScale
         if (!restarting) {
+            inlineAutofillController.onStartInputSession(
+                sdkInt = Build.VERSION.SDK_INT,
+                inputType = info?.inputType ?: 0
+            )
             typingController.resetComposing()
             _imeState.update {
                 it.copy(
                     isClipboardOpen = false,
+                    isExpressionPanelOpen = false,
                     isToolPanelOpen = false,
                     isToolPanelHeightExpanded = false,
+                    isToolPanelSchemeExpanded = false,
+                    isToolPanelDoublePinyinSubOpen = false,
                     voiceSubPanel = VoiceSubPanel.NONE,
                     isPunctuationStripOpen = false,
                     isStylePickerExpanded = false,
+                    isT9QuickPunctuationOpen = false,
+                    activeT9CycleSymbol = null,
                     flypyComposingCode = "",
                     preeditDisplay = "",
                     flypyCandidates = emptyList(),
@@ -323,7 +387,9 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                     aiCompletionSuggestion = null,
                     activeHeightLevel = latestHeightLevel,
                     activeHeightMode = latestHeightMode,
-                    activeLiftLevel = latestLiftLevel
+                    activeLiftLevel = latestLiftLevel,
+                    activeBottomLiftDp = latestBottomLiftDp,
+                    activeCandidateFontScale = latestCandFontScale
                 )
             }
         } else {
@@ -331,11 +397,18 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 it.copy(
                     activeHeightLevel = latestHeightLevel,
                     activeHeightMode = latestHeightMode,
-                    activeLiftLevel = latestLiftLevel
+                    activeLiftLevel = latestLiftLevel,
+                    activeBottomLiftDp = latestBottomLiftDp,
+                    activeCandidateFontScale = latestCandFontScale
                 )
             }
         }
         syncEditorMetadata(info, restarting)
+        ImeDiagnosticLogger.record(
+            category = "IME_LIFECYCLE",
+            event = "onStartInputView",
+            detail = "pkg=${_imeState.value.targetPackage} restarting=$restarting incog=${_imeState.value.isIncognitoMode} pwd=${ImeLogic.isPasswordEditorInputType(_imeState.value.currentInputType)}"
+        )
         typingController.codetableEnhancedEngine?.let { eng ->
             eng.reloadShadowRules()
             eng.reloadUserDictWordsCache()
@@ -349,14 +422,93 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     override fun onWindowShown() {
         super.onWindowShown()
         repository.setImeWindowVisible(true)
+        ImeDiagnosticLogger.record(
+            category = "IME_LIFECYCLE",
+            event = "onWindowShown",
+            detail = "pkg=${_imeState.value.targetPackage}"
+        )
         syncSystemClipboardIfNeeded(allowFreshBanner = true)
         voiceController.warmVoiceConnectionsInBackground()
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
+        ImeDiagnosticLogger.record(
+            category = "IME_LIFECYCLE",
+            event = "onFinishInputView",
+            detail = "pkg=${_imeState.value.targetPackage} finishing=$finishingInput"
+        )
+        inlineAutofillController.onFinishInputSession()
+        typingController.dismissT9QuickPunctuation()
         tryAutoLearnFromRecentEdit()
         repository.setImeWindowVisible(false)
+        _imeState.update {
+            it.copy(
+                isT9QuickPunctuationOpen = false,
+                activeT9CycleSymbol = null
+            )
+        }
         super.onFinishInputView(finishingInput)
+    }
+
+    override fun onFinishInput() {
+        inlineAutofillController.onFinishInputSession()
+        typingController.dismissT9QuickPunctuation()
+        super.onFinishInput()
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    override fun onCreateInlineSuggestionsRequest(uiExtras: Bundle): InlineSuggestionsRequest? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val settingsSnap = repository.settings.value
+        val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val metrics = KeyboardMetrics.fromSettings(settingsSnap, isLandscape = isLandscape)
+        val dm = resources.displayMetrics
+        val inputType = currentInputEditorInfo?.inputType ?: _imeState.value.currentInputType
+        val isDark = when (settingsSnap.themePreference) {
+            ThemePreference.DARK -> true
+            ThemePreference.LIGHT -> false
+            ThemePreference.SYSTEM ->
+                (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        }
+        inlineAutofillController.onStartInputSession(
+            sdkInt = Build.VERSION.SDK_INT,
+            inputType = inputType
+        )
+        return inlineAutofillController.createInlineSuggestionsRequest(
+            inputType = inputType,
+            metrics = metrics,
+            density = dm.density,
+            screenWidthPx = dm.widthPixels,
+            isDarkTheme = isDark
+        )
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    override fun onInlineSuggestionsResponse(response: InlineSuggestionsResponse): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        val settingsSnap = repository.settings.value
+        val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val metrics = KeyboardMetrics.fromSettings(settingsSnap, isLandscape = isLandscape)
+        val dm = resources.displayMetrics
+        return inlineAutofillController.onInlineSuggestionsResponse(
+            response = response,
+            context = this,
+            metrics = metrics,
+            density = dm.density
+        )
+    }
+
+    override fun onDecorSystemBottomInsetChanged(bottomPx: Int) {
+        val safePx = bottomPx.coerceAtLeast(0)
+        if (_imeState.value.systemBottomInsetPx != safePx) {
+            _imeState.update { it.copy(systemBottomInsetPx = safePx) }
+            ImeDiagnosticLogger.record(
+                category = "IME_INSETS",
+                event = "system_bottom_inset",
+                detail = "bottomPx=$safePx"
+            )
+            requestRefreshImeInsets()
+        }
     }
 
     override fun onComputeInsets(outInsets: Insets?) {
@@ -378,10 +530,20 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     }
 
     private fun requestRefreshImeInsets() {
+        runCatching { updateFullscreenMode() }
+        runCatching { updateInputViewShown() }
         runCatching {
             window?.window?.decorView?.let { decor ->
+                decor.requestApplyInsets()
                 decor.requestLayout()
                 decor.invalidate()
+                decor.post {
+                    runCatching {
+                        decor.requestApplyInsets()
+                        decor.requestLayout()
+                        decor.invalidate()
+                    }
+                }
             }
         }
     }
@@ -525,10 +687,16 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     }
 
     override fun onWindowHidden() {
+        ImeDiagnosticLogger.record(
+            category = "IME_LIFECYCLE",
+            event = "onWindowHidden",
+            detail = "pkg=${_imeState.value.targetPackage}"
+        )
         tryAutoLearnFromRecentEdit()
         repository.dailyStatsStore.flushAsync()
         repository.setImeWindowVisible(false)
         super.onWindowHidden()
+        inlineAutofillController.onFinishInputSession()
         voiceController.stopRecordingOnTabSwitchOrWindowHidden()
         typingController.resetComposing()
         val hiddenBaseMode = ImeLogic.resolveInitialKeyboardMode(
@@ -549,8 +717,11 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 isPunctuationStripOpen = false,
                 isHistoryDrawerOpen = false,
                 isClipboardOpen = false,
+                isExpressionPanelOpen = false,
                 isToolPanelOpen = false,
                 isToolPanelHeightExpanded = false,
+                isToolPanelSchemeExpanded = false,
+                isToolPanelDoublePinyinSubOpen = false,
                 flypyComposingCode = "",
                 preeditDisplay = "",
                 flypyCandidates = emptyList(),
@@ -603,19 +774,23 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         val configuration = LocalConfiguration.current
         val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
+        val resolvedBottomLiftDp = settings.resolvedBottomLiftDp()
+        val screenWidthDp = configuration.screenWidthDp
+        val systemFontScale = configuration.fontScale
         val keyboardMetrics = remember(
-            uiState.activeHeightLevel,
-            uiState.activeHeightMode,
-            uiState.activeLiftLevel,
+            settings.keyboardHeightLevel,
+            resolvedBottomLiftDp,
             settings.qwertyShowNumberRow,
-            isLandscape
+            settings.candidateFontScale,
+            isLandscape,
+            screenWidthDp,
+            systemFontScale
         ) {
-            KeyboardMetrics.fromLevel(
-                level = uiState.activeHeightLevel,
+            KeyboardMetrics.fromSettings(
+                settings = settings,
                 isLandscape = isLandscape,
-                heightMode = uiState.activeHeightMode,
-                liftLevel = uiState.activeLiftLevel,
-                showNumberRow = settings.qwertyShowNumberRow
+                screenWidthDp = screenWidthDp,
+                systemFontScale = systemFontScale
             )
         }
 
@@ -638,7 +813,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         ) {
             CompositionLocalProvider(
                 LocalDensity provides lockedImeDensity,
-                LocalKeyboardMetrics provides keyboardMetrics
+                LocalKeyboardMetrics provides keyboardMetrics,
+                LocalKeyFeedbackTrigger provides keyFeedbackController.composeTrigger
             ) {
                 KeyboardScreen(
                     uiState = uiState,
@@ -666,6 +842,10 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             ImeUiAction.DismissSpeakToEdit -> voiceController.dismissSpeakToEditForTurn()
             ImeUiAction.OpenClipboard -> openClipboardPanel()
             ImeUiAction.CloseClipboard -> closeClipboardPanel()
+            is ImeUiAction.OpenExpressionPanel -> openExpressionPanel(action.tab)
+            ImeUiAction.CloseExpressionPanel -> closeExpressionPanel()
+            is ImeUiAction.SelectExpressionTab -> selectExpressionTab(action.tab)
+            is ImeUiAction.CommitExpressionEmoji -> commitExpressionEmoji(action.glyph, action.baseGlyph)
             ImeUiAction.ToggleStylePicker -> toggleStylePicker()
             ImeUiAction.OpenStylePickerFromToolPanel -> openStylePickerFromToolPanel()
             ImeUiAction.TogglePunctuationStrip -> voiceController.togglePunctuationStrip()
@@ -673,6 +853,8 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
 
             ImeUiAction.StartVoiceRecording -> voiceController.handleMicPressDown(VoiceIntentMode.DICTATE)
             ImeUiAction.StopVoiceRecording -> voiceController.handleMicPressUp()
+            ImeUiAction.HoldStartInPlaceVoice -> startInPlaceVoiceDictation()
+            ImeUiAction.HoldReleaseInPlaceVoice -> voiceController.handleMicPressUp()
             is ImeUiAction.MicPressDown -> voiceController.handleMicPressDown(action.mode)
             ImeUiAction.MicPressUp -> voiceController.handleMicPressUp()
             ImeUiAction.FinishHandsFree -> voiceController.finishHandsFreeRecording()
@@ -703,9 +885,16 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             ImeUiAction.ToggleAiCompletion -> toggleAiCompletion()
             ImeUiAction.ToggleLiveWrite -> toggleLiveWrite()
             ImeUiAction.CycleInputScheme -> cycleInputScheme()
+            ImeUiAction.ToggleToolPanelScheme -> toggleToolPanelScheme()
+            ImeUiAction.ToggleToolPanelDoublePinyinSub -> toggleToolPanelDoublePinyinSub()
+            is ImeUiAction.SelectInputScheme -> selectInputSchemeFromToolPanel(action.scheme)
+            is ImeUiAction.SelectDoublePinyinLayout -> selectDoublePinyinLayoutFromToolPanel(action.layout)
             is ImeUiAction.SelectKeyboardHeightLevel -> selectKeyboardHeightLevel(action.level)
             is ImeUiAction.SelectKeyboardHeightMode -> selectKeyboardHeightMode(action.mode)
             is ImeUiAction.SelectKeyboardLiftLevel -> selectKeyboardLiftLevel(action.liftLevel)
+            is ImeUiAction.SelectKeyboardBottomLiftDp -> selectKeyboardBottomLiftDp(action.bottomLiftDp)
+            is ImeUiAction.SelectCandidateFontScale -> selectCandidateFontScale(action.scale)
+            ImeUiAction.ResetKeyboardAdjustments -> resetKeyboardAdjustments()
 
             ImeUiAction.TriggerUndo -> performUndo()
             ImeUiAction.ClearInputBox -> clearCurrentInputBox()
@@ -727,6 +916,13 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             ImeUiAction.ToggleFlypyLanguageMode -> typingController.toggleFlypyLanguageMode()
             is ImeUiAction.SelectFlypyCandidate -> typingController.selectFlypyCandidate(action.index)
             is ImeUiAction.SelectT9Syllable -> typingController.selectT9Syllable(action.syllable)
+            ImeUiAction.TapT9Key1Punctuation -> typingController.handleT9Key1IdleTap()
+            is ImeUiAction.SelectT9QuickPunctuation -> typingController.selectT9QuickPunctuation(action.symbol)
+            ImeUiAction.DismissT9QuickPunctuation -> typingController.dismissT9QuickPunctuation(playFeedback = true)
+            ImeUiAction.DismissInlineAutofill -> {
+                performKeyFeedback(strong = false)
+                inlineAutofillController.dismissCurrentSuggestions()
+            }
             ImeUiAction.ClearFlypyComposing -> typingController.clearFlypyComposing()
             ImeUiAction.FlushFlypyComposing -> typingController.flushFlypyComposing()
             ImeUiAction.ToggleFlypyCandidateSheet -> typingController.toggleFlypyCandidateSheet()
@@ -762,7 +958,12 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
 
     private fun selectTabMode(mode: KeyboardTabMode) {
         val prevMode = _imeState.value.tabMode
-        if (prevMode == mode && !_imeState.value.isClipboardOpen && !_imeState.value.isToolPanelOpen) return
+        if (
+            prevMode == mode &&
+            !_imeState.value.isClipboardOpen &&
+            !_imeState.value.isExpressionPanelOpen &&
+            !_imeState.value.isToolPanelOpen
+        ) return
 
         performKeyFeedback(strong = false)
         if (mode == KeyboardTabMode.QWERTY && !typingController.isDictionaryLoaded) {
@@ -793,6 +994,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
                 isPunctuationStripOpen = false,
                 isStylePickerExpanded = false,
                 isClipboardOpen = false,
+                isExpressionPanelOpen = false,
                 isToolPanelOpen = false,
                 isToolPanelHeightExpanded = false,
                 flypyComposingCode = "",
@@ -805,6 +1007,15 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
 
     fun retryLastAudio() {
         voiceController.retryLastAudio()
+    }
+
+    private fun startInPlaceVoiceDictation() {
+        typingController.dismissT9QuickPunctuation()
+        if (typingController.isComposing) {
+            typingController.flushFlypyComposing()
+        }
+        typingController.predictionCoordinator.dismissPredictions(resetChain = false)
+        voiceController.handleMicPressDown(VoiceIntentMode.DICTATE)
     }
 
     fun performEnterOrNewline() {
@@ -841,6 +1052,16 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     }
 
     override fun peekTopUndoSnapshot(): UndoSnapshot? = undoStack.firstOrNull()
+
+    override fun replaceTopUndoInsertedLength(prevInsertedLength: Int, newInsertedLength: Int) {
+        val top = undoStack.firstOrNull() ?: return
+        if (top.insertedTextLength == prevInsertedLength) {
+            undoStack.removeFirst()
+            val updated = top.copy(insertedTextLength = newInsertedLength)
+            undoStack.addFirst(updated)
+            _imeState.update { it.copy(undoSnapshot = updated) }
+        }
+    }
 
     override fun commitDirectText(
         text: String,
@@ -1235,6 +1456,7 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         _imeState.update { prev ->
             prev.copy(
                 isClipboardOpen = true,
+                isExpressionPanelOpen = false,
                 isToolPanelOpen = false,
                 isToolPanelHeightExpanded = false,
                 freshClipboardBannerItem = null,
@@ -1248,6 +1470,55 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     private fun closeClipboardPanel() {
         performKeyFeedback(strong = false)
         _imeState.update { it.copy(isClipboardOpen = false) }
+    }
+
+    private fun openExpressionPanel(tab: ExpressionTab) {
+        performKeyFeedback(strong = false)
+        typingController.dismissT9QuickPunctuation()
+        if (_imeState.value.isFlypyComposing) {
+            typingController.flushFlypyComposing()
+        } else {
+            typingController.onPanelSwitched()
+        }
+        voiceController.stopRecordingOnTabSwitchOrWindowHidden()
+        _imeState.update { prev ->
+            prev.copy(
+                isExpressionPanelOpen = true,
+                activeExpressionTab = tab,
+                isClipboardOpen = false,
+                isToolPanelOpen = false,
+                isToolPanelHeightExpanded = false,
+                voicePhase = if (prev.voicePhase is VoicePhase.Recording) VoicePhase.Idle else prev.voicePhase,
+                isStylePickerExpanded = false,
+                isPunctuationStripOpen = false
+            )
+        }
+    }
+
+    private fun closeExpressionPanel() {
+        performKeyFeedback(strong = false)
+        _imeState.update { it.copy(isExpressionPanelOpen = false) }
+    }
+
+    private fun selectExpressionTab(tab: ExpressionTab) {
+        _imeState.update { it.copy(activeExpressionTab = tab) }
+    }
+
+    private fun commitExpressionEmoji(glyph: String, baseGlyph: String?) {
+        if (glyph.isEmpty()) return
+        commitDirectText(
+            text = glyph,
+            recordUndo = true,
+            markManualEdit = true,
+            playFeedback = true
+        )
+        val curr = _imeState.value
+        val isPrivate = repository.settings.value.manualIncognitoMode ||
+            curr.isIncognitoMode ||
+            ImeLogic.isPasswordEditorInputType(curr.currentInputType)
+        if (!isPrivate) {
+            repository.recordRecentEmoji(glyph = glyph, baseGlyph = baseGlyph)
+        }
     }
 
     private fun dismissFreshClipboardBanner() {
@@ -1354,7 +1625,10 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
             prev.copy(
                 isToolPanelOpen = willOpen,
                 isToolPanelHeightExpanded = if (willOpen) prev.isToolPanelHeightExpanded else false,
+                isToolPanelSchemeExpanded = if (willOpen) prev.isToolPanelSchemeExpanded else false,
+                isToolPanelDoublePinyinSubOpen = if (willOpen) prev.isToolPanelDoublePinyinSubOpen else false,
                 isClipboardOpen = false,
+                isExpressionPanelOpen = false,
                 voicePhase = if (willOpen && prev.voicePhase is VoicePhase.Recording) VoicePhase.Idle else prev.voicePhase,
                 isStylePickerExpanded = false,
                 isPunctuationStripOpen = false
@@ -1364,7 +1638,37 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
 
     private fun toggleToolPanelHeight() {
         performKeyFeedback(strong = false)
-        _imeState.update { it.copy(isToolPanelHeightExpanded = !it.isToolPanelHeightExpanded) }
+        _imeState.update {
+            val next = !it.isToolPanelHeightExpanded
+            it.copy(
+                isToolPanelHeightExpanded = next,
+                isToolPanelSchemeExpanded = false,
+                isToolPanelDoublePinyinSubOpen = false
+            )
+        }
+    }
+
+    private fun toggleToolPanelScheme() {
+        performKeyFeedback(strong = false)
+        _imeState.update {
+            val next = !it.isToolPanelSchemeExpanded
+            it.copy(
+                isToolPanelSchemeExpanded = next,
+                isToolPanelDoublePinyinSubOpen = false,
+                isToolPanelHeightExpanded = false
+            )
+        }
+    }
+
+    private fun toggleToolPanelDoublePinyinSub() {
+        performKeyFeedback(strong = false)
+        _imeState.update {
+            it.copy(
+                isToolPanelSchemeExpanded = true,
+                isToolPanelDoublePinyinSubOpen = !it.isToolPanelDoublePinyinSubOpen,
+                isToolPanelHeightExpanded = false
+            )
+        }
     }
 
     private fun selectKeyboardHeightLevel(level: Int) {
@@ -1372,30 +1676,138 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
         performKeyFeedback(strong = false)
         repository.updateSettings { it.copy(keyboardHeightLevel = clamped) }
         _imeState.update { it.copy(activeHeightLevel = clamped) }
+        requestRefreshImeInsets()
     }
 
     private fun selectKeyboardHeightMode(mode: KeyboardHeightMode) {
         performKeyFeedback(strong = false)
         repository.updateSettings { it.copy(keyboardHeightMode = mode) }
         _imeState.update { it.copy(activeHeightMode = mode) }
+        requestRefreshImeInsets()
     }
 
     private fun selectKeyboardLiftLevel(liftLevel: Int) {
         val clamped = liftLevel.coerceIn(KeyboardMetrics.MIN_LIFT_LEVEL, KeyboardMetrics.MAX_LIFT_LEVEL)
+        val liftDp = KeyboardMetrics.liftDpForLevel(clamped)
+        selectKeyboardBottomLiftDp(liftDp)
+    }
+
+    private fun selectKeyboardBottomLiftDp(bottomLiftDp: Int) {
+        val clampedDp = bottomLiftDp.coerceIn(
+            KeyboardMetrics.MIN_BOTTOM_LIFT_DP,
+            KeyboardMetrics.MAX_BOTTOM_LIFT_DP
+        )
+        val nearestLevel = (clampedDp / 8).coerceIn(
+            KeyboardMetrics.MIN_LIFT_LEVEL,
+            KeyboardMetrics.MAX_LIFT_LEVEL
+        )
         performKeyFeedback(strong = false)
-        repository.updateSettings { it.copy(keyboardLiftLevel = clamped) }
-        _imeState.update { it.copy(activeLiftLevel = clamped) }
+        repository.updateSettings {
+            it.copy(
+                keyboardLiftLevel = nearestLevel,
+                keyboardBottomLiftDp = clampedDp
+            )
+        }
+        _imeState.update {
+            it.copy(
+                activeLiftLevel = nearestLevel,
+                activeBottomLiftDp = clampedDp
+            )
+        }
+        requestRefreshImeInsets()
+    }
+
+    private fun selectCandidateFontScale(scale: CandidateFontScale) {
+        performKeyFeedback(strong = false)
+        repository.updateSettings { it.copy(candidateFontScale = scale) }
+        _imeState.update { it.copy(activeCandidateFontScale = scale) }
+        requestRefreshImeInsets()
+    }
+
+    private fun resetKeyboardAdjustments() {
+        performKeyFeedback(strong = true)
+        repository.updateSettings {
+            it.copy(
+                keyboardHeightLevel = KeyboardMetrics.DEFAULT_LEVEL,
+                keyboardLiftLevel = KeyboardMetrics.DEFAULT_LIFT_LEVEL,
+                keyboardBottomLiftDp = KeyboardMetrics.DEFAULT_BOTTOM_LIFT_DP,
+                candidateFontScale = CandidateFontScale.STANDARD
+            )
+        }
+        _imeState.update {
+            it.copy(
+                activeHeightLevel = KeyboardMetrics.DEFAULT_LEVEL,
+                activeLiftLevel = KeyboardMetrics.DEFAULT_LIFT_LEVEL,
+                activeBottomLiftDp = KeyboardMetrics.DEFAULT_BOTTOM_LIFT_DP,
+                activeCandidateFontScale = CandidateFontScale.STANDARD
+            )
+        }
+        requestRefreshImeInsets()
     }
 
     private fun cycleInputScheme() {
         performKeyFeedback(strong = false)
-        val current = repository.settings.value.inputScheme
-        val hasCustom = TypeFreeApp.instance.rimeDataManager.hasCustomSchemaImported()
-        val next = nextCycledInputScheme(current, hasCustomSchema = hasCustom)
+        val settingsSnap = repository.settings.value
+        val current = settingsSnap.inputScheme
+        val dm = TypeFreeApp.instance.rimeDataManager
+        val hasCustom = dm.hasCustomSchemaImported()
+        val next = nextCycledInputScheme(
+            current = current,
+            hasCustomSchema = hasCustom,
+            includeBuiltinFlypyTable = com.typefree.ime.BuildConfig.USE_PRIVATE_DICT
+        )
+        applySchemeSelectionFromIme(next, settingsSnap.doublePinyinLayout)
+    }
+
+    private fun selectInputSchemeFromToolPanel(scheme: InputScheme) {
+        performKeyFeedback(strong = false)
+        val settingsSnap = repository.settings.value
+        if (scheme == InputScheme.RIME_DOUBLE_PINYIN_FLYPY &&
+            settingsSnap.inputScheme == InputScheme.RIME_DOUBLE_PINYIN_FLYPY &&
+            _imeState.value.isFlypyChineseMode
+        ) {
+            _imeState.update {
+                it.copy(
+                    isToolPanelSchemeExpanded = true,
+                    isToolPanelDoublePinyinSubOpen = !it.isToolPanelDoublePinyinSubOpen
+                )
+            }
+            return
+        }
+        applySchemeSelectionFromIme(scheme, settingsSnap.doublePinyinLayout)
+    }
+
+    private fun selectDoublePinyinLayoutFromToolPanel(layout: DoublePinyinLayout) {
+        performKeyFeedback(strong = false)
+        applySchemeSelectionFromIme(InputScheme.RIME_DOUBLE_PINYIN_FLYPY, layout)
+    }
+
+    private fun applySchemeSelectionFromIme(scheme: InputScheme, dpLayout: DoublePinyinLayout) {
         typingController.resetComposing()
-        repository.updateSettings { it.copy(inputScheme = next) }
-        _imeState.update { it.copy(activeInputScheme = next) }
-        showQuickActionToast("输入方案：${next.label}")
+        repository.updateSettings {
+            it.copy(
+                inputScheme = scheme,
+                doublePinyinLayout = dpLayout,
+                flypyEnabled = true,
+                lastQwertyIsChinese = true
+            )
+        }
+        _imeState.update {
+            it.copy(
+                activeInputScheme = scheme,
+                isFlypyChineseMode = true,
+                isToolPanelDoublePinyinSubOpen = false
+            )
+        }
+        val dm = TypeFreeApp.instance.rimeDataManager
+        val lang = AppStrings.resolveLang(repository.settings.value.appLanguage)
+        val label = if (scheme == InputScheme.RIME_CUSTOM) {
+            dm.readCustomSchemaName()?.takeIf { it.isNotBlank() }
+                ?: AppStrings.inputSchemeLabel(scheme, lang, dpLayout)
+        } else {
+            shortInputSchemeLabel(scheme, dpLayout, dm.readCustomSchemaName())
+        }
+        showQuickActionToast(AppStrings.pick(lang, "输入方案：$label", "Scheme: $label", "輸入方案：$label"))
     }
 
     private fun toggleManualIncognito() {
@@ -1802,35 +2214,28 @@ class TypeFreeInputMethodService : ComposeInputMethodService(), ImeHostCallbacks
     }
 
     override fun performKeyFeedback(strong: Boolean) {
-        performHaptic(strong = strong)
-        playKeyClickSound()
-    }
-
-    private fun playKeyClickSound() {
-        if (!repository.settings.value.interactionSounds) return
-        try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-            am?.playSoundEffect(AudioManager.FX_KEY_CLICK)
-        } catch (_: Exception) {
-        }
+        if (!::keyFeedbackController.isInitialized) return
+        keyFeedbackController.performLegacyUpOrProgrammaticFeedback(
+            strong = strong,
+            playSound = true,
+            view = window?.window?.decorView
+        )
     }
 
     override fun performHaptic(strong: Boolean) {
-        if (!repository.settings.value.hapticFeedback) return
-        try {
-            val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
-                vm?.defaultVibrator
-            } else {
-                @Suppress("DEPRECATION")
-                getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-            }
-            if (vibrator?.hasVibrator() == true) {
-                val duration = if (strong) 20L else 10L
-                val amplitude = if (strong) 115 else 60
-                vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude))
-            }
-        } catch (_: Exception) {
-        }
+        if (!::keyFeedbackController.isInitialized) return
+        val tier = if (strong) HapticTier.MIC_STRONG else HapticTier.ALPHA_KEY
+        keyFeedbackController.performTieredHaptic(
+            tier = tier,
+            view = window?.window?.decorView
+        )
+    }
+
+    override fun performTieredHaptic(tier: HapticTier) {
+        if (!::keyFeedbackController.isInitialized) return
+        keyFeedbackController.performTieredHaptic(
+            tier = tier,
+            view = window?.window?.decorView
+        )
     }
 }

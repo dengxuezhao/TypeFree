@@ -10,10 +10,12 @@ import com.typefree.ime.data.ApiPreset
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.AppToneRule
+import com.typefree.ime.data.CandidateFontScale
 import com.typefree.ime.data.ClipboardEntry
 import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.DictionaryEntry
 import com.typefree.ime.data.DictionarySource
+import com.typefree.ime.data.HapticPreset
 import com.typefree.ime.data.HistoryRecord
 import com.typefree.ime.data.HistoryRetention
 import com.typefree.ime.data.InputScheme
@@ -23,9 +25,11 @@ import com.typefree.ime.data.LlmConfig
 import com.typefree.ime.data.MultimodalConfig
 import com.typefree.ime.data.MultimodalProtocol
 import com.typefree.ime.data.OfflineModelConfig
+import com.typefree.ime.data.OneHandedMode
 import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.ProviderCredential
 import com.typefree.ime.data.SnippetEntry
+import com.typefree.ime.data.SpaceLongPressAction
 import com.typefree.ime.data.SttConfig
 import com.typefree.ime.data.SttProtocol
 import com.typefree.ime.data.ThemePreference
@@ -67,8 +71,14 @@ object ApiConfigBackupHelper {
         "keyboardHeightLevel",
         "keyboardHeightMode",
         "keyboardLiftLevel",
+        "keyboardBottomLiftDp",
+        "candidateFontScale",
+        "oneHandedMode",
+        "t9LeftHandedMirror",
+        "spaceLongPressAction",
         "liveWriteToEditor",
         "inputScheme",
+        "doublePinyinLayout",
         "fixedCandidateOrder",
         "codetableFiveKeyBottomRow",
         "xiaoheDirectCommandsEnabled",
@@ -90,7 +100,12 @@ object ApiConfigBackupHelper {
         "appAwareToneEnabled",
         "selectedManualStyleId",
         "hapticFeedback",
+        "hapticPreset",
+        "hapticStrength",
         "interactionSounds",
+        "keySoundVolume",
+        "recentEmojis",
+        "emojiSkinTonePrefs",
         "useSurroundingContext",
         "autoLearnDictionary",
         "historyRetention",
@@ -843,9 +858,81 @@ object ApiConfigBackupHelper {
                 ?.coerceIn(0, 4)
                 ?: existingSettings.keyboardLiftLevel
 
+            val rawImportedBottomLiftDp = rootObj.optLong("keyboardBottomLiftDp")?.toInt()
+            val mergedBottomLiftDp = when {
+                rawImportedBottomLiftDp != null && rawImportedBottomLiftDp >= 0 ->
+                    rawImportedBottomLiftDp.coerceIn(0, 56)
+                rootObj.has("keyboardLiftLevel") || rootObj.has("keyboardHeightMode") ->
+                    AppRepository.resolveMigratedBottomLiftDp(
+                        rawBottomLiftDp = -1,
+                        heightMode = mergedHeightMode,
+                        liftLevel = mergedLiftLevel
+                    )
+                rawImportedBottomLiftDp != null ->
+                    AppRepository.resolveMigratedBottomLiftDp(
+                        rawBottomLiftDp = rawImportedBottomLiftDp,
+                        heightMode = mergedHeightMode,
+                        liftLevel = mergedLiftLevel
+                    )
+                else -> existingSettings.keyboardBottomLiftDp
+            }
+
+            val mergedCandidateFontScale = rootObj.optString("candidateFontScale")?.let { rawScale ->
+                CandidateFontScale.entries.firstOrNull { it.name.equals(rawScale, ignoreCase = true) }
+            } ?: existingSettings.candidateFontScale
+
+            val mergedOneHandedMode = rootObj.optString("oneHandedMode")?.let { rawOneHanded ->
+                OneHandedMode.entries.firstOrNull { it.name.equals(rawOneHanded, ignoreCase = true) }
+            } ?: existingSettings.oneHandedMode
+
+            val mergedT9LeftHandedMirror = rootObj.optBoolean("t9LeftHandedMirror")
+                ?: existingSettings.t9LeftHandedMirror
+
+            val mergedSpaceLongPressAction = rootObj.optString("spaceLongPressAction")?.let { rawAction ->
+                SpaceLongPressAction.entries.firstOrNull { it.name.equals(rawAction, ignoreCase = true) }
+            } ?: existingSettings.spaceLongPressAction
+
+            val importedHapticFeedback = rootObj.optBoolean("hapticFeedback")
+            val importedHapticPreset = rootObj.optString("hapticPreset")?.let { rawPreset ->
+                HapticPreset.entries.firstOrNull { it.name.equals(rawPreset, ignoreCase = true) }
+            }
+            val mergedHapticPreset = when {
+                importedHapticFeedback == false -> HapticPreset.OFF
+                importedHapticPreset != null -> importedHapticPreset
+                importedHapticFeedback == true ->
+                    if (existingSettings.hapticPreset == HapticPreset.OFF) HapticPreset.SYSTEM else existingSettings.hapticPreset
+                else -> existingSettings.hapticPreset
+            }
+            val mergedHapticStrength = rootObj.optLong("hapticStrength")
+                ?.toInt()?.coerceIn(10, 100)
+                ?: existingSettings.hapticStrength
+            val mergedKeySoundVolume = rootObj.optLong("keySoundVolume")
+                ?.toInt()?.coerceIn(5, 100)
+                ?: existingSettings.keySoundVolume
+            val mergedRecentEmojis = rootObj.getAsJsonArray("recentEmojis")?.let { arr ->
+                arr.mapNotNull { el -> runCatching { el.asString }.getOrNull()?.trim() }
+                    .filter { it.isNotEmpty() }
+                    .distinct()
+                    .take(24)
+            } ?: existingSettings.recentEmojis
+            val mergedSkinTonePrefs = rootObj.optObject("emojiSkinTonePrefs")?.let { obj ->
+                buildMap<String, String> {
+                    for ((k, v) in obj.entrySet()) {
+                        val valueStr = runCatching { v.asString }.getOrNull()?.trim().orEmpty()
+                        if (k.isNotBlank() && valueStr.isNotEmpty()) {
+                            put(k, valueStr)
+                        }
+                    }
+                }
+            } ?: existingSettings.emojiSkinTonePrefs
+
             val mergedInputScheme = rootObj.optString("inputScheme")?.let { rawScheme ->
                 InputScheme.entries.firstOrNull { it.name.equals(rawScheme, ignoreCase = true) }
             } ?: existingSettings.inputScheme
+
+            val mergedDoublePinyinLayout = rootObj.optString("doublePinyinLayout")?.let { rawDp ->
+                com.typefree.ime.data.DoublePinyinLayout.entries.firstOrNull { it.name.equals(rawDp, ignoreCase = true) }
+            } ?: existingSettings.doublePinyinLayout
 
             val mergedKeycapBadgeMode = rootObj.optString("keycapBadgeMode")?.let { rawBadgeMode ->
                 KeycapBadgeMode.entries.firstOrNull { it.name.equals(rawBadgeMode, ignoreCase = true) }
@@ -922,9 +1009,15 @@ object ApiConfigBackupHelper {
                 keyboardHeightLevel = mergedHeightLevel,
                 keyboardHeightMode = mergedHeightMode,
                 keyboardLiftLevel = mergedLiftLevel,
+                keyboardBottomLiftDp = mergedBottomLiftDp,
+                candidateFontScale = mergedCandidateFontScale,
+                oneHandedMode = mergedOneHandedMode,
+                t9LeftHandedMirror = mergedT9LeftHandedMirror,
+                spaceLongPressAction = mergedSpaceLongPressAction,
                 liveWriteToEditor = rootObj.optBoolean("liveWriteToEditor")
                     ?: existingSettings.liveWriteToEditor,
                 inputScheme = mergedInputScheme,
+                doublePinyinLayout = mergedDoublePinyinLayout,
                 fixedCandidateOrder = mergedFixedOrder,
                 codetableFiveKeyBottomRow = rootObj.optBoolean("codetableFiveKeyBottomRow")
                     ?: existingSettings.codetableFiveKeyBottomRow,
@@ -965,10 +1058,14 @@ object ApiConfigBackupHelper {
                     ?: existingSettings.appAwareToneEnabled,
                 selectedManualStyleId = rootObj.optString("selectedManualStyleId")
                     ?.takeIf { it.isNotBlank() } ?: existingSettings.selectedManualStyleId,
-                hapticFeedback = rootObj.optBoolean("hapticFeedback")
-                    ?: existingSettings.hapticFeedback,
+                hapticFeedback = mergedHapticPreset != HapticPreset.OFF,
+                hapticPreset = mergedHapticPreset,
+                hapticStrength = mergedHapticStrength,
                 interactionSounds = rootObj.optBoolean("interactionSounds")
                     ?: existingSettings.interactionSounds,
+                keySoundVolume = mergedKeySoundVolume,
+                recentEmojis = mergedRecentEmojis,
+                emojiSkinTonePrefs = mergedSkinTonePrefs,
                 useSurroundingContext = rootObj.optBoolean("useSurroundingContext")
                     ?: existingSettings.useSurroundingContext,
                 autoLearnDictionary = rootObj.optBoolean("autoLearnDictionary")

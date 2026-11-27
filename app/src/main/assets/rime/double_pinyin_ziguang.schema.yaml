@@ -1,0 +1,162 @@
+# Rime schema - 雾凇拼音 · 紫光双拼 (iDvel/rime-ice)
+# encoding: utf-8
+
+schema:
+  schema_id: double_pinyin_ziguang
+  name: 紫光双拼
+  version: "2026-06-30"
+  author:
+    - Dvel
+  description: |
+    雾凇拼音 - 紫光双拼
+    https://github.com/iDvel/rime-ice
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中, Ａ ]
+  - name: ascii_punct
+    reset: 0
+    states: [ ¥, $ ]
+  - name: traditionalization
+    reset: 0
+    states: [ 简, 繁 ]
+
+engine:
+  processors:
+    - predictor
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - predict_translator
+    - punct_translator
+    - script_translator
+    - table_translator@melt_eng
+    - table_translator@cn_en
+  filters:
+    - uniquifier
+
+predictor:
+  db: predict.db
+  max_candidates: 8
+  max_iterations: 1
+
+translator:
+  dictionary: rime_ice
+  prism: double_pinyin_ziguang
+  enable_user_dict: true
+  enable_word_completion: true
+  enable_completion: true
+  enable_sentence: true
+  max_sentences: 1
+  initial_quality: 1.2
+  preedit_format:
+    - xform/o(\w)/0$1/
+    - xform/([jqxy])n/$1ue/
+    - xform/([nl])n/$1ve/
+    - xform/([dtgkhzcsuai])n/$1ui/
+    - xform/([nljqxb])g/$1iang/
+    - xform/([gkhuai])g/$1uang/
+    - xform/(\w)w/$1en/
+    - xform/(\w)r/$1an/
+    - xform/(\w)t/$1eng/
+    - xform/([jqxylmnbp])y/$1in/
+    - xform/([zcsuaigkh])y/$1uai/
+    - xform/([dtnlgkhrzcsuai])o/$1uo/
+    - xform/(\w)q/$1ao/
+    - xform/(\w)p/$1ai/
+    - xform/(\w)s/$1ang/
+    - xform/(\w)d/$1ie/
+    - xform/(\w)f/$1ian/
+    - xform/([jqx])h/$1iong/
+    - xform/([dtnlgkhrzcsuai])h/$1ong/
+    - xform/0j/0er/
+    - xform/([dnlmjqx])j/$1iu/
+    - xform/(\w)k/$1ei/
+    - xform/(\w)l/$1uan/
+    - xform/(\w)z/$1ou/
+    - xform/([jqxl])x/$1ia/
+    - xform/([gkhuai])x/$1ua/
+    - xform/(\w);/$1ing/
+    - xform/(\w)b/$1iao/
+    - xform/(\w)m/$1un/
+    - "xform/(^|[ '])u/$1zh/"
+    - "xform/(^|[ '])a/$1ch/"
+    - "xform/(^|[ '])i/$1sh/"
+    - xform/0(\w)/$1/
+    - xform/([nljqxy])v/$1ü/
+    - xform/ü/v/
+    - xform/(?<=[A-Z])\s(?=[A-Z])//
+
+melt_eng:
+  dictionary: melt_eng
+  enable_sentence: false
+  enable_user_dict: false
+  initial_quality: 0.8
+  comment_format:
+    - xform/.*//
+
+cn_en:
+  dictionary: ""
+  user_dict: en_dicts/cn_en_ziguang
+  db_class: stabledb
+  enable_completion: true
+  enable_sentence: false
+  initial_quality: 0.6
+  comment_format:
+    - xform/^.+$//
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA;`
+  initials: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA
+  delimiter: " '"
+  algebra:
+    - erase/^xx$/
+    - derive/^([jqxy])u$/$1v/
+    - xform/^([aoe].*)$/Ⓞ$1/
+    - xform/en$/Ⓦ/
+    - xform/eng$/Ⓣ/
+    - xform/in$|uai$/Ⓨ/
+    - xform/^zh/Ⓤ/
+    - xform/^sh/Ⓘ/
+    - xform/uo$/Ⓞ/
+    - xform/ai$/Ⓟ/
+    - xform/^ch/Ⓐ/
+    - xform/[iu]ang$/Ⓖ/
+    - xform/ang$/Ⓢ/
+    - xform/ie$/Ⓓ/
+    - xform/ian$/Ⓕ/
+    - xform/(.)i?ong$/$1Ⓗ/
+    - xform/er$|iu$/Ⓙ/
+    - xform/ei$/Ⓚ/
+    - xform/uan$/Ⓛ/
+    - xform/ing$/;/
+    - xform/ou$/Ⓩ/
+    - xform/[iu]a$/Ⓧ/
+    - xform/iao$/Ⓑ/
+    - xform/ue$|ui$|ve$/Ⓝ/
+    - xform/un$/Ⓜ/
+    - xform/ao$/Ⓠ/ # ao should be placed after iao
+    - xform/an$/Ⓡ/ # an should be placed after uan/ian
+    - xlit/ⓌⓉⓎⓊⒾⓄⓅⒶⒼⓈⒹⒻⒽⒿⓀⓁⓏⓍⒷⓃⓂⓆⓇ/wtyuiopagsdfhjklzxbnmqr/
+
+punctuator:
+  import_preset: default
+
+key_binder:
+  import_preset: default
+
+recognizer:
+  import_preset: default

@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.compositionLocalOf
 import com.typefree.ime.data.HistoryRetention
+import com.typefree.ime.data.DoublePinyinLayout
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.KeycapBadgeMode
@@ -138,11 +139,26 @@ object AppStrings {
         }
     }
 
-    fun inputSchemeLabel(scheme: InputScheme, lang: AppLang): String {
+    fun doublePinyinLayoutLabel(layout: DoublePinyinLayout, lang: AppLang): String =
+        pick(lang, layout.labelZhCn, layout.labelEn, layout.labelZhTw)
+
+    fun doublePinyinLayoutShortLabel(layout: DoublePinyinLayout, lang: AppLang): String =
+        pick(lang, layout.shortZhCn, layout.shortEn, layout.shortZhTw)
+
+    fun inputSchemeLabel(
+        scheme: InputScheme,
+        lang: AppLang,
+        doublePinyinLayout: DoublePinyinLayout = DoublePinyinLayout.FLYPY
+    ): String {
         return when (scheme) {
             InputScheme.RIME_PINYIN -> pick(lang, "全拼（雾凇拼音）", "Full Pinyin (Rime Ice)", "全拼（霧凇拼音）")
             InputScheme.RIME_T9_PINYIN -> pick(lang, "九键拼音（雾凇 T9）", "9-Key Pinyin (T9)", "九鍵拼音（霧凇 T9）")
-            InputScheme.RIME_DOUBLE_PINYIN_FLYPY -> pick(lang, "小鹤双拼（整句）", "Double Pinyin (Flypy)", "小鶴雙拼（整句）")
+            InputScheme.RIME_DOUBLE_PINYIN_FLYPY -> pick(
+                lang,
+                "${doublePinyinLayout.labelZhCn}（整句）",
+                "Double Pinyin (${doublePinyinLayout.labelEn})",
+                "${doublePinyinLayout.labelZhTw}（整句）"
+            )
             InputScheme.FLYPY_TABLE -> pick(lang, "小鹤音形（四码）", "Flypy Codetable (4-Code)", "小鶴音形（四碼）")
             InputScheme.RIME_CUSTOM -> pick(lang, "自定义 Rime 方案", "Custom Rime Schema", "自訂 Rime 方案")
         }

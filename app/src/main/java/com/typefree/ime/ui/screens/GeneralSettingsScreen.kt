@@ -1,10 +1,15 @@
 package com.typefree.ime.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.os.Build
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +49,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -51,6 +57,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -61,6 +69,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,19 +77,151 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typefree.core.offline.OfflineMode
 import com.typefree.ime.BuildConfig
+import com.typefree.ime.bubble.TypeFreeBubbleController
 import com.typefree.ime.data.AppRepository
+import com.typefree.ime.data.AppSettings
+import com.typefree.ime.data.HapticPreset
 import com.typefree.ime.data.ThemePreference
 import com.typefree.ime.data.stats.StatsTimeRange
+import com.typefree.ime.diagnostics.ImeDiagnosticLogger
+import com.typefree.ime.i18n.AppLang
 import com.typefree.ime.i18n.AppStrings
 import com.typefree.ime.i18n.LocalAppLanguage
 import com.typefree.ime.i18n.tr
+import com.typefree.ime.ime.HapticFeedbackPlanner
+import com.typefree.ime.ime.HapticTier
+import com.typefree.ime.ime.KeyFeedbackController
+import com.typefree.ime.ime.KeySoundType
 import com.typefree.ime.network.AppUpdateChecker
 import com.typefree.ime.network.UpdateCheckInfo
 import com.typefree.ime.ui.components.ContinuousRoundedCornerShape
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.TypeFreeEmerald
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
+
+internal object AboutDiagnosticsSnapshotHelper {
+    const val DEFAULT_EXPANDED: Boolean = false
+
+    fun buildExtraState(
+        settings: AppSettings,
+        imeEnabled: Boolean,
+        imeSelected: Boolean,
+        accessibilityEnabled: Boolean
+    ): Map<String, String> = linkedMapOf(
+        "imeEnabled" to imeEnabled.toString(),
+        "imeSelected" to imeSelected.toString(),
+        "a11yEnabled" to accessibilityEnabled.toString(),
+        "bubbleEnabled" to settings.bubbleEnabled.toString()
+    )
+
+    fun buildSnapshotText(
+        settings: AppSettings,
+        imeEnabled: Boolean,
+        imeSelected: Boolean,
+        accessibilityEnabled: Boolean,
+        appVersion: String = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+        deviceSummary: String = "${Build.MANUFACTURER} ${Build.MODEL} | Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})"
+    ): String {
+        return ImeDiagnosticLogger.exportSnapshot(
+            appVersion = appVersion,
+            deviceSummary = deviceSummary,
+            extraState = buildExtraState(
+                settings = settings,
+                imeEnabled = imeEnabled,
+                imeSelected = imeSelected,
+                accessibilityEnabled = accessibilityEnabled
+            )
+        )
+    }
+
+    fun sectionHeaderLabel(lang: AppLang): String = AppStrings.pick(
+        lang,
+        "高级排障与运行快照",
+        "Troubleshooting & Diagnostics",
+        "進階排障與執行快照"
+    )
+
+    fun copyActionLabel(copied: Boolean, lang: AppLang): String {
+        return if (copied) {
+            AppStrings.pick(
+                lang,
+                "✓ 已复制运行诊断快照",
+                "✓ Diagnostic Snapshot Copied",
+                "✓ 已複製執行診斷快照"
+            )
+        } else {
+            AppStrings.pick(
+                lang,
+                "复制运行诊断快照",
+                "Copy Diagnostic Snapshot",
+                "複製執行診斷快照"
+            )
+        }
+    }
+
+    fun privacyNoticeLabel(lang: AppLang): String = AppStrings.pick(
+        lang,
+        "仅含最近窗口显隐、无障碍状态与耗时，绝不记录任何打字或聊天内容",
+        "Contains recent window/accessibility states & timings only — never records typed or chat text",
+        "僅含最近視窗顯隱、無障礙狀態與耗時，絕不記錄任何打字或聊天內容"
+    )
+
+    fun copiedToastLabel(lang: AppLang): String = AppStrings.pick(
+        lang,
+        "✓ 已复制运行诊断快照（零隐私正文）",
+        "✓ Diagnostic snapshot copied (Zero-PII)",
+        "✓ 已複製執行診斷快照（零隱私正文）"
+    )
+}
+
+internal object HapticSettingsUiHelper {
+    const val DEFAULT_EXPANDED: Boolean = false
+
+    val SELECTABLE_PRESETS: List<HapticPreset> = listOf(
+        HapticPreset.OFF,
+        HapticPreset.SYSTEM,
+        HapticPreset.SOFT,
+        HapticPreset.CRISP,
+        HapticPreset.STRONG
+    )
+
+    fun sectionHeaderLabel(lang: AppLang): String = AppStrings.pick(
+        lang,
+        "震感与音效精细调节",
+        "Haptic & Sound Fine-Tuning",
+        "震感與音效精細調節"
+    )
+
+    fun presetLabel(preset: HapticPreset, lang: AppLang): String = when (preset) {
+        HapticPreset.OFF -> AppStrings.pick(lang, "关闭", "Off", "關閉")
+        HapticPreset.SYSTEM -> AppStrings.pick(lang, "跟随系统", "System", "跟隨系統")
+        HapticPreset.SOFT -> AppStrings.pick(lang, "轻柔", "Soft", "輕柔")
+        HapticPreset.CRISP -> AppStrings.pick(lang, "清脆", "Crisp", "清脆")
+        HapticPreset.STRONG -> AppStrings.pick(lang, "强劲", "Strong", "強勁")
+        HapticPreset.CUSTOM -> AppStrings.pick(lang, "自定义", "Custom", "自訂")
+    }
+
+    fun formatCollapsedSummary(settings: AppSettings, lang: AppLang): String {
+        val effective = HapticFeedbackPlanner.resolveEffectivePreset(settings)
+        val hapticPart = when (effective) {
+            HapticPreset.OFF -> presetLabel(HapticPreset.OFF, lang)
+            HapticPreset.SYSTEM -> presetLabel(HapticPreset.SYSTEM, lang)
+            HapticPreset.CUSTOM -> "${presetLabel(HapticPreset.CUSTOM, lang)} ${settings.hapticStrength.coerceIn(10, 100)}%"
+            else -> presetLabel(effective, lang)
+        }
+        val soundPart = if (settings.interactionSounds) {
+            val vol = settings.keySoundVolume.coerceIn(5, 100)
+            AppStrings.pick(lang, "音效 $vol%", "Sound $vol%", "音效 $vol%")
+        } else {
+            AppStrings.pick(lang, "静音", "Muted", "靜音")
+        }
+        return "$hapticPart · $soundPart"
+    }
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -421,18 +562,310 @@ fun GeneralSettingsScreen(
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
 
+                    val effectiveHapticPreset = HapticFeedbackPlanner.resolveEffectivePreset(settings)
                     PreferenceSwitchRow(
                         title = tr("触觉振动反馈", "Haptic Feedback", "觸覺震動回饋"),
                         subtitle = tr(
-                            "按下说话键、弧形转盘选词及文字上屏时提供振动反馈",
-                            "Crisp tactile vibration on key presses, mic button, and text commit",
-                            "按下說話鍵、弧形轉盤選詞及文字上屏時提供震動回饋"
+                            "按下瞬间 0ms 触觉响应，区分字母键、功能键与上滑确认手感",
+                            "Instant 0ms touch-down vibration tuned per key tier and swipe gesture",
+                            "按下瞬間 0ms 觸覺回應，區分字母鍵、功能鍵與上滑確認手感"
                         ),
-                        checked = settings.hapticFeedback,
+                        checked = effectiveHapticPreset != HapticPreset.OFF,
                         onCheckedChange = { enabled ->
-                            repository.updateSettings { it.copy(hapticFeedback = enabled) }
+                            repository.updateSettings { prev ->
+                                prev.copy(
+                                    hapticFeedback = enabled,
+                                    hapticPreset = when {
+                                        !enabled -> HapticPreset.OFF
+                                        prev.hapticPreset == HapticPreset.OFF -> HapticPreset.SYSTEM
+                                        else -> prev.hapticPreset
+                                    }
+                                )
+                            }
                         }
                     )
+
+                    // 默认折叠的震感与音效精细调节区
+                    var showHapticTuning by rememberSaveable {
+                        mutableStateOf(HapticSettingsUiHelper.DEFAULT_EXPANDED)
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showHapticTuning = !showHapticTuning }
+                            .padding(horizontal = 4.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = HapticSettingsUiHelper.sectionHeaderLabel(appLang),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = HapticSettingsUiHelper.formatCollapsedSummary(settings, appLang),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.82f)
+                            )
+                            Text(
+                                text = if (showHapticTuning) "▾" else "▸",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    AnimatedVisibility(visible = showHapticTuning) {
+                        val hostView = LocalView.current
+                        val previewController = remember(context) {
+                            KeyFeedbackController(context) { repository.settings.value }
+                        }
+                        var strengthSliderValue by remember(settings.hapticStrength) {
+                            mutableFloatStateOf(settings.hapticStrength.coerceIn(10, 100).toFloat())
+                        }
+                        var lastPreviewStrength by remember {
+                            mutableIntStateOf(settings.hapticStrength.coerceIn(10, 100))
+                        }
+                        var soundSliderValue by remember(settings.keySoundVolume) {
+                            mutableFloatStateOf(settings.keySoundVolume.coerceIn(5, 100).toFloat())
+                        }
+
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = tr("震感档位（点击立即试震）", "Haptic Profile (Tap to Preview)", "震感檔位（點擊立即試震）"),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+
+                                FlowRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    HapticSettingsUiHelper.SELECTABLE_PRESETS.forEach { preset ->
+                                        val selected = effectiveHapticPreset == preset
+                                        FilterChip(
+                                            selected = selected,
+                                            onClick = {
+                                                val nextStrength = if (preset.defaultStrength > 0) {
+                                                    preset.defaultStrength
+                                                } else {
+                                                    settings.hapticStrength
+                                                }
+                                                strengthSliderValue = nextStrength.coerceIn(10, 100).toFloat()
+                                                lastPreviewStrength = nextStrength.coerceIn(10, 100)
+                                                repository.updateSettings { prev ->
+                                                    prev.copy(
+                                                        hapticFeedback = preset != HapticPreset.OFF,
+                                                        hapticPreset = preset,
+                                                        hapticStrength = if (preset.defaultStrength > 0) preset.defaultStrength else prev.hapticStrength
+                                                    )
+                                                }
+                                                if (preset != HapticPreset.OFF) {
+                                                    previewController.previewInSettings(
+                                                        preset = preset,
+                                                        strengthPercent = nextStrength,
+                                                        tier = HapticTier.ALPHA_KEY,
+                                                        view = hostView
+                                                    )
+                                                }
+                                            },
+                                            label = {
+                                                Text(
+                                                    text = HapticSettingsUiHelper.presetLabel(preset, appLang),
+                                                    fontSize = 12.sp,
+                                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                                )
+                                            },
+                                            colors = FilterChipDefaults.filterChipColors(
+                                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                            )
+                                        )
+                                    }
+                                }
+
+                                // Strength slider (available whenever haptics is not OFF; dragging switches to CUSTOM)
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = tr("震动强度", "Vibration Strength", "震動強度"),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = when (effectiveHapticPreset) {
+                                                HapticPreset.OFF -> tr("已关闭", "Off", "已關閉")
+                                                HapticPreset.SYSTEM -> tr("系统默认（拖动自定义）", "System (drag to customize)", "系統預設（拖動自訂）")
+                                                else -> "${strengthSliderValue.roundToInt()}%"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Slider(
+                                        value = strengthSliderValue,
+                                        onValueChange = { raw ->
+                                            val snapped = raw.roundToInt().coerceIn(10, 100)
+                                            strengthSliderValue = snapped.toFloat()
+                                            if (abs(snapped - lastPreviewStrength) >= 6) {
+                                                lastPreviewStrength = snapped
+                                                previewController.previewInSettings(
+                                                    preset = HapticPreset.CUSTOM,
+                                                    strengthPercent = snapped,
+                                                    tier = HapticTier.ALPHA_KEY,
+                                                    view = hostView
+                                                )
+                                            }
+                                        },
+                                        onValueChangeFinished = {
+                                            val finalVal = strengthSliderValue.roundToInt().coerceIn(10, 100)
+                                            lastPreviewStrength = finalVal
+                                            repository.updateSettings { prev ->
+                                                prev.copy(
+                                                    hapticFeedback = true,
+                                                    hapticPreset = HapticPreset.CUSTOM,
+                                                    hapticStrength = finalVal
+                                                )
+                                            }
+                                            previewController.previewInSettings(
+                                                preset = HapticPreset.CUSTOM,
+                                                strengthPercent = finalVal,
+                                                tier = HapticTier.ALPHA_KEY,
+                                                view = hostView
+                                            )
+                                        },
+                                        valueRange = 10f..100f,
+                                        enabled = effectiveHapticPreset != HapticPreset.OFF
+                                    )
+                                }
+
+                                // Key sound volume slider
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = tr("按键音效音量", "Key Sound Volume", "按鍵音效音量"),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = if (settings.interactionSounds) {
+                                                "${soundSliderValue.roundToInt()}%"
+                                            } else {
+                                                tr("请先开启上方提示音", "Enable sounds above", "請先開啟上方提示音")
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Slider(
+                                        value = soundSliderValue,
+                                        onValueChange = { raw ->
+                                            soundSliderValue = raw.roundToInt().coerceIn(5, 100).toFloat()
+                                        },
+                                        onValueChangeFinished = {
+                                            val finalVol = soundSliderValue.roundToInt().coerceIn(5, 100)
+                                            repository.updateSettings { it.copy(keySoundVolume = finalVol) }
+                                            if (settings.interactionSounds) {
+                                                previewController.previewSoundInSettings(finalVol)
+                                            }
+                                        },
+                                        valueRange = 5f..100f,
+                                        enabled = settings.interactionSounds
+                                    )
+                                }
+
+                                // Quick tactile tier test row
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    val testTiers = listOf(
+                                        Triple(tr("试按字母键", "Letter", "試按字母鍵"), HapticTier.ALPHA_KEY, KeySoundType.STANDARD),
+                                        Triple(tr("试按空格键", "Space", "試按空格鍵"), HapticTier.FUNCTION_KEY, KeySoundType.SPACEBAR),
+                                        Triple(tr("试按上滑确认", "Swipe Up", "試按上滑確認"), HapticTier.GESTURE_CONFIRM, KeySoundType.NONE)
+                                    )
+                                    testTiers.forEach { (label, tier, sound) ->
+                                        OutlinedButton(
+                                            onClick = {
+                                                val presetToPreview = if (effectiveHapticPreset == HapticPreset.OFF) {
+                                                    HapticPreset.SYSTEM
+                                                } else {
+                                                    effectiveHapticPreset
+                                                }
+                                                previewController.previewInSettings(
+                                                    preset = presetToPreview,
+                                                    strengthPercent = strengthSliderValue.roundToInt(),
+                                                    tier = tier,
+                                                    view = hostView
+                                                )
+                                                if (settings.interactionSounds && sound != KeySoundType.NONE) {
+                                                    previewController.playKeySound(sound)
+                                                }
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(10.dp),
+                                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
+                                        ) {
+                                            Text(
+                                                text = label,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                }
+
+                                val hwHint = if (previewController.hardwareCaps.supportsLowTick || previewController.hardwareCaps.supportsClick) {
+                                    tr(
+                                        "当前设备支持硬件线性马达瞬态原语，已启用主动刹停波形",
+                                        "Linear motor primitives detected — active-braked waveforms enabled",
+                                        "目前裝置支援硬體線性馬達瞬態原語，已啟用主動煞停波形"
+                                    )
+                                } else {
+                                    tr(
+                                        "已自动适配短促瞬态脉冲（4–13ms）与系统触感曲线",
+                                        "Adaptive short crisp pulse (4–13ms) and system haptic curve active",
+                                        "已自動適配短促瞬態脈衝（4–13ms）與系統觸感曲線"
+                                    )
+                                }
+                                Text(
+                                    text = hwHint,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    lineHeight = 16.sp
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -836,6 +1269,117 @@ fun GeneralSettingsScreen(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+
+                    // 默认收起的高级排障与运行诊断快照复制区
+                    var showDiagnosticsSection by rememberSaveable {
+                        mutableStateOf(AboutDiagnosticsSnapshotHelper.DEFAULT_EXPANDED)
+                    }
+                    var diagnosticCopiedFeedback by remember { mutableStateOf(false) }
+                    LaunchedEffect(diagnosticCopiedFeedback) {
+                        if (diagnosticCopiedFeedback) {
+                            delay(2200L)
+                            diagnosticCopiedFeedback = false
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                val next = !showDiagnosticsSection
+                                showDiagnosticsSection = next
+                                if (!next) diagnosticCopiedFeedback = false
+                            }
+                            .padding(horizontal = 4.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = AboutDiagnosticsSnapshotHelper.sectionHeaderLabel(appLang),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = if (showDiagnosticsSection) "▾" else "▸",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    AnimatedVisibility(visible = showDiagnosticsSection) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = AboutDiagnosticsSnapshotHelper.privacyNoticeLabel(appLang),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    lineHeight = 17.sp
+                                )
+
+                                OutlinedButton(
+                                    onClick = {
+                                        val imeEnabled = isSystemImeEnabled(context)
+                                        val imeSelected = isSystemImeSelected(context)
+                                        val a11yEnabled = TypeFreeBubbleController.isAccessibilityEnabledInSettings(context)
+                                        val snapshotText = AboutDiagnosticsSnapshotHelper.buildSnapshotText(
+                                            settings = settings,
+                                            imeEnabled = imeEnabled,
+                                            imeSelected = imeSelected,
+                                            accessibilityEnabled = a11yEnabled
+                                        )
+                                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                        cm?.setPrimaryClip(
+                                            ClipData.newPlainText("TypeFree Diagnostic Snapshot", snapshotText)
+                                        )
+                                        diagnosticCopiedFeedback = true
+                                        Toast.makeText(
+                                            context,
+                                            AboutDiagnosticsSnapshotHelper.copiedToastLabel(appLang),
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (diagnosticCopiedFeedback) {
+                                            TypeFreeEmerald.copy(alpha = 0.65f)
+                                        } else {
+                                            MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+                                        }
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        text = AboutDiagnosticsSnapshotHelper.copyActionLabel(
+                                            copied = diagnosticCopiedFeedback,
+                                            lang = appLang
+                                        ),
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (diagnosticCopiedFeedback) {
+                                            TypeFreeEmerald
+                                        } else {
+                                            MaterialTheme.colorScheme.primary
+                                        }
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

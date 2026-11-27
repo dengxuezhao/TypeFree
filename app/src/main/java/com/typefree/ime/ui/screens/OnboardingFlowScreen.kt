@@ -5,9 +5,14 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.database.ContentObserver
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
+import android.view.View
 import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -79,6 +84,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -92,6 +98,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -132,12 +139,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
-private enum class OnboardingTypingChoice {
+internal enum class OnboardingTypingChoice {
     ENGLISH_QWERTY,
     PINYIN_26,
     PINYIN_T9,
     DOUBLE_FLYPY,
     CODETABLE
+}
+
+internal enum class OnboardingStage {
+    ENABLE_SWITCH,
+    TYPING_SCHEME,
+    PINYIN_DICT_PACKS,
+    VOICE_AI_ROUTE,
+    LIVE_TRIAL
 }
 
 private enum class OnboardingVoiceRoute {
@@ -180,6 +195,340 @@ object OnboardingProviderOrderHelper {
         val lang = locale.language.lowercase(Locale.US)
         val country = locale.country.uppercase(Locale.US)
         return lang == "zh" && (country == "CN" || country.isEmpty())
+    }
+}
+
+/**
+ * Coordinates zero-layout-shift hidden EditText focus acquisition before calling
+ * [InputMethodManager.showInputMethodPicker] so ROMs such as vivo OriginOS 5/6
+ * (Android 15/16) accept our window as an active `FOCUS_INPUT` target after
+ * returning from System Settings or tapping the manual switch button.
+ */
+object ImePickerFocusCoordinator {
+    const val AUTO_TRIGGER_SETTLE_DELAY_MS = 320L
+    const val FOCUS_HANDSHAKE_DELAY_MS = 80L
+    const val DEDUPE_COOLDOWN_MS = 500L
+
+    data class GateState(
+        val currentStep: Int,
+        val autoTriggerPending: Boolean,
+        val isWindowFocused: Boolean,
+        val isResumed: Boolean,
+        val isImeEnabled: Boolean,
+        val isImeSelected: Boolean
+    )
+
+    enum class DispatchOutcome {
+        DISPATCHED_WITH_FOCUS_HANDSHAKE,
+        DISPATCHED_FALLBACK_DIRECT,
+        BLOCKED_BY_GATE,
+        DEDUPLICATED
+    }
+
+    interface FocusAnchor {
+        val isAttached: Boolean
+            get() = true
+
+        fun requestFocus(): Boolean
+        fun postDelayed(delayMs: Long, action: () -> Unit): Boolean
+    }
+
+    fun shouldMountHiddenFocusAnchor(currentStep: Int, isImeSelected: Boolean): Boolean {
+        return currentStep == 0 && !isImeSelected
+    }
+
+    fun canAutoTrigger(state: GateState): Boolean {
+        return state.currentStep == 0 &&
+            state.autoTriggerPending &&
+            state.isWindowFocused &&
+            state.isResumed &&
+            state.isImeEnabled &&
+            !state.isImeSelected
+    }
+
+    fun canManualTrigger(
+        currentStep: Int,
+        isImeEnabled: Boolean,
+        isImeSelected: Boolean
+    ): Boolean {
+        return currentStep == 0 && isImeEnabled && !isImeSelected
+    }
+
+    class Session(
+        val settleDelayMs: Long = AUTO_TRIGGER_SETTLE_DELAY_MS,
+        val focusHandshakeDelayMs: Long = FOCUS_HANDSHAKE_DELAY_MS,
+        val dedupeCooldownMs: Long = DEDUPE_COOLDOWN_MS,
+        private val clockMs: () -> Long = { System.nanoTime() / 1_000_000L }
+    ) {
+        private var hasDispatchedOnce: Boolean = false
+        private var lastDispatchAtMs: Long = 0L
+        private var handshakeInFlight: Boolean = false
+
+        val isHandshakeInFlight: Boolean
+            get() = handshakeInFlight
+
+        suspend fun runAutoTriggerWhenSettled(
+            initialState: GateState,
+            recheckState: () -> GateState,
+            onConsumePending: () -> Unit,
+            anchorProvider: () -> FocusAnchor?,
+            shouldStillShowPicker: () -> Boolean = { true },
+            showPicker: () -> Unit,
+            delayFn: suspend (Long) -> Unit = { delay(it) }
+        ): DispatchOutcome {
+            if (!canAutoTrigger(initialState)) {
+                if (initialState.autoTriggerPending && (initialState.isImeSelected || initialState.currentStep != 0)) {
+                    onConsumePending()
+                }
+                return DispatchOutcome.BLOCKED_BY_GATE
+            }
+
+            delayFn(settleDelayMs)
+
+            val settledState = recheckState()
+            if (!canAutoTrigger(settledState)) {
+                if (settledState.autoTriggerPending && (settledState.isImeSelected || settledState.currentStep != 0)) {
+                    onConsumePending()
+                }
+                return DispatchOutcome.BLOCKED_BY_GATE
+            }
+
+            onConsumePending()
+            return dispatchFocusHandshake(
+                anchor = anchorProvider(),
+                shouldStillShowPicker = shouldStillShowPicker,
+                showPicker = showPicker
+            )
+        }
+
+        fun triggerManual(
+            currentStep: Int,
+            isImeEnabled: Boolean,
+            isImeSelected: Boolean,
+            onClearPendingAuto: () -> Unit = {},
+            anchor: FocusAnchor?,
+            shouldStillShowPicker: () -> Boolean = { true },
+            showPicker: () -> Unit
+        ): DispatchOutcome {
+            if (!canManualTrigger(currentStep = currentStep, isImeEnabled = isImeEnabled, isImeSelected = isImeSelected)) {
+                return DispatchOutcome.BLOCKED_BY_GATE
+            }
+            onClearPendingAuto()
+            return dispatchFocusHandshake(
+                anchor = anchor,
+                shouldStillShowPicker = shouldStillShowPicker,
+                showPicker = showPicker
+            )
+        }
+
+        fun dispatchFocusHandshake(
+            anchor: FocusAnchor?,
+            shouldStillShowPicker: () -> Boolean = { true },
+            showPicker: () -> Unit
+        ): DispatchOutcome {
+            val now = clockMs()
+            val inFlightSafetyExpiryMs = maxOf(dedupeCooldownMs, focusHandshakeDelayMs * 4L)
+            if (handshakeInFlight) {
+                val inFlightElapsed = now - lastDispatchAtMs
+                if (inFlightElapsed in 0 until inFlightSafetyExpiryMs) {
+                    return DispatchOutcome.DEDUPLICATED
+                }
+                handshakeInFlight = false
+            }
+            if (hasDispatchedOnce) {
+                val elapsed = now - lastDispatchAtMs
+                if (elapsed in 0 until dedupeCooldownMs) {
+                    return DispatchOutcome.DEDUPLICATED
+                }
+            }
+
+            hasDispatchedOnce = true
+            lastDispatchAtMs = now
+
+            if (anchor == null || !anchor.isAttached) {
+                if (shouldStillShowPicker()) {
+                    showPicker()
+                }
+                return DispatchOutcome.DISPATCHED_FALLBACK_DIRECT
+            }
+
+            val focusedImmediately = anchor.requestFocus()
+            handshakeInFlight = true
+            val posted = anchor.postDelayed(focusHandshakeDelayMs) {
+                handshakeInFlight = false
+                if (!shouldStillShowPicker()) return@postDelayed
+                if (!focusedImmediately && anchor.isAttached) {
+                    anchor.requestFocus()
+                }
+                showPicker()
+            }
+            if (!posted) {
+                handshakeInFlight = false
+                if (shouldStillShowPicker()) {
+                    showPicker()
+                }
+                return DispatchOutcome.DISPATCHED_FALLBACK_DIRECT
+            }
+            return DispatchOutcome.DISPATCHED_WITH_FOCUS_HANDSHAKE
+        }
+    }
+}
+
+internal object OnboardingStep1FallbackHelper {
+    data class OpenImeSettingsPlan(
+        val armForegroundEnableWatcher: Boolean,
+        val armAutoPickerOnReturn: Boolean
+    )
+
+    fun resolveOpenImeSettingsPlan(isImeEnabled: Boolean): OpenImeSettingsPlan {
+        return if (!isImeEnabled) {
+            OpenImeSettingsPlan(
+                armForegroundEnableWatcher = true,
+                armAutoPickerOnReturn = true
+            )
+        } else {
+            OpenImeSettingsPlan(
+                armForegroundEnableWatcher = false,
+                armAutoPickerOnReturn = false
+            )
+        }
+    }
+
+    fun shouldShowStep1FallbackRow(isImeEnabled: Boolean, isImeSelected: Boolean): Boolean {
+        return isImeEnabled && !isImeSelected
+    }
+
+    fun switchInSettingsFallbackLabel(lang: AppLang): String = AppStrings.pick(
+        lang,
+        "未弹出菜单？去系统设置切换 ›",
+        "Menu didn't appear? Switch in Settings ›",
+        "未彈出選單？去系統設定切換 ›"
+    )
+
+    fun skipForNowFallbackLabel(lang: AppLang): String = AppStrings.pick(
+        lang,
+        "稍后切换，先进入应用 ›",
+        "Skip for now ›",
+        "稍後切換，先進入應用 ›"
+    )
+}
+
+internal object OnboardingPinyinDictFlowHelper {
+    const val PACK_RIME_ICE_FULL = "rime_ice_full"
+    const val PACK_TENCENT_VEC = "tencent_vec"
+    const val PACK_GRAM_BGC = "zh-hans-t-essay-bgc-compact"
+    const val PACK_GRAM_BGW = "zh-hans-t-essay-bgw-compact"
+
+    data class PackOptionSpec(
+        val id: String,
+        val isGrammarGroup: Boolean,
+        val sizeMb: Double,
+        val defaultChecked: Boolean
+    )
+
+    data class EnqueuePlan(
+        val downloadFullRimeIce: Boolean,
+        val downloadTencentVec: Boolean,
+        val grammarModelId: String?
+    ) {
+        val hasAnyTask: Boolean
+            get() = downloadFullRimeIce || downloadTencentVec || !grammarModelId.isNullOrBlank()
+    }
+
+    val PACK_SPECS: List<PackOptionSpec> = listOf(
+        PackOptionSpec(id = PACK_RIME_ICE_FULL, isGrammarGroup = false, sizeMb = 15.7, defaultChecked = true),
+        PackOptionSpec(id = PACK_TENCENT_VEC, isGrammarGroup = false, sizeMb = 17.3, defaultChecked = false),
+        PackOptionSpec(id = PACK_GRAM_BGC, isGrammarGroup = true, sizeMb = 10.0, defaultChecked = true),
+        PackOptionSpec(id = PACK_GRAM_BGW, isGrammarGroup = true, sizeMb = 39.0, defaultChecked = false)
+    )
+
+    private val GRAMMAR_PACK_IDS: Set<String> = PACK_SPECS.filter { it.isGrammarGroup }.map { it.id }.toSet()
+
+    fun isPinyinChoice(choice: OnboardingTypingChoice): Boolean {
+        return choice == OnboardingTypingChoice.PINYIN_26 ||
+            choice == OnboardingTypingChoice.PINYIN_T9 ||
+            choice == OnboardingTypingChoice.DOUBLE_FLYPY
+    }
+
+    fun totalSteps(choice: OnboardingTypingChoice): Int {
+        return if (isPinyinChoice(choice)) 5 else 4
+    }
+
+    fun resolveStage(step: Int, choice: OnboardingTypingChoice): OnboardingStage {
+        val hasDictStep = isPinyinChoice(choice)
+        val clamped = step.coerceIn(0, totalSteps(choice) - 1)
+        return if (hasDictStep) {
+            when (clamped) {
+                0 -> OnboardingStage.ENABLE_SWITCH
+                1 -> OnboardingStage.TYPING_SCHEME
+                2 -> OnboardingStage.PINYIN_DICT_PACKS
+                3 -> OnboardingStage.VOICE_AI_ROUTE
+                else -> OnboardingStage.LIVE_TRIAL
+            }
+        } else {
+            when (clamped) {
+                0 -> OnboardingStage.ENABLE_SWITCH
+                1 -> OnboardingStage.TYPING_SCHEME
+                2 -> OnboardingStage.VOICE_AI_ROUTE
+                else -> OnboardingStage.LIVE_TRIAL
+            }
+        }
+    }
+
+    fun stepIndexForStage(stage: OnboardingStage, choice: OnboardingTypingChoice): Int {
+        val hasDictStep = isPinyinChoice(choice)
+        return when (stage) {
+            OnboardingStage.ENABLE_SWITCH -> 0
+            OnboardingStage.TYPING_SCHEME -> 1
+            OnboardingStage.PINYIN_DICT_PACKS -> if (hasDictStep) 2 else 1
+            OnboardingStage.VOICE_AI_ROUTE -> if (hasDictStep) 3 else 2
+            OnboardingStage.LIVE_TRIAL -> if (hasDictStep) 4 else 3
+        }
+    }
+
+    fun defaultSelectedIds(
+        hasFullRimeIce: Boolean = false,
+        hasTencentVec: Boolean = false,
+        installedGrammarId: String? = null
+    ): Set<String> {
+        val out = LinkedHashSet<String>()
+        if (!hasFullRimeIce) {
+            out.add(PACK_RIME_ICE_FULL)
+        }
+        if (installedGrammarId.isNullOrBlank()) {
+            out.add(PACK_GRAM_BGC)
+        }
+        if (hasTencentVec) {
+            out.remove(PACK_TENCENT_VEC)
+        }
+        return out
+    }
+
+    fun togglePack(currentSelected: Set<String>, packId: String): Set<String> {
+        val spec = PACK_SPECS.firstOrNull { it.id == packId } ?: return currentSelected
+        val next = LinkedHashSet(currentSelected)
+        if (packId in next) {
+            next.remove(packId)
+        } else {
+            if (spec.isGrammarGroup) {
+                next.removeAll(GRAMMAR_PACK_IDS)
+            }
+            next.add(packId)
+        }
+        return next
+    }
+
+    fun totalSelectedMb(selectedIds: Set<String>): Double {
+        return PACK_SPECS.filter { it.id in selectedIds }.sumOf { it.sizeMb }
+    }
+
+    fun buildEnqueuePlan(selectedIds: Set<String>): EnqueuePlan {
+        val gram = PACK_SPECS.firstOrNull { it.isGrammarGroup && it.id in selectedIds }?.id
+        return EnqueuePlan(
+            downloadFullRimeIce = PACK_RIME_ICE_FULL in selectedIds,
+            downloadTencentVec = PACK_TENCENT_VEC in selectedIds,
+            grammarModelId = gram
+        )
     }
 }
 
@@ -296,6 +645,17 @@ fun OnboardingFlowScreen(
         }
     }
 
+    var isLifecycleResumed by remember(lifecycleOwner) {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
+    var hiddenPickerEditText by remember { mutableStateOf<EditText?>(null) }
+    val pickerCoordinatorSession = remember { ImePickerFocusCoordinator.Session() }
+
+    fun showSystemImePicker() {
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.showInputMethodPicker()
+    }
+
     fun refreshSystemImeStatus() {
         isImeEnabled = isSystemImeEnabled(context)
         isImeSelected = isSystemImeSelected(context)
@@ -303,26 +663,75 @@ fun OnboardingFlowScreen(
     }
 
     DisposableEffect(lifecycleOwner, context) {
-        val observer = LifecycleEventObserver { _, event ->
+        isLifecycleResumed = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        val observer = LifecycleEventObserver { owner, event ->
+            isLifecycleResumed = owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
             if (event == Lifecycle.Event.ON_RESUME) {
                 refreshSystemImeStatus()
                 waitingForSystemImeEnable = false
             }
         }
+        val defaultImeObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                refreshSystemImeStatus()
+            }
+        }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        runCatching {
+            context.contentResolver.registerContentObserver(
+                Settings.Secure.getUriFor(Settings.Secure.DEFAULT_INPUT_METHOD),
+                false,
+                defaultImeObserver
+            )
+        }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            runCatching {
+                context.contentResolver.unregisterContentObserver(defaultImeObserver)
+            }
+        }
     }
 
     LaunchedEffect(windowInfo.isWindowFocused) {
         if (windowInfo.isWindowFocused) {
             refreshSystemImeStatus()
-            if (currentStep == 0 && autoTriggerPickerPending && isImeEnabled && !isImeSelected) {
-                autoTriggerPickerPending = false
-                delay(250L)
-                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-                imm?.showInputMethodPicker()
-            }
         }
+    }
+
+    LaunchedEffect(
+        currentStep,
+        autoTriggerPickerPending,
+        windowInfo.isWindowFocused,
+        isLifecycleResumed,
+        isImeEnabled,
+        isImeSelected
+    ) {
+        val initialGate = ImePickerFocusCoordinator.GateState(
+            currentStep = currentStep,
+            autoTriggerPending = autoTriggerPickerPending,
+            isWindowFocused = windowInfo.isWindowFocused,
+            isResumed = isLifecycleResumed && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),
+            isImeEnabled = isImeEnabled,
+            isImeSelected = isImeSelected
+        )
+        pickerCoordinatorSession.runAutoTriggerWhenSettled(
+            initialState = initialGate,
+            recheckState = {
+                refreshSystemImeStatus()
+                ImePickerFocusCoordinator.GateState(
+                    currentStep = currentStep,
+                    autoTriggerPending = autoTriggerPickerPending,
+                    isWindowFocused = windowInfo.isWindowFocused,
+                    isResumed = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),
+                    isImeEnabled = isSystemImeEnabled(context),
+                    isImeSelected = isSystemImeSelected(context)
+                )
+            },
+            onConsumePending = { autoTriggerPickerPending = false },
+            anchorProvider = { hiddenPickerEditText?.asImePickerFocusAnchor() },
+            shouldStillShowPicker = { currentStep == 0 && !isSystemImeSelected(context) },
+            showPicker = { showSystemImePicker() }
+        )
     }
 
     // Active 300ms foreground watcher while user is inside System Input Method Settings
@@ -378,8 +787,30 @@ fun OnboardingFlowScreen(
         onCompleteOnboarding()
     }
 
+    var selectedPinyinPackIdsList by rememberSaveable {
+        mutableStateOf(
+            OnboardingPinyinDictFlowHelper.defaultSelectedIds(
+                hasFullRimeIce = rimeDataManager.hasFullRimeIceDictionary(),
+                hasTencentVec = rimeDataManager.hasTencentRimeIceDictionary(),
+                installedGrammarId = rimeDataManager.installedGrammarModelId()
+            ).toList()
+        )
+    }
+    val selectedPinyinPackIds = remember(selectedPinyinPackIdsList) { selectedPinyinPackIdsList.toSet() }
+    var selectedDoublePinyinLayoutName by rememberSaveable {
+        mutableStateOf(settings.doublePinyinLayout.name)
+    }
+    val selectedDoublePinyinLayout = remember(selectedDoublePinyinLayoutName) {
+        runCatching { com.typefree.ime.data.DoublePinyinLayout.valueOf(selectedDoublePinyinLayoutName) }
+            .getOrDefault(com.typefree.ime.data.DoublePinyinLayout.FLYPY)
+    }
+
+    val totalSteps = OnboardingPinyinDictFlowHelper.totalSteps(selectedTypingChoice)
+    val safeStep = currentStep.coerceIn(0, totalSteps - 1)
+    val activeStage = OnboardingPinyinDictFlowHelper.resolveStage(safeStep, selectedTypingChoice)
+
     val stepProgress by animateFloatAsState(
-        targetValue = (currentStep + 1) / 4f,
+        targetValue = (safeStep + 1).toFloat() / totalSteps.toFloat(),
         animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
         label = "onboardingProgress"
     )
@@ -389,6 +820,28 @@ fun OnboardingFlowScreen(
         color = MaterialTheme.colorScheme.background,
         contentColor = MaterialTheme.colorScheme.onBackground
     ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+    if (ImePickerFocusCoordinator.shouldMountHiddenFocusAnchor(currentStep, isImeSelected)) {
+        DisposableEffect(Unit) {
+            onDispose {
+                hiddenPickerEditText = null
+            }
+        }
+        AndroidView(
+            modifier = Modifier
+                .size(1.dp)
+                .alpha(0f),
+            factory = { viewContext ->
+                EditText(viewContext).apply {
+                    configureHiddenImePickerEditText(this)
+                    hiddenPickerEditText = this
+                }
+            },
+            update = { editText ->
+                hiddenPickerEditText = editText
+            }
+        )
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -411,9 +864,9 @@ fun OnboardingFlowScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    if (currentStep > 0) {
+                    if (safeStep > 0) {
                         TextButton(
-                            onClick = { currentStep = (currentStep - 1).coerceAtLeast(0) },
+                            onClick = { currentStep = (safeStep - 1).coerceAtLeast(0) },
                             contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                         ) {
                             Icon(
@@ -450,7 +903,7 @@ fun OnboardingFlowScreen(
                         color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Text(
-                            text = "${currentStep + 1} / 4",
+                            text = "${safeStep + 1} / $totalSteps",
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -459,13 +912,33 @@ fun OnboardingFlowScreen(
                     }
                 }
 
-                when (currentStep) {
-                    2 -> {
+                when (activeStage) {
+                    OnboardingStage.PINYIN_DICT_PACKS -> {
+                        TextButton(
+                            onClick = {
+                                currentStep = OnboardingPinyinDictFlowHelper.stepIndexForStage(
+                                    OnboardingStage.VOICE_AI_ROUTE,
+                                    selectedTypingChoice
+                                )
+                            },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = tr("先用内置词库 ›", "Built-in Only ›", "先用內建詞庫 ›"),
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                    OnboardingStage.VOICE_AI_ROUTE -> {
                         TextButton(
                             onClick = {
                                 repository.updateSettings { it.copy(lastKeyboardTab = "QWERTY") }
                                 step3Result = OnboardingStep3Result.SKIPPED_TYPING_ONLY
-                                currentStep = 3
+                                currentStep = OnboardingPinyinDictFlowHelper.stepIndexForStage(
+                                    OnboardingStage.LIVE_TRIAL,
+                                    selectedTypingChoice
+                                )
                             },
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                         ) {
@@ -476,7 +949,7 @@ fun OnboardingFlowScreen(
                             )
                         }
                     }
-                    3 -> {
+                    OnboardingStage.LIVE_TRIAL -> {
                         Button(
                             onClick = { finishOnboarding() },
                             shape = RoundedCornerShape(12.dp),
@@ -489,6 +962,7 @@ fun OnboardingFlowScreen(
                             )
                         }
                     }
+                    else -> Unit
                 }
             }
 
@@ -505,7 +979,7 @@ fun OnboardingFlowScreen(
 
         // Animated Step Content
         AnimatedContent(
-            targetState = currentStep,
+            targetState = safeStep,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
@@ -525,26 +999,46 @@ fun OnboardingFlowScreen(
             },
             label = "onboardingStepTransition"
         ) { step ->
-            when (step) {
-                0 -> OnboardingStep1EnableAndSwitch(
+            when (OnboardingPinyinDictFlowHelper.resolveStage(step, selectedTypingChoice)) {
+                OnboardingStage.ENABLE_SWITCH -> OnboardingStep1EnableAndSwitch(
                     isImeEnabled = isImeEnabled,
                     isImeSelected = isImeSelected,
                     privacyFooterSlot = privacyFooterSlot,
                     onOpenSystemImeSettings = {
-                        waitingForSystemImeEnable = true
-                        autoTriggerPickerPending = true
+                        val currentlyEnabled = isSystemImeEnabled(context)
+                        isImeEnabled = currentlyEnabled
+                        val plan = OnboardingStep1FallbackHelper.resolveOpenImeSettingsPlan(currentlyEnabled)
+                        waitingForSystemImeEnable = plan.armForegroundEnableWatcher
+                        autoTriggerPickerPending = plan.armAutoPickerOnReturn
                         openImeSettings(context)
                     },
                     onShowImePicker = {
-                        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-                        imm?.showInputMethodPicker()
+                        refreshSystemImeStatus()
+                        pickerCoordinatorSession.triggerManual(
+                            currentStep = currentStep,
+                            isImeEnabled = isSystemImeEnabled(context),
+                            isImeSelected = isSystemImeSelected(context),
+                            onClearPendingAuto = { autoTriggerPickerPending = false },
+                            anchor = hiddenPickerEditText?.asImePickerFocusAnchor(),
+                            shouldStillShowPicker = { currentStep == 0 && !isSystemImeSelected(context) },
+                            showPicker = { showSystemImePicker() }
+                        )
                     },
-                    onManualNext = { currentStep = 1 }
+                    onManualNext = {
+                        waitingForSystemImeEnable = false
+                        autoTriggerPickerPending = false
+                        currentStep = 1
+                    }
                 )
 
-                1 -> OnboardingStep2TypingScheme(
+                OnboardingStage.TYPING_SCHEME -> OnboardingStep2TypingScheme(
                     selectedChoice = selectedTypingChoice,
                     onSelectChoice = { selectedTypingChoice = it },
+                    selectedDoublePinyinLayout = selectedDoublePinyinLayout,
+                    onSelectDoublePinyinLayout = { layout ->
+                        selectedDoublePinyinLayoutName = layout.name
+                        selectedTypingChoice = OnboardingTypingChoice.DOUBLE_FLYPY
+                    },
                     presets = orderedPresets,
                     selectedPresetId = selectedPresetId,
                     importedZipLabel = customZipImportedLabel,
@@ -570,7 +1064,12 @@ fun OnboardingFlowScreen(
                                     }
                                     OnboardingTypingChoice.PINYIN_26 -> applyBuiltinScheme(repository, rimeDataManager, InputScheme.RIME_PINYIN)
                                     OnboardingTypingChoice.PINYIN_T9 -> applyBuiltinScheme(repository, rimeDataManager, InputScheme.RIME_T9_PINYIN)
-                                    OnboardingTypingChoice.DOUBLE_FLYPY -> applyBuiltinScheme(repository, rimeDataManager, InputScheme.RIME_DOUBLE_PINYIN_FLYPY)
+                                    OnboardingTypingChoice.DOUBLE_FLYPY -> applyBuiltinScheme(
+                                        repository = repository,
+                                        rimeDataManager = rimeDataManager,
+                                        scheme = InputScheme.RIME_DOUBLE_PINYIN_FLYPY,
+                                        doublePinyinLayout = selectedDoublePinyinLayout
+                                    )
                                     OnboardingTypingChoice.CODETABLE -> {
                                         if (selectedPresetId != "__imported_zip__") {
                                             val preset = orderedPresets.firstOrNull { it.id == selectedPresetId }
@@ -604,7 +1103,43 @@ fun OnboardingFlowScreen(
                     }
                 )
 
-                2 -> OnboardingStep3VoiceAndAiRoute(
+                OnboardingStage.PINYIN_DICT_PACKS -> OnboardingStepPinyinDictPacks(
+                    selectedIds = selectedPinyinPackIds,
+                    hasFullRimeIceInstalled = rimeDataManager.hasFullRimeIceDictionary(),
+                    hasTencentVecInstalled = rimeDataManager.hasTencentRimeIceDictionary(),
+                    installedGrammarId = rimeDataManager.installedGrammarModelId(),
+                    onTogglePack = { packId ->
+                        selectedPinyinPackIdsList = OnboardingPinyinDictFlowHelper
+                            .togglePack(selectedPinyinPackIds, packId)
+                            .toList()
+                    },
+                    onConfirmAndContinue = {
+                        val plan = OnboardingPinyinDictFlowHelper.buildEnqueuePlan(selectedPinyinPackIds)
+                        if (plan.hasAnyTask) {
+                            rimeDataManager.enqueueOnboardingPinyinPacksAsync(
+                                downloadFullRimeIce = plan.downloadFullRimeIce,
+                                downloadTencentVec = plan.downloadTencentVec,
+                                grammarModelId = plan.grammarModelId
+                            )
+                            Toast.makeText(
+                                context,
+                                AppStrings.pick(
+                                    appLang,
+                                    "✓ 已加入后台加速下载队列，下载期间可正常打字",
+                                    "✓ Queued in background — built-in dictionary works immediately",
+                                    "✓ 已加入背景加速下載佇列，下載期間可正常打字"
+                                ),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                        currentStep = OnboardingPinyinDictFlowHelper.stepIndexForStage(
+                            OnboardingStage.VOICE_AI_ROUTE,
+                            selectedTypingChoice
+                        )
+                    }
+                )
+
+                OnboardingStage.VOICE_AI_ROUTE -> OnboardingStep3VoiceAndAiRoute(
                     selectedRoute = selectedVoiceRoute,
                     onSelectRoute = {
                         selectedVoiceRoute = it
@@ -683,7 +1218,10 @@ fun OnboardingFlowScreen(
                             } else {
                                 OnboardingStep3Result.OFFLINE_DOWNLOADING
                             }
-                            currentStep = 3
+                            currentStep = OnboardingPinyinDictFlowHelper.stepIndexForStage(
+                                OnboardingStage.LIVE_TRIAL,
+                                selectedTypingChoice
+                            )
                         }
 
                         if (hasMicRecordPermission(context)) {
@@ -761,7 +1299,10 @@ fun OnboardingFlowScreen(
                                     )
                                 }
                                 step3Result = OnboardingStep3Result.VOICE_READY
-                                currentStep = 3
+                                currentStep = OnboardingPinyinDictFlowHelper.stepIndexForStage(
+                                    OnboardingStage.LIVE_TRIAL,
+                                    selectedTypingChoice
+                                )
                             }
 
                             if (hasMicRecordPermission(context)) {
@@ -788,6 +1329,7 @@ fun OnboardingFlowScreen(
         }
     }
     }
+    }
 
     if (showKeyGuideDialog) {
         ApiKeyQuickGuideDialog(
@@ -800,11 +1342,13 @@ fun OnboardingFlowScreen(
 private suspend fun applyBuiltinScheme(
     repository: AppRepository,
     rimeDataManager: com.typefree.ime.ime.engine.RimeDataManager,
-    scheme: InputScheme
+    scheme: InputScheme,
+    doublePinyinLayout: com.typefree.ime.data.DoublePinyinLayout = repository.settings.value.doublePinyinLayout
 ) {
     repository.updateSettings {
         it.copy(
             inputScheme = scheme,
+            doublePinyinLayout = doublePinyinLayout,
             flypyEnabled = true,
             lastQwertyIsChinese = true
         )
@@ -814,11 +1358,12 @@ private suspend fun applyBuiltinScheme(
             if (rimeDataManager.isSchemeHandledByEnhancedEngine(scheme)) {
                 rimeDataManager.activateEnhancedSchemeSync(scheme)
             }
-            TypeFreeApp.instance.rimeInputEngine.setInputScheme(scheme)
+            TypeFreeApp.instance.rimeInputEngine.setInputScheme(scheme, doublePinyinLayout)
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun OnboardingStep1EnableAndSwitch(
     isImeEnabled: Boolean,
@@ -828,6 +1373,7 @@ private fun OnboardingStep1EnableAndSwitch(
     onShowImePicker: () -> Unit,
     onManualNext: () -> Unit
 ) {
+    val appLang = LocalAppLanguage.current
     val toggleTrackColor by animateColorAsState(
         targetValue = if (isImeEnabled) TypeFreeEmerald else MaterialTheme.colorScheme.primary,
         label = "imeDemoToggleColor"
@@ -1024,6 +1570,45 @@ private fun OnboardingStep1EnableAndSwitch(
                             fontWeight = FontWeight.Bold
                         )
                     }
+
+                    if (OnboardingStep1FallbackHelper.shouldShowStep1FallbackRow(
+                            isImeEnabled = isImeEnabled,
+                            isImeSelected = isImeSelected
+                        )
+                    ) {
+                        FlowRow(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 2.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = OnboardingStep1FallbackHelper.switchInSettingsFallbackLabel(appLang),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(onClick = onOpenSystemImeSettings)
+                                    .padding(horizontal = 6.dp, vertical = 5.dp)
+                            )
+                            Text(
+                                text = "|",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.55f),
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 5.dp)
+                            )
+                            Text(
+                                text = OnboardingStep1FallbackHelper.skipForNowFallbackLabel(appLang),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(onClick = onManualNext)
+                                    .padding(horizontal = 6.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
                 }
                 else -> {
                     Button(
@@ -1056,6 +1641,8 @@ private fun OnboardingStep1EnableAndSwitch(
 private fun OnboardingStep2TypingScheme(
     selectedChoice: OnboardingTypingChoice,
     onSelectChoice: (OnboardingTypingChoice) -> Unit,
+    selectedDoublePinyinLayout: com.typefree.ime.data.DoublePinyinLayout = com.typefree.ime.data.DoublePinyinLayout.FLYPY,
+    onSelectDoublePinyinLayout: (com.typefree.ime.data.DoublePinyinLayout) -> Unit = {},
     presets: List<PresetSchemaCatalog.PresetSchemaInfo>,
     selectedPresetId: String,
     importedZipLabel: String?,
@@ -1204,16 +1791,92 @@ private fun OnboardingStep2TypingScheme(
                 onClick = { onSelectChoice(OnboardingTypingChoice.DOUBLE_FLYPY) },
                 headerContent = {
                     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = tr("双拼输入", "Double Pinyin (Shuangpin)", "雙拼輸入"),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Surface(
+                                shape = CircleShape,
+                                color = if (selectedChoice == OnboardingTypingChoice.DOUBLE_FLYPY) {
+                                    TypeFreeEmerald.copy(alpha = 0.15f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                }
+                            ) {
+                                Text(
+                                    text = AppStrings.doublePinyinLayoutShortLabel(selectedDoublePinyinLayout, appLang),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (selectedChoice == OnboardingTypingChoice.DOUBLE_FLYPY) {
+                                        TypeFreeEmerald
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
                         Text(
-                            text = tr("小鹤双拼", "Double Pinyin (Flypy Shuangpin)", "小鶴雙拼"),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = tr("两键一字 · 延续双拼肌肉记忆", "2-stroke Chinese syllable input for Shuangpin users", "兩鍵一字 · 延續雙拼肌肉記憶"),
+                            text = tr("两键一字 · 内置小鹤 / 自然码 / 微软 / 搜狗 / 智能ABC / 紫光", "6 mainstream 2-stroke Chinese Shuangpin layouts built in", "兩鍵一字 · 內建小鶴 / 自然碼 / 微軟 / 搜狗 / 智慧ABC / 紫光"),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                },
+                expandedContent = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            com.typefree.ime.data.DoublePinyinLayout.entries.forEach { layout ->
+                                val isChosen = selectedDoublePinyinLayout == layout
+                                val chipLabel = if (layout == com.typefree.ime.data.DoublePinyinLayout.FLYPY) {
+                                    tr("小鹤双拼（默认）", "Flypy (Default)", "小鶴雙拼（預設）")
+                                } else {
+                                    AppStrings.doublePinyinLayoutLabel(layout, appLang)
+                                }
+                                FilterChip(
+                                    selected = isChosen,
+                                    onClick = { onSelectDoublePinyinLayout(layout) },
+                                    label = {
+                                        Text(
+                                            text = chipLabel,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = if (isChosen) FontWeight.Bold else FontWeight.Medium
+                                        )
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                )
+                            }
+                        }
+                        if (selectedDoublePinyinLayout.usesSemicolonKey) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = TypeFreeEmerald.copy(alpha = 0.11f)
+                            ) {
+                                Text(
+                                    text = tr(
+                                        "✓ 中文态自动在 L 右侧补出「;」分号键（27 键），切英文自动恢复标准 26 键",
+                                        "✓ Automatically adds ';' next to L in Chinese mode (27-key) and restores 26-key in English",
+                                        "✓ 中文態自動在 L 右側補出「;」分號鍵（27 鍵），切英文自動恢復標準 26 鍵"
+                                    ),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TypeFreeEmerald,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
                     }
                 }
             )
@@ -1323,6 +1986,246 @@ private fun OnboardingStep2TypingScheme(
                         fontWeight = FontWeight.Bold
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnboardingStepPinyinDictPacks(
+    selectedIds: Set<String>,
+    hasFullRimeIceInstalled: Boolean,
+    hasTencentVecInstalled: Boolean,
+    installedGrammarId: String?,
+    onTogglePack: (String) -> Unit,
+    onConfirmAndContinue: () -> Unit
+) {
+    data class PackCardItem(
+        val id: String,
+        val title: String,
+        val badge: String,
+        val subtitle: String,
+        val sizeMb: Double,
+        val alreadyInstalled: Boolean
+    )
+
+    val items = listOf(
+        PackCardItem(
+            id = OnboardingPinyinDictFlowHelper.PACK_RIME_ICE_FULL,
+            title = tr("完整雾凇大词库 (base + ext + others)", "Full Rime Ice Lexicon", "完整霧凇大詞庫 (base + ext + others)"),
+            badge = if (hasFullRimeIceInstalled) tr("已安装", "Installed", "已安裝") else tr("推荐", "Recommended", "推薦"),
+            subtitle = tr(
+                "扩充至 50 万+ 现代常用词、成语俗语与专有名词",
+                "Expands Pinyin vocabulary to 500k+ modern phrases, idioms, and proper nouns",
+                "擴充至 50 萬+ 現代常用詞、成語俗語與專有名詞"
+            ),
+            sizeMb = 15.7,
+            alreadyInstalled = hasFullRimeIceInstalled
+        ),
+        PackCardItem(
+            id = OnboardingPinyinDictFlowHelper.PACK_TENCENT_VEC,
+            title = tr("腾讯词向量扩展新词库", "Tencent Word-Vector Lexicon", "騰訊詞向量擴展新詞庫"),
+            badge = if (hasTencentVecInstalled) tr("已安装", "Installed", "已安裝") else tr("可选叠加", "Optional Add-on", "可選疊加"),
+            subtitle = tr(
+                "补充互联网流行热词、影视百科与长尾新词",
+                "Adds trending expressions, pop culture titles, and long-tail terms",
+                "補充網路流行熱詞、影視百科與長尾新詞"
+            ),
+            sizeMb = 17.3,
+            alreadyInstalled = hasTencentVecInstalled
+        ),
+        PackCardItem(
+            id = OnboardingPinyinDictFlowHelper.PACK_GRAM_BGC,
+            title = tr("八股文轻量整句语法模型", "Compact Octagram Language Model", "八股文輕量整句語法模型"),
+            badge = if (installedGrammarId == OnboardingPinyinDictFlowHelper.PACK_GRAM_BGC) {
+                tr("已安装", "Installed", "已安裝")
+            } else {
+                tr("推荐 · 极轻", "Recommended · Lite", "推薦 · 極輕")
+            },
+            subtitle = tr(
+                "大幅减少全拼/九键长句连打同音错字，极省内存",
+                "Improves full-sentence homophone disambiguation for 26-key & T9 Pinyin",
+                "大幅減少全拼/九鍵長句連打同音錯字，極省記憶體"
+            ),
+            sizeMb = 10.0,
+            alreadyInstalled = installedGrammarId == OnboardingPinyinDictFlowHelper.PACK_GRAM_BGC
+        ),
+        PackCardItem(
+            id = OnboardingPinyinDictFlowHelper.PACK_GRAM_BGW,
+            title = tr("八股文标准整句语法模型", "Standard Octagram Language Model", "八股文標準整句語法模型"),
+            badge = if (installedGrammarId == OnboardingPinyinDictFlowHelper.PACK_GRAM_BGW) {
+                tr("已安装", "Installed", "已安裝")
+            } else {
+                tr("进阶（与轻量二选一）", "Plus (replaces Lite)", "進階（與輕量二選一）")
+            },
+            subtitle = tr(
+                "覆盖更广的书面与日常上下文搭配纠偏",
+                "Broader context collocation coverage for long-form Chinese typing",
+                "覆蓋更廣的書面與日常上下文搭配糾偏"
+            ),
+            sizeMb = 39.0,
+            alreadyInstalled = installedGrammarId == OnboardingPinyinDictFlowHelper.PACK_GRAM_BGW
+        )
+    )
+
+    val effectiveSelected = selectedIds.filterNot { id ->
+        items.firstOrNull { it.id == id }?.alreadyInstalled == true
+    }.toSet()
+    val totalMb = OnboardingPinyinDictFlowHelper.totalSelectedMb(effectiveSelected)
+    val selectedCount = effectiveSelected.size
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = tr("扩展拼音词库与整句纠偏（可多选）", "Optional Pinyin Lexicon & Grammar Packs", "擴展拼音詞庫與整句糾偏（可多選）"),
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Text(
+                    text = tr(
+                        "✓ 已自带离线基础词库（免下载即可打字） · 勾选后走国内加速源后台下载，无需原地等待",
+                        "✓ Built-in Pinyin dictionary is already active offline · Selected packs download in the background",
+                        "✓ 已自帶離線基礎詞庫（免下載即可打字） · 勾選後走加速源背景下載，無需原地等待"
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TypeFreeEmerald,
+                    fontWeight = FontWeight.SemiBold,
+                    lineHeight = 19.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(2.dp))
+
+            items.forEach { item ->
+                val isChecked = item.alreadyInstalled || item.id in effectiveSelected
+                Surface(
+                    onClick = {
+                        if (!item.alreadyInstalled) {
+                            onTogglePack(item.id)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = ContinuousRoundedCornerShape(18.dp),
+                    color = if (isChecked) {
+                        TypeFreeEmerald.copy(alpha = 0.08f)
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    },
+                    border = BorderStroke(
+                        width = if (isChecked) 1.4.dp else 1.dp,
+                        color = if (isChecked) TypeFreeEmerald else MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Checkbox(
+                            checked = isChecked,
+                            enabled = !item.alreadyInstalled,
+                            onCheckedChange = null,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f, fill = false),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = item.title,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = if (isChecked) {
+                                            TypeFreeEmerald.copy(alpha = 0.16f)
+                                        } else {
+                                            MaterialTheme.colorScheme.surfaceVariant
+                                        }
+                                    ) {
+                                        Text(
+                                            text = item.badge,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (isChecked) TypeFreeEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = "%.1f MB".format(Locale.US, item.sizeMb),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(start = 6.dp)
+                                )
+                            }
+                            Text(
+                                text = item.subtitle,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                lineHeight = 18.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 16.dp, bottom = 8.dp)
+        ) {
+            val formattedMb = "%.1f".format(Locale.US, totalMb)
+            Button(
+                onClick = onConfirmAndContinue,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape = ContinuousRoundedCornerShape(16.dp)
+            ) {
+                Text(
+                    text = if (selectedCount > 0) {
+                        tr(
+                            "后台加速下载已选 ($selectedCount 项 · 约 $formattedMb MB) 并继续",
+                            "Download in Background ($selectedCount · ~$formattedMb MB) & Next",
+                            "背景加速下載已選 ($selectedCount 項 · 約 $formattedMb MB) 並繼續"
+                        )
+                    } else {
+                        tr(
+                            "暂不下载，使用内置词库继续",
+                            "Continue with Built-in Dictionary",
+                            "暫不下載，使用內建詞庫繼續"
+                        )
+                    },
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
@@ -2014,5 +2917,37 @@ private fun openImeSettings(context: Context) {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
+    }
+}
+
+internal fun configureHiddenImePickerEditText(editText: EditText) {
+    editText.background = null
+    editText.setPadding(0, 0, 0, 0)
+    editText.minWidth = 0
+    editText.minHeight = 0
+    editText.minimumWidth = 0
+    editText.minimumHeight = 0
+    editText.alpha = 0f
+    editText.isCursorVisible = false
+    editText.isLongClickable = false
+    editText.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    editText.showSoftInputOnFocus = false
+    editText.isFocusable = true
+    editText.isFocusableInTouchMode = true
+}
+
+private fun EditText.asImePickerFocusAnchor(): ImePickerFocusCoordinator.FocusAnchor {
+    val editText = this
+    return object : ImePickerFocusCoordinator.FocusAnchor {
+        override val isAttached: Boolean
+            get() = editText.isAttachedToWindow
+
+        override fun requestFocus(): Boolean {
+            return editText.requestFocus()
+        }
+
+        override fun postDelayed(delayMs: Long, action: () -> Unit): Boolean {
+            return editText.postDelayed(action, delayMs)
+        }
     }
 }

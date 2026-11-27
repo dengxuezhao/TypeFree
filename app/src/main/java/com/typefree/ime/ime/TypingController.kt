@@ -47,6 +47,9 @@ interface ImeHostCallbacks {
     fun currentInputConnection(): InputConnection?
     fun performKeyFeedback(strong: Boolean = false)
     fun performHaptic(strong: Boolean = false)
+    fun performTieredHaptic(tier: HapticTier) {
+        performHaptic(strong = tier == HapticTier.MIC_STRONG || tier == HapticTier.GESTURE_CONFIRM)
+    }
     fun showQuickActionToast(message: String)
 
     fun commitDirectText(
@@ -58,6 +61,7 @@ interface ImeHostCallbacks {
 
     fun pushUndoSnapshot(snapshot: UndoSnapshot?)
     fun peekTopUndoSnapshot(): UndoSnapshot?
+    fun replaceTopUndoInsertedLength(prevInsertedLength: Int, newInsertedLength: Int) {}
     fun recordManualEditTouch()
     fun tryAutoLearnFromRecentEdit()
     fun onDictationCommittedForAutoLearn(fullBufferAfterCommit: String)
@@ -88,7 +92,8 @@ class TypingController(
     val staticPredictor: StaticPredictor = StaticPredictor(),
     aiSentenceCompleter: AiSentenceCompleter? = null,
     predictionIdleDismissMs: Long = PredictionCoordinator.IDLE_DISMISS_MS,
-    private val settingsOverride: (() -> AppSettings)? = null
+    private val settingsOverride: (() -> AppSettings)? = null,
+    private val clock: () -> Long = { System.currentTimeMillis() }
 ) {
     var isIncognitoMode: Boolean = false
         private set
@@ -126,6 +131,9 @@ class TypingController(
     private var lastCommitDuringDispatch: String = ""
     private var lastOptimisticBeforeCursor: String = ""
     private var lastOptimisticAtMs: Long = 0L
+    private var t9CycleActiveIndex: Int = -1
+    private var t9CycleLastCommittedSymbol: String = ""
+    private var t9CycleLastTapAtMs: Long = 0L
 
     val aiCompleter: AiSentenceCompleter = aiSentenceCompleter ?: AiSentenceCompleter(
         scope = host.scope,
@@ -235,6 +243,7 @@ class TypingController(
     }
 
     fun resetComposing() {
+        dismissT9QuickPunctuation()
         flypyInputEngine.clear()
         rimeInputEngine?.clear()
         codetableEnhancedEngine?.clear()
@@ -245,6 +254,7 @@ class TypingController(
     }
 
     fun clearComposing(): Boolean {
+        dismissT9QuickPunctuation()
         val wasComposing = isComposing
         if (!wasComposing) return false
         activeEngine.clear()
@@ -327,7 +337,9 @@ class TypingController(
         val code = engineState.rawCode
         val preedit = engineState.preedit.ifEmpty { code }
         val cands = engineState.candidates
-        val scheme = safeSettings().inputScheme
+        val settingsSnap = safeSettings()
+        val scheme = settingsSnap.inputScheme
+        val expandThreshold = KeyboardMetrics.expandButtonCandidateThreshold(settingsSnap.candidateFontScale)
         host.stateFlow.update { prev ->
             prev.copy(
                 flypyComposingCode = code,
@@ -339,12 +351,14 @@ class TypingController(
                 orqDateOffsetDays = engineState.orqDateOffsetDays,
                 activeInputScheme = scheme,
                 isRimeDeploying = scheme.usesRime && !isRimeReady && rimeInputEngine != null,
+                isT9QuickPunctuationOpen = if (engineState.isComposing) false else prev.isT9QuickPunctuationOpen,
+                activeT9CycleSymbol = if (engineState.isComposing) null else prev.activeT9CycleSymbol,
                 passiveMathResult = if (engineState.isComposing) null else prev.passiveMathResult,
                 passiveMathExpression = if (engineState.isComposing) null else prev.passiveMathExpression,
                 passiveMathEndsWithEquals = if (engineState.isComposing) false else prev.passiveMathEndsWithEquals,
                 englishSuggestions = if (engineState.isComposing) emptyList() else prev.englishSuggestions,
                 englishSuggestionReplaceLength = if (engineState.isComposing) 0 else prev.englishSuggestionReplaceLength,
-                isFlypyCandidateSheetExpanded = if (!engineState.isComposing || cands.size <= 4) {
+                isFlypyCandidateSheetExpanded = if (!engineState.isComposing || (cands.size <= expandThreshold && !engineState.hasMore)) {
                     false
                 } else {
                     prev.isFlypyCandidateSheetExpanded
@@ -670,7 +684,9 @@ class TypingController(
                 recordedPhraseBuffer = "",
                 recordedPhraseCode = null,
                 isToolPanelOpen = if (nextRecording) false else it.isToolPanelOpen,
-                isToolPanelHeightExpanded = if (nextRecording) false else it.isToolPanelHeightExpanded
+                isToolPanelHeightExpanded = if (nextRecording) false else it.isToolPanelHeightExpanded,
+                isToolPanelSchemeExpanded = if (nextRecording) false else it.isToolPanelSchemeExpanded,
+                isToolPanelDoublePinyinSubOpen = if (nextRecording) false else it.isToolPanelDoublePinyinSubOpen
             )
         }
         host.showQuickActionToast(
@@ -787,6 +803,7 @@ class TypingController(
     }
 
     fun toggleFlypyLanguageMode() {
+        dismissT9QuickPunctuation()
         host.performKeyFeedback(strong = true)
         val wasChinese = host.stateFlow.value.isFlypyChineseMode
         if (wasChinese && isComposing) {
@@ -839,7 +856,7 @@ class TypingController(
         }
         refreshEnglishAutoCapState()
         val toastText = if (nextChinese) {
-            "${AppStrings.inputSchemeShortBadge(scheme, lang)} · ${AppStrings.inputSchemeLabel(scheme, lang)}"
+            "${AppStrings.inputSchemeShortBadge(scheme, lang)} · ${AppStrings.inputSchemeLabel(scheme, lang, safeSettings().doublePinyinLayout)}"
         } else {
             AppStrings.pick(lang, "EN · 英文键盘", "EN · English Keyboard", "EN · 英文鍵盤")
         }
@@ -848,6 +865,7 @@ class TypingController(
 
     fun commitQwertyChar(ch: String) {
         if (ch.isEmpty()) return
+        dismissT9QuickPunctuation()
         predictionCoordinator.onUserKeyPressed()
         val curr = host.stateFlow.value
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode) {
@@ -901,6 +919,7 @@ class TypingController(
     }
 
     fun handleCommaOrPeriodKey(isComma: Boolean) {
+        dismissT9QuickPunctuation()
         predictionCoordinator.onUserKeyPressed()
         val curr = host.stateFlow.value
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode) {
@@ -948,12 +967,136 @@ class TypingController(
 
     fun selectT9Syllable(syllable: String) {
         if (syllable.isBlank()) return
+        dismissT9QuickPunctuation()
         val rime = rimeInputEngine as? com.typefree.ime.ime.engine.RimeInputEngine ?: return
         if (activeEngine !== rime) return
         predictionCoordinator.onUserKeyPressed()
         host.performKeyFeedback(strong = false)
         val result = rime.lockT9Syllable(syllable)
         handleEngineResult(result)
+    }
+
+    /**
+     * Handles tapping T9 Key `1 (，@)` when idle (`!isComposing`, `Issue #12`):
+     * - First tap commits `"，"` and opens the top-bar T9 quick punctuation strip (`，`, `。`, `@`, `？`, `！`, `、`, `：`, `；`).
+     * - Repeated taps within [ImeLogic.T9_KEY1_CYCLE_WINDOW_MS] (`1200ms`) cycle the just-committed symbol
+     *   in-place through `["，", "。", "@", "？", "！"]` (`1st -> ，`, `2nd -> 。`, `3rd -> @`).
+     */
+    fun handleT9Key1IdleTap() {
+        if (isComposing) {
+            commitQwertyChar("'")
+            return
+        }
+        val now = clock()
+        val curr = host.stateFlow.value
+        val cycleItems = ImeLogic.t9Key1CycleSymbols
+        val canCycle = curr.isT9QuickPunctuationOpen &&
+            t9CycleLastCommittedSymbol.isNotEmpty() &&
+            t9CycleActiveIndex in cycleItems.indices &&
+            (now - t9CycleLastTapAtMs) in 0L..ImeLogic.T9_KEY1_CYCLE_WINDOW_MS
+
+        if (canCycle) {
+            val prevSym = t9CycleLastCommittedSymbol
+            val nextIdx = (t9CycleActiveIndex + 1) % cycleItems.size
+            val nextSym = cycleItems[nextIdx]
+            replaceT9CyclePunctuationInEditor(prevSym = prevSym, nextSym = nextSym)
+            t9CycleActiveIndex = nextIdx
+            t9CycleLastCommittedSymbol = nextSym
+            t9CycleLastTapAtMs = now
+            host.stateFlow.update {
+                it.copy(
+                    isT9QuickPunctuationOpen = true,
+                    activeT9CycleSymbol = nextSym
+                )
+            }
+            return
+        }
+
+        val firstSym = cycleItems.first()
+        predictionCoordinator.onPunctuationCommitted()
+        host.commitDirectText(
+            text = firstSym,
+            recordUndo = true,
+            markManualEdit = true,
+            playFeedback = true
+        )
+        t9CycleActiveIndex = 0
+        t9CycleLastCommittedSymbol = firstSym
+        t9CycleLastTapAtMs = now
+        host.stateFlow.update {
+            it.copy(
+                isT9QuickPunctuationOpen = true,
+                activeT9CycleSymbol = firstSym
+            )
+        }
+    }
+
+    /**
+     * Tapping any symbol chip (such as `@`) in the top-bar T9 quick punctuation strip while open
+     * replaces the just-typed cycle symbol (e.g. `，` -> `@`) and closes the strip.
+     */
+    fun selectT9QuickPunctuation(symbol: String) {
+        if (symbol.isEmpty()) {
+            dismissT9QuickPunctuation()
+            return
+        }
+        val prevSym = t9CycleLastCommittedSymbol
+        dismissT9QuickPunctuation()
+        if (prevSym.isNotEmpty()) {
+            if (symbol == prevSym) {
+                host.performKeyFeedback(strong = false)
+            } else {
+                replaceT9CyclePunctuationInEditor(prevSym = prevSym, nextSym = symbol)
+            }
+        } else {
+            commitSecondarySymbol(symbol)
+        }
+    }
+
+    fun dismissT9QuickPunctuation(playFeedback: Boolean = false) {
+        if (playFeedback) {
+            host.performKeyFeedback(strong = false)
+        }
+        t9CycleActiveIndex = -1
+        t9CycleLastCommittedSymbol = ""
+        t9CycleLastTapAtMs = 0L
+        if (host.stateFlow.value.isT9QuickPunctuationOpen || host.stateFlow.value.activeT9CycleSymbol != null) {
+            host.stateFlow.update {
+                it.copy(
+                    isT9QuickPunctuationOpen = false,
+                    activeT9CycleSymbol = null
+                )
+            }
+        }
+    }
+
+    private fun replaceT9CyclePunctuationInEditor(prevSym: String, nextSym: String) {
+        host.performKeyFeedback(strong = false)
+        val ic = host.currentInputConnection()
+        if (ic != null) {
+            ic.beginBatchEdit()
+            val before = runCatching {
+                ic.getTextBeforeCursor(prevSym.length, 0)?.toString().orEmpty()
+            }.getOrDefault("")
+            if (before == prevSym || before.isEmpty()) {
+                ic.deleteSurroundingText(prevSym.length, 0)
+            }
+            ic.commitText(nextSym, 1)
+            ic.endBatchEdit()
+            recordExternalCommit(nextSym)
+            host.recordManualEditTouch()
+            host.replaceTopUndoInsertedLength(
+                prevInsertedLength = prevSym.length,
+                newInsertedLength = nextSym.length
+            )
+        } else {
+            host.commitDirectText(
+                text = nextSym,
+                recordUndo = true,
+                markManualEdit = true,
+                playFeedback = false
+            )
+        }
     }
 
     fun selectPredictionCandidate(index: Int) {
@@ -1008,6 +1151,7 @@ class TypingController(
     }
 
     fun onPanelSwitched() {
+        dismissT9QuickPunctuation()
         predictionCoordinator.onPanelSwitched()
         host.stateFlow.update {
             it.copy(
@@ -1062,6 +1206,7 @@ class TypingController(
     }
 
     fun insertSpace() {
+        dismissT9QuickPunctuation()
         predictionCoordinator.onUserKeyPressed()
         val curr = host.stateFlow.value
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode && isComposing) {
@@ -1094,6 +1239,7 @@ class TypingController(
     }
 
     fun deleteBackward() {
+        dismissT9QuickPunctuation()
         predictionCoordinator.onBackspacePressed()
         val curr = host.stateFlow.value
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode) {
@@ -1145,6 +1291,7 @@ class TypingController(
     }
 
     fun performEnterOrNewline(onRunEqualEqualAskAi: (String, String) -> Unit) {
+        dismissT9QuickPunctuation()
         predictionCoordinator.onUserKeyPressed()
         val curr = host.stateFlow.value
         if (curr.tabMode == KeyboardTabMode.QWERTY && curr.isFlypyChineseMode && isComposing) {
@@ -1246,6 +1393,7 @@ class TypingController(
 
     fun commitSecondarySymbol(symbol: String) {
         if (symbol.isEmpty()) return
+        dismissT9QuickPunctuation()
         val state = host.stateFlow.value
         // Special case: preserve Xiaohe Yinxing (`FLYPY_TABLE`) stroke reverse-lookup `ji\`` when composing
         if (
@@ -1285,6 +1433,7 @@ class TypingController(
     }
 
     fun commitPairedSymbol(open: String, close: String) {
+        dismissT9QuickPunctuation()
         if (isComposing) {
             flushFlypyComposing()
         }
@@ -1330,10 +1479,11 @@ class TypingController(
 
     fun moveCursorByChars(delta: Int) {
         if (delta == 0) return
+        dismissT9QuickPunctuation()
         if (isComposing) {
             flushFlypyComposing()
         }
-        host.performHaptic(strong = false)
+        host.performTieredHaptic(HapticTier.CURSOR_TICK)
         val ic = host.currentInputConnection() ?: return
         val extracted = runCatching {
             ic.getExtractedText(ExtractedTextRequest(), 0)

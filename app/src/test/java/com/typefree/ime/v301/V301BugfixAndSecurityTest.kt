@@ -383,19 +383,19 @@ class V301BugfixAndSecurityTest {
 
     @Test
     fun m7_rimeCustomSchemeCycle_andZipImportExtractsLuaAndOpenccAndCleansUpOnRestore() {
-        // 1. Cycle order without custom schema
+        // 1. Cycle order without custom schema (standard build omits built-in FLYPY_TABLE)
         assertEquals(
             InputScheme.RIME_PINYIN,
-            nextCycledInputScheme(InputScheme.FLYPY_TABLE, hasCustomSchema = false)
+            nextCycledInputScheme(InputScheme.RIME_DOUBLE_PINYIN_FLYPY, hasCustomSchema = false, includeBuiltinFlypyTable = false)
         )
         // 2. Cycle order with custom schema imported
         assertEquals(
             InputScheme.RIME_CUSTOM,
-            nextCycledInputScheme(InputScheme.FLYPY_TABLE, hasCustomSchema = true)
+            nextCycledInputScheme(InputScheme.RIME_DOUBLE_PINYIN_FLYPY, hasCustomSchema = true, includeBuiltinFlypyTable = false)
         )
         assertEquals(
             InputScheme.RIME_PINYIN,
-            nextCycledInputScheme(InputScheme.RIME_CUSTOM, hasCustomSchema = true)
+            nextCycledInputScheme(InputScheme.RIME_CUSTOM, hasCustomSchema = true, includeBuiltinFlypyTable = false)
         )
 
         // 3. Zip import with rime.lua, lua/*.lua, opencc/*, and restoreDefaultRimeDataSync cleanup

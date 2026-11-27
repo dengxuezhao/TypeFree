@@ -243,6 +243,21 @@ class OfflineRoutePlannerTest {
         )
         assertEquals(TextRoute.Local(OfflineModelCatalog.ID_SLM_CORE_0_8B, isFallbackTier = true), transformOfflineOnly.text)
         assertFalse(transformOfflineOnly.egressAllowed)
+
+        // 0.8B intentionally withholds TRANSLATE in OFFLINE_ONLY ("宁缺毋滥": requires 2B+ or Cloud)
+        val translateOfflineOnly = OfflineRoutePlanner.resolveRoute(
+            RouteInput(
+                task = AiTask.TRANSLATE,
+                offline = offlineVoiceCfg.copy(mode = OfflineMode.OFFLINE_ONLY),
+                registry = offlineVoiceReg,
+                cloud = CloudAvailability()
+            )
+        )
+        assertEquals(
+            TextRoute.Blocked(RouteBlockReason.OFFLINE_ONLY_UNSUPPORTED_TASK),
+            translateOfflineOnly.text
+        )
+        assertFalse(translateOfflineOnly.egressAllowed)
     }
 
     @Test

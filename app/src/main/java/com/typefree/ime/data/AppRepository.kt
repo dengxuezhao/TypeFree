@@ -217,6 +217,68 @@ class AppRepository(
             } else {
                 rawKeyboardLiftLevel
             }
+            val rawKeyboardBottomLiftDp = if (raw.contains("\"keyboardBottomLiftDp\"")) {
+                parsed.keyboardBottomLiftDp
+            } else {
+                -1
+            }
+            val resolvedKeyboardBottomLiftDp = resolveMigratedBottomLiftDp(
+                rawBottomLiftDp = rawKeyboardBottomLiftDp,
+                heightMode = resolvedKeyboardHeightMode,
+                liftLevel = resolvedKeyboardLiftLevel
+            )
+            @Suppress("USELESS_ELVIS")
+            val resolvedCandidateFontScale = if (raw.contains("\"candidateFontScale\"")) {
+                parsed.candidateFontScale ?: CandidateFontScale.STANDARD
+            } else {
+                CandidateFontScale.STANDARD
+            }
+            @Suppress("USELESS_ELVIS")
+            val resolvedOneHandedMode = if (raw.contains("\"oneHandedMode\"")) {
+                parsed.oneHandedMode ?: OneHandedMode.OFF
+            } else {
+                OneHandedMode.OFF
+            }
+            val resolvedT9LeftHandedMirror = if (raw.contains("\"t9LeftHandedMirror\"")) {
+                parsed.t9LeftHandedMirror
+            } else {
+                false
+            }
+            @Suppress("USELESS_ELVIS")
+            val resolvedSpaceLongPressAction = if (raw.contains("\"spaceLongPressAction\"")) {
+                parsed.spaceLongPressAction ?: SpaceLongPressAction.VOICE_HOLD
+            } else {
+                SpaceLongPressAction.VOICE_HOLD
+            }
+            @Suppress("USELESS_ELVIS")
+            val resolvedHapticPreset = when {
+                raw.contains("\"hapticFeedback\"") && !parsed.hapticFeedback -> HapticPreset.OFF
+                raw.contains("\"hapticPreset\"") ->
+                    parsed.hapticPreset ?: if (parsed.hapticFeedback) HapticPreset.SYSTEM else HapticPreset.OFF
+                else -> if (parsed.hapticFeedback) HapticPreset.SYSTEM else HapticPreset.OFF
+            }
+            val resolvedHapticStrength = if (raw.contains("\"hapticStrength\"")) {
+                parsed.hapticStrength.coerceIn(10, 100)
+            } else {
+                38
+            }
+            val resolvedKeySoundVolume = if (raw.contains("\"keySoundVolume\"")) {
+                parsed.keySoundVolume.coerceIn(5, 100)
+            } else {
+                50
+            }
+            @Suppress("USELESS_ELVIS")
+            val resolvedRecentEmojis = if (raw.contains("\"recentEmojis\"")) {
+                (parsed.recentEmojis ?: emptyList()).filter { it.isNotBlank() }.distinct().take(24)
+            } else {
+                emptyList()
+            }
+            @Suppress("USELESS_ELVIS")
+            val resolvedEmojiSkinTonePrefs = if (raw.contains("\"emojiSkinTonePrefs\"")) {
+                (parsed.emojiSkinTonePrefs ?: emptyMap()).filter { it.key.isNotBlank() && it.value.isNotBlank() }
+            } else {
+                emptyMap()
+            }
             val migratedV30LiveWrite = publicStore.getBoolean(KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT, false)
             val resolvedLiveWriteToEditor = if (!migratedV30LiveWrite) {
                 publicStore.putBoolean(KEY_MIGRATED_V30_LIVE_WRITE_DEFAULT, true)
@@ -460,8 +522,20 @@ class AppRepository(
                 keyboardHeightLevel = resolvedKeyboardHeightLevel,
                 keyboardHeightMode = resolvedKeyboardHeightMode,
                 keyboardLiftLevel = resolvedKeyboardLiftLevel,
+                keyboardBottomLiftDp = resolvedKeyboardBottomLiftDp,
+                candidateFontScale = resolvedCandidateFontScale,
+                oneHandedMode = resolvedOneHandedMode,
+                t9LeftHandedMirror = resolvedT9LeftHandedMirror,
+                spaceLongPressAction = resolvedSpaceLongPressAction,
+                hapticFeedback = resolvedHapticPreset != HapticPreset.OFF,
+                hapticPreset = resolvedHapticPreset,
+                hapticStrength = resolvedHapticStrength,
+                keySoundVolume = resolvedKeySoundVolume,
+                recentEmojis = resolvedRecentEmojis,
+                emojiSkinTonePrefs = resolvedEmojiSkinTonePrefs,
                 liveWriteToEditor = resolvedLiveWriteToEditor,
                 inputScheme = resolvedInputScheme,
+                doublePinyinLayout = parsed.doublePinyinLayout ?: DoublePinyinLayout.FLYPY,
                 fixedCandidateOrder = resolvedFixedCandidateOrder,
                 englishPrefixVetoEnabled = resolvedEnglishPrefixVetoEnabled,
                 codetableAutoEncodeEnabled = resolvedCodetableAutoEncodeEnabled,
@@ -626,6 +700,33 @@ class AppRepository(
             if (pruned.size != _history.value.size) {
                 _history.value = pruned
                 publicStore.putString(KEY_HISTORY, gson.toJson(pruned))
+            }
+        }
+    }
+
+    fun recordRecentEmoji(glyph: String, baseGlyph: String? = null) {
+        val cleanGlyph = glyph.trim()
+        if (cleanGlyph.isEmpty()) return
+        updateSettings { curr ->
+            val updatedRecents = com.typefree.ime.ime.expression.ExpressionCatalog.recordRecentEmoji(
+                existing = curr.recentEmojis,
+                picked = cleanGlyph
+            )
+            val cleanBase = baseGlyph?.trim().orEmpty()
+            val updatedSkinPrefs = when {
+                cleanBase.isNotEmpty() && cleanBase != cleanGlyph ->
+                    curr.emojiSkinTonePrefs + (cleanBase to cleanGlyph)
+                cleanBase.isNotEmpty() && cleanBase == cleanGlyph && curr.emojiSkinTonePrefs.containsKey(cleanBase) ->
+                    curr.emojiSkinTonePrefs - cleanBase
+                else -> curr.emojiSkinTonePrefs
+            }
+            if (updatedRecents == curr.recentEmojis && updatedSkinPrefs == curr.emojiSkinTonePrefs) {
+                curr
+            } else {
+                curr.copy(
+                    recentEmojis = updatedRecents,
+                    emojiSkinTonePrefs = updatedSkinPrefs
+                )
             }
         }
     }
@@ -1017,6 +1118,36 @@ class AppRepository(
                 keyboardHeightMode = KeyboardHeightMode.LIFT,
                 keyboardLiftLevel = migratedLift
             )
+        }
+
+        fun resolveMigratedBottomLiftDp(
+            rawBottomLiftDp: Int,
+            heightMode: KeyboardHeightMode,
+            liftLevel: Int
+        ): Int {
+            return if (rawBottomLiftDp >= 0) {
+                rawBottomLiftDp.coerceIn(0, 56)
+            } else {
+                val legacyDp = if (heightMode == KeyboardHeightMode.LIFT) {
+                    liftLevel.coerceIn(0, 4) * 8
+                } else {
+                    0
+                }
+                legacyDp.coerceIn(0, 56)
+            }
+        }
+
+        fun migrateSettingsToV391DecoupledLift(oldSettings: AppSettings): AppSettings {
+            val resolvedDp = resolveMigratedBottomLiftDp(
+                rawBottomLiftDp = oldSettings.keyboardBottomLiftDp,
+                heightMode = oldSettings.keyboardHeightMode,
+                liftLevel = oldSettings.keyboardLiftLevel
+            )
+            return if (oldSettings.keyboardBottomLiftDp == resolvedDp) {
+                oldSettings
+            } else {
+                oldSettings.copy(keyboardBottomLiftDp = resolvedDp)
+            }
         }
 
         fun sortClipboardEntries(entries: List<ClipboardEntry>): List<ClipboardEntry> {

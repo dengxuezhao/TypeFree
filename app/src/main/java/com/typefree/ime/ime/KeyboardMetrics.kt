@@ -1,23 +1,34 @@
 package com.typefree.ime.ime
 
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.typefree.ime.data.AppSettings
+import com.typefree.ime.data.CandidateFontScale
 import com.typefree.ime.data.KeyboardHeightMode
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * Unified keyboard height and scaling metrics for TypeFree v2.7.
+ * Unified keyboard height, bottom lift, and candidate strip scaling metrics for TypeFree.
  *
  * Rules:
- * - Only the key area scales; the 34.dp top bar and 1.dp top divider remain fixed across all levels.
+ * - Only the key area scales vertically by [scale]; the top bar (`34/38/44.dp` per [candidateFontScale])
+ *   and `1.dp` top divider remain fixed across key height levels.
+ * - In decoupled v3.9.1+ mode ([resolve] or `fromLevel(..., decoupledLiftDp = ...)`), key-area vertical
+ *   scaling (`-2..+2` -> `0.88f..1.14f`) and portrait bottom cushion (`0..56.dp`) combine additively
+ *   without resetting [scale] to `1.0f`.
  * - All panels (VOICE, QWERTY, TRANSLATE, CLIPBOARD, TOOL_PANEL, HELP_ME_WRITE, SPEAK_TO_EDIT, ArcTranslate)
  *   read [frameHeight] from [LocalKeyboardMetrics] so switching panels causes 0px host relayout.
  * - Fixed-size elements on the Voice panel (mic orb, waveform) scale by [elementScale] = `min(scale, 1f)`
  *   (shrink-only, never bloated in comfortable mode).
- * - Landscape mode automatically applies `COMPACT_SCALE * 0.8f`.
+ * - Landscape mode automatically applies `COMPACT_SCALE * 0.8f` and `0.dp` bottom cushion.
  */
 @Immutable
 data class KeyboardMetrics(
@@ -30,17 +41,36 @@ data class KeyboardMetrics(
     val keyAreaHeight: Dp,
     val frameHeight: Dp,
     val label: String,
-    /** STRETCH scales the key area; LIFT keeps keys at standard size and adds [liftHeight] at the bottom. */
+    /** Legacy mode flag; preserved for v2.9..v3.9.0 callers. */
     val heightMode: KeyboardHeightMode = KeyboardHeightMode.LIFT,
     val liftLevel: Int = 0,
-    /** Blank bottom cushion inside [frameHeight] (0.dp in STRETCH mode and in landscape). */
+    /** Blank bottom cushion inside [frameHeight] (0.dp in landscape). */
     val liftHeight: Dp = 0.dp,
-    val showNumberRow: Boolean = false
+    val showNumberRow: Boolean = false,
+    /** Gently coupled keycap font multiplier (`0.94f..1.08f` * [widthScale] in portrait) avoiding swipe-badge collisions at `-2`. */
+    val keyFontScale: Float = KEY_FONT_SCALE_STANDARD,
+    val candidateFontScale: CandidateFontScale = CandidateFontScale.STANDARD,
+    val candidateChipHeight: Dp = 29.dp,
+    val candidateFontSizeSp: Float = 15.5f,
+    val fixedChromeDp: Int = FIXED_CHROME_DP,
+    /** Cross-device viewport width scale normalized to Xiaomi 15 (`375.dp` = `1.0f`, clamped `0.92f..1.16f`, capped `1.12f` at `>= 600.dp`). */
+    val widthScale: Float = 1.0f,
+    val preeditFontSizeSp: Float = 13.5f,
+    val preeditCapsuleHeight: Dp = 24.dp,
+    val topBarActionButtonSize: Dp = 28.dp
 ) {
     companion object {
         const val MIN_LEVEL = -2
         const val MAX_LEVEL = 2
         const val DEFAULT_LEVEL = 0
+
+        const val BASELINE_SCREEN_WIDTH_DP = 375
+        const val TABLET_WIDTH_CUTOFF_DP = 600
+        const val MIN_WIDTH_SCALE = 0.92f
+        const val MAX_WIDTH_SCALE = 1.16f
+        const val TABLET_MAX_WIDTH_SCALE = 1.12f
+        private const val WIDTH_HEIGHT_DAMPING = 0.88f
+        private const val CHROME_OVERHEAD_DP = 8 // 1.dp divider + 5.dp top pad + 2.dp gap
 
         const val SCALE_COMPACT = 0.88f
         const val SCALE_LOW = 0.94f
@@ -49,11 +79,25 @@ data class KeyboardMetrics(
         const val SCALE_COMFORTABLE = 1.14f
         const val LANDSCAPE_FACTOR = 0.80f
 
+        const val KEY_FONT_SCALE_COMPACT = 0.94f
+        const val KEY_FONT_SCALE_LOW = 0.97f
+        const val KEY_FONT_SCALE_STANDARD = 1.00f
+        const val KEY_FONT_SCALE_HIGH = 1.04f
+        const val KEY_FONT_SCALE_COMFORTABLE = 1.08f
+        const val KEY_FONT_SCALE_LANDSCAPE = 0.90f
+
         private const val BASE_KEY_AREA_4ROW_DP = 210f
         private const val BASE_KEY_AREA_5ROW_DP = 252f
-        const val FIXED_CHROME_DP = 42 // 1.dp divider + 5.dp top pad + 34.dp top bar + 2.dp gap
+        const val FIXED_CHROME_DP = 42 // STANDARD: 1.dp divider + 5.dp top pad + 34.dp top bar + 2.dp gap
+        const val FIXED_CHROME_LARGE_DP = 46 // LARGE: 1.dp divider + 5.dp top pad + 38.dp top bar + 2.dp gap
+        const val FIXED_CHROME_EXTRA_LARGE_DP = 52 // EXTRA_LARGE: 1.dp divider + 5.dp top pad + 44.dp top bar + 2.dp gap
+
         /** Transparent floating preedit capsule overhang above the 1.dp keyboard divider (`0px` host viewport loss via `contentTopInsets`). */
         const val FLOATING_PREEDIT_OVERHANG_DP = 28
+
+        const val MIN_BOTTOM_LIFT_DP = 0
+        const val MAX_BOTTOM_LIFT_DP = 56
+        const val DEFAULT_BOTTOM_LIFT_DP = 0
 
         fun computeFloatingOverhangContentTopInset(
             baseContentTopInsets: Int,
@@ -64,6 +108,20 @@ data class KeyboardMetrics(
                 return baseContentTopInsets
             }
             return (baseContentTopInsets + floatingOverhangPx).coerceAtMost(decorHeight)
+        }
+
+        /**
+         * Resolves the bottom safe-area inset for the IME window on Android 15/16 (`targetSdk = 35`)
+         * including vivo OriginOS 7's `imeCaptionBar` / `NavigationBarFrame` (🌐 switcher bar) even
+         * when `@android:layout/input_method` swallows child [ComposeView] `navigationBars` insets,
+         * using `max(...)` so normal gesture bars are never double-counted.
+         */
+        @Composable
+        fun resolveImeSystemBottomInsetDp(decorBottomInsetPx: Int): Dp {
+            val density = LocalDensity.current
+            val composeBottomPx = WindowInsets.systemBars.getBottom(density)
+            val effectivePx = max(composeBottomPx, decorBottomInsetPx.coerceAtLeast(0))
+            return with(density) { effectivePx.toDp() }
         }
 
         val ALL_LEVELS: List<Int> = listOf(-2, -1, 0, 1, 2)
@@ -77,6 +135,15 @@ data class KeyboardMetrics(
             else -> SCALE_STANDARD
         }
 
+        fun keyFontScaleForLevel(level: Int): Float = when (level.coerceIn(MIN_LEVEL, MAX_LEVEL)) {
+            -2 -> KEY_FONT_SCALE_COMPACT
+            -1 -> KEY_FONT_SCALE_LOW
+            0 -> KEY_FONT_SCALE_STANDARD
+            1 -> KEY_FONT_SCALE_HIGH
+            2 -> KEY_FONT_SCALE_COMFORTABLE
+            else -> KEY_FONT_SCALE_STANDARD
+        }
+
         fun labelForLevel(level: Int): String = when (level.coerceIn(MIN_LEVEL, MAX_LEVEL)) {
             -2 -> "紧凑"
             -1 -> "偏低"
@@ -86,8 +153,90 @@ data class KeyboardMetrics(
             else -> "标准"
         }
 
+        fun topBarHeightDpForCandidateScale(scale: CandidateFontScale): Int = when (scale) {
+            CandidateFontScale.STANDARD -> 34
+            CandidateFontScale.LARGE -> 38
+            CandidateFontScale.EXTRA_LARGE -> 44
+        }
+
+        fun candidateChipHeightDpForScale(scale: CandidateFontScale): Int = when (scale) {
+            CandidateFontScale.STANDARD -> 29
+            CandidateFontScale.LARGE -> 33
+            CandidateFontScale.EXTRA_LARGE -> 38
+        }
+
+        fun candidateFontSizeSpForScale(scale: CandidateFontScale): Float = when (scale) {
+            CandidateFontScale.STANDARD -> 15.5f
+            CandidateFontScale.LARGE -> 17.0f
+            CandidateFontScale.EXTRA_LARGE -> 19.5f
+        }
+
+        fun preeditFontSizeSpForScale(scale: CandidateFontScale): Float = when (scale) {
+            CandidateFontScale.STANDARD -> 13.5f
+            CandidateFontScale.LARGE -> 14.8f
+            CandidateFontScale.EXTRA_LARGE -> 16.0f
+        }
+
+        fun preeditCapsuleHeightDpForScale(scale: CandidateFontScale): Int = when (scale) {
+            CandidateFontScale.STANDARD -> 24
+            CandidateFontScale.LARGE -> 25
+            CandidateFontScale.EXTRA_LARGE -> 26
+        }
+
+        fun resolveWidthScale(
+            screenWidthDp: Int,
+            isLandscape: Boolean
+        ): Float {
+            if (isLandscape || screenWidthDp <= 0) return 1.0f
+            if (screenWidthDp >= TABLET_WIDTH_CUTOFF_DP) return TABLET_MAX_WIDTH_SCALE
+            return (screenWidthDp.toFloat() / BASELINE_SCREEN_WIDTH_DP.toFloat())
+                .coerceIn(MIN_WIDTH_SCALE, MAX_WIDTH_SCALE)
+        }
+
+        fun resolveDampedSystemFontScale(
+            systemFontScale: Float,
+            isLandscape: Boolean
+        ): Float {
+            if (isLandscape || systemFontScale <= 0f) return 1.0f
+            return systemFontScale.coerceIn(0.96f, 1.10f)
+        }
+
+        fun fixedChromeDpForCandidateScale(scale: CandidateFontScale): Int = when (scale) {
+            CandidateFontScale.STANDARD -> FIXED_CHROME_DP
+            CandidateFontScale.LARGE -> FIXED_CHROME_LARGE_DP
+            CandidateFontScale.EXTRA_LARGE -> FIXED_CHROME_EXTRA_LARGE_DP
+        }
+
+        fun expandedGridFontSizeSpForScale(scale: CandidateFontScale): Float = when (scale) {
+            CandidateFontScale.STANDARD -> 15.0f
+            CandidateFontScale.LARGE -> 17.5f
+            CandidateFontScale.EXTRA_LARGE -> 20.0f
+        }
+
+        fun expandedGridRowHeightDpForScale(scale: CandidateFontScale): Int = when (scale) {
+            CandidateFontScale.STANDARD -> 38
+            CandidateFontScale.LARGE -> 42
+            CandidateFontScale.EXTRA_LARGE -> 48
+        }
+
+        /**
+         * Candidate count threshold (`candidates.size > threshold`) above which the right-side `[▾]`
+         * expand grid button appears: lowered from `4` to `2` for `LARGE` / `EXTRA_LARGE` so wide
+         * 17.0sp / 19.5sp chips always expose `[▾]` even with 3–4 candidates.
+         */
+        fun expandButtonCandidateThreshold(scale: CandidateFontScale): Int = when (scale) {
+            CandidateFontScale.STANDARD -> 4
+            CandidateFontScale.LARGE, CandidateFontScale.EXTRA_LARGE -> 2
+        }
+
+        fun shouldShowCandidateExpandButton(
+            candidateCount: Int,
+            hasMoreCandidates: Boolean,
+            scale: CandidateFontScale
+        ): Boolean = hasMoreCandidates || candidateCount > expandButtonCandidateThreshold(scale)
+
         // ---------------------------------------------------------------------------------
-        // LIFT mode (垫高): keys keep the standard size; a blank bottom cushion raises the keyboard.
+        // Legacy LIFT mode (垫高): keys keep standard size; a blank bottom cushion raises keyboard.
         // ---------------------------------------------------------------------------------
         const val MIN_LIFT_LEVEL = 0
         const val MAX_LIFT_LEVEL = 4
@@ -96,19 +245,123 @@ data class KeyboardMetrics(
 
         val ALL_LIFT_LEVELS: List<Int> = listOf(0, 1, 2, 3, 4)
 
-        /** Bottom cushion height for a lift level: 0 / 8 / 16 / 24 / 32 dp. */
+        /** Bottom cushion height for a legacy lift level: 0 / 8 / 16 / 24 / 32 dp. */
         fun liftDpForLevel(liftLevel: Int): Int =
             liftLevel.coerceIn(MIN_LIFT_LEVEL, MAX_LIFT_LEVEL) * LIFT_STEP_DP
 
         fun labelForLiftLevel(liftLevel: Int): String = "${liftDpForLevel(liftLevel)}dp"
+
+        /**
+         * Decoupled v3.9.1+ metrics resolver:
+         * Combines key-area vertical scale (`level` `-2..+2` -> `0.88f..1.14f`), portrait bottom cushion
+         * (`bottomLiftDp` `0..56`, `0` in landscape), and [candidateFontScale] chrome budget additively.
+         */
+        fun resolve(
+            level: Int = DEFAULT_LEVEL,
+            bottomLiftDp: Int = DEFAULT_BOTTOM_LIFT_DP,
+            isLandscape: Boolean = false,
+            showNumberRow: Boolean = false,
+            candidateFontScale: CandidateFontScale = CandidateFontScale.STANDARD,
+            screenWidthDp: Int = BASELINE_SCREEN_WIDTH_DP,
+            systemFontScale: Float = 1.0f
+        ): KeyboardMetrics {
+            val clampedLevel = level.coerceIn(MIN_LEVEL, MAX_LEVEL)
+            val clampedBottomLiftDp = bottomLiftDp.coerceIn(MIN_BOTTOM_LIFT_DP, MAX_BOTTOM_LIFT_DP)
+            val widthScale = resolveWidthScale(screenWidthDp = screenWidthDp, isLandscape = isLandscape)
+            val dampedSysFont = resolveDampedSystemFontScale(systemFontScale = systemFontScale, isLandscape = isLandscape)
+            val keyAreaHeightScale = if (isLandscape) 1.0f else (1.0f + (widthScale - 1.0f) * WIDTH_HEIGHT_DAMPING)
+            val effectiveScale = if (isLandscape) {
+                SCALE_COMPACT * LANDSCAPE_FACTOR
+            } else {
+                scaleForLevel(clampedLevel)
+            }
+            val effectiveKeyFontScale = if (isLandscape) {
+                KEY_FONT_SCALE_LANDSCAPE
+            } else {
+                keyFontScaleForLevel(clampedLevel) * widthScale
+            }
+            val liftDp = if (isLandscape) 0 else clampedBottomLiftDp
+            val baseKeyAreaDp = if (showNumberRow) BASE_KEY_AREA_5ROW_DP else BASE_KEY_AREA_4ROW_DP
+            val keyAreaDp = (baseKeyAreaDp * effectiveScale * keyAreaHeightScale).roundToInt()
+            val candCombinedScale = widthScale * dampedSysFont
+            val topBarDp = (topBarHeightDpForCandidateScale(candidateFontScale) * candCombinedScale).roundToInt()
+            val chromeDp = topBarDp + CHROME_OVERHEAD_DP
+            val chipDp = (candidateChipHeightDpForScale(candidateFontScale) * candCombinedScale)
+                .roundToInt()
+                .coerceAtMost((topBarDp - 4).coerceAtLeast(24))
+            val candidateSp = candidateFontSizeSpForScale(candidateFontScale) * candCombinedScale
+            val preeditScale = candCombinedScale.coerceAtMost(1.15f)
+            val preeditSp = preeditFontSizeSpForScale(candidateFontScale) * preeditScale
+            val preeditHeightDp = (preeditCapsuleHeightDpForScale(candidateFontScale) * preeditScale.coerceAtMost(1.08f))
+                .roundToInt()
+                .coerceIn(22, 26)
+            val actionBtnDp = (28f * widthScale).roundToInt().coerceAtMost((topBarDp - 4).coerceAtLeast(24))
+            val frameDp = chromeDp + keyAreaDp + liftDp
+            val nearestLiftLevel = (clampedBottomLiftDp / LIFT_STEP_DP).coerceIn(MIN_LIFT_LEVEL, MAX_LIFT_LEVEL)
+            val resolvedLabel = if (liftDp > 0) {
+                "${labelForLevel(clampedLevel)} · +${liftDp}dp"
+            } else {
+                labelForLevel(clampedLevel)
+            }
+            return KeyboardMetrics(
+                level = clampedLevel,
+                isLandscape = isLandscape,
+                scale = effectiveScale,
+                elementScale = min(effectiveScale, 1.0f),
+                topBarHeight = topBarDp.dp,
+                dividerHeight = 1.dp,
+                keyAreaHeight = keyAreaDp.dp,
+                frameHeight = frameDp.dp,
+                label = resolvedLabel,
+                heightMode = if (clampedLevel == DEFAULT_LEVEL) KeyboardHeightMode.LIFT else KeyboardHeightMode.STRETCH,
+                liftLevel = nearestLiftLevel,
+                liftHeight = liftDp.dp,
+                showNumberRow = showNumberRow,
+                keyFontScale = effectiveKeyFontScale,
+                candidateFontScale = candidateFontScale,
+                candidateChipHeight = chipDp.dp,
+                candidateFontSizeSp = candidateSp,
+                fixedChromeDp = chromeDp,
+                widthScale = widthScale,
+                preeditFontSizeSp = preeditSp,
+                preeditCapsuleHeight = preeditHeightDp.dp,
+                topBarActionButtonSize = actionBtnDp.dp
+            )
+        }
+
+        fun fromSettings(
+            settings: AppSettings,
+            isLandscape: Boolean = false,
+            screenWidthDp: Int = BASELINE_SCREEN_WIDTH_DP,
+            systemFontScale: Float = 1.0f
+        ): KeyboardMetrics = resolve(
+            level = settings.keyboardHeightLevel,
+            bottomLiftDp = settings.resolvedBottomLiftDp(),
+            isLandscape = isLandscape,
+            showNumberRow = settings.qwertyShowNumberRow,
+            candidateFontScale = settings.candidateFontScale,
+            screenWidthDp = screenWidthDp,
+            systemFontScale = systemFontScale
+        )
 
         fun fromLevel(
             level: Int = DEFAULT_LEVEL,
             isLandscape: Boolean = false,
             heightMode: KeyboardHeightMode = KeyboardHeightMode.LIFT,
             liftLevel: Int = DEFAULT_LIFT_LEVEL,
-            showNumberRow: Boolean = false
+            showNumberRow: Boolean = false,
+            decoupledLiftDp: Int? = null,
+            candidateFontScale: CandidateFontScale = CandidateFontScale.STANDARD
         ): KeyboardMetrics {
+            if (decoupledLiftDp != null) {
+                return resolve(
+                    level = level,
+                    bottomLiftDp = decoupledLiftDp,
+                    isLandscape = isLandscape,
+                    showNumberRow = showNumberRow,
+                    candidateFontScale = candidateFontScale
+                )
+            }
             val clamped = level.coerceIn(MIN_LEVEL, MAX_LEVEL)
             val isLift = heightMode == KeyboardHeightMode.LIFT
             val effectiveScale = when {
@@ -116,18 +369,27 @@ data class KeyboardMetrics(
                 isLift -> SCALE_STANDARD
                 else -> scaleForLevel(clamped)
             }
+            val effectiveKeyFontScale = when {
+                isLandscape -> KEY_FONT_SCALE_LANDSCAPE
+                isLift -> KEY_FONT_SCALE_STANDARD
+                else -> keyFontScaleForLevel(clamped)
+            }
             val clampedLift = liftLevel.coerceIn(MIN_LIFT_LEVEL, MAX_LIFT_LEVEL)
             // Landscape never adds a cushion: vertical space is already scarce.
             val liftDp = if (isLift && !isLandscape) liftDpForLevel(clampedLift) else 0
             val baseKeyAreaDp = if (showNumberRow) BASE_KEY_AREA_5ROW_DP else BASE_KEY_AREA_4ROW_DP
             val keyAreaDp = (baseKeyAreaDp * effectiveScale).roundToInt()
-            val frameDp = FIXED_CHROME_DP + keyAreaDp + liftDp
+            val chromeDp = fixedChromeDpForCandidateScale(candidateFontScale)
+            val topBarDp = topBarHeightDpForCandidateScale(candidateFontScale)
+            val chipDp = candidateChipHeightDpForScale(candidateFontScale)
+            val candidateSp = candidateFontSizeSpForScale(candidateFontScale)
+            val frameDp = chromeDp + keyAreaDp + liftDp
             return KeyboardMetrics(
                 level = clamped,
                 isLandscape = isLandscape,
                 scale = effectiveScale,
                 elementScale = min(effectiveScale, 1.0f),
-                topBarHeight = 34.dp,
+                topBarHeight = topBarDp.dp,
                 dividerHeight = 1.dp,
                 keyAreaHeight = keyAreaDp.dp,
                 frameHeight = frameDp.dp,
@@ -135,7 +397,12 @@ data class KeyboardMetrics(
                 heightMode = heightMode,
                 liftLevel = clampedLift,
                 liftHeight = liftDp.dp,
-                showNumberRow = showNumberRow
+                showNumberRow = showNumberRow,
+                keyFontScale = effectiveKeyFontScale,
+                candidateFontScale = candidateFontScale,
+                candidateChipHeight = chipDp.dp,
+                candidateFontSizeSp = candidateSp,
+                fixedChromeDp = chromeDp
             )
         }
     }

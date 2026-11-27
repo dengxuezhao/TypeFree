@@ -12,6 +12,7 @@ import android.text.InputType
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.typefree.ime.TypeFreeApp
+import com.typefree.ime.diagnostics.ImeDiagnosticLogger
 
 /**
  * Floating Voice Bubble accessibility helper:
@@ -24,24 +25,55 @@ import com.typefree.ime.TypeFreeApp
  */
 class TypeFreeAccessibilityService : AccessibilityService() {
 
+    @Volatile
+    private var lastSyncedBubbleImeEnabled: Boolean? = null
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         activeInstance = this
-        try {
-            val info = serviceInfo ?: AccessibilityServiceInfo()
-            var updatedFlags = info.flags or
-                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
-                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                updatedFlags = updatedFlags or AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR
-            }
-            info.flags = updatedFlags
-            serviceInfo = info
-        } catch (_: Exception) {
-        }
+        lastSyncedBubbleImeEnabled = null
+        val initialBubbleEnabled = runCatching {
+            TypeFreeApp.instance.repository.settings.value.bubbleEnabled
+        }.getOrDefault(false)
+        syncServiceFlagsForBubbleState(initialBubbleEnabled)
         TypeFreeBubbleController.setAccessibilityConnected(true)
         refreshFocusedInputState()
         TypeFreeBubbleController.syncBubbleService(this)
+    }
+
+    /**
+     * Dynamically toggles [AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR] on Android 13+ (`TIRAMISU`)
+     * so `AccessibilityInputMethod` is bound ONLY when Floating Voice Bubble (`bubbleEnabled == true`)
+     * needs direct keyboard-less cursor injection.
+     */
+    fun syncServiceFlagsForBubbleState(bubbleEnabled: Boolean) {
+        try {
+            val info = serviceInfo ?: AccessibilityServiceInfo()
+            val prevFlags = info.flags
+            val updatedFlags = computeUpdatedServiceFlags(
+                existingFlags = prevFlags,
+                sdkInt = Build.VERSION.SDK_INT,
+                bubbleEnabled = bubbleEnabled
+            )
+            if (lastSyncedBubbleImeEnabled != bubbleEnabled || updatedFlags != prevFlags) {
+                info.flags = updatedFlags
+                serviceInfo = info
+                lastSyncedBubbleImeEnabled = bubbleEnabled
+                val imeFlagActive = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    (updatedFlags and AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR) != 0
+                ImeDiagnosticLogger.record(
+                    category = "A11Y_FLAGS",
+                    event = "sync_service_flags",
+                    detail = "bubble=$bubbleEnabled a11yImeFlag=$imeFlagActive changed=${updatedFlags != prevFlags}"
+                )
+            }
+        } catch (t: Exception) {
+            ImeDiagnosticLogger.record(
+                category = "A11Y_FLAGS",
+                event = "sync_service_flags_error",
+                detail = "bubble=$bubbleEnabled err=${ImeDiagnosticLogger.sanitizeThrowable(t)}"
+            )
+        }
     }
 
     @Volatile
@@ -52,6 +84,9 @@ class TypeFreeAccessibilityService : AccessibilityService() {
         val bubbleEnabled = runCatching {
             TypeFreeApp.instance.repository.settings.value.bubbleEnabled
         }.getOrDefault(false)
+        if (lastSyncedBubbleImeEnabled != bubbleEnabled) {
+            syncServiceFlagsForBubbleState(bubbleEnabled)
+        }
         val nowMs = SystemClock.uptimeMillis()
         val (shouldProcess, allowMultiWindowScan) = shouldProcessAccessibilityEvent(
             eventType = event.eventType,
@@ -71,6 +106,7 @@ class TypeFreeAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        lastSyncedBubbleImeEnabled = null
         if (activeInstance === this) {
             activeInstance = null
         }
@@ -278,6 +314,24 @@ class TypeFreeAccessibilityService : AccessibilityService() {
 
     companion object {
         const val CONTENT_CHANGED_THROTTLE_MS = 180L
+
+        fun computeUpdatedServiceFlags(
+            existingFlags: Int,
+            sdkInt: Int,
+            bubbleEnabled: Boolean
+        ): Int {
+            var updated = existingFlags or
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+            if (sdkInt >= Build.VERSION_CODES.TIRAMISU) {
+                updated = if (bubbleEnabled) {
+                    updated or AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR
+                } else {
+                    updated and AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR.inv()
+                }
+            }
+            return updated
+        }
 
         @Volatile
         var activeInstance: TypeFreeAccessibilityService? = null

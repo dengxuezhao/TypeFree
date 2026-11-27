@@ -124,6 +124,7 @@ object TypeFreeBubbleController {
     fun syncBubbleService(context: Context) {
         val appContext = context.applicationContext
         val settings = TypeFreeApp.instance.repository.settings.value
+        TypeFreeAccessibilityService.activeInstance?.syncServiceFlagsForBubbleState(settings.bubbleEnabled)
         val intent = Intent(appContext, TypeFreeBubbleService::class.java)
         if (settings.bubbleEnabled && hasOverlayPermission(appContext)) {
             try {

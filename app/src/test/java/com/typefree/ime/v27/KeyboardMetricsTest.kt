@@ -156,11 +156,13 @@ class KeyboardMetricsTest {
         assertNull(restoredExplicitNull.fixedCandidateOrder)
         assertEquals(-2, restoredExplicitNull.keyboardHeightLevel)
 
-        // Input scheme cycle in tool panel
-        assertEquals(InputScheme.RIME_T9_PINYIN, nextCycledInputScheme(InputScheme.RIME_PINYIN))
-        assertEquals(InputScheme.RIME_DOUBLE_PINYIN_FLYPY, nextCycledInputScheme(InputScheme.RIME_T9_PINYIN))
-        assertEquals(InputScheme.FLYPY_TABLE, nextCycledInputScheme(InputScheme.RIME_DOUBLE_PINYIN_FLYPY))
-        assertEquals(InputScheme.RIME_PINYIN, nextCycledInputScheme(InputScheme.FLYPY_TABLE))
+        // Input scheme cycle in tool panel (standard build excludes redundant FLYPY_TABLE; private dict build includes it)
+        assertEquals(InputScheme.RIME_T9_PINYIN, nextCycledInputScheme(InputScheme.RIME_PINYIN, includeBuiltinFlypyTable = false))
+        assertEquals(InputScheme.RIME_DOUBLE_PINYIN_FLYPY, nextCycledInputScheme(InputScheme.RIME_T9_PINYIN, includeBuiltinFlypyTable = false))
+        assertEquals(InputScheme.RIME_PINYIN, nextCycledInputScheme(InputScheme.RIME_DOUBLE_PINYIN_FLYPY, hasCustomSchema = false, includeBuiltinFlypyTable = false))
+        assertEquals(InputScheme.RIME_CUSTOM, nextCycledInputScheme(InputScheme.RIME_DOUBLE_PINYIN_FLYPY, hasCustomSchema = true, includeBuiltinFlypyTable = false))
+        assertEquals(InputScheme.FLYPY_TABLE, nextCycledInputScheme(InputScheme.RIME_DOUBLE_PINYIN_FLYPY, includeBuiltinFlypyTable = true))
+        assertEquals(InputScheme.RIME_PINYIN, nextCycledInputScheme(InputScheme.FLYPY_TABLE, includeBuiltinFlypyTable = true))
         assertEquals("雾凇全拼", shortInputSchemeLabel(InputScheme.RIME_PINYIN))
         assertEquals("九键拼音", shortInputSchemeLabel(InputScheme.RIME_T9_PINYIN))
         assertEquals("小鹤双拼", shortInputSchemeLabel(InputScheme.RIME_DOUBLE_PINYIN_FLYPY))

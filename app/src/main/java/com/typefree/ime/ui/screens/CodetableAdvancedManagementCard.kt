@@ -1966,8 +1966,10 @@ private fun localizedActiveProfileName(
         "tigress" -> AppStrings.pick(lang, "虎码官方字词", "Tiger Code (Words)", "虎碼官方字詞")
         "tiger" -> AppStrings.pick(lang, "虎码官方单字", "Tiger Code (Chars)", "虎碼官方單字")
         "rime_ice" -> AppStrings.pick(lang, "雾凇拼音", "Rime Ice Pinyin", "霧凇拼音")
-        "double_pinyin_flypy" -> AppStrings.pick(lang, "小鹤双拼", "Flypy Double Pinyin", "小鶴雙拼")
-        else -> rawDisplayName.ifBlank { schemaId }
+        else -> {
+            val dp = com.typefree.ime.data.DoublePinyinLayout.fromSchemaId(schemaId.lowercase())
+            if (dp != null) AppStrings.doublePinyinLayoutLabel(dp, lang) else rawDisplayName.ifBlank { schemaId }
+        }
     }
 }
 

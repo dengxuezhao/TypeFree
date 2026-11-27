@@ -9,6 +9,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -47,9 +48,11 @@ import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import android.view.HapticFeedbackConstants
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -61,14 +64,18 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import com.typefree.ime.data.DoublePinyinLayout
+import com.typefree.ime.data.ExpressionTab
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeycapBadgeMode
+import com.typefree.ime.data.SpaceLongPressAction
 import com.typefree.ime.i18n.AppLang
 import com.typefree.ime.i18n.AppStrings
 import com.typefree.ime.i18n.LocalAppLanguage
 import com.typefree.ime.i18n.tr
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.LocalTypeFreeKeyboardPalette
+import com.typefree.ime.ui.theme.TypeFreeEmerald
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -268,12 +275,33 @@ private val NUM_KEY_CORNER = 6.0.dp
 private val FUNC_KEY_CORNER = 7.5.dp
 private val KEY_BOTTOM_RIM = 1.25.dp
 
+object BuiltInQwertyHelper {
+    /**
+     * Returns `true` when Row 2 should expand from 9 keys (`A..L`) to 10 uniform keys (`A..L ;`),
+     * matching PC Shuangpin muscle memory for layouts that map rhyme `ing` / `uai` onto `;`
+     * (Microsoft, Sogou, and Ziguang Shuangpin) while automatically restoring standard 26-key
+     * layout in English mode or symbol layers.
+     */
+    fun shouldShowSemicolonKey(
+        isSymbolLayer: Boolean,
+        isFlypyChineseMode: Boolean,
+        activeInputScheme: InputScheme,
+        doublePinyinLayout: DoublePinyinLayout
+    ): Boolean {
+        return !isSymbolLayer &&
+            isFlypyChineseMode &&
+            activeInputScheme == InputScheme.RIME_DOUBLE_PINYIN_FLYPY &&
+            doublePinyinLayout.usesSemicolonKey
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BuiltInQwertyKeyboard(
     enterActionInfo: EnterActionInfo,
     isFlypyChineseMode: Boolean,
     activeInputScheme: InputScheme = InputScheme.FLYPY_TABLE,
+    doublePinyinLayout: DoublePinyinLayout = DoublePinyinLayout.FLYPY,
     flypyComposingCode: String,
     flypyCandidateCount: Int,
     commaPeriodQuickSelect: Boolean,
@@ -306,10 +334,18 @@ fun BuiltInQwertyKeyboard(
     keycapBadgeMode: KeycapBadgeMode = KeycapBadgeMode.SWIPE_UP,
     autoCapShift: Boolean = false,
     customSchemaDisplayName: String? = null,
+    spaceLongPressAction: SpaceLongPressAction = SpaceLongPressAction.VOICE_HOLD,
+    isInPlaceVoiceActive: Boolean = false,
+    onHoldStartInPlaceVoice: () -> Unit = {},
+    onHoldReleaseInPlaceVoice: () -> Unit = {},
+    onOpenExpressionPanel: (ExpressionTab) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
     val appLang = LocalAppLanguage.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
+    val hostView = LocalView.current
 
     var isSymbolLayer by remember { mutableStateOf(false) }
     var isMoreSymbols by remember { mutableStateOf(false) }
@@ -356,7 +392,7 @@ fun BuiltInQwertyKeyboard(
     val hasActiveFlypyComposing = isFlypyChineseMode && flypyComposingCode.isNotEmpty()
     val hasFiveRows = !isSymbolLayer && showNumberRow
     val rowVPad = if (hasFiveRows) KEY_CELL_VPAD_5ROW else KEY_CELL_VPAD_4ROW
-    val letterFontSize = if (showUppercaseKeycap) 18.5.sp else 20.5.sp
+    val letterFontSize = ((if (showUppercaseKeycap) 18.5f else 20.5f) * metrics.keyFontScale).sp
     val letterFontWeight = if (showUppercaseKeycap) FontWeight.Medium else FontWeight.Normal
 
     val effectiveGestureProfile = keyGestureProfile ?: remember(isFlypyChineseMode, showNumberRow) {
@@ -520,32 +556,74 @@ fun BuiltInQwertyKeyboard(
                         }
                     }
 
-                    // Row 2: 9 uniform 1.0f visual keys centered with 0.5f edge-anchored outer hitboxes
-                    // (`a` and `l` capture outer margin taps while keeping exact 1:1 visual width with Row 1!)
+                    val showSemicolonKey = BuiltInQwertyHelper.shouldShowSemicolonKey(
+                        isSymbolLayer = isSymbolLayer,
+                        isFlypyChineseMode = isFlypyChineseMode,
+                        activeInputScheme = activeInputScheme,
+                        doublePinyinLayout = doublePinyinLayout
+                    )
+
+                    // Row 2:
+                    // - Standard 26-key: 9 uniform 1.0f visual keys centered with 0.5f edge-anchored outer hitboxes
+                    // - Semicolon Shuangpin (MSPY / Sogou / Ziguang in Chinese mode): 10 uniform 1.0f keys (`a..l ;`)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f),
                         horizontalArrangement = Arrangement.spacedBy(0.dp)
                     ) {
-                        ALPHA_ROW_2.forEachIndexed { idx, ch ->
-                            val isFirst = idx == 0
-                            val isLast = idx == ALPHA_ROW_2.lastIndex
-                            val cellWeight = if (isFirst || isLast) 1.5f else 1f
-                            val visualWidthFraction = if (isFirst || isLast) (1f / 1.5f) else 1f
-                            val visualAlignment = when {
-                                isFirst -> Alignment.CenterEnd
-                                isLast -> Alignment.CenterStart
-                                else -> Alignment.Center
+                        if (showSemicolonKey) {
+                            ALPHA_ROW_2.forEach { ch ->
+                                AlphaLetterKey(
+                                    ch = ch,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                )
                             }
-                            AlphaLetterKey(
-                                ch = ch,
-                                visualWidthFraction = visualWidthFraction,
-                                visualAlignment = visualAlignment,
+                            val semiBadge = when (keycapBadgeMode) {
+                                KeycapBadgeMode.SWIPE_UP -> "："
+                                KeycapBadgeMode.LONG_PRESS -> "；"
+                                KeycapBadgeMode.NONE -> null
+                            }
+                            QwertyCharKey(
+                                label = ";",
+                                swipeUpBadge = semiBadge,
+                                swipeUpPreviewBadge = "：",
+                                longPressBadge = "；",
+                                topCenterBadge = true,
+                                fontSize = letterFontSize,
+                                fontWeight = letterFontWeight,
+                                verticalCellPad = rowVPad,
+                                onPressPreviewStart = ::showPreviewForKey,
+                                onPressPreviewEnd = ::clearPreviewToken,
                                 modifier = Modifier
-                                    .weight(cellWeight)
-                                    .fillMaxHeight()
+                                    .weight(1f)
+                                    .fillMaxHeight(),
+                                onClick = { onCommitChar(";") },
+                                onSwipeUp = { onCommitSecondarySymbol("：") },
+                                onLongPress = { onCommitSecondarySymbol("；") }
                             )
+                        } else {
+                            ALPHA_ROW_2.forEachIndexed { idx, ch ->
+                                val isFirst = idx == 0
+                                val isLast = idx == ALPHA_ROW_2.lastIndex
+                                val cellWeight = if (isFirst || isLast) 1.5f else 1f
+                                val visualWidthFraction = if (isFirst || isLast) (1f / 1.5f) else 1f
+                                val visualAlignment = when {
+                                    isFirst -> Alignment.CenterEnd
+                                    isLast -> Alignment.CenterStart
+                                    else -> Alignment.Center
+                                }
+                                AlphaLetterKey(
+                                    ch = ch,
+                                    visualWidthFraction = visualWidthFraction,
+                                    visualAlignment = visualAlignment,
+                                    modifier = Modifier
+                                        .weight(cellWeight)
+                                        .fillMaxHeight()
+                                )
+                            }
                         }
                     }
 
@@ -566,6 +644,15 @@ fun BuiltInQwertyKeyboard(
                             onTap = {
                                 if (hasActiveFlypyComposing) {
                                     onClearComposing()
+                                } else if (
+                                    ImeLogic.shouldFiveKeyShiftTapToggleLanguage(
+                                        fiveKeyBottomRow = fiveKeyBottomRow,
+                                        isFlypyChineseMode = isFlypyChineseMode,
+                                        hasActiveFlypyComposing = hasActiveFlypyComposing,
+                                        isSymbolLayer = isSymbolLayer
+                                    )
+                                ) {
+                                    onToggleFlypyLanguageMode()
                                 } else {
                                     val now = System.currentTimeMillis()
                                     val delta = if (lastShiftTapMs > 0L) now - lastShiftTapMs else Long.MAX_VALUE
@@ -718,18 +805,27 @@ fun BuiltInQwertyKeyboard(
                         .weight(1.04f),
                     horizontalArrangement = Arrangement.spacedBy(0.dp)
                 ) {
-                    QwertyFunctionKey(
+                    QwertySymbolEmojiKey(
                         label = if (isSymbolLayer) "ABC" else "123",
+                        topBadge = "↑☺",
                         verticalCellPad = rowVPad,
                         modifier = Modifier
                             .weight(w123)
                             .fillMaxHeight(),
-                        onClick = {
+                        onTap = {
                             if (!isSymbolLayer && hasActiveFlypyComposing) {
                                 onFlushComposingBeforeLayerSwitch()
                             }
                             isSymbolLayer = !isSymbolLayer
                             isMoreSymbols = false
+                        },
+                        onOpenEmoji = {
+                            if (hasActiveFlypyComposing) {
+                                onFlushComposingBeforeLayerSwitch()
+                            }
+                            isSymbolLayer = false
+                            isMoreSymbols = false
+                            onOpenExpressionPanel(ExpressionTab.EMOJI)
                         }
                     )
 
@@ -737,6 +833,13 @@ fun BuiltInQwertyKeyboard(
                         // [中/英] Language Toggle Key: tap = toggle 中文 <-> EN, long-press = system IME picker
                         val langInteraction = remember { MutableInteractionSource() }
                         val langPressed by langInteraction.collectIsPressedAsState()
+                        LaunchedEffect(langInteraction) {
+                            langInteraction.interactions.collect { interaction ->
+                                if (interaction is PressInteraction.Press) {
+                                    keyFeedback.onTouchFeedback(HapticTier.FUNCTION_KEY, hostView, KeySoundType.STANDARD, true)
+                                }
+                            }
+                        }
                         val effectiveChinese = isFlypyChineseMode && !isSymbolLayer
                         Box(
                             modifier = Modifier
@@ -822,17 +925,22 @@ fun BuiltInQwertyKeyboard(
                     )
 
                     // Wide Space Bar: Tap commits 1st candidate / space, Hold & Slide horizontally moves cursor,
-                    // Long-press (when not sliding) toggles 中文 <-> EN
+                    // Hold >= 240ms (VOICE_HOLD default) dictates in-place, or 420ms (TOGGLE_LANGUAGE) toggles 中文 <-> EN
                     QwertySpaceBarKey(
                         isFlypyChineseMode = isFlypyChineseMode && !isSymbolLayer,
                         activeInputScheme = activeInputScheme,
+                        doublePinyinLayout = doublePinyinLayout,
                         customSchemaDisplayName = customSchemaDisplayName,
-                        fiveKeyBottomRow = fiveKeyBottomRow,
+                        fiveKeyBottomRow = fiveKeyBottomRow && !isSymbolLayer,
                         hasComposing = hasActiveFlypyComposing,
+                        spaceLongPressAction = spaceLongPressAction,
+                        isInPlaceVoiceActive = isInPlaceVoiceActive,
                         verticalCellPad = rowVPad,
                         onTap = onInsertSpace,
                         onMoveCursorByStep = onMoveCursorByStep,
                         onLongPressToggleLanguage = onToggleFlypyLanguageMode,
+                        onHoldStartInPlaceVoice = onHoldStartInPlaceVoice,
+                        onHoldReleaseInPlaceVoice = onHoldReleaseInPlaceVoice,
                         modifier = Modifier
                             .weight(wSpace)
                             .fillMaxHeight()
@@ -878,6 +986,13 @@ fun BuiltInQwertyKeyboard(
                     val isPrimaryAction = !hasActiveFlypyComposing && enterActionInfo.performEditorActionId != null
                     val enterInteraction = remember { MutableInteractionSource() }
                     val enterPressed by enterInteraction.collectIsPressedAsState()
+                    LaunchedEffect(enterInteraction) {
+                        enterInteraction.interactions.collect { interaction ->
+                            if (interaction is PressInteraction.Press) {
+                                keyFeedback.onTouchFeedback(HapticTier.FUNCTION_KEY, hostView, KeySoundType.RETURN, true)
+                            }
+                        }
+                    }
                     val enterBg = when {
                         isPrimaryAction && enterPressed -> palette.primaryMicSolid.copy(alpha = 0.86f)
                         isPrimaryAction -> palette.primaryMicSolid
@@ -1080,7 +1195,10 @@ private fun QwertyCharKey(
     onLongPress: (() -> Unit)? = null
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
     val density = LocalDensity.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
+    val hostView = LocalView.current
     val touchSlopPx = with(density) { 28.dp.toPx() }
     val swipeUpThresholdPx = with(density) { ImeLogic.SECONDARY_KEY_SWIPE_UP_DP.dp.toPx() }
 
@@ -1107,6 +1225,7 @@ private fun QwertyCharKey(
                         down.consume()
                         val startPos = down.position
                         isPressed = true
+                        keyFeedback.onTouchFeedback(HapticTier.ALPHA_KEY, hostView, KeySoundType.STANDARD, true)
                         var previewToken = currentOnPreviewStart?.invoke(
                             currentLabel,
                             keyCapOriginInWindow,
@@ -1120,6 +1239,7 @@ private fun QwertyCharKey(
                                 delay(KEY_LONG_PRESS_MS)
                                 if (!cancelled && !gestureFired) {
                                     gestureFired = true
+                                    keyFeedback.onTouchFeedback(HapticTier.GESTURE_CONFIRM, hostView, KeySoundType.NONE, false)
                                     currentOnPreviewEnd?.invoke(previewToken)
                                     val badge = currentLongPressBadge
                                     if (!badge.isNullOrEmpty()) {
@@ -1159,6 +1279,7 @@ private fun QwertyCharKey(
                                     gestureFired = true
                                     longJob?.cancel()
                                     change.consume()
+                                    keyFeedback.onTouchFeedback(HapticTier.GESTURE_CONFIRM, hostView, KeySoundType.NONE, false)
                                     currentOnPreviewEnd?.invoke(previewToken)
                                     val badge = currentSwipeUpBadge
                                     if (!badge.isNullOrEmpty()) {
@@ -1221,22 +1342,23 @@ private fun QwertyCharKey(
                 if (!swipeUpBadge.isNullOrEmpty()) {
                     val isPairedWide = topCenterBadge && swipeUpBadge.length >= 2 &&
                         swipeUpBadge.any { it.code > 0x7F }
+                    val badgeSp = when {
+                        highlightSwipeUpBadge -> (10.8f * metrics.widthScale).sp
+                        topCenterBadge -> (10.2f * metrics.widthScale).sp
+                        else -> (9.0f * metrics.widthScale).sp
+                    }
                     Text(
                         text = swipeUpBadge,
                         style = TextStyle(
                             color = if (highlightSwipeUpBadge) {
                                 palette.keyTextPrimary
                             } else {
-                                palette.keyTextMuted.copy(alpha = if (topCenterBadge) 0.78f else 0.68f)
+                                palette.keyTextMuted.copy(alpha = if (topCenterBadge) 0.86f else 0.74f)
                             },
-                            fontSize = when {
-                                highlightSwipeUpBadge -> 9.5.sp
-                                topCenterBadge -> 8.5.sp
-                                else -> 8.sp
-                            },
-                            lineHeight = 10.sp,
-                            letterSpacing = if (isPairedWide) (-1.2).sp else 0.sp,
-                            fontWeight = if (highlightSwipeUpBadge) FontWeight.Bold else FontWeight.Medium,
+                            fontSize = badgeSp,
+                            lineHeight = (badgeSp.value + 1.5f).sp,
+                            letterSpacing = if (isPairedWide) (-0.4).sp else 0.sp,
+                            fontWeight = if (highlightSwipeUpBadge) FontWeight.Bold else FontWeight.SemiBold,
                             platformStyle = PlatformTextStyle(includeFontPadding = false)
                         ),
                         maxLines = 1,
@@ -1282,26 +1404,39 @@ private fun QwertyCharKey(
 private fun QwertySpaceBarKey(
     isFlypyChineseMode: Boolean,
     activeInputScheme: InputScheme = InputScheme.FLYPY_TABLE,
+    doublePinyinLayout: DoublePinyinLayout = DoublePinyinLayout.FLYPY,
     customSchemaDisplayName: String? = null,
     fiveKeyBottomRow: Boolean = false,
     hasComposing: Boolean,
+    spaceLongPressAction: SpaceLongPressAction = SpaceLongPressAction.VOICE_HOLD,
+    isInPlaceVoiceActive: Boolean = false,
     verticalCellPad: Dp = KEY_CELL_VPAD_5ROW,
     onTap: () -> Unit,
     onMoveCursorByStep: (Int) -> Unit = {},
     onLongPressToggleLanguage: (() -> Unit)? = null,
+    onHoldStartInPlaceVoice: (() -> Unit)? = null,
+    onHoldReleaseInPlaceVoice: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val view = LocalView.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
     val density = LocalDensity.current
     val touchSlopPx = with(density) { 28.dp.toPx() }
     val slideActivatePx = with(density) { ImeLogic.SPACE_CURSOR_SLIDE_ACTIVATE_DP.dp.toPx() }
     val slideStepPx = with(density) { ImeLogic.SPACE_CURSOR_SLIDE_STEP_DP.dp.toPx() }
+    val swipeUpThresholdPx = with(density) { ImeLogic.SECONDARY_KEY_SWIPE_UP_DP.dp.toPx() }
 
     val currentOnTap by rememberUpdatedState(onTap)
     val currentOnMoveCursor by rememberUpdatedState(onMoveCursorByStep)
     val currentOnLongPressToggleLanguage by rememberUpdatedState(onLongPressToggleLanguage)
+    val currentOnHoldStartVoice by rememberUpdatedState(onHoldStartInPlaceVoice)
+    val currentOnHoldReleaseVoice by rememberUpdatedState(onHoldReleaseInPlaceVoice)
+    val currentSpaceAction by rememberUpdatedState(spaceLongPressAction)
+    val currentFiveKeyBottomRow by rememberUpdatedState(fiveKeyBottomRow)
     var isPressed by remember { mutableStateOf(false) }
     var isCursorSliding by remember { mutableStateOf(false) }
+    var isVoiceHolding by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -1311,25 +1446,46 @@ private fun QwertySpaceBarKey(
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         down.consume()
-                        val startX = down.position.x
+                        val startPos = down.position
+                        val startX = startPos.x
                         var lastX = startX
                         var accumulatedDx = 0f
                         var slidingActive = false
-                        var longPressed = false
+                        var swipedUp = false
+                        var holdTriggered = false
+                        var voiceHoldStarted = false
+                        var voiceHoldReleased = false
                         var cancelled = false
                         isPressed = true
                         isCursorSliding = false
+                        isVoiceHolding = false
+                        keyFeedback.onTouchFeedback(HapticTier.FUNCTION_KEY, view, KeySoundType.SPACEBAR, true)
 
-                        val longJob: Job? = if (currentOnLongPressToggleLanguage != null) {
-                            outerScope.launch {
-                                delay(420L)
-                                if (!cancelled && !slidingActive && !longPressed) {
-                                    longPressed = true
-                                    currentOnLongPressToggleLanguage?.invoke()
+                        val actionAtDown = currentSpaceAction
+                        val holdJob: Job? = when {
+                            actionAtDown == SpaceLongPressAction.VOICE_HOLD && currentOnHoldStartVoice != null -> {
+                                outerScope.launch {
+                                    delay(ImeLogic.SPACE_VOICE_HOLD_MS)
+                                    if (!cancelled && !slidingActive && !swipedUp && !holdTriggered) {
+                                        holdTriggered = true
+                                        voiceHoldStarted = true
+                                        isVoiceHolding = true
+                                        keyFeedback.onTouchFeedback(HapticTier.MIC_STRONG, view, KeySoundType.NONE, false)
+                                        currentOnHoldStartVoice?.invoke()
+                                    }
                                 }
                             }
-                        } else {
-                            null
+                            actionAtDown == SpaceLongPressAction.TOGGLE_LANGUAGE && currentOnLongPressToggleLanguage != null -> {
+                                outerScope.launch {
+                                    delay(ImeLogic.SPACE_LANGUAGE_LONG_PRESS_MS)
+                                    if (!cancelled && !slidingActive && !swipedUp && !holdTriggered) {
+                                        holdTriggered = true
+                                        keyFeedback.onTouchFeedback(HapticTier.GESTURE_CONFIRM, view, KeySoundType.NONE, false)
+                                        currentOnLongPressToggleLanguage?.invoke()
+                                    }
+                                }
+                            }
+                            else -> null
                         }
 
                         try {
@@ -1338,18 +1494,38 @@ private fun QwertySpaceBarKey(
                                 val change = event.changes.firstOrNull { it.id == down.id }
                                 if (change == null) {
                                     cancelled = true
-                                    longJob?.cancel()
+                                    holdJob?.cancel()
                                     break
                                 }
                                 val pos = change.position
                                 val totalDx = pos.x - startX
+                                val totalDy = pos.y - startPos.y
                                 val frameDx = pos.x - lastX
                                 lastX = pos.x
 
-                                if (!longPressed && !slidingActive && abs(totalDx) >= slideActivatePx) {
+                                if (
+                                    !holdTriggered &&
+                                    !slidingActive &&
+                                    !swipedUp &&
+                                    !cancelled &&
+                                    currentOnLongPressToggleLanguage != null &&
+                                    ImeLogic.shouldSwipeUpSpaceToggleLanguage(
+                                        fiveKeyBottomRow = currentFiveKeyBottomRow,
+                                        spaceLongPressAction = actionAtDown,
+                                        dxPx = totalDx,
+                                        dyPx = totalDy,
+                                        thresholdPx = swipeUpThresholdPx
+                                    )
+                                ) {
+                                    swipedUp = true
+                                    holdJob?.cancel()
+                                    change.consume()
+                                    keyFeedback.onTouchFeedback(HapticTier.GESTURE_CONFIRM, view, KeySoundType.NONE, false)
+                                    currentOnLongPressToggleLanguage?.invoke()
+                                } else if (!holdTriggered && !swipedUp && !slidingActive && abs(totalDx) >= slideActivatePx) {
                                     slidingActive = true
                                     isCursorSliding = true
-                                    longJob?.cancel()
+                                    holdJob?.cancel()
                                     accumulatedDx = totalDx
                                 } else if (slidingActive) {
                                     accumulatedDx += frameDx
@@ -1366,12 +1542,13 @@ private fun QwertySpaceBarKey(
                                         currentOnMoveCursor(steps)
                                     }
                                 } else if (
-                                    !longPressed &&
+                                    !holdTriggered &&
+                                    !swipedUp &&
                                     (pos.y < -touchSlopPx ||
                                         pos.y > size.height + touchSlopPx)
                                 ) {
                                     cancelled = true
-                                    longJob?.cancel()
+                                    holdJob?.cancel()
                                     isPressed = false
                                 }
 
@@ -1383,10 +1560,15 @@ private fun QwertySpaceBarKey(
                         } finally {
                             isPressed = false
                             isCursorSliding = false
-                            longJob?.cancel()
+                            isVoiceHolding = false
+                            holdJob?.cancel()
+                            if (voiceHoldStarted && !voiceHoldReleased) {
+                                voiceHoldReleased = true
+                                currentOnHoldReleaseVoice?.invoke()
+                            }
                         }
 
-                        if (!cancelled && !slidingActive && !longPressed) {
+                        if (!cancelled && !slidingActive && !swipedUp && !holdTriggered) {
                             currentOnTap()
                         }
                     }
@@ -1394,11 +1576,22 @@ private fun QwertySpaceBarKey(
             }
             .padding(horizontal = KEY_CELL_HPAD, vertical = verticalCellPad)
     ) {
+        val activeSpaceVoice = isVoiceHolding && isInPlaceVoiceActive
+        val faceColor = when {
+            activeSpaceVoice -> TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.22f else 0.14f)
+            isPressed -> palette.keyCapSecondaryBg
+            else -> palette.keyCapBg
+        }
+        val borderColor = if (activeSpaceVoice) {
+            TypeFreeEmerald.copy(alpha = 0.68f)
+        } else {
+            palette.keyBorder.copy(alpha = if (palette.isDark) 0.58f else 0.50f)
+        }
         TactileKeycapSurface(
             isPressed = isPressed,
             cornerRadius = FUNC_KEY_CORNER,
-            faceColor = if (isPressed) palette.keyCapSecondaryBg else palette.keyCapBg,
-            borderColor = palette.keyBorder.copy(alpha = if (palette.isDark) 0.58f else 0.50f),
+            faceColor = faceColor,
+            borderColor = borderColor,
             shadowColor = palette.keyShadow
         ) {
             val spaceLang = LocalAppLanguage.current
@@ -1408,22 +1601,37 @@ private fun QwertySpaceBarKey(
                     if (spaceLang == AppLang.EN && clean.contains("小鹤")) "Flypy" else clean
                 }
                 activeInputScheme == InputScheme.RIME_CUSTOM -> tr("自定义码表", "Rime", "自訂碼表")
-                spaceLang == AppLang.EN -> AppStrings.inputSchemeLabel(activeInputScheme, spaceLang)
-                else -> shortInputSchemeLabel(activeInputScheme)
+                spaceLang == AppLang.EN -> AppStrings.inputSchemeLabel(activeInputScheme, spaceLang, doublePinyinLayout)
+                else -> shortInputSchemeLabel(activeInputScheme, doublePinyinLayout)
             }
             val label = when {
+                activeSpaceVoice -> tr("🎙 聆听中 · 松手上屏", "🎙 Listening · Release", "🎙 聆聽中 · 放開上屏")
                 isCursorSliding -> tr("‹ 滑动移光标 ›", "‹ Slide cursor ›", "‹ 滑動移游標 ›")
-                hasComposing -> tr("空格首选", "Space: 1st", "空白首選")
-                isFlypyChineseMode -> if (fiveKeyBottomRow) "$resolvedChineseName · 中" else resolvedChineseName
-                else -> if (fiveKeyBottomRow) "English · EN" else "English"
+                else -> ImeLogic.resolveQwertySpaceBarLabel(
+                    lang = spaceLang,
+                    isSpaceVoiceActive = false,
+                    isCursorSliding = false,
+                    hasComposing = hasComposing,
+                    isFlypyChineseMode = isFlypyChineseMode,
+                    fiveKeyBottomRow = fiveKeyBottomRow,
+                    resolvedChineseSchemeName = resolvedChineseName
+                )
+            }
+            val labelColor = when {
+                activeSpaceVoice -> if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+                hasComposing || isCursorSliding -> palette.keyTextPrimary
+                else -> palette.keyTextMuted
             }
             Text(
                 text = label,
-                color = if (hasComposing || isCursorSliding) palette.keyTextPrimary else palette.keyTextMuted,
+                color = labelColor,
                 fontSize = 12.sp,
-                fontWeight = if (hasComposing || isCursorSliding) FontWeight.SemiBold else FontWeight.Medium,
+                fontWeight = if (activeSpaceVoice || hasComposing || isCursorSliding) FontWeight.SemiBold else FontWeight.Medium,
                 maxLines = 1,
-                modifier = Modifier.align(Alignment.Center)
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 4.dp)
             )
         }
     }
@@ -1437,8 +1645,17 @@ private fun QwertyFunctionKey(
     onClick: () -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
+    val hostView = LocalView.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
+    LaunchedEffect(interactionSource) {
+        interactionSource.interactions.collect { interaction ->
+            if (interaction is PressInteraction.Press) {
+                keyFeedback.onTouchFeedback(HapticTier.FUNCTION_KEY, hostView, KeySoundType.STANDARD, false)
+            }
+        }
+    }
 
     Box(
         modifier = modifier
@@ -1468,6 +1685,139 @@ private fun QwertyFunctionKey(
     }
 }
 
+/**
+ * Bottom-left `123` / `ABC` key with default Emoji/Kaomoji/Symbol panel entry:
+ * - Tap: toggles numeric/symbol layer (`123` <-> `ABC`) with zero regression to fast digit typing.
+ * - Swipe-up (`>= 18.dp`) or Long-press: opens the unified Expression & Symbol panel on the Emoji tab.
+ */
+@Composable
+private fun QwertySymbolEmojiKey(
+    label: String,
+    topBadge: String,
+    verticalCellPad: Dp = KEY_CELL_VPAD_5ROW,
+    modifier: Modifier = Modifier,
+    onTap: () -> Unit,
+    onOpenEmoji: () -> Unit
+) {
+    val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
+    val density = LocalDensity.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
+    val hostView = LocalView.current
+    val touchSlopPx = with(density) { 28.dp.toPx() }
+    val swipeUpThresholdPx = with(density) { ImeLogic.SECONDARY_KEY_SWIPE_UP_DP.dp.toPx() }
+
+    val currentOnTap by rememberUpdatedState(onTap)
+    val currentOnOpenEmoji by rememberUpdatedState(onOpenEmoji)
+    var isPressed by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = modifier
+            .pointerInput(Unit) {
+                coroutineScope {
+                    val outerScope = this
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        down.consume()
+                        val startPos = down.position
+                        isPressed = true
+                        keyFeedback.onTouchFeedback(HapticTier.FUNCTION_KEY, hostView, KeySoundType.STANDARD, false)
+                        var gestureFired = false
+                        var cancelled = false
+
+                        val longJob = outerScope.launch {
+                            delay(KEY_LONG_PRESS_MS)
+                            if (!cancelled && !gestureFired) {
+                                gestureFired = true
+                                keyFeedback.onTouchFeedback(HapticTier.GESTURE_CONFIRM, hostView, KeySoundType.NONE, true)
+                                currentOnOpenEmoji()
+                            }
+                        }
+
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id }
+                                if (change == null) {
+                                    cancelled = true
+                                    break
+                                }
+                                val pos = change.position
+                                val dx = pos.x - startPos.x
+                                val dy = pos.y - startPos.y
+                                if (!gestureFired && !cancelled && dy <= -swipeUpThresholdPx && abs(dy) > abs(dx)) {
+                                    gestureFired = true
+                                    longJob.cancel()
+                                    change.consume()
+                                    keyFeedback.onTouchFeedback(HapticTier.GESTURE_CONFIRM, hostView, KeySoundType.NONE, true)
+                                    currentOnOpenEmoji()
+                                } else if (
+                                    !gestureFired &&
+                                    (pos.x < -touchSlopPx ||
+                                        pos.x > size.width + touchSlopPx ||
+                                        pos.y < -touchSlopPx ||
+                                        pos.y > size.height + touchSlopPx)
+                                ) {
+                                    cancelled = true
+                                    longJob.cancel()
+                                    isPressed = false
+                                }
+                                if (!change.pressed) {
+                                    change.consume()
+                                    break
+                                }
+                            }
+                        } finally {
+                            isPressed = false
+                            longJob.cancel()
+                        }
+
+                        if (!cancelled && !gestureFired) {
+                            currentOnTap()
+                        }
+                    }
+                }
+            }
+            .padding(horizontal = KEY_CELL_HPAD, vertical = verticalCellPad)
+    ) {
+        TactileKeycapSurface(
+            isPressed = isPressed,
+            cornerRadius = FUNC_KEY_CORNER,
+            faceColor = if (isPressed) palette.keyBorder else palette.keyCapSecondaryBg,
+            borderColor = palette.keyBorder.copy(alpha = 0.65f),
+            shadowColor = palette.keyShadow
+        ) {
+            Text(
+                text = topBadge,
+                style = TextStyle(
+                    color = palette.keyTextMuted.copy(alpha = 0.82f),
+                    fontSize = (9.5f * metrics.widthScale).sp,
+                    lineHeight = (11f * metrics.widthScale).sp,
+                    fontWeight = FontWeight.SemiBold,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                ),
+                maxLines = 1,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 2.dp)
+            )
+            Text(
+                text = label,
+                style = TextStyle(
+                    color = palette.keyTextPrimary,
+                    fontSize = (12.5f * metrics.keyFontScale).sp,
+                    fontWeight = FontWeight.SemiBold,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                ),
+                maxLines = 1,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .offset(y = 3.5.dp)
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun QwertyShiftKey(
@@ -1479,8 +1829,18 @@ private fun QwertyShiftKey(
     onLongPress: () -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
+    val hostView = LocalView.current
+    val currentClearCode by rememberUpdatedState(isClearCodeMode)
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
+    LaunchedEffect(interactionSource) {
+        interactionSource.interactions.collect { interaction ->
+            if (interaction is PressInteraction.Press) {
+                keyFeedback.onTouchFeedback(HapticTier.FUNCTION_KEY, hostView, KeySoundType.STANDARD, currentClearCode)
+            }
+        }
+    }
 
     val bgColor = when {
         isClearCodeMode -> if (isPressed) palette.keyBorder else palette.keyCapSecondaryBg
@@ -1557,6 +1917,8 @@ private fun QwertyRepeatingBackspaceKey(
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val density = LocalDensity.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
+    val hostView = LocalView.current
     val swipeUpThresholdPx = with(density) { 24.dp.toPx() }
 
     val currentOnBackspace by rememberUpdatedState(onBackspace)
@@ -1573,6 +1935,7 @@ private fun QwertyRepeatingBackspaceKey(
                         down.consume()
                         val startPos = down.position
                         isHolding = true
+                        keyFeedback.onTouchFeedback(HapticTier.FUNCTION_KEY, hostView, KeySoundType.DELETE, true)
                         var swipedUp = false
                         var repeatStarted = false
 
@@ -1581,6 +1944,7 @@ private fun QwertyRepeatingBackspaceKey(
                             if (!swipedUp) {
                                 repeatStarted = true
                                 while (isActive && !swipedUp) {
+                                    keyFeedback.onTouchFeedback(HapticTier.CURSOR_TICK, hostView, KeySoundType.DELETE, true)
                                     currentOnBackspace()
                                     delay(48L)
                                 }
@@ -1595,6 +1959,7 @@ private fun QwertyRepeatingBackspaceKey(
                                     swipedUp = true
                                     repeatJob.cancel()
                                     change.consume()
+                                    keyFeedback.onTouchFeedback(HapticTier.GESTURE_CONFIRM, hostView, KeySoundType.NONE, false)
                                     currentOnSwipeUpAction()
                                 }
                                 if (!change.pressed) {

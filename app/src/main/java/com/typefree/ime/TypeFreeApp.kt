@@ -72,7 +72,9 @@ class TypeFreeApp : Application() {
             rimeBridge = rimeDataManager.rimeBridge,
             initialScheme = repository.settings.value.inputScheme,
             externalEnhancedSchemePredicate = { rimeDataManager.isSchemeHandledByEnhancedEngine(it) },
-            customSchemaIdProvider = { rimeDataManager.resolveCustomSchemaId() }
+            customSchemaIdProvider = { rimeDataManager.resolveCustomSchemaId() },
+            initialDoublePinyinLayout = repository.settings.value.doublePinyinLayout,
+            onEnsureSchemaDeployed = { rimeDataManager.ensureBuiltInSchemaDeployedSync(it) }
         )
         rimeInputEngine.setFixedCandidateOrder(repository.settings.value.fixedCandidateOrder)
         TypeFreeBubbleController.syncBubbleService(this)
@@ -85,14 +87,18 @@ class TypeFreeApp : Application() {
         if (!rimeDeploying.compareAndSet(false, true)) return
         appScope.launch {
             try {
-                val initialScheme = repository.settings.value.inputScheme
-                val state = rimeDataManager.deployDefaultSync(initialScheme)
-                val latestScheme = repository.settings.value.inputScheme
+                val initialSettings = repository.settings.value
+                val state = rimeDataManager.deployDefaultSync(
+                    initialScheme = initialSettings.inputScheme,
+                    doublePinyinLayout = initialSettings.doublePinyinLayout
+                )
+                val latestSettings = repository.settings.value
+                val latestScheme = latestSettings.inputScheme
                 if (rimeDataManager.isSchemeHandledByEnhancedEngine(latestScheme)) {
                     rimeDataManager.activateEnhancedSchemeSync(latestScheme)
                 }
-                rimeInputEngine.setInputScheme(latestScheme)
-                rimeInputEngine.setFixedCandidateOrder(repository.settings.value.fixedCandidateOrder)
+                rimeInputEngine.setInputScheme(latestScheme, latestSettings.doublePinyinLayout)
+                rimeInputEngine.setFixedCandidateOrder(latestSettings.fixedCandidateOrder)
                 if (state is RimeDeploymentState.Ready) {
                     Log.i(
                         "TypeFreeRime",

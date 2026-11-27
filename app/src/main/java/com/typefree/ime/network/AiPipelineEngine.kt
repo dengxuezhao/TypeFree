@@ -418,7 +418,13 @@ class AiPipelineEngine(
                 }
                 if (planText is TextRoute.Blocked) {
                     return@withContext Result.failure(
-                        IllegalStateException(routeBlockMessage(planText.reason, "纯离线锁已开启，当前任务不支持离线执行"))
+                        IllegalStateException(
+                            routeBlockMessage(
+                                reason = planText.reason,
+                                defaultCloudHint = "纯离线锁已开启，当前任务不支持离线执行",
+                                task = task
+                            )
+                        )
                     )
                 }
             } else if (settings.offlineConfig.mode != OfflineMode.OFF &&
@@ -1579,9 +1585,17 @@ class AiPipelineEngine(
         else -> OfflineModelCatalog.findById(modelId)?.displayName ?: modelId
     }
 
-    private fun routeBlockMessage(reason: RouteBlockReason, defaultCloudHint: String): String = when (reason) {
+    private fun routeBlockMessage(
+        reason: RouteBlockReason,
+        defaultCloudHint: String,
+        task: AiTask? = null
+    ): String = when (reason) {
         RouteBlockReason.SECURE_FIELD -> "当前为密码框或安全输入域，已禁用语音与 AI 推理"
-        RouteBlockReason.OFFLINE_ONLY_UNSUPPORTED_TASK -> "纯离线锁已开启，当前任务不支持离线执行（可切换至混合模式或关闭纯离线锁）"
+        RouteBlockReason.OFFLINE_ONLY_UNSUPPORTED_TASK -> when (task) {
+            AiTask.TRANSLATE -> "离线快译需 2B+ 本机模型或配置云端 API（当前 0.8B 专精听写净写）"
+            AiTask.HELP_ME_WRITE -> "离线帮写需 2B+ 本机模型或配置云端 API（当前 0.8B 专精听写净写）"
+            else -> "纯离线锁已开启，当前任务不支持离线执行（可切换至混合模式或关闭纯离线锁）"
+        }
         RouteBlockReason.OFFLINE_ONLY_NO_MODEL -> "纯离线锁已开启，请先在「离线模型」页面下载并启用所需本机模型"
         RouteBlockReason.LOCAL_MODEL_UNAVAILABLE -> "已选本机离线模型损坏或推理服务暂不可用，请重新校验或切换模型"
         RouteBlockReason.NO_CLOUD_OR_LOCAL_AVAILABLE -> defaultCloudHint

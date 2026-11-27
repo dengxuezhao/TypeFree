@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -33,6 +32,7 @@ import androidx.compose.ui.zIndex
 import com.typefree.ime.data.AppSettings
 import com.typefree.ime.data.ClipboardEntry
 import com.typefree.ime.data.DefaultPresets
+import com.typefree.ime.data.ExpressionTab
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
@@ -43,11 +43,13 @@ import com.typefree.ime.ime.candidates.CandidateGridOverlay
 import com.typefree.ime.ime.candidates.CandidateStrip
 import com.typefree.ime.ime.candidates.FloatingPreeditCapsule
 import com.typefree.ime.ime.candidates.PredictionCandidateBar
+import com.typefree.ime.ime.candidates.T9QuickPunctuationBar
 import com.typefree.ime.ime.chrome.ErrorContextBanner
 import com.typefree.ime.ime.chrome.InlineStyleSelectorStrip
 import com.typefree.ime.ime.chrome.TypeFreeTopBar
 import com.typefree.ime.ime.panels.ArcTranslateFullPanel
 import com.typefree.ime.ime.panels.AskAiCardPanel
+import com.typefree.ime.ime.panels.ExpressionSymbolPanelHost
 import com.typefree.ime.ime.panels.HelpMeWritePanel
 import com.typefree.ime.ime.panels.RealtimeTranslatePanel
 import com.typefree.ime.ime.panels.SpeakToEditPanel
@@ -146,8 +148,9 @@ fun KeyboardScreen(
     val metrics = LocalKeyboardMetrics.current
     val resolvedSubPanel = uiState.resolvedVoiceSubPanel
     val isInSubPanel = uiState.tabMode == KeyboardTabMode.VOICE && resolvedSubPanel != VoiceSubPanel.NONE
-    val isActiveQwertyGrid = !uiState.isClipboardOpen && !uiState.isToolPanelOpen &&
-        !isInSubPanel && !uiState.isArcTranslateActive && uiState.tabMode == KeyboardTabMode.QWERTY
+    val isActiveQwertyGrid = !uiState.isClipboardOpen && !uiState.isExpressionPanelOpen &&
+        !uiState.isToolPanelOpen && !isInSubPanel && !uiState.isArcTranslateActive &&
+        uiState.tabMode == KeyboardTabMode.QWERTY
     val fiveKeyBottomRowActive = settings.codetableFiveKeyBottomRow && (
         uiState.activeInputScheme == InputScheme.FLYPY_TABLE ||
             uiState.activeInputScheme == InputScheme.RIME_CUSTOM ||
@@ -179,7 +182,7 @@ fun KeyboardScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(KeyboardMetrics.FLOATING_PREEDIT_OVERHANG_DP.dp)
-                .padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+                .padding(start = 12.dp, end = 12.dp, bottom = 2.dp),
             contentAlignment = androidx.compose.ui.Alignment.BottomStart
         ) {
             if (isActiveQwertyGrid && uiState.isFlypyComposing) {
@@ -195,7 +198,7 @@ fun KeyboardScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(palette.keyboardCanvas)
-                .navigationBarsPadding()
+                .padding(bottom = KeyboardMetrics.resolveImeSystemBottomInsetDp(uiState.systemBottomInsetPx))
                 .height(metrics.frameHeight)
         ) {
         // Subtle 1.dp top divider (fixed across all height levels)
@@ -237,7 +240,7 @@ fun KeyboardScreen(
                             onBackspace = onBackspace
                         )
                     }
-
+                    uiState.isExpressionPanelOpen -> ExpressionSymbolPanelHost(uiState, settings, onAction)
                     uiState.tabMode == KeyboardTabMode.VOICE &&
                         resolvedSubPanel == VoiceSubPanel.ASK_AI_CARD -> {
                         AskAiCardPanel(
@@ -298,80 +301,77 @@ fun KeyboardScreen(
                     }
 
                     else -> {
-                        val headerSidePadModifier = if (isActiveQwertyGrid) {
-                            Modifier.padding(horizontal = 12.dp)
-                        } else {
-                            Modifier
-                        }
+                        val headerSidePadModifier = if (isActiveQwertyGrid) Modifier.padding(horizontal = 12.dp) else Modifier
 
-                        // Fixed 34.dp Top Bar Slot
+                        // Fixed Top Bar Slot
                         Box(modifier = Modifier.fillMaxWidth().then(headerSidePadModifier)) {
                             when {
-                                uiState.isFlypyComposing -> {
-                                    CandidateStrip(
-                                        composingCode = uiState.flypyComposingCode,
-                                        preeditDisplay = uiState.preeditDisplay,
-                                        inputScheme = uiState.activeInputScheme,
-                                        candidates = uiState.flypyCandidates,
-                                        hasMoreCandidates = uiState.hasMoreCandidates,
-                                        isSheetExpanded = uiState.isFlypyCandidateSheetExpanded,
-                                        onSelectCandidate = onSelectFlypyCandidate,
-                                        onToggleSheet = onToggleFlypyCandidateSheet,
-                                        onClearCode = onClearFlypyComposing,
-                                        onRequestMoreCandidates = onRequestMoreCandidates,
-                                        codetableEnhancerActive = uiState.codetableEnhancerActive,
-                                        pinnedWordsForCurrentCode = uiState.pinnedWordsForCurrentCode,
-                                        onPinCandidate = { onAction(ImeUiAction.PinCandidate(it)) },
-                                        onUnpinCandidate = { onAction(ImeUiAction.UnpinCandidate(it)) },
-                                        onBlockCandidate = { onAction(ImeUiAction.BlockCandidate(it)) },
-                                        isOrqDateActive = uiState.isOrqDateActive,
-                                        orqDateOffsetDays = uiState.orqDateOffsetDays,
-                                        onStepOrqDate = { delta -> onAction(ImeUiAction.StepOrqDate(delta)) }
-                                    )
-                                }
+                                uiState.isFlypyComposing -> CandidateStrip(
+                                    composingCode = uiState.flypyComposingCode,
+                                    preeditDisplay = uiState.preeditDisplay,
+                                    inputScheme = uiState.activeInputScheme,
+                                    candidates = uiState.flypyCandidates,
+                                    hasMoreCandidates = uiState.hasMoreCandidates,
+                                    isSheetExpanded = uiState.isFlypyCandidateSheetExpanded,
+                                    onSelectCandidate = onSelectFlypyCandidate,
+                                    onToggleSheet = onToggleFlypyCandidateSheet,
+                                    onClearCode = onClearFlypyComposing,
+                                    onRequestMoreCandidates = onRequestMoreCandidates,
+                                    codetableEnhancerActive = uiState.codetableEnhancerActive,
+                                    pinnedWordsForCurrentCode = uiState.pinnedWordsForCurrentCode,
+                                    onPinCandidate = { onAction(ImeUiAction.PinCandidate(it)) },
+                                    onUnpinCandidate = { onAction(ImeUiAction.UnpinCandidate(it)) },
+                                    onBlockCandidate = { onAction(ImeUiAction.BlockCandidate(it)) },
+                                    isOrqDateActive = uiState.isOrqDateActive,
+                                    orqDateOffsetDays = uiState.orqDateOffsetDays,
+                                    onStepOrqDate = { delta -> onAction(ImeUiAction.StepOrqDate(delta)) }
+                                )
 
-                                !uiState.isToolPanelOpen && uiState.isPredictionBarVisible -> {
-                                    PredictionCandidateBar(
-                                        isToolPanelOpen = uiState.isToolPanelOpen,
-                                        predictions = uiState.predictionCandidates,
-                                        aiCompletion = uiState.aiCompletionSuggestion,
-                                        onToggleToolPanel = onToggleToolPanel,
-                                        onSelectPrediction = onSelectPredictionCandidate,
-                                        onSelectAiCompletion = onSelectAiCompletion,
-                                        onDismiss = onDismissPredictions,
-                                        passiveMathResult = uiState.passiveMathResult,
-                                        onSelectPassiveMath = { onAction(ImeUiAction.SelectPassiveMath(it)) },
-                                        phraseSuggestionLabel = uiState.activePhraseSuggestionLabel,
-                                        onAcceptPhraseSuggestion = { onAction(ImeUiAction.AcceptPhraseSuggestion) },
-                                        onDismissPhraseSuggestion = { onAction(ImeUiAction.DismissPhraseSuggestion) },
-                                        englishSuggestions = uiState.englishSuggestions,
-                                        onSelectEnglishSuggestion = { onAction(ImeUiAction.SelectEnglishSuggestion(it)) }
-                                    )
-                                }
+                                !uiState.isToolPanelOpen && uiState.isT9QuickPunctuationOpen -> T9QuickPunctuationBar(
+                                    isToolPanelOpen = uiState.isToolPanelOpen,
+                                    activeSymbol = uiState.activeT9CycleSymbol,
+                                    onToggleToolPanel = onToggleToolPanel,
+                                    onSelectSymbol = { onAction(ImeUiAction.SelectT9QuickPunctuation(it)) },
+                                    onDismiss = { onAction(ImeUiAction.DismissT9QuickPunctuation) }
+                                )
 
-                                else -> {
-                                    TypeFreeTopBar(
-                                        uiState = uiState,
-                                        settings = settings,
-                                        activeStyle = activeStyle,
-                                        isAutoMatched = isAutoMatched,
-                                        onToggleToolPanel = onToggleToolPanel,
-                                        onSelectTabMode = onSelectTabMode,
-                                        onOpenHelpMeWrite = onOpenHelpMeWrite,
-                                        onToggleFlypyLanguageMode = onToggleFlypyLanguageMode,
-                                        onToggleStylePicker = onToggleStylePicker,
-                                        onPerformUndo = onPerformUndo,
-                                        onPasteClipboardText = onPasteClipboardText,
-                                        onDismissFreshClipboardBanner = { onAction(ImeUiAction.DismissFreshClipboardBanner) },
-                                        onToggleManualIncognito = onToggleManualIncognito,
-                                        onToggleClipboard = {
-                                            if (uiState.isClipboardOpen) onCloseClipboard() else onOpenClipboard()
-                                        },
-                                        onStartVoiceDictation = { onMicPressDown(VoiceIntentMode.DICTATE) },
-                                        onStopVoiceDictation = onMicPressUp,
-                                        onOpenAskAiCard = { onAction(ImeUiAction.OpenAskAiCard) }
-                                    )
-                                }
+                                !uiState.isToolPanelOpen && uiState.isPredictionBarVisible -> PredictionCandidateBar(
+                                    isToolPanelOpen = uiState.isToolPanelOpen,
+                                    predictions = uiState.predictionCandidates,
+                                    aiCompletion = uiState.aiCompletionSuggestion,
+                                    onToggleToolPanel = onToggleToolPanel,
+                                    onSelectPrediction = onSelectPredictionCandidate,
+                                    onSelectAiCompletion = onSelectAiCompletion,
+                                    onDismiss = onDismissPredictions,
+                                    passiveMathResult = uiState.passiveMathResult,
+                                    onSelectPassiveMath = { onAction(ImeUiAction.SelectPassiveMath(it)) },
+                                    phraseSuggestionLabel = uiState.activePhraseSuggestionLabel,
+                                    onAcceptPhraseSuggestion = { onAction(ImeUiAction.AcceptPhraseSuggestion) },
+                                    onDismissPhraseSuggestion = { onAction(ImeUiAction.DismissPhraseSuggestion) },
+                                    englishSuggestions = uiState.englishSuggestions,
+                                    onSelectEnglishSuggestion = { onAction(ImeUiAction.SelectEnglishSuggestion(it)) }
+                                )
+
+                                else -> TypeFreeTopBar(
+                                    uiState = uiState,
+                                    settings = settings,
+                                    activeStyle = activeStyle,
+                                    isAutoMatched = isAutoMatched,
+                                    onToggleToolPanel = onToggleToolPanel,
+                                    onSelectTabMode = onSelectTabMode,
+                                    onOpenHelpMeWrite = onOpenHelpMeWrite,
+                                    onToggleFlypyLanguageMode = onToggleFlypyLanguageMode,
+                                    onToggleStylePicker = onToggleStylePicker,
+                                    onPerformUndo = onPerformUndo,
+                                    onPasteClipboardText = onPasteClipboardText,
+                                    onDismissFreshClipboardBanner = { onAction(ImeUiAction.DismissFreshClipboardBanner) },
+                                    onToggleManualIncognito = onToggleManualIncognito,
+                                    onToggleClipboard = { if (uiState.isClipboardOpen) onCloseClipboard() else onOpenClipboard() },
+                                    onStartVoiceDictation = { onAction(ImeUiAction.HoldStartInPlaceVoice) },
+                                    onStopVoiceDictation = { onAction(ImeUiAction.HoldReleaseInPlaceVoice) },
+                                    onOpenAskAiCard = { onAction(ImeUiAction.OpenAskAiCard) },
+                                    onDismissInlineAutofill = { onAction(ImeUiAction.DismissInlineAutofill) }
+                                )
                             }
                         }
 
@@ -380,13 +380,7 @@ fun KeyboardScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
-                                .then(
-                                    if (isActiveQwertyGrid) {
-                                        Modifier.padding(horizontal = 3.dp)
-                                    } else {
-                                        Modifier
-                                    }
-                                )
+                                .then(if (isActiveQwertyGrid) Modifier.padding(horizontal = 3.dp) else Modifier)
                         ) {
                             when {
                                 uiState.isToolPanelOpen -> {
@@ -408,12 +402,14 @@ fun KeyboardScreen(
                                         onOpenHelpMeWrite = onOpenHelpMeWrite,
                                         onToggleManualIncognito = onToggleManualIncognito,
                                         onToggleSingleCharMode = { onAction(ImeUiAction.ToggleSingleCharMode) },
+                                        onOpenExpressionPanel = { onAction(ImeUiAction.OpenExpressionPanel(ExpressionTab.EMOJI)) },
                                         onOpenDictionary = { onOpenHostApp(AppDestinations.TAB_KEYBOARD) },
                                         onOpenSettings = { onOpenHostApp(AppDestinations.TAB_GENERAL) },
                                         showLanguageTogglePill = fiveKeyBottomRowActive,
                                         onToggleLanguageMode = onToggleFlypyLanguageMode,
                                         isPhraseRecording = uiState.isPhraseRecording,
-                                        onTogglePhraseRecording = { onAction(ImeUiAction.TogglePhraseRecording) }
+                                        onTogglePhraseRecording = { onAction(ImeUiAction.TogglePhraseRecording) },
+                                        onAction = onAction
                                     )
                                 }
 
@@ -448,7 +444,7 @@ fun KeyboardScreen(
                                 uiState.tabMode == KeyboardTabMode.QWERTY -> {
                                     val customSchemaName = remember(uiState.activeInputScheme, uiState.inputSessionToken) { runCatching { com.typefree.ime.TypeFreeApp.instance.rimeDataManager.readCustomSchemaName() }.getOrNull() }
                                     if (uiState.activeInputScheme == InputScheme.RIME_T9_PINYIN && uiState.isFlypyChineseMode) {
-                                        BuiltInT9KeyboardHost(uiState, settings.qwertyKeyPopupPreview, onAction, settings.backspaceSwipeUpClearEnabled)
+                                        BuiltInT9KeyboardHost(uiState, settings.qwertyKeyPopupPreview, onAction, settings.backspaceSwipeUpClearEnabled, settings.spaceLongPressAction)
                                     } else BuiltInQwertyKeyboard(
                                         enterActionInfo = uiState.resolveEnterActionInfo(LocalAppLanguage.current != AppLang.EN),
                                         isFlypyChineseMode = uiState.isFlypyChineseMode,
@@ -477,14 +473,19 @@ fun KeyboardScreen(
                                         showNumberRow = settings.qwertyShowNumberRow,
                                         inputSessionToken = uiState.inputSessionToken,
                                         showKeyPopupPreview = settings.qwertyKeyPopupPreview,
-                                        activeInputScheme = uiState.activeInputScheme,
+                                        activeInputScheme = uiState.activeInputScheme, doublePinyinLayout = settings.doublePinyinLayout,
                                         keyGestureProfile = effectiveKeyGestureProfile,
                                         onTriggerKeyGesture = { onAction(ImeUiAction.TriggerKeyGesture(it)) },
                                         fiveKeyBottomRow = fiveKeyBottomRowActive,
                                         keycapBadgeMode = settings.keycapBadgeMode,
                                         autoCapShift = uiState.englishAutoCapActive,
                                         customSchemaDisplayName = customSchemaName,
-                                        onSwipeUpPeriodSlash = { onAction(ImeUiAction.SwipeUpPeriodSlash) }
+                                        spaceLongPressAction = settings.spaceLongPressAction,
+                                        isInPlaceVoiceActive = uiState.tabMode == KeyboardTabMode.QWERTY && uiState.voicePhase is VoicePhase.Recording,
+                                        onHoldStartInPlaceVoice = { onAction(ImeUiAction.HoldStartInPlaceVoice) },
+                                        onHoldReleaseInPlaceVoice = { onAction(ImeUiAction.HoldReleaseInPlaceVoice) },
+                                        onSwipeUpPeriodSlash = { onAction(ImeUiAction.SwipeUpPeriodSlash) },
+                                        onOpenExpressionPanel = { onAction(ImeUiAction.OpenExpressionPanel(it)) }
                                     )
 
                                     if (

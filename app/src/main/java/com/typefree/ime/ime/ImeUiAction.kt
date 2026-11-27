@@ -1,5 +1,9 @@
 package com.typefree.ime.ime
 
+import com.typefree.ime.data.CandidateFontScale
+import com.typefree.ime.data.DoublePinyinLayout
+import com.typefree.ime.data.ExpressionTab
+import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
@@ -18,6 +22,10 @@ sealed interface ImeUiAction {
     data object DismissSpeakToEdit : ImeUiAction
     data object OpenClipboard : ImeUiAction
     data object CloseClipboard : ImeUiAction
+    data class OpenExpressionPanel(val tab: ExpressionTab = ExpressionTab.EMOJI) : ImeUiAction
+    data object CloseExpressionPanel : ImeUiAction
+    data class SelectExpressionTab(val tab: ExpressionTab) : ImeUiAction
+    data class CommitExpressionEmoji(val glyph: String, val baseGlyph: String? = null) : ImeUiAction
     data object ToggleStylePicker : ImeUiAction
     data object OpenStylePickerFromToolPanel : ImeUiAction
     data object TogglePunctuationStrip : ImeUiAction
@@ -26,6 +34,8 @@ sealed interface ImeUiAction {
     // Voice recording & Arc Translate
     data object StartVoiceRecording : ImeUiAction
     data object StopVoiceRecording : ImeUiAction
+    data object HoldStartInPlaceVoice : ImeUiAction
+    data object HoldReleaseInPlaceVoice : ImeUiAction
     data class MicPressDown(val mode: VoiceIntentMode) : ImeUiAction
     data object MicPressUp : ImeUiAction
     data object FinishHandsFree : ImeUiAction
@@ -59,9 +69,16 @@ sealed interface ImeUiAction {
     data object ToggleAiCompletion : ImeUiAction
     data object ToggleLiveWrite : ImeUiAction
     data object CycleInputScheme : ImeUiAction
+    data object ToggleToolPanelScheme : ImeUiAction
+    data object ToggleToolPanelDoublePinyinSub : ImeUiAction
+    data class SelectInputScheme(val scheme: InputScheme) : ImeUiAction
+    data class SelectDoublePinyinLayout(val layout: DoublePinyinLayout) : ImeUiAction
     data class SelectKeyboardHeightLevel(val level: Int) : ImeUiAction
     data class SelectKeyboardHeightMode(val mode: KeyboardHeightMode) : ImeUiAction
     data class SelectKeyboardLiftLevel(val liftLevel: Int) : ImeUiAction
+    data class SelectKeyboardBottomLiftDp(val bottomLiftDp: Int) : ImeUiAction
+    data class SelectCandidateFontScale(val scale: CandidateFontScale) : ImeUiAction
+    data object ResetKeyboardAdjustments : ImeUiAction
 
     // Typing & Editor actions
     data object TriggerUndo : ImeUiAction
@@ -84,6 +101,10 @@ sealed interface ImeUiAction {
     data object ToggleFlypyLanguageMode : ImeUiAction
     data class SelectFlypyCandidate(val index: Int) : ImeUiAction
     data class SelectT9Syllable(val syllable: String) : ImeUiAction
+    data object TapT9Key1Punctuation : ImeUiAction
+    data class SelectT9QuickPunctuation(val symbol: String) : ImeUiAction
+    data object DismissT9QuickPunctuation : ImeUiAction
+    data object DismissInlineAutofill : ImeUiAction
     data object ClearFlypyComposing : ImeUiAction
     data object FlushFlypyComposing : ImeUiAction
     data object ToggleFlypyCandidateSheet : ImeUiAction

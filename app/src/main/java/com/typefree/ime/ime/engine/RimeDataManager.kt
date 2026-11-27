@@ -16,6 +16,7 @@ import com.typefree.core.ime.profile.SchemaInspector
 import com.typefree.core.ime.profile.SchemaProfile
 import com.typefree.core.ime.profile.TypeFreeTomlParser
 import com.typefree.ime.BuildConfig
+import com.typefree.ime.data.DoublePinyinLayout
 import com.typefree.ime.data.InputScheme
 import com.typefree.rime.RimeBridge
 import com.typefree.rime.RimeSessionClient
@@ -138,8 +139,44 @@ class RimeDataManager(
         return loaded
     }
 
+    @Volatile
+    private var hasOperationalNativeEngine: Boolean = false
+
     val isReady: Boolean
-        get() = _deploymentState.value is RimeDeploymentState.Ready
+        get() = hasOperationalNativeEngine || rimeBridge.isDeployed || _deploymentState.value is RimeDeploymentState.Ready
+
+    /**
+     * Guarantees that if an optional online dictionary/grammar download fails before or during a
+     * session, the bundled built-in `rime_ice` + `t9` dictionary inside the APK remains deployed
+     * and ready so 9-key T9 and Pinyin input never become inoperable, while preserving the current
+     * [deploymentState] error banner for Settings UI feedback.
+     */
+    private fun ensureBuiltInFallbackEngineOperational() {
+        if (hasOperationalNativeEngine || rimeBridge.isDeployed) return
+        val preservedState = _deploymentState.value
+        runCatching {
+            synchronized(deployLock) {
+                if (hasOperationalNativeEngine || rimeBridge.isDeployed) return@synchronized
+                sharedDir.mkdirs()
+                userDir.mkdirs()
+                extractBuiltInAssetsIfNeeded(forceOverwrite = false)
+                ensurePrecompiledXiaoheBinariesPresent()
+                syncRimeIceDictYaml()
+                syncGrammarPatches(installedGrammarModelId())
+                val fallbackSchema = rimeBridge.activeSchemaId.ifBlank { "rime_ice" }
+                ensureDefaultCustomYaml(sharedDir, primarySchemaId = fallbackSchema)
+                rimeBridge.initialize(sharedDir.absolutePath, userDir.absolutePath)
+                val ok = rimeBridge.deploy(fallbackSchema)
+                refreshEnhancedMetadataFromDir(sharedDir, fallbackSchema)
+                if (ok || !rimeBridge.isNativeLoaded) {
+                    hasOperationalNativeEngine = true
+                }
+            }
+        }
+        if (preservedState is RimeDeploymentState.Error) {
+            _deploymentState.value = preservedState
+        }
+    }
 
     fun hasFullRimeIceDictionary(): Boolean {
         val marker = File(sharedDir, FULL_DICT_MARKER_FILENAME)
@@ -171,6 +208,7 @@ class RimeDataManager(
         deployDurationMs: Long,
         customSchemaName: String? = readCustomSchemaName()
     ): RimeDeploymentState.Ready {
+        hasOperationalNativeEngine = true
         return RimeDeploymentState.Ready(
             wordCount = wordCount,
             hasFullRimeIce = hasFullRimeIceDictionary(),
@@ -196,12 +234,12 @@ class RimeDataManager(
             val saved = runCatching { idFile.readText(Charsets.UTF_8).trim() }.getOrNull()
             if (!saved.isNullOrBlank()) return saved
         }
-        val builtinSchemas = setOf(
-            "rime_ice.schema.yaml",
-            "t9.schema.yaml",
-            "double_pinyin_flypy.schema.yaml",
-            "flypy.schema.yaml"
-        )
+        val builtinSchemas = buildSet {
+            add("rime_ice.schema.yaml")
+            add("t9.schema.yaml")
+            add("flypy.schema.yaml")
+            addAll(DoublePinyinLayout.ALL_SCHEMA_FILES)
+        }
         val customSchemaFile = sharedDir.listFiles().orEmpty()
             .filter {
                 it.isFile &&
@@ -216,7 +254,11 @@ class RimeDataManager(
             if (!parsedId.isNullOrBlank()) return parsedId
         }
         val activeId = activeSchemaProfile.schemaId
-        if (activeId.isNotBlank() && activeId != "rime_ice" && activeId != "t9" && activeId != "double_pinyin_flypy") {
+        if (activeId.isNotBlank() &&
+            activeId != "rime_ice" &&
+            activeId != "t9" &&
+            activeId !in DoublePinyinLayout.ALL_SCHEMA_IDS
+        ) {
             return activeId
         }
         return if (hasXiaoheSchemaInstalled()) "flypy" else "custom"
@@ -260,7 +302,7 @@ class RimeDataManager(
         val builtinSchemas = buildSet {
             add("rime_ice.schema.yaml")
             add("t9.schema.yaml")
-            add("double_pinyin_flypy.schema.yaml")
+            addAll(DoublePinyinLayout.ALL_SCHEMA_FILES)
             if (BuildConfig.USE_PRIVATE_DICT) {
                 add("flypy.schema.yaml")
             }
@@ -315,7 +357,10 @@ class RimeDataManager(
      * Extracts built-in `iDvel/rime-ice` schemas and dictionaries into [sharedDir]
      * and runs `librime` deployment (`RimeStartMaintenance` + `build/<schema>.bin` generation).
      */
-    fun deployDefaultSync(initialScheme: InputScheme = InputScheme.RIME_PINYIN): RimeDeploymentState = synchronized(deployLock) {
+    fun deployDefaultSync(
+        initialScheme: InputScheme = InputScheme.RIME_PINYIN,
+        doublePinyinLayout: DoublePinyinLayout = DoublePinyinLayout.FLYPY
+    ): RimeDeploymentState = synchronized(deployLock) {
         val t0 = System.currentTimeMillis()
         try {
             _deploymentState.value = RimeDeploymentState.Deploying(0.15f, "正在准备 Rime 共享词库目录…")
@@ -332,6 +377,7 @@ class RimeDataManager(
             val schemaId = when {
                 initialScheme == InputScheme.FLYPY_TABLE && hasXiaoheBundle -> "flypy"
                 initialScheme == InputScheme.RIME_CUSTOM && hasCustomSchemaImported() -> resolveCustomSchemaId()
+                initialScheme == InputScheme.RIME_DOUBLE_PINYIN_FLYPY -> doublePinyinLayout.rimeSchemaId
                 initialScheme.rimeSchemaId.isNotBlank() -> initialScheme.rimeSchemaId
                 hasXiaoheBundle && BuildConfig.IS_XIAOHE_FLAVOR -> "flypy"
                 else -> "rime_ice"
@@ -358,11 +404,33 @@ class RimeDataManager(
         }
     }
 
-    suspend fun ensureDefaultDeployed(initialScheme: InputScheme = InputScheme.RIME_PINYIN): RimeDeploymentState {
+    /**
+     * On-demand prism compilation when switching to an uncompiled built-in Shuangpin layout
+     * (`double_pinyin`, `double_pinyin_mspy`, `double_pinyin_sogou`, `double_pinyin_abc`, `double_pinyin_ziguang`).
+     * Reuses the already-compiled `rime_ice.table.bin` so first-launch deploy latency stays 0ms higher.
+     */
+    fun ensureBuiltInSchemaDeployedSync(schemaId: String): Boolean = synchronized(deployLock) {
+        if (schemaId !in DoublePinyinLayout.ALL_SCHEMA_IDS && schemaId != "rime_ice" && schemaId != "t9") {
+            return@synchronized false
+        }
+        sharedDir.mkdirs()
+        userDir.mkdirs()
+        extractBuiltInAssetsIfNeeded(forceOverwrite = false)
+        syncGrammarPatches(installedGrammarModelId())
+        ensureDefaultCustomYaml(sharedDir, primarySchemaId = schemaId)
+        rimeBridge.initialize(sharedDir.absolutePath, userDir.absolutePath)
+        rimeBridge.deploy(schemaId)
+        rimeBridge.selectSchema(schemaId)
+    }
+
+    suspend fun ensureDefaultDeployed(
+        initialScheme: InputScheme = InputScheme.RIME_PINYIN,
+        doublePinyinLayout: DoublePinyinLayout = DoublePinyinLayout.FLYPY
+    ): RimeDeploymentState {
         val current = _deploymentState.value
         if (current is RimeDeploymentState.Ready) return current
         return withContext(Dispatchers.IO) {
-            deployDefaultSync(initialScheme)
+            deployDefaultSync(initialScheme, doublePinyinLayout)
         }
     }
 
@@ -459,11 +527,13 @@ class RimeDataManager(
                 customSchemaName = metaLabel,
                 deployDurationMs = elapsed
             )
+            hasOperationalNativeEngine = true
             _deploymentState.value = ready
             ready
         } catch (e: Exception) {
             val err = RimeDeploymentState.Error(e.message ?: "导入 Rime 方案包失败")
             _deploymentState.value = err
+            ensureBuiltInFallbackEngineOperational()
             throw e
         }
     }
@@ -554,13 +624,14 @@ class RimeDataManager(
         } catch (e: Exception) {
             val err = RimeDeploymentState.Error(e.message ?: "雾凇词库校验或部署失败")
             _deploymentState.value = err
+            ensureBuiltInFallbackEngineOperational()
             throw e
         }
     }
 
     /**
-     * Downloads a single pinned file with SHA-256 verification and real-time progress reporting
-     * into [targetFile] atomically via `.tmp`.
+     * Downloads a single pinned file across the domestic + global mirror chain with SHA-256
+     * verification and real-time progress reporting into [targetFile] atomically via `.tmp`.
      */
     private fun downloadVerifiedFileSync(
         client: OkHttpClient,
@@ -573,103 +644,114 @@ class RimeDataManager(
     ): Long {
         targetFile.parentFile?.mkdirs()
         val tmpFile = File(targetFile.parentFile, "${targetFile.name}.tmp")
-        val req = Request.Builder().url(url).get().build()
-        client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                throw IllegalStateException("$label 下载失败: HTTP ${resp.code}")
-            }
-            val body = resp.body ?: throw IllegalStateException("$label 响应体为空")
-            val contentLen = body.contentLength()
-            val digest = MessageDigest.getInstance("SHA-256")
-            var totalBytes = 0L
-            var lastReportMs = 0L
+        val candidates = resolveDownloadMirrorChain(url)
+        var lastError: Throwable? = null
 
+        for ((mirrorIdx, candidateUrl) in candidates.withIndex()) {
+            tmpFile.delete()
             try {
-                body.byteStream().use { input ->
-                    FileOutputStream(tmpFile).use { output ->
-                        val buffer = ByteArray(32 * 1024)
-                        var read = input.read(buffer)
-                        while (read > 0) {
-                            digest.update(buffer, 0, read)
-                            output.write(buffer, 0, read)
-                            totalBytes += read
-                            val now = System.currentTimeMillis()
-                            if (now - lastReportMs >= 200L) {
-                                lastReportMs = now
-                                val frac = if (contentLen > 0L) {
-                                    (totalBytes.toFloat() / contentLen.toFloat()).coerceIn(0f, 1f)
-                                } else {
-                                    0.5f
+                val mirrorTag = if (mirrorIdx < candidates.lastIndex) "加速线路 ${mirrorIdx + 1}" else "GitHub 源站"
+                val req = Request.Builder().url(candidateUrl).get().build()
+                client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        throw IllegalStateException("$label ($mirrorTag) HTTP ${resp.code}")
+                    }
+                    val body = resp.body ?: throw IllegalStateException("$label ($mirrorTag) 响应体为空")
+                    val contentLen = body.contentLength()
+                    val digest = MessageDigest.getInstance("SHA-256")
+                    var totalBytes = 0L
+                    var lastReportMs = 0L
+
+                    body.byteStream().use { input ->
+                        FileOutputStream(tmpFile).use { output ->
+                            val buffer = ByteArray(32 * 1024)
+                            var read = input.read(buffer)
+                            while (read > 0) {
+                                digest.update(buffer, 0, read)
+                                output.write(buffer, 0, read)
+                                totalBytes += read
+                                val now = System.currentTimeMillis()
+                                if (now - lastReportMs >= 200L) {
+                                    lastReportMs = now
+                                    val frac = if (contentLen > 0L) {
+                                        (totalBytes.toFloat() / contentLen.toFloat()).coerceIn(0f, 1f)
+                                    } else {
+                                        0.5f
+                                    }
+                                    val pct = (frac * 100).toInt()
+                                    val mbDone = "%.1f".format(totalBytes / (1024.0 * 1024.0))
+                                    val detail = if (contentLen > 0L) {
+                                        val mbTotal = "%.1f".format(contentLen / (1024.0 * 1024.0))
+                                        "正在下载 $label [$mirrorTag] ($mbDone / $mbTotal MB · $pct%)…"
+                                    } else {
+                                        "正在下载 $label [$mirrorTag] ($mbDone MB)…"
+                                    }
+                                    _deploymentState.value = RimeDeploymentState.Deploying(
+                                        progress = progressStart + (progressEnd - progressStart) * frac,
+                                        message = detail
+                                    )
                                 }
-                                val pct = (frac * 100).toInt()
-                                val mbDone = "%.1f".format(totalBytes / (1024.0 * 1024.0))
-                                val detail = if (contentLen > 0L) {
-                                    val mbTotal = "%.1f".format(contentLen / (1024.0 * 1024.0))
-                                    "正在下载 $label ($mbDone / $mbTotal MB · $pct%)…"
-                                } else {
-                                    "正在下载 $label ($mbDone MB)…"
-                                }
-                                _deploymentState.value = RimeDeploymentState.Deploying(
-                                    progress = progressStart + (progressEnd - progressStart) * frac,
-                                    message = detail
-                                )
+                                read = input.read(buffer)
                             }
-                            read = input.read(buffer)
                         }
                     }
+
+                    if (totalBytes <= 0L) {
+                        throw IllegalStateException("$label ($mirrorTag) 内容为空")
+                    }
+
+                    val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
+                    val normalizedExpected = expectedSha256.trim().lowercase()
+                    if (normalizedExpected.isNotEmpty() && actualSha256 != normalizedExpected) {
+                        throw SecurityException(
+                            "$label ($mirrorTag) SHA-256 校验失败 (expected=${normalizedExpected.take(12)}…, actual=${actualSha256.take(12)}…)"
+                        )
+                    }
+
+                    if (!tmpFile.renameTo(targetFile)) {
+                        tmpFile.copyTo(targetFile, overwrite = true)
+                        tmpFile.delete()
+                    }
+                    return totalBytes
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 tmpFile.delete()
-                throw e
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                lastError = e
             }
-
-            if (totalBytes <= 0L) {
-                tmpFile.delete()
-                throw IllegalStateException("$label 内容为空")
-            }
-
-            val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
-            val normalizedExpected = expectedSha256.trim().lowercase()
-            if (normalizedExpected.isNotEmpty() && actualSha256 != normalizedExpected) {
-                tmpFile.delete()
-                throw SecurityException(
-                    "$label SHA-256 校验失败 (expected=${normalizedExpected.take(12)}…, actual=${actualSha256.take(12)}…)"
-                )
-            }
-
-            if (!tmpFile.renameTo(targetFile)) {
-                tmpFile.copyTo(targetFile, overwrite = true)
-                tmpFile.delete()
-            }
-            return totalBytes
         }
+        throw (lastError ?: IllegalStateException("$label 所有加速线路与源站均下载失败"))
     }
 
     /**
      * Downloads the pinned upstream `iDvel/rime-ice` full standard suite (`base` + `ext` + `others`,
-     * ~15.7 MB total, `tag 2026.06.30`) over HTTPS, verifies each file's SHA-256 digest, updates
-     * `rime_ice.dict.yaml` import tables, and triggers `librime` deployment.
+     * ~15.7 MB total, `tag 2026.06.30`) over domestic/global HTTPS mirrors, verifies each file's
+     * SHA-256 digest in staging files before atomic swap, updates `rime_ice.dict.yaml`, and redeploys.
      */
     suspend fun downloadFullRimeIceDictionary(): RimeDeploymentState = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
+        val stagedBase = File(sharedDir, "$BASE_DICT_RELATIVE_PATH.stage")
+        val stagedExt = File(sharedDir, "$EXT_DICT_RELATIVE_PATH.stage")
+        val stagedOthers = File(sharedDir, "$OTHERS_DICT_RELATIVE_PATH.stage")
         try {
             sharedDir.mkdirs()
             userDir.mkdirs()
             extractBuiltInAssetsIfNeeded(forceOverwrite = false)
 
             val client = OkHttpClient.Builder()
-                .connectTimeout(20, TimeUnit.SECONDS)
+                .connectTimeout(8, TimeUnit.SECONDS)
                 .readTimeout(90, TimeUnit.SECONDS)
+                .followRedirects(true)
                 .build()
 
             _deploymentState.value = RimeDeploymentState.Deploying(
                 progress = 0.05f,
-                message = "正在从 GitHub 下载雾凇基础词库 (1/3)…"
+                message = "正在连接国内加速源下载雾凇基础词库 (1/3)…"
             )
             downloadVerifiedFileSync(
                 client = client,
                 url = RIME_ICE_BASE_DICT_URL,
-                targetFile = File(sharedDir, BASE_DICT_RELATIVE_PATH),
+                targetFile = stagedBase,
                 expectedSha256 = RIME_ICE_BASE_DICT_SHA256,
                 label = "雾凇基础词库 base (1/3)",
                 progressStart = 0.05f,
@@ -679,7 +761,7 @@ class RimeDataManager(
             downloadVerifiedFileSync(
                 client = client,
                 url = RIME_ICE_EXT_DICT_URL,
-                targetFile = File(sharedDir, EXT_DICT_RELATIVE_PATH),
+                targetFile = stagedExt,
                 expectedSha256 = RIME_ICE_EXT_DICT_SHA256,
                 label = "雾凇扩展词库 ext (2/3)",
                 progressStart = 0.25f,
@@ -689,12 +771,24 @@ class RimeDataManager(
             downloadVerifiedFileSync(
                 client = client,
                 url = RIME_ICE_OTHERS_DICT_URL,
-                targetFile = File(sharedDir, OTHERS_DICT_RELATIVE_PATH),
+                targetFile = stagedOthers,
                 expectedSha256 = RIME_ICE_OTHERS_DICT_SHA256,
                 label = "雾凇补充词库 others (3/3)",
                 progressStart = 0.72f,
                 progressEnd = 0.76f
             )
+
+            listOf(
+                stagedBase to File(sharedDir, BASE_DICT_RELATIVE_PATH),
+                stagedExt to File(sharedDir, EXT_DICT_RELATIVE_PATH),
+                stagedOthers to File(sharedDir, OTHERS_DICT_RELATIVE_PATH)
+            ).forEach { (staged, live) ->
+                live.parentFile?.mkdirs()
+                if (!staged.renameTo(live)) {
+                    staged.copyTo(live, overwrite = true)
+                    staged.delete()
+                }
+            }
 
             File(sharedDir, FULL_DICT_MARKER_FILENAME).writeText(RIME_ICE_BASE_DICT_SHA256, Charsets.UTF_8)
             syncRimeIceDictYaml()
@@ -720,8 +814,12 @@ class RimeDataManager(
             _metadataVersion.value++
             ready
         } catch (e: Exception) {
+            runCatching { stagedBase.delete() }
+            runCatching { stagedExt.delete() }
+            runCatching { stagedOthers.delete() }
             val err = RimeDeploymentState.Error("下载或校验失败: ${e.message ?: "网络异常"}")
             _deploymentState.value = err
+            ensureBuiltInFallbackEngineOperational()
             throw e
         }
     }
@@ -738,8 +836,9 @@ class RimeDataManager(
             extractBuiltInAssetsIfNeeded(forceOverwrite = false)
 
             val client = OkHttpClient.Builder()
-                .connectTimeout(20, TimeUnit.SECONDS)
+                .connectTimeout(8, TimeUnit.SECONDS)
                 .readTimeout(120, TimeUnit.SECONDS)
+                .followRedirects(true)
                 .build()
 
             downloadVerifiedFileSync(
@@ -774,6 +873,7 @@ class RimeDataManager(
         } catch (e: Exception) {
             val err = RimeDeploymentState.Error("腾讯词库下载或编译失败: ${e.message ?: "网络异常"}")
             _deploymentState.value = err
+            ensureBuiltInFallbackEngineOperational()
             throw e
         }
     }
@@ -896,41 +996,84 @@ class RimeDataManager(
         } catch (e: Exception) {
             val err = RimeDeploymentState.Error("语法模型安装失败: ${e.message ?: "网络异常"}")
             _deploymentState.value = err
+            ensureBuiltInFallbackEngineOperational()
             throw e
         }
     }
 
     suspend fun downloadGrammarModel(preset: GrammarModelPreset): RimeDeploymentState = withContext(Dispatchers.IO) {
         try {
-            _deploymentState.value = RimeDeploymentState.Deploying(
-                progress = 0.03f,
-                message = "正在连接 GitHub 下载 ${preset.displayName} (${preset.sizeLabel})…"
-            )
+            val candidates = resolveDownloadMirrorChain(preset.url)
             val client = OkHttpClient.Builder()
-                .connectTimeout(25, TimeUnit.SECONDS)
+                .connectTimeout(8, TimeUnit.SECONDS)
                 .readTimeout(240, TimeUnit.SECONDS)
                 .followRedirects(true)
                 .build()
-            val req = Request.Builder().url(preset.url).get().build()
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    throw IllegalStateException("HTTP ${resp.code}")
-                }
-                val body = resp.body ?: throw IllegalStateException("空响应体")
-                val expectedLen = preset.expectedBytes.takeIf { it > 0L } ?: body.contentLength()
-                body.byteStream().use { stream ->
-                    installGrammarModelFromStreamSync(
-                        modelId = preset.id,
-                        inputStream = stream,
-                        expectedBytes = expectedLen,
-                        label = preset.displayName
+
+            var lastErr: Throwable? = null
+            for ((mirrorIdx, candidateUrl) in candidates.withIndex()) {
+                val mirrorTag = if (mirrorIdx < candidates.lastIndex) "加速线路 ${mirrorIdx + 1}" else "GitHub 源站"
+                try {
+                    _deploymentState.value = RimeDeploymentState.Deploying(
+                        progress = 0.03f,
+                        message = "正在通过 $mirrorTag 下载 ${preset.displayName} (${preset.sizeLabel})…"
                     )
+                    val req = Request.Builder().url(candidateUrl).get().build()
+                    val ready = client.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) {
+                            throw IllegalStateException("HTTP ${resp.code}")
+                        }
+                        val body = resp.body ?: throw IllegalStateException("空响应体")
+                        val expectedLen = preset.expectedBytes.takeIf { it > 0L } ?: body.contentLength()
+                        body.byteStream().use { stream ->
+                            installGrammarModelFromStreamSync(
+                                modelId = preset.id,
+                                inputStream = stream,
+                                expectedBytes = expectedLen,
+                                label = "${preset.displayName} [$mirrorTag]"
+                            )
+                        }
+                    }
+                    return@withContext ready
+                } catch (e: Throwable) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    lastErr = e
                 }
             }
+            throw (lastErr ?: IllegalStateException("所有加速线路均不可达"))
         } catch (e: Exception) {
             val err = RimeDeploymentState.Error("语法模型下载失败: ${e.message ?: "网络异常"}")
             _deploymentState.value = err
+            ensureBuiltInFallbackEngineOperational()
             throw e
+        }
+    }
+
+    /**
+     * Enqueues background domestic-accelerated downloads for Pinyin dictionary & grammar packs
+     * selected during Onboarding without blocking the user from advancing to the next step.
+     * Runs on Application-scoped [backgroundReloadScope] so finishing Onboarding never cancels it.
+     */
+    fun enqueueOnboardingPinyinPacksAsync(
+        downloadFullRimeIce: Boolean,
+        downloadTencentVec: Boolean,
+        grammarModelId: String?
+    ) {
+        if (!downloadFullRimeIce && !downloadTencentVec && grammarModelId.isNullOrBlank()) return
+        backgroundReloadScope.launch {
+            if (downloadFullRimeIce && !hasFullRimeIceDictionary()) {
+                runCatching { downloadFullRimeIceDictionary() }
+            }
+            if (downloadTencentVec && !hasTencentRimeIceDictionary()) {
+                runCatching { downloadTencentRimeIceDictionary() }
+            }
+            val cleanGramId = grammarModelId?.trim().orEmpty()
+            if (cleanGramId.isNotEmpty() && installedGrammarModelId() != cleanGramId) {
+                val preset = GRAMMAR_MODEL_PRESETS.firstOrNull { it.id == cleanGramId }
+                if (preset != null) {
+                    runCatching { downloadGrammarModel(preset) }
+                }
+            }
         }
     }
 
@@ -996,7 +1139,7 @@ class RimeDataManager(
      * on `rime_ice`, `double_pinyin_flypy`, and `t9` depending on whether [activeModelId] is installed.
      */
     fun syncGrammarPatches(activeModelId: String?) {
-        val targetSchemas = listOf("rime_ice", "double_pinyin_flypy", "t9")
+        val targetSchemas = listOf("rime_ice", "t9") + DoublePinyinLayout.ALL_SCHEMA_IDS
         val cleanId = activeModelId?.trim()?.takeIf { it.isNotEmpty() && File(sharedDir, "$it.gram").isFile }
         for (schema in targetSchemas) {
             val customFile = File(sharedDir, "$schema.custom.yaml")
@@ -1247,6 +1390,7 @@ class RimeDataManager(
             File(sharedDir, CUSTOM_SCHEMA_META_FILENAME).writeText(result.displayName, Charsets.UTF_8)
             File(sharedDir, CUSTOM_SCHEMA_ID_FILENAME).writeText(result.schemaId, Charsets.UTF_8)
             val elapsed = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+            hasOperationalNativeEngine = true
             _deploymentState.value = RimeDeploymentState.Ready(
                 wordCount = rimeBridge.wordCount,
                 hasFullRimeIce = hasFullRimeIceDictionary(),
@@ -1258,6 +1402,7 @@ class RimeDataManager(
             result
         } catch (e: Exception) {
             _deploymentState.value = RimeDeploymentState.Error(e.message ?: "导入方案包失败")
+            ensureBuiltInFallbackEngineOperational()
             throw e
         }
     }
@@ -1360,12 +1505,14 @@ class RimeDataManager(
                 customSchemaName = readCustomSchemaName(),
                 deployDurationMs = elapsed
             )
+            hasOperationalNativeEngine = true
             _deploymentState.value = ready
             _metadataVersion.value++
             ready
         } catch (e: Exception) {
             val err = RimeDeploymentState.Error(e.message ?: "Rime 重载失败")
             _deploymentState.value = err
+            ensureBuiltInFallbackEngineOperational()
             err
         }
     }
@@ -1556,7 +1703,15 @@ class RimeDataManager(
             }
         }
         for (sid in discoveredIds) {
-            orderedIds.add(sid)
+            if (sid in DoublePinyinLayout.ALL_SCHEMA_IDS) {
+                val alreadyCompiled = File(userDir, "build/$sid.prism.bin").exists() ||
+                    File(dir, "build/$sid.prism.bin").exists()
+                if (sid == primarySchemaId || alreadyCompiled) {
+                    orderedIds.add(sid)
+                }
+            } else {
+                orderedIds.add(sid)
+            }
         }
         if (orderedIds.isEmpty()) return
 
@@ -1738,7 +1893,7 @@ class RimeDataManager(
         const val CUSTOM_SCHEMA_META_FILENAME = ".custom_schema_name"
         const val CUSTOM_SCHEMA_ID_FILENAME = ".custom_schema_id"
         const val BUILTIN_ASSETS_VERSION_FILENAME = ".builtin_assets_version"
-        const val BUILTIN_ASSETS_VERSION = "3.8.3-p0"
+        const val BUILTIN_ASSETS_VERSION = "3.9.1-sp6"
 
         val OPENCC_ASSET_FILES = listOf(
             "opencc/s2tw.json",
@@ -1768,19 +1923,17 @@ class RimeDataManager(
             "melt_eng.dict.yaml",
             "en_dicts/en.dict.yaml",
             "en_dicts/en_ext.dict.yaml",
-            "en_dicts/cn_en.txt",
-            "en_dicts/cn_en_flypy.txt"
-        )
+            "en_dicts/cn_en.txt"
+        ) + DoublePinyinLayout.ALL_CN_EN_ASSETS
 
         val BUILTIN_ASSET_FILES = listOf(
             "default.yaml",
             "rime_ice.schema.yaml",
             "t9.schema.yaml",
-            "double_pinyin_flypy.schema.yaml",
             "rime_ice.dict.yaml",
             CHAR_DICT_RELATIVE_PATH,
             BASE_DICT_RELATIVE_PATH
-        ) + ENGLISH_MIX_ASSET_FILES + OPENCC_ASSET_FILES
+        ) + DoublePinyinLayout.ALL_SCHEMA_FILES + ENGLISH_MIX_ASSET_FILES + OPENCC_ASSET_FILES
 
         val XIAOHE_FLAVOR_OPTIONAL_ASSETS = listOf(
             "flypy.schema.yaml",
@@ -1798,6 +1951,45 @@ class RimeDataManager(
             "build/flypy.prism.bin",
             "build/flypy.reverse.bin"
         )
+
+        const val OFFICIAL_CN_RIME_MIRROR_BASE_URL =
+            "https://typefree.xuezhao.space/downloads/rime"
+
+        /**
+         * Builds an ordered domestic-friendly download URL fallback chain for any Rime dictionary
+         * or `.gram` language model URL while keeping cryptographic SHA-256 / exact-byte verification:
+         * 1. First-party domestic direct (`https://typefree.xuezhao.space/downloads/rime/<file>`)
+         * 2. jsDelivr Fastly / TestingCF global CDN (`https://fastly.jsdelivr.net/gh/<owner>/<repo>@<ref>/<path>`)
+         *    for `raw.githubusercontent.com` dictionary files (< 20 MB)
+         * 3. Domestic GitHub reverse proxies (`gh-proxy.com`, `hk.gh-proxy.com`)
+         * 4. Upstream GitHub origin (`raw.githubusercontent.com` / `github.com`)
+         */
+        fun resolveDownloadMirrorChain(primaryUrl: String): List<String> {
+            val clean = primaryUrl.trim()
+            if (clean.isEmpty() || !clean.startsWith("https://")) return listOf(clean).filter { it.isNotEmpty() }
+            if (!clean.startsWith("https://raw.githubusercontent.com/") && !clean.startsWith("https://github.com/")) {
+                return listOf(clean)
+            }
+            val result = LinkedHashSet<String>()
+            val fileName = clean.substringBefore('?').substringAfterLast('/').trim()
+            if (fileName.isNotEmpty() && !fileName.contains('/')) {
+                result.add("$OFFICIAL_CN_RIME_MIRROR_BASE_URL/$fileName")
+            }
+            if (clean.startsWith("https://raw.githubusercontent.com/")) {
+                // https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path...>
+                val rest = clean.removePrefix("https://raw.githubusercontent.com/")
+                val segments = rest.split('/', limit = 4)
+                if (segments.size == 4) {
+                    val (owner, repo, ref, path) = segments
+                    result.add("https://fastly.jsdelivr.net/gh/$owner/$repo@$ref/$path")
+                    result.add("https://testingcf.jsdelivr.net/gh/$owner/$repo@$ref/$path")
+                }
+            }
+            result.add("https://gh-proxy.com/$clean")
+            result.add("https://hk.gh-proxy.com/$clean")
+            result.add(clean)
+            return result.toList()
+        }
 
         /**
          * Pinned upstream `iDvel/rime-ice` release (`2026.06.30`, commit `6810e8916d160498620a16fef2135956fecbd485`)

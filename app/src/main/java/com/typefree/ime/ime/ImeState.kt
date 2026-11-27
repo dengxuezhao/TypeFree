@@ -3,12 +3,18 @@ package com.typefree.ime.ime
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import com.typefree.ime.data.AppSettings
+import com.typefree.ime.data.CandidateFontScale
 import com.typefree.ime.data.ClipboardEntry
 import com.typefree.ime.data.DefaultPresets
+import com.typefree.ime.data.ExpressionTab
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
+import com.typefree.ime.data.SpaceLongPressAction
 import com.typefree.ime.data.ToneStyle
 import com.typefree.ime.data.VoiceIntentMode
+import com.typefree.ime.i18n.AppLang
+import com.typefree.ime.i18n.AppStrings
+import com.typefree.ime.ime.autofill.InlineAutofillUiState
 import com.typefree.ime.ime.flypy.FlypyCandidate
 import com.typefree.ime.network.PipelineStage
 import java.util.Locale
@@ -125,8 +131,12 @@ data class ImeUiState(
     val flypyCandidates: List<FlypyCandidate> = emptyList(),
     val isFlypyCandidateSheetExpanded: Boolean = false,
     val isClipboardOpen: Boolean = false,
+    val isExpressionPanelOpen: Boolean = false,
+    val activeExpressionTab: ExpressionTab = ExpressionTab.EMOJI,
     val isToolPanelOpen: Boolean = false,
     val isToolPanelHeightExpanded: Boolean = false,
+    val isToolPanelSchemeExpanded: Boolean = false,
+    val isToolPanelDoublePinyinSubOpen: Boolean = false,
     val freshClipboardBannerItem: ClipboardEntry? = null,
     val quickActionToast: String? = null,
     val streamingPartialPreview: String = "",
@@ -158,6 +168,12 @@ data class ImeUiState(
     val activeHeightLevel: Int = KeyboardMetrics.DEFAULT_LEVEL,
     val activeHeightMode: KeyboardHeightMode = KeyboardHeightMode.LIFT,
     val activeLiftLevel: Int = KeyboardMetrics.DEFAULT_LIFT_LEVEL,
+    val activeBottomLiftDp: Int = KeyboardMetrics.DEFAULT_BOTTOM_LIFT_DP,
+    val activeCandidateFontScale: CandidateFontScale = CandidateFontScale.STANDARD,
+    val systemBottomInsetPx: Int = 0,
+    val isT9QuickPunctuationOpen: Boolean = false,
+    val activeT9CycleSymbol: String? = null,
+    val inlineAutofillState: InlineAutofillUiState = InlineAutofillUiState(),
     val selectedHelpWritePreset: HelpWritePromptPreset? = null,
     val bigBangClipboardItem: ClipboardEntry? = null,
     val currentEditorText: String = "",
@@ -187,6 +203,10 @@ data class ImeUiState(
     val isPredictionBarVisible: Boolean
         get() = tabMode == KeyboardTabMode.QWERTY &&
             !isFlypyComposing &&
+            !isT9QuickPunctuationOpen &&
+            !inlineAutofillState.hasVisibleSuggestions &&
+            voicePhase !is VoicePhase.Recording &&
+            voicePhase !is VoicePhase.Processing &&
             rawSelectedText.isBlank() && (
                 (isFlypyChineseMode && (
                     predictionCandidates.isNotEmpty() ||
@@ -236,9 +256,15 @@ object ImeLogic {
     const val DOUBLE_TAP_SHIFT_MS: Long = 360L
     const val SPACE_CURSOR_SLIDE_ACTIVATE_DP: Float = 10f
     const val SPACE_CURSOR_SLIDE_STEP_DP: Float = 11f
+    const val SPACE_VOICE_HOLD_MS: Long = 240L
+    const val SPACE_LANGUAGE_LONG_PRESS_MS: Long = 420L
     const val SECONDARY_KEY_LONG_PRESS_MS: Long = 250L
     const val SECONDARY_KEY_SWIPE_UP_DP: Float = 18f
     const val TOP_BAR_VOICE_HOLD_MS: Long = 220L
+    const val T9_KEY1_CYCLE_WINDOW_MS: Long = 1200L
+
+    val t9Key1CycleSymbols: List<String> = listOf("，", "。", "@", "？", "！")
+    val t9QuickPunctuationItems: List<String> = listOf("，", "。", "@", "？", "！", "、", "：", "；")
 
     private val WHITESPACE_COLLAPSE_REGEX = Regex("\\s+")
 
@@ -796,6 +822,74 @@ object ImeLogic {
         return steps to remainder
     }
 
+    fun resolveSpaceHoldDelayMs(action: SpaceLongPressAction): Long = when (action) {
+        SpaceLongPressAction.VOICE_HOLD -> SPACE_VOICE_HOLD_MS
+        SpaceLongPressAction.TOGGLE_LANGUAGE -> SPACE_LANGUAGE_LONG_PRESS_MS
+    }
+
+    /**
+     * 5-key bottom row language switch fallback when spacebar hold is assigned to [SpaceLongPressAction.VOICE_HOLD]:
+     * upward swipe (`dyPx <= -thresholdPx` and `abs(dyPx) > abs(dxPx)`) before hold fires toggles 中文 <-> EN.
+     */
+    fun shouldSwipeUpSpaceToggleLanguage(
+        fiveKeyBottomRow: Boolean,
+        spaceLongPressAction: SpaceLongPressAction,
+        dxPx: Float,
+        dyPx: Float,
+        thresholdPx: Float
+    ): Boolean {
+        if (!fiveKeyBottomRow || spaceLongPressAction != SpaceLongPressAction.VOICE_HOLD || thresholdPx <= 0f) {
+            return false
+        }
+        return dyPx <= -thresholdPx && abs(dyPx) > abs(dxPx)
+    }
+
+    /**
+     * In 5-key bottom row Chinese idle state (`!hasActiveFlypyComposing && !isSymbolLayer`),
+     * tapping left `⇧ Shift` toggles cleanly to English (`EN`) without needing a dedicated bottom key.
+     */
+    fun shouldFiveKeyShiftTapToggleLanguage(
+        fiveKeyBottomRow: Boolean,
+        isFlypyChineseMode: Boolean,
+        hasActiveFlypyComposing: Boolean,
+        isSymbolLayer: Boolean = false
+    ): Boolean {
+        return fiveKeyBottomRow && isFlypyChineseMode && !hasActiveFlypyComposing && !isSymbolLayer
+    }
+
+    /**
+     * Pure spacebar label resolver enforcing clean idle labels (`雾凇全拼` / `小鹤音形 · 中` / `English`,
+     * never cluttered with `"按住说话"` or `"↑切EN"`), showing `"🎙 聆听中 · 松手上屏"` ONLY while
+     * in-place voice is active via spacebar hold, and `"‹ 滑动移光标 ›"` while sliding cursor.
+     */
+    fun resolveQwertySpaceBarLabel(
+        lang: AppLang,
+        isSpaceVoiceActive: Boolean,
+        isCursorSliding: Boolean,
+        hasComposing: Boolean,
+        isFlypyChineseMode: Boolean,
+        fiveKeyBottomRow: Boolean,
+        resolvedChineseSchemeName: String
+    ): String {
+        return when {
+            isSpaceVoiceActive -> AppStrings.pick(
+                lang,
+                "🎙 聆听中 · 松手上屏",
+                "🎙 Listening · Release",
+                "🎙 聆聽中 · 放開上屏"
+            )
+            isCursorSliding -> AppStrings.pick(
+                lang,
+                "‹ 滑动移光标 ›",
+                "‹ Slide cursor ›",
+                "‹ 滑動移游標 ›"
+            )
+            hasComposing -> AppStrings.pick(lang, "空格首选", "Space: 1st", "空白首選")
+            isFlypyChineseMode -> if (fiveKeyBottomRow) "$resolvedChineseSchemeName · 中" else resolvedChineseSchemeName
+            else -> if (fiveKeyBottomRow) "English · EN" else "English"
+        }
+    }
+
     /**
      * Builds an [UndoSnapshot] for restoring editor state on 1-tap Undo.
      */
@@ -854,6 +948,7 @@ object ImeLogic {
             cleanMsg.contains("麦克风") && cleanMsg.contains("权限")
         val needsApi = cleanMsg.contains("API Key", ignoreCase = true) ||
             cleanMsg.contains("API 配置") ||
+            cleanMsg.contains("云端 API") ||
             cleanMsg.contains("接口地址") ||
             cleanMsg.contains("(401)") ||
             cleanMsg.contains("(403)")

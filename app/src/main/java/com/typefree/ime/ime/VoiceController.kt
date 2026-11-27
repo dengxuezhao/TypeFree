@@ -13,16 +13,20 @@ import com.typefree.ime.data.PipelineMode
 import com.typefree.ime.data.VoiceIntentMode
 import com.typefree.ime.data.stats.TokenFeatureKeys
 import com.typefree.ime.data.stats.TokenUsage
+import com.typefree.ime.diagnostics.ImeDiagnosticLogger
 import com.typefree.ime.i18n.AppStrings
 import com.typefree.ime.network.AiPipelineEngine
 import com.typefree.ime.network.PipelineStage
 import com.typefree.ime.network.VoiceLatencyTraceAssembler
 import com.typefree.ime.network.asr.StreamingAsrSession
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /**
@@ -98,6 +102,7 @@ class VoiceController(
                     selectedHelpWritePreset = null,
                     bigBangClipboardItem = null,
                     isClipboardOpen = false,
+                    isExpressionPanelOpen = false,
                     isToolPanelOpen = false,
                     isPunctuationStripOpen = false,
                     isStylePickerExpanded = false,
@@ -115,6 +120,7 @@ class VoiceController(
                     selectedHelpWritePreset = defaultPreset,
                     bigBangClipboardItem = null,
                     isClipboardOpen = false,
+                    isExpressionPanelOpen = false,
                     isToolPanelOpen = false,
                     isPunctuationStripOpen = false,
                     isStylePickerExpanded = false,
@@ -366,8 +372,8 @@ class VoiceController(
         if (settingsSnap.offlineConfig.mode != OfflineMode.OFF) {
             host.aiEngine.preBindLocalAiIfNeeded(
                 settings = settingsSnap,
-                prewarmAsr = startRoutePlan.asr is AsrRoute.Local,
-                prewarmSlm = startRoutePlan.text is TextRoute.Local
+                prewarmAsr = startRoutePlan.asr is AsrRoute.Local || settingsSnap.offlineConfig.asrSlotOn,
+                prewarmSlm = startRoutePlan.text is TextRoute.Local || settingsSnap.offlineConfig.slmSlotOn
             )
         }
 
@@ -1464,6 +1470,7 @@ class VoiceController(
                 askAiErrorMessage = null,
                 askAiFromSelection = fromSelection,
                 isClipboardOpen = false,
+                isExpressionPanelOpen = false,
                 isToolPanelOpen = false,
                 selectedHelpWritePreset = null
             )
@@ -1910,6 +1917,7 @@ class VoiceController(
     }
 
     companion object {
+        const val MAX_FULL_SCREEN_PEEK_MS: Long = 1_600L
         const val HANDS_FREE_SILENCE_AUTO_STOP_MS: Long = 8_000L
         const val HANDS_FREE_SILENCE_AMPLITUDE_THRESHOLD: Float = 0.12f
 

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -37,6 +38,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -44,8 +47,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.typefree.ime.data.CandidateFontScale
 import com.typefree.ime.data.InputScheme
+import com.typefree.ime.ime.HapticTier
 import com.typefree.ime.ime.ImeLogic
+import com.typefree.ime.ime.KeySoundType
+import com.typefree.ime.ime.KeyboardMetrics
+import com.typefree.ime.ime.LocalKeyFeedbackTrigger
 import com.typefree.ime.ime.LocalKeyboardMetrics
 import com.typefree.ime.ime.chrome.TopBarToolPanelButton
 import com.typefree.ime.ime.flypy.FlypyCandidate
@@ -107,7 +115,7 @@ fun PredictionCandidateBar(
                 val mathDisplay = if (cleanMath.startsWith("=")) cleanMath else "= $cleanMath"
                 Box(
                     modifier = Modifier
-                        .height(28.dp)
+                        .height(metrics.candidateChipHeight)
                         .clip(RoundedCornerShape(8.dp))
                         .background(TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.16f else 0.12f))
                         .border(1.dp, TypeFreeEmerald.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
@@ -118,7 +126,7 @@ fun PredictionCandidateBar(
                     Text(
                         text = mathDisplay,
                         color = emeraldAccentText,
-                        fontSize = 13.5.sp,
+                        fontSize = (metrics.candidateFontSizeSp - 1.0f).sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace,
                         maxLines = 1
@@ -138,7 +146,7 @@ fun PredictionCandidateBar(
                 }
                 Row(
                     modifier = Modifier
-                        .height(28.dp)
+                        .height(metrics.candidateChipHeight)
                         .clip(RoundedCornerShape(8.dp))
                         .background(palette.capsuleSelectedBg)
                         .border(1.dp, TypeFreeEmerald.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
@@ -149,7 +157,7 @@ fun PredictionCandidateBar(
                     Text(
                         text = displayPhrase,
                         color = emeraldAccentText,
-                        fontSize = 12.5.sp,
+                        fontSize = (metrics.candidateFontSizeSp - 2.0f).sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         modifier = Modifier.clickable { onAcceptPhraseSuggestion?.invoke() }
@@ -178,7 +186,7 @@ fun PredictionCandidateBar(
                 if (word.isNotBlank()) {
                     Box(
                         modifier = Modifier
-                            .height(28.dp)
+                            .height(metrics.candidateChipHeight)
                             .clip(RoundedCornerShape(8.dp))
                             .background(palette.keyCapBg)
                             .border(1.dp, palette.keyBorder, RoundedCornerShape(8.dp))
@@ -189,7 +197,7 @@ fun PredictionCandidateBar(
                         Text(
                             text = word,
                             color = palette.keyTextPrimary,
-                            fontSize = 13.5.sp,
+                            fontSize = metrics.candidateFontSizeSp.sp,
                             fontWeight = FontWeight.Medium,
                             maxLines = 1
                         )
@@ -205,7 +213,7 @@ fun PredictionCandidateBar(
                 }
                 Box(
                     modifier = Modifier
-                        .height(28.dp)
+                        .height(metrics.candidateChipHeight)
                         .clip(RoundedCornerShape(8.dp))
                         .background(palette.keyCapBg)
                         .border(1.dp, palette.keyBorder, RoundedCornerShape(8.dp))
@@ -216,7 +224,7 @@ fun PredictionCandidateBar(
                     Text(
                         text = visualText,
                         color = palette.keyTextPrimary,
-                        fontSize = 14.sp,
+                        fontSize = metrics.candidateFontSizeSp.sp,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1
                     )
@@ -235,7 +243,7 @@ fun PredictionCandidateBar(
             }
             Box(
                 modifier = Modifier
-                    .height(28.dp)
+                    .height(metrics.candidateChipHeight)
                     .clip(RoundedCornerShape(8.dp))
                     .background(TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.16f else 0.12f))
                     .border(1.dp, TypeFreeEmerald.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
@@ -246,7 +254,7 @@ fun PredictionCandidateBar(
                 Text(
                     text = "✦ $truncatedAi",
                     color = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
-                    fontSize = 13.sp,
+                    fontSize = (metrics.candidateFontSizeSp - 1.5f).sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1
                 )
@@ -288,6 +296,7 @@ fun FloatingPreeditCapsule(
     inputScheme: InputScheme = InputScheme.FLYPY_TABLE
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
     val displayPreedit = remember(preeditDisplay, composingCode, inputScheme) {
         ImeLogic.formatPreeditDisplay(
             preedit = preeditDisplay,
@@ -301,21 +310,21 @@ fun FloatingPreeditCapsule(
     val pillShape = RoundedCornerShape(8.dp)
     Row(
         modifier = Modifier
-            .height(22.dp)
+            .height(metrics.preeditCapsuleHeight)
             .shadow(elevation = 2.dp, shape = pillShape, clip = false)
             .clip(pillShape)
             .background(palette.keyCapBg)
             .border(1.dp, palette.keyBorder, pillShape)
-            .padding(horizontal = 9.dp),
+            .padding(horizontal = 9.5.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp)
+        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
     ) {
         Text(
             text = displayPreedit,
             style = TextStyle(
                 color = palette.keyTextPrimary,
-                fontSize = 12.sp,
-                lineHeight = 14.sp,
+                fontSize = metrics.preeditFontSizeSp.sp,
+                lineHeight = (metrics.preeditFontSizeSp + 2f).sp,
                 fontWeight = FontWeight.SemiBold,
                 fontFamily = if (inputScheme.usesRime) FontFamily.Default else FontFamily.Monospace,
                 platformStyle = PlatformTextStyle(includeFontPadding = false)
@@ -326,7 +335,7 @@ fun FloatingPreeditCapsule(
         Box(
             modifier = Modifier
                 .width(1.5.dp)
-                .height(11.dp)
+                .height((12f * metrics.widthScale).dp)
                 .clip(RoundedCornerShape(1.dp))
                 .background(TypeFreeEmerald)
         )
@@ -480,49 +489,56 @@ fun CandidateStrip(
             }
         }
 
-        // 3. Expand All Candidates Grid Toggle (`[▾]`)
-        if (candidates.size > 4 || hasMoreCandidates) {
+        // 3. Expand All Candidates Grid Toggle (`[▾]` crisp vector chevron)
+        val stripFeedback = LocalKeyFeedbackTrigger.current
+        val stripView = LocalView.current
+        if (
+            KeyboardMetrics.shouldShowCandidateExpandButton(
+                candidateCount = candidates.size,
+                hasMoreCandidates = hasMoreCandidates,
+                scale = metrics.candidateFontScale
+            )
+        ) {
             Box(
                 modifier = Modifier
-                    .size(28.dp)
+                    .size(metrics.topBarActionButtonSize)
                     .clip(RoundedCornerShape(8.dp))
                     .background(if (isSheetExpanded) palette.capsuleSelectedBg else palette.keyCapSecondaryBg)
                     .border(1.dp, palette.keyBorder, RoundedCornerShape(8.dp))
-                    .clickable(onClick = onToggleSheet),
+                    .clickable {
+                        stripFeedback.onTouchFeedback(HapticTier.CANDIDATE_TAP, stripView, KeySoundType.STANDARD, false)
+                        onToggleSheet()
+                    },
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = if (isSheetExpanded) "▴" else "▾",
-                    style = TextStyle(
-                        color = palette.keyTextPrimary,
-                        fontSize = 12.sp,
-                        lineHeight = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        platformStyle = PlatformTextStyle(includeFontPadding = false)
-                    )
+                Icon(
+                    imageVector = TypeFreeIcons.ChevronDown,
+                    contentDescription = if (isSheetExpanded) "收起候选" else "展开候选",
+                    tint = palette.keyTextPrimary,
+                    modifier = Modifier
+                        .size((16f * metrics.widthScale).dp)
+                        .graphicsLayer {
+                            rotationZ = if (isSheetExpanded) 180f else 0f
+                        }
                 )
             }
         }
 
-        // 4. 1-Tap Clear Code (`[×]`)
+        // 4. 1-Tap Clear Code (`[×]` crisp vector close)
         Box(
             modifier = Modifier
-                .size(28.dp)
+                .size(metrics.topBarActionButtonSize)
                 .clip(RoundedCornerShape(8.dp))
                 .background(palette.keyCapSecondaryBg)
                 .border(1.dp, palette.keyBorder, RoundedCornerShape(8.dp))
                 .clickable(onClick = onClearCode),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = "×",
-                style = TextStyle(
-                    color = palette.keyTextMuted,
-                    fontSize = 14.sp,
-                    lineHeight = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    platformStyle = PlatformTextStyle(includeFontPadding = false)
-                )
+            Icon(
+                imageVector = TypeFreeIcons.Close,
+                contentDescription = "清空编码",
+                tint = palette.keyTextMuted,
+                modifier = Modifier.size((13.5f * metrics.widthScale).dp)
             )
         }
     }
@@ -542,13 +558,24 @@ private fun CandidateChipItem(
     onBlock: () -> Unit = {}
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
+    val hostView = LocalView.current
     var menuExpanded by remember { mutableStateOf(false) }
     val longPressEnabled = codetableEnhancerActive && cand.text.isNotBlank() && !cand.text.startsWith("[")
+    val maxCandChars = when (metrics.candidateFontScale) {
+        CandidateFontScale.STANDARD -> 16
+        CandidateFontScale.LARGE -> 12
+        CandidateFontScale.EXTRA_LARGE -> 10
+    }
+    val indexFontSp = ((10.8f + metrics.candidateFontScale.level * 0.8f) * metrics.widthScale).sp
+    val hintFontSp = ((10.2f + metrics.candidateFontScale.level * 0.8f) * metrics.widthScale).sp
 
     Box {
         Row(
             modifier = Modifier
-                .height(29.dp)
+                .height(metrics.candidateChipHeight)
+                .then(if (isFirst) Modifier.widthIn(max = (210f * metrics.widthScale).dp) else Modifier)
                 .clip(RoundedCornerShape(8.dp))
                 .background(if (isFirst) palette.capsuleSelectedBg else palette.keyCapBg)
                 .border(
@@ -557,9 +584,15 @@ private fun CandidateChipItem(
                     shape = RoundedCornerShape(8.dp)
                 )
                 .combinedClickable(
-                    onClick = onClick,
+                    onClick = {
+                        keyFeedback.onTouchFeedback(HapticTier.CANDIDATE_TAP, hostView, KeySoundType.STANDARD, true)
+                        onClick()
+                    },
                     onLongClick = if (longPressEnabled) {
-                        { menuExpanded = true }
+                        {
+                            keyFeedback.onTouchFeedback(HapticTier.GESTURE_CONFIRM, hostView, KeySoundType.NONE, false)
+                            menuExpanded = true
+                        }
                     } else {
                         null
                     }
@@ -573,8 +606,8 @@ private fun CandidateChipItem(
                     text = "${index + 1}",
                     style = TextStyle(
                         color = palette.keyTextMuted,
-                        fontSize = 10.5.sp,
-                        lineHeight = 12.sp,
+                        fontSize = indexFontSp,
+                        lineHeight = (indexFontSp.value + 2f).sp,
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.SemiBold,
                         platformStyle = PlatformTextStyle(includeFontPadding = false)
@@ -582,8 +615,8 @@ private fun CandidateChipItem(
                 )
             }
             val rawDisplay = cand.displayText.ifEmpty { cand.text }
-            val visualCandText = if (rawDisplay.length > 16 || rawDisplay.contains('\n')) {
-                rawDisplay.replace('\n', '↵').take(16) + "…"
+            val visualCandText = if (rawDisplay.length > maxCandChars || rawDisplay.contains('\n')) {
+                rawDisplay.replace('\n', '↵').take(maxCandChars) + "…"
             } else {
                 rawDisplay
             }
@@ -591,20 +624,21 @@ private fun CandidateChipItem(
                 text = visualCandText,
                 style = TextStyle(
                     color = palette.keyTextPrimary,
-                    fontSize = 14.5.sp,
-                    lineHeight = 17.sp,
+                    fontSize = metrics.candidateFontSizeSp.sp,
+                    lineHeight = (metrics.candidateFontSizeSp + 2.5f).sp,
                     fontWeight = if (isFirst) FontWeight.Bold else FontWeight.Medium,
                     platformStyle = PlatformTextStyle(includeFontPadding = false)
                 ),
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             if (cand.codeHint.isNotEmpty()) {
                 Text(
                     text = "〔${cand.codeHint}〕",
                     style = TextStyle(
                         color = palette.keyTextMuted,
-                        fontSize = 10.sp,
-                        lineHeight = 12.sp,
+                        fontSize = hintFontSp,
+                        lineHeight = (hintFontSp.value + 2f).sp,
                         fontFamily = FontFamily.Monospace,
                         platformStyle = PlatformTextStyle(includeFontPadding = false)
                     ),
@@ -701,7 +735,11 @@ fun CandidateGridOverlay(
     onBlockCandidate: (String) -> Unit = {}
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
     val vScroll = rememberScrollState()
+    val gridFontSize = KeyboardMetrics.expandedGridFontSizeSpForScale(metrics.candidateFontScale).sp
+    val gridRowHeight = KeyboardMetrics.expandedGridRowHeightDpForScale(metrics.candidateFontScale).dp
+    val gridHintFontSize = (11f + metrics.candidateFontScale.level * 1f).sp
 
     LaunchedEffect(hasMoreCandidates, vScroll.value, vScroll.maxValue) {
         if (hasMoreCandidates && (vScroll.maxValue == 0 || vScroll.value >= vScroll.maxValue - 80)) {
@@ -735,6 +773,7 @@ fun CandidateGridOverlay(
                     Box {
                         Row(
                             modifier = Modifier
+                                .height(gridRowHeight)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(if (idx == 0) palette.capsuleSelectedBg else palette.keyCapBg)
                                 .border(1.dp, palette.keyBorder, RoundedCornerShape(8.dp))
@@ -746,7 +785,7 @@ fun CandidateGridOverlay(
                                         null
                                     }
                                 )
-                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                                .padding(horizontal = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
@@ -759,14 +798,14 @@ fun CandidateGridOverlay(
                             Text(
                                 text = gridCandText,
                                 color = palette.keyTextPrimary,
-                                fontSize = 15.sp,
+                                fontSize = gridFontSize,
                                 fontWeight = if (idx == 0) FontWeight.Bold else FontWeight.Medium
                             )
                             if (cand.codeHint.isNotEmpty()) {
                                 Text(
                                     text = "〔${cand.codeHint}〕",
                                     color = palette.keyTextMuted,
-                                    fontSize = 11.sp,
+                                    fontSize = gridHintFontSize,
                                     fontFamily = FontFamily.Monospace
                                 )
                             }
@@ -842,4 +881,103 @@ fun FlypyExpandedCandidateGridOverlay(
         onBackspace = onBackspace,
         onCollapse = onCollapse
     )
+}
+
+/**
+ * Top-bar T9 Quick Punctuation Strip opened when tapping Key `1 (，@)` in idle state (`Issue #12`):
+ * - Displays `，`, `。`, `@`, `？`, `！`, `、`, `：`, `；` at [KeyboardMetrics.candidateChipHeight].
+ * - Highlights [activeSymbol] during `1200ms` multi-tap cycling (`， -> 。 -> @ -> ？ -> ！`).
+ * - Tapping any symbol chip replaces the just-typed cycle symbol in-place (e.g. `，` -> `@`) and closes.
+ */
+@Composable
+fun T9QuickPunctuationBar(
+    isToolPanelOpen: Boolean,
+    activeSymbol: String?,
+    onToggleToolPanel: () -> Unit,
+    onSelectSymbol: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
+    val scrollState = rememberScrollState()
+    val emeraldText = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(metrics.topBarHeight),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        TopBarToolPanelButton(
+            isOpen = isToolPanelOpen,
+            onClick = onToggleToolPanel
+        )
+
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .horizontalScroll(scrollState),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            ImeLogic.t9QuickPunctuationItems.forEach { sym ->
+                val isSelected = sym == activeSymbol
+                Box(
+                    modifier = Modifier
+                        .height(metrics.candidateChipHeight)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            if (isSelected) {
+                                TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.20f else 0.14f)
+                            } else {
+                                palette.keyCapBg
+                            }
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = if (isSelected) TypeFreeEmerald.copy(alpha = 0.75f) else palette.keyBorder,
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        .clickable { onSelectSymbol(sym) }
+                        .padding(horizontal = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = sym,
+                        style = TextStyle(
+                            color = if (isSelected) emeraldText else palette.keyTextPrimary,
+                            fontSize = metrics.candidateFontSizeSp.sp,
+                            lineHeight = (metrics.candidateFontSizeSp + 2.5f).sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        ),
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(palette.keyCapSecondaryBg)
+                .border(1.dp, palette.keyBorder, RoundedCornerShape(8.dp))
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "×",
+                style = TextStyle(
+                    color = palette.keyTextMuted,
+                    fontSize = 14.sp,
+                    lineHeight = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                )
+            )
+        }
+    }
 }

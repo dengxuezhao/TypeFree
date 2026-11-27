@@ -88,12 +88,14 @@ import com.typefree.ime.BuildConfig
 import com.typefree.ime.TypeFreeApp
 import com.typefree.ime.data.AppRepository
 import com.typefree.ime.data.AppSettings
+import com.typefree.ime.data.CandidateFontScale
 import com.typefree.ime.data.DefaultPresets
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.KeyboardHeightMode
 import com.typefree.ime.data.KeycapBadgeMode
 import com.typefree.ime.data.SnippetEntry
 import com.typefree.ime.data.SnippetMatcher
+import com.typefree.ime.data.SpaceLongPressAction
 import com.typefree.ime.data.stats.StatsTimeRange
 import com.typefree.ime.i18n.AppLang
 import com.typefree.ime.i18n.AppStrings
@@ -214,6 +216,132 @@ private fun compactKeycapBadgeModeLabel(mode: KeycapBadgeMode, lang: AppLang): S
     }
 }
 
+internal object KeyboardStudioV391Helper {
+    val BOTTOM_LIFT_STEP_OPTIONS_DP: List<Int> = listOf(0, 8, 16, 24, 32, 40, 48, 56)
+
+    fun applyKeyHeightLevel(current: AppSettings, level: Int): AppSettings {
+        val clampedLevel = level.coerceIn(KeyboardMetrics.MIN_LEVEL, KeyboardMetrics.MAX_LEVEL)
+        val preservedLiftDp = current.resolvedBottomLiftDp()
+        val syncedLegacyLiftLevel = (preservedLiftDp / 8).coerceIn(
+            KeyboardMetrics.MIN_LIFT_LEVEL,
+            KeyboardMetrics.MAX_LIFT_LEVEL
+        )
+        return current.copy(
+            keyboardHeightLevel = clampedLevel,
+            keyboardHeightMode = if (clampedLevel == KeyboardMetrics.DEFAULT_LEVEL) {
+                KeyboardHeightMode.LIFT
+            } else {
+                KeyboardHeightMode.STRETCH
+            },
+            keyboardBottomLiftDp = preservedLiftDp,
+            keyboardLiftLevel = syncedLegacyLiftLevel
+        )
+    }
+
+    fun applyBottomLiftDp(current: AppSettings, bottomLiftDp: Int): AppSettings {
+        val clampedDp = bottomLiftDp.coerceIn(
+            KeyboardMetrics.MIN_BOTTOM_LIFT_DP,
+            KeyboardMetrics.MAX_BOTTOM_LIFT_DP
+        )
+        val syncedLegacyLiftLevel = (clampedDp / 8).coerceIn(
+            KeyboardMetrics.MIN_LIFT_LEVEL,
+            KeyboardMetrics.MAX_LIFT_LEVEL
+        )
+        return current.copy(
+            keyboardBottomLiftDp = clampedDp,
+            keyboardLiftLevel = syncedLegacyLiftLevel,
+            keyboardHeightMode = if (current.keyboardHeightLevel == KeyboardMetrics.DEFAULT_LEVEL) {
+                KeyboardHeightMode.LIFT
+            } else {
+                KeyboardHeightMode.STRETCH
+            }
+        )
+    }
+
+    fun resetHeightAndBottomLift(current: AppSettings): AppSettings {
+        return current.copy(
+            keyboardHeightLevel = KeyboardMetrics.DEFAULT_LEVEL,
+            keyboardHeightMode = KeyboardHeightMode.LIFT,
+            keyboardLiftLevel = KeyboardMetrics.DEFAULT_LIFT_LEVEL,
+            keyboardBottomLiftDp = KeyboardMetrics.DEFAULT_BOTTOM_LIFT_DP
+        )
+    }
+
+    fun isHeightOrBottomLiftCustomized(settings: AppSettings): Boolean {
+        return settings.keyboardHeightLevel != KeyboardMetrics.DEFAULT_LEVEL ||
+            settings.resolvedBottomLiftDp() != KeyboardMetrics.DEFAULT_BOTTOM_LIFT_DP
+    }
+
+    fun keyHeightOptionLabel(level: Int, lang: AppLang): String {
+        return when (level.coerceIn(KeyboardMetrics.MIN_LEVEL, KeyboardMetrics.MAX_LEVEL)) {
+            -2 -> AppStrings.pick(lang, "紧凑 88%", "Compact 88%", "緊湊 88%")
+            -1 -> AppStrings.pick(lang, "偏低 94%", "Low 94%", "偏低 94%")
+            0 -> AppStrings.pick(lang, "标准 100%", "Standard 100%", "標準 100%")
+            1 -> AppStrings.pick(lang, "偏高 107%", "Tall 107%", "偏高 107%")
+            2 -> AppStrings.pick(lang, "舒适 114%", "Comfort 114%", "舒適 114%")
+            else -> AppStrings.pick(lang, "标准 100%", "Standard 100%", "標準 100%")
+        }
+    }
+
+    fun bottomLiftOptionLabel(dp: Int): String =
+        "${dp.coerceIn(KeyboardMetrics.MIN_BOTTOM_LIFT_DP, KeyboardMetrics.MAX_BOTTOM_LIFT_DP)}dp"
+
+    fun candidateFontScaleOptionLabel(scale: CandidateFontScale, lang: AppLang): String {
+        return when (scale) {
+            CandidateFontScale.STANDARD -> AppStrings.pick(lang, "标准 (15sp)", "Standard (15sp)", "標準 (15sp)")
+            CandidateFontScale.LARGE -> AppStrings.pick(lang, "偏大 (17sp)", "Large (17sp)", "偏大 (17sp)")
+            CandidateFontScale.EXTRA_LARGE -> AppStrings.pick(lang, "超大 (19.5sp)", "Extra Large (19.5sp)", "超大 (19.5sp)")
+        }
+    }
+
+    fun spaceLongPressOptionLabel(action: SpaceLongPressAction, lang: AppLang): String {
+        return when (action) {
+            SpaceLongPressAction.VOICE_HOLD -> AppStrings.pick(
+                lang,
+                "按住说话（松手上屏）",
+                "Hold to Speak",
+                "按住說話（放開上屏）"
+            )
+            SpaceLongPressAction.TOGGLE_LANGUAGE -> AppStrings.pick(
+                lang,
+                "切换中英文",
+                "Switch Language",
+                "切換中英文"
+            )
+        }
+    }
+
+    fun fiveKeyBottomRowSubtitle(spaceLongPressAction: SpaceLongPressAction, lang: AppLang): String {
+        return when (spaceLongPressAction) {
+            SpaceLongPressAction.VOICE_HOLD -> AppStrings.pick(
+                lang,
+                "开启后隐藏独立「中/EN」键，底排变为「123 · ，次选 · 空格 · 。三选 · 回车」；可通过上滑空格键 ↑（或中文空闲态点按 ⇧ Shift）切换中英文",
+                "Hides the standalone '中/EN' key ('123 · , 2nd · Space · . 3rd · Enter'); swipe up ↑ on Space (or tap ⇧ Shift when idle in Chinese) to switch Chinese/English",
+                "開啟後隱藏獨立「中/EN」鍵，底排變為「123 · ，次選 · 空白鍵 · 。三選 · 換行」；可透過上滑空白鍵 ↑（或中文空閒態點按 ⇧ Shift）切換中英文"
+            )
+            SpaceLongPressAction.TOGGLE_LANGUAGE -> AppStrings.pick(
+                lang,
+                "开启后隐藏独立「中/EN」键，底排变为「123 · ，次选 · 空格 · 。三选 · 回车」；可通过上滑空格键 ↑、长按空格键（或中文空闲态点按 ⇧ Shift）切换中英文",
+                "Hides the standalone '中/EN' key ('123 · , 2nd · Space · . 3rd · Enter'); swipe up ↑ on Space, hold Space (or tap ⇧ Shift when idle in Chinese) to switch Chinese/English",
+                "開啟後隱藏獨立「中/EN」鍵，底排變為「123 · ，次選 · 空白鍵 · 。三選 · 換行」；可透過上滑空白鍵 ↑、長按空白鍵（或中文空閒態點按 ⇧ Shift）切換中英文"
+            )
+        }
+    }
+
+    fun formatLiveHeightSummary(metrics: KeyboardMetrics, lang: AppLang): String {
+        val totalDp = metrics.frameHeight.value.toInt()
+        val chromeDp = metrics.fixedChromeDp
+        val keyAreaDp = metrics.keyAreaHeight.value.toInt()
+        val liftDp = metrics.liftHeight.value.toInt()
+        return AppStrings.pick(
+            lang,
+            "实时总高度 ${totalDp}dp（顶栏 ${chromeDp}dp + 按键区 ${keyAreaDp}dp + 底部垫高 ${liftDp}dp）",
+            "Total Height ${totalDp}dp (Top Bar ${chromeDp}dp + Keys ${keyAreaDp}dp + Bottom Lift ${liftDp}dp)",
+            "即時總高度 ${totalDp}dp（頂欄 ${chromeDp}dp + 按鍵區 ${keyAreaDp}dp + 底部墊高 ${liftDp}dp）"
+        )
+    }
+}
+
 @Composable
 fun KeyboardStudioScreen(
     repository: AppRepository,
@@ -250,7 +378,10 @@ fun KeyboardStudioScreen(
             InputScheme.RIME_T9_PINYIN,
             InputScheme.RIME_DOUBLE_PINYIN_FLYPY -> SchemaArchetype.SENTENCE_PINYIN
             InputScheme.RIME_CUSTOM -> {
-                if (activeProfile.schemaId != "rime_ice" && activeProfile.schemaId != "t9" && activeProfile.schemaId != "double_pinyin_flypy") {
+                if (activeProfile.schemaId != "rime_ice" &&
+                    activeProfile.schemaId != "t9" &&
+                    activeProfile.schemaId !in com.typefree.ime.data.DoublePinyinLayout.ALL_SCHEMA_IDS
+                ) {
                     activeProfile.archetype
                 } else if (hasCustomImported) {
                     SchemaArchetype.FIXED_SHAPECODE
@@ -287,6 +418,7 @@ fun KeyboardStudioScreen(
 
     val schemeDisplayBadge = remember(
         settings.inputScheme,
+        settings.doublePinyinLayout,
         customSchemaName,
         activeProfile,
         activeCustomSchemaId,
@@ -304,7 +436,7 @@ fun KeyboardStudioScreen(
                         ?: activeProfile.displayName.takeIf { it.isNotBlank() },
                     lang = appLang
                 )
-                else -> AppStrings.inputSchemeLabel(settings.inputScheme, appLang)
+                else -> AppStrings.inputSchemeLabel(settings.inputScheme, appLang, settings.doublePinyinLayout)
             }
         }
     }
@@ -389,7 +521,7 @@ fun KeyboardStudioScreen(
                                     if (rimeDataManager.isSchemeHandledByEnhancedEngine(nextScheme)) {
                                         rimeDataManager.activateEnhancedSchemeSync(nextScheme)
                                     }
-                                    TypeFreeApp.instance.rimeInputEngine.setInputScheme(nextScheme)
+                                    TypeFreeApp.instance.rimeInputEngine.setInputScheme(nextScheme, settings.doublePinyinLayout)
                                 }
                             }
                         },
@@ -550,10 +682,11 @@ private fun KeyboardSchemeAndLayoutPane(
                     val hideBuiltinFlypyTable = !BuildConfig.USE_PRIVATE_DICT &&
                         (installedCustomSchemas.any { it.schemaId == "flypy" } || settings.inputScheme != InputScheme.FLYPY_TABLE)
 
+                    val dpShort = AppStrings.doublePinyinLayoutShortLabel(settings.doublePinyinLayout, appLang)
                     val builtinItems = buildList {
                         add(InputScheme.RIME_PINYIN to tr("全拼", "Full Pinyin", "全拼"))
                         add(InputScheme.RIME_T9_PINYIN to tr("九键拼音", "9-Key T9", "九鍵拼音"))
-                        add(InputScheme.RIME_DOUBLE_PINYIN_FLYPY to tr("小鹤双拼", "Double Pinyin", "小鶴雙拼"))
+                        add(InputScheme.RIME_DOUBLE_PINYIN_FLYPY to tr("双拼 · $dpShort", "Shuangpin · $dpShort", "雙拼 · $dpShort"))
                         if (!hideBuiltinFlypyTable) {
                             add(InputScheme.FLYPY_TABLE to tr("小鹤音形", "Flypy 4-Code", "小鶴音形"))
                         }
@@ -625,6 +758,87 @@ private fun KeyboardSchemeAndLayoutPane(
                     }
                 }
 
+                if (!isEnglishQwertyActive && settings.inputScheme == InputScheme.RIME_DOUBLE_PINYIN_FLYPY) {
+                    val dpScope = rememberCoroutineScope()
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = tr("双拼键位方案", "Shuangpin Layout", "雙拼鍵位方案"),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = if (settings.doublePinyinLayout.usesSemicolonKey) {
+                                        tr("中文态自动补 L 右侧「;」键（27 键）", "Auto ';' key on Row 2 in Chinese (27-key)", "中文態自動補 L 右側「;」鍵（27 鍵）")
+                                    } else {
+                                        tr("标准 26 键排布 · 共用雾凇词库", "Standard 26-key · Shared Rime Ice lexicon", "標準 26 鍵排佈 · 共用霧凇詞庫")
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (settings.doublePinyinLayout.usesSemicolonKey) TypeFreeEmerald else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                com.typefree.ime.data.DoublePinyinLayout.entries.forEach { layout ->
+                                    val selectedDp = settings.doublePinyinLayout == layout
+                                    val baseLabel = AppStrings.doublePinyinLayoutLabel(layout, appLang)
+                                    val chipLabel = if (layout.usesSemicolonKey) "$baseLabel (;)" else baseLabel
+                                    FilterChip(
+                                        selected = selectedDp,
+                                        onClick = {
+                                            repository.updateSettings {
+                                                it.copy(
+                                                    inputScheme = InputScheme.RIME_DOUBLE_PINYIN_FLYPY,
+                                                    doublePinyinLayout = layout,
+                                                    lastQwertyIsChinese = true,
+                                                    flypyEnabled = true
+                                                )
+                                            }
+                                            dpScope.launch(Dispatchers.IO) {
+                                                runCatching {
+                                                    TypeFreeApp.instance.rimeInputEngine.setInputScheme(
+                                                        InputScheme.RIME_DOUBLE_PINYIN_FLYPY,
+                                                        layout
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        label = {
+                                            Text(
+                                                text = chipLabel,
+                                                fontSize = 12.sp,
+                                                fontWeight = if (selectedDp) FontWeight.Bold else FontWeight.Medium
+                                            )
+                                        },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = TypeFreeEmerald,
+                                            selectedLabelColor = Color.White
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if (isEnglishQwertyActive) {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
@@ -674,10 +888,9 @@ private fun KeyboardSchemeAndLayoutPane(
                                 "5-Key Bottom Row (Wide ',' 2nd Choice)",
                                 "四碼 5 鍵底排（寬次選 ,）"
                             ),
-                            subtitle = tr(
-                                "开启后底排变为「123 · ，次选 · 空格(长按切中英) · 。三选 · 回车」，更不易误触句号",
-                                "Changes bottom row to '123 · , (2nd) · Space (hold for EN/中) · . (3rd) · Enter' to prevent period mis-taps",
-                                "開啟後底排變為「123 · ，次選 · 空白鍵(長按切中英) · 。三選 · 換行」，更不易誤觸句號"
+                            subtitle = KeyboardStudioV391Helper.fiveKeyBottomRowSubtitle(
+                                spaceLongPressAction = settings.spaceLongPressAction,
+                                lang = appLang
                             ),
                             checked = settings.codetableFiveKeyBottomRow,
                             onCheckedChange = { enabled ->
@@ -878,10 +1091,9 @@ private fun KeyboardSchemeAndLayoutPane(
                                 "5-Key Bottom Row (Wide ',' 2nd Choice)",
                                 "四碼 5 鍵底排（寬次選 ,）"
                             ),
-                            subtitle = tr(
-                                "开启后底排变为「123 · ，次选 · 空格(长按切中英) · 。三选 · 回车」",
-                                "Changes bottom row to '123 · , (2nd) · Space (hold for EN/中) · . (3rd) · Enter'",
-                                "開啟後底排變為「123 · ，次選 · 空白鍵(長按切中英) · 。三選 · 換行」"
+                            subtitle = KeyboardStudioV391Helper.fiveKeyBottomRowSubtitle(
+                                spaceLongPressAction = settings.spaceLongPressAction,
+                                lang = appLang
                             ),
                             checked = settings.codetableFiveKeyBottomRow,
                             onCheckedChange = { enabled ->
@@ -1172,11 +1384,113 @@ private fun KeyboardSchemeAndLayoutPane(
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
 
-                val currentLiftLevel = settings.keyboardLiftLevel.coerceIn(
-                    KeyboardMetrics.MIN_LIFT_LEVEL,
-                    KeyboardMetrics.MAX_LIFT_LEVEL
+                // 长按空格键动作（语音直出 vs 切换中英文）
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "${tr("长按空格键动作", "Spacebar Long-Press Action", "長按空白鍵動作")}（${KeyboardStudioV391Helper.spaceLongPressOptionLabel(settings.spaceLongPressAction, cardLang)}）",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = tr(
+                            "选择长按打字键盘空格键触发按住说话或切换中英；无论选哪项，上滑空格键 ↑（或中文空闲态点按 ⇧ Shift）均可随时切换中英文",
+                            "Choose whether holding Space starts voice dictation or toggles language; swiping up ↑ on Space (or tapping ⇧ Shift when idle in Chinese) always switches Chinese/English",
+                            "選擇長按打字鍵盤空白鍵觸發按住說話或切換中英；無論選哪項，上滑空白鍵 ↑（或中文空閒態點按 ⇧ Shift）皆可隨時切換中英文"
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(
+                            SpaceLongPressAction.VOICE_HOLD,
+                            SpaceLongPressAction.TOGGLE_LANGUAGE
+                        ).forEach { action ->
+                            val selected = settings.spaceLongPressAction == action
+                            FilterChip(
+                                selected = selected,
+                                onClick = {
+                                    repository.updateSettings { it.copy(spaceLongPressAction = action) }
+                                },
+                                label = {
+                                    Text(
+                                        text = KeyboardStudioV391Helper.spaceLongPressOptionLabel(action, cardLang),
+                                        fontSize = 12.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                )
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+
+                // 候选栏字号（Issue #6）
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "${tr("候选栏字号", "Candidate Bar Font Size", "候選欄字號")}（${KeyboardStudioV391Helper.candidateFontScaleOptionLabel(settings.candidateFontScale, cardLang)}）",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = tr(
+                            "顶栏与候选词胶囊高度随字号联动加高，切换语音/打字面板保持零高度跳变",
+                            "Top bar and candidate capsules expand together with font size without panel height jitter",
+                            "頂欄與候選詞膠囊高度隨字號連動加高，切換語音/打字面板保持零高度跳變"
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        CandidateFontScale.entries.forEach { scale ->
+                            val selected = settings.candidateFontScale == scale
+                            FilterChip(
+                                selected = selected,
+                                onClick = {
+                                    repository.updateSettings { it.copy(candidateFontScale = scale) }
+                                },
+                                label = {
+                                    Text(
+                                        text = KeyboardStudioV391Helper.candidateFontScaleOptionLabel(scale, cardLang),
+                                        fontSize = 12.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                )
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+
+                // 解耦按键高度缩放 + 底部防低头垫高（Issue #13）+ 实时总高度缩略预览
+                val currentKeyHeightLevel = settings.keyboardHeightLevel.coerceIn(
+                    KeyboardMetrics.MIN_LEVEL,
+                    KeyboardMetrics.MAX_LEVEL
                 )
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val effectiveBottomLiftDp = settings.resolvedBottomLiftDp()
+                val livePortraitMetrics = remember(settings) {
+                    KeyboardMetrics.fromSettings(settings, isLandscape = false)
+                }
+                val isHeightOrLiftCustomized = KeyboardStudioV391Helper.isHeightOrBottomLiftCustomized(settings)
+
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -1187,57 +1501,181 @@ private fun KeyboardSchemeAndLayoutPane(
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             Text(
-                                text = "${tr("底部垫高", "Bottom Cushion Lift", "底部墊高")} · ${KeyboardMetrics.labelForLiftLevel(currentLiftLevel)}",
+                                text = "${tr("按键高度缩放", "Key Height Scale", "按鍵高度縮放")} · ${KeyboardStudioV391Helper.keyHeightOptionLabel(currentKeyHeightLevel, cardLang)}",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
                                 text = tr(
-                                    "在键盘底部增加防误触留白托起按键区，所有面板同步生效",
-                                    "Raise the keyboard comfortably above your chin bezel without stretching keys",
-                                    "在鍵盤底部增加防誤觸留白托起按鍵區，所有面板同步生效"
+                                    "独立调节按键区纵向比例（88%–114%），与下方底部防低头垫高互不覆盖、可同时叠加生效",
+                                    "Scale vertical key height (88%–114%) independently — combines additively with Bottom Cushion Lift below",
+                                    "獨立調節按鍵區縱向比例（88%–114%），與下方底部防低頭墊高互不覆蓋、可同時疊加生效"
                                 ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        if (currentLiftLevel != KeyboardMetrics.DEFAULT_LIFT_LEVEL) {
+                        if (isHeightOrLiftCustomized) {
                             TextButton(
                                 onClick = {
-                                    repository.updateSettings {
-                                        it.copy(
-                                            keyboardHeightMode = KeyboardHeightMode.LIFT,
-                                            keyboardLiftLevel = KeyboardMetrics.DEFAULT_LIFT_LEVEL
-                                        )
+                                    repository.updateSettings { curr ->
+                                        KeyboardStudioV391Helper.resetHeightAndBottomLift(curr)
                                     }
                                 }
-                            ) { Text(tr("恢复默认", "Reset", "恢復預設"), fontSize = 12.sp) }
+                            ) {
+                                Text(tr("恢复默认", "Reset", "恢復預設"), fontSize = 12.sp)
+                            }
                         }
                     }
 
-                    Row(
+                    FlowRow(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        KeyboardMetrics.ALL_LIFT_LEVELS.forEach { level ->
-                            val selected = level == currentLiftLevel
+                        KeyboardMetrics.ALL_LEVELS.forEach { level ->
+                            val selected = level == currentKeyHeightLevel
                             FilterChip(
                                 selected = selected,
                                 onClick = {
-                                    repository.updateSettings {
-                                        it.copy(
-                                            keyboardHeightMode = KeyboardHeightMode.LIFT,
-                                            keyboardLiftLevel = level
-                                        )
+                                    repository.updateSettings { curr ->
+                                        KeyboardStudioV391Helper.applyKeyHeightLevel(curr, level)
                                     }
                                 },
-                                label = { Text(KeyboardMetrics.labelForLiftLevel(level), fontSize = 12.sp, maxLines = 1) },
-                                modifier = Modifier.weight(1f),
+                                label = {
+                                    Text(
+                                        text = KeyboardStudioV391Helper.keyHeightOptionLabel(level, cardLang),
+                                        fontSize = 11.5.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                        maxLines = 1
+                                    )
+                                },
                                 colors = FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = MaterialTheme.colorScheme.primary,
                                     selectedLabelColor = MaterialTheme.colorScheme.onPrimary
                                 )
                             )
+                        }
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "${tr("底部防低头垫高", "Bottom Cushion Lift", "底部防低頭墊高")} · ${KeyboardStudioV391Helper.bottomLiftOptionLabel(effectiveBottomLiftDp)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = tr(
+                                "在竖屏键盘底部增加 0–56dp 防低头留白托起按键区，横屏自动归零不占视野",
+                                "Add a 0–56dp portrait bottom cushion to raise keys ergonomically (auto-zeroes in landscape)",
+                                "在直向鍵盤底部增加 0–56dp 防低頭留白托起按鍵區，橫向自動歸零不佔視野"
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        KeyboardStudioV391Helper.BOTTOM_LIFT_STEP_OPTIONS_DP.forEach { stepDp ->
+                            val selected = stepDp == effectiveBottomLiftDp
+                            FilterChip(
+                                selected = selected,
+                                onClick = {
+                                    repository.updateSettings { curr ->
+                                        KeyboardStudioV391Helper.applyBottomLiftDp(curr, stepDp)
+                                    }
+                                },
+                                label = {
+                                    Text(
+                                        text = KeyboardStudioV391Helper.bottomLiftOptionLabel(stepDp),
+                                        fontSize = 12.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                        maxLines = 1
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                )
+                            )
+                        }
+                    }
+
+                    // 实时键盘总高度比例缩略预览
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            val miniScale = 0.16f
+                            val miniChromeH = (livePortraitMetrics.fixedChromeDp * miniScale).coerceAtLeast(6f).dp
+                            val miniKeysH = (livePortraitMetrics.keyAreaHeight.value * miniScale).coerceAtLeast(24f).dp
+                            val miniLiftH = (livePortraitMetrics.liftHeight.value * miniScale).dp
+                            Column(
+                                modifier = Modifier
+                                    .width(46.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(MaterialTheme.colorScheme.surface)
+                                    .padding(2.dp),
+                                verticalArrangement = Arrangement.spacedBy(1.5.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(miniChromeH)
+                                        .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(miniKeysH)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.62f))
+                                )
+                                if (livePortraitMetrics.liftHeight > 0.dp) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(miniLiftH.coerceAtLeast(3.dp))
+                                            .clip(RoundedCornerShape(bottomStart = 4.dp, bottomEnd = 4.dp))
+                                            .background(TypeFreeEmerald.copy(alpha = 0.35f))
+                                    )
+                                }
+                            }
+
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = KeyboardStudioV391Helper.formatLiveHeightSummary(livePortraitMetrics, cardLang),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = tr(
+                                        "语音、全键、翻译、剪贴板等面板共享同一外框高度，切换无跳动",
+                                        "Voice, QWERTY, Translate, and Clipboard share this exact frame height with zero relayout",
+                                        "語音、全鍵、翻譯、剪貼簿等面板共享同一外框高度，切換無跳動"
+                                    ),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }

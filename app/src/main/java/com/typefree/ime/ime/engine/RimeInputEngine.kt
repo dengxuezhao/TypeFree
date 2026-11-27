@@ -1,5 +1,6 @@
 package com.typefree.ime.ime.engine
 
+import com.typefree.ime.data.DoublePinyinLayout
 import com.typefree.ime.data.InputScheme
 import com.typefree.ime.data.SnippetEntry
 import com.typefree.ime.ime.flypy.FlypyCandidate
@@ -23,10 +24,15 @@ class RimeInputEngine(
     val rimeBridge: RimeSessionClient = RimeBridge(),
     initialScheme: InputScheme = InputScheme.RIME_PINYIN,
     var externalEnhancedSchemePredicate: (InputScheme) -> Boolean = { it == InputScheme.FLYPY_TABLE },
-    var customSchemaIdProvider: () -> String = { "custom" }
+    var customSchemaIdProvider: () -> String = { "custom" },
+    initialDoublePinyinLayout: DoublePinyinLayout = DoublePinyinLayout.FLYPY,
+    var onEnsureSchemaDeployed: ((String) -> Boolean)? = null
 ) : InputEngine {
 
     var inputScheme: InputScheme = initialScheme
+        private set
+
+    var doublePinyinLayout: DoublePinyinLayout = initialDoublePinyinLayout
         private set
 
     private var normalizedSnippets: List<SnippetEntry> = emptyList()
@@ -59,7 +65,24 @@ class RimeInputEngine(
         }
     }
 
-    fun setInputScheme(scheme: InputScheme) {
+    fun setDoublePinyinLayout(layout: DoublePinyinLayout) {
+        if (doublePinyinLayout == layout &&
+            (inputScheme != InputScheme.RIME_DOUBLE_PINYIN_FLYPY || rimeBridge.activeSchemaId == layout.rimeSchemaId)
+        ) {
+            return
+        }
+        doublePinyinLayout = layout
+        if (inputScheme == InputScheme.RIME_DOUBLE_PINYIN_FLYPY && !externalEnhancedSchemePredicate(inputScheme)) {
+            applySchemeToBridge(inputScheme)
+            clear()
+        }
+    }
+
+    fun setInputScheme(
+        scheme: InputScheme,
+        layout: DoublePinyinLayout = doublePinyinLayout
+    ) {
+        doublePinyinLayout = layout
         if (externalEnhancedSchemePredicate(scheme)) {
             inputScheme = scheme
             currentRawCode = ""
@@ -78,7 +101,7 @@ class RimeInputEngine(
     private fun resolveSchemaId(scheme: InputScheme): String {
         return when (scheme) {
             InputScheme.RIME_T9_PINYIN -> "t9"
-            InputScheme.RIME_DOUBLE_PINYIN_FLYPY -> "double_pinyin_flypy"
+            InputScheme.RIME_DOUBLE_PINYIN_FLYPY -> doublePinyinLayout.rimeSchemaId
             InputScheme.RIME_CUSTOM -> customSchemaIdProvider().ifBlank { "custom" }
             else -> "rime_ice"
         }
@@ -86,7 +109,16 @@ class RimeInputEngine(
 
     private fun applySchemeToBridge(scheme: InputScheme) {
         val targetSchema = resolveSchemaId(scheme)
-        rimeBridge.selectSchema(targetSchema)
+        val selected = rimeBridge.selectSchema(targetSchema)
+        if (!selected) {
+            val deployedViaManager = onEnsureSchemaDeployed?.invoke(targetSchema) == true
+            if (!deployedViaManager && rimeBridge.isNativeLoaded && rimeBridge.isDeployed) {
+                rimeBridge.deploy(targetSchema)
+                rimeBridge.selectSchema(targetSchema)
+            } else if (deployedViaManager && rimeBridge.activeSchemaId != targetSchema) {
+                rimeBridge.selectSchema(targetSchema)
+            }
+        }
         applySessionOptions()
     }
 
@@ -283,6 +315,9 @@ class RimeInputEngine(
         // T9 9-key Pinyin mode: route digits `2-9` and syllable delimiter `'` directly into Rime `t9` schema;
         // any other character (punctuation, symbols, 0/1) flushes active composition and commits directly.
         if (isT9Mode) {
+            if (rimeBridge.activeSchemaId != "t9") {
+                applySchemeToBridge(InputScheme.RIME_T9_PINYIN)
+            }
             if (T9PinyinHelper.isT9Digit(ch) || (ch == '\'' && currentRawCode.isNotEmpty())) {
                 if (currentRawCode.length >= MAX_RIME_INPUT_LENGTH) {
                     return EngineResult.Consumed
@@ -370,8 +405,16 @@ class RimeInputEngine(
             return EngineResult.Commit(out, remainComposing = false)
         }
 
+        val isSemicolonShuangpinRhyme = ch == ';' &&
+            inputScheme == InputScheme.RIME_DOUBLE_PINYIN_FLYPY &&
+            doublePinyinLayout.usesSemicolonKey &&
+            currentRawCode.isNotEmpty() &&
+            !currentRawCode.startsWith(";") &&
+            !currentRawCode.startsWith("/")
+
         // 1. Semicolon (`;` / `；`) — Quick-symbol prefix when idle, secondary select (`分号次选`) when composing
-        if (ch == ';' || ch == '；') {
+        //    (except in Microsoft / Sogou / Ziguang Shuangpin where `;` is the `ing` / `uai` phonetic rhyme key).
+        if ((ch == ';' || ch == '；') && !isSemicolonShuangpinRhyme) {
             return when {
                 currentRawCode.isEmpty() -> {
                     currentRawCode = ";"
@@ -459,8 +502,8 @@ class RimeInputEngine(
             }
         }
 
-        // 4. Standard Rime input (`a-z` and syllable separator `'`)
-        if (ch in 'a'..'z' || (ch == '\'' && currentRawCode.isNotEmpty())) {
+        // 4. Standard Rime input (`a-z`, syllable separator `'`, and `;` rhyme in MSPY/Sogou/Ziguang Shuangpin)
+        if (ch in 'a'..'z' || (ch == '\'' && currentRawCode.isNotEmpty()) || isSemicolonShuangpinRhyme) {
             if (currentRawCode.length >= MAX_RIME_INPUT_LENGTH) {
                 return EngineResult.Consumed
             }

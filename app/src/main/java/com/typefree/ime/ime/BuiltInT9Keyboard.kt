@@ -5,6 +5,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,10 +39,12 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import android.view.HapticFeedbackConstants
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -50,8 +54,12 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import com.typefree.ime.data.ExpressionTab
+import com.typefree.ime.data.SpaceLongPressAction
+import com.typefree.ime.i18n.tr
 import com.typefree.ime.ui.components.TypeFreeIcons
 import com.typefree.ime.ui.theme.LocalTypeFreeKeyboardPalette
+import com.typefree.ime.ui.theme.TypeFreeEmerald
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -97,9 +105,10 @@ private val T9_GRID_ROWS: List<List<T9KeySpec>> = listOf(
     )
 )
 
-private val T9_IDLE_PUNCTUATIONS: List<Pair<String, String?>> = listOf(
+internal val T9_IDLE_PUNCTUATIONS: List<Pair<String, String?>> = listOf(
     "，" to null,
     "。" to null,
+    "@" to null,
     "？" to null,
     "！" to null,
     "、" to null,
@@ -108,8 +117,7 @@ private val T9_IDLE_PUNCTUATIONS: List<Pair<String, String?>> = listOf(
     "……" to null,
     "“”" to "“|”",
     "（）" to "（|）",
-    "—" to null,
-    "@" to null
+    "—" to null
 )
 
 private val T9_NUMBER_SIDE_SYMBOLS: List<String> = listOf(
@@ -128,7 +136,7 @@ private val T9_SYMBOL_PAGE_2: List<List<String>> = listOf(
     listOf("}", "+", "-", "*", "=", "%", "$")
 )
 
-private val T9_CELL_PAD = 2.6.dp
+private val T9_CELL_PAD = 1.8.dp
 private val T9_KEY_CORNER = 7.5.dp
 private val T9_KEY_RIM = 1.25.dp
 
@@ -161,6 +169,12 @@ fun BuiltInT9Keyboard(
     onSwipeUpBackspaceUndo: () -> Unit,
     onEnterOrNewline: () -> Unit,
     onSwitchToVoice: () -> Unit,
+    onTapKey1IdlePunctuation: () -> Unit = { onCommitSecondarySymbol("，") },
+    spaceLongPressAction: SpaceLongPressAction = SpaceLongPressAction.VOICE_HOLD,
+    isInPlaceVoiceActive: Boolean = false,
+    onHoldStartInPlaceVoice: () -> Unit = {},
+    onHoldReleaseInPlaceVoice: () -> Unit = {},
+    onOpenExpressionPanel: ((ExpressionTab) -> Unit)? = null,
     inputSessionToken: Int = 0,
     showKeyPopupPreview: Boolean = true,
     modifier: Modifier = Modifier
@@ -225,13 +239,31 @@ fun BuiltInT9Keyboard(
                     },
                     onOpenSymbolLayer = {
                         if (isComposing) onFlushComposingBeforeLayerSwitch()
-                        isMoreSymbols = false
-                        activeLayer = T9KeyboardLayer.SYMBOL
+                        if (onOpenExpressionPanel != null) {
+                            onOpenExpressionPanel(ExpressionTab.SYMBOL)
+                        } else {
+                            isMoreSymbols = false
+                            activeLayer = T9KeyboardLayer.SYMBOL
+                        }
+                    },
+                    onOpenEmojiPanel = {
+                        if (isComposing) onFlushComposingBeforeLayerSwitch()
+                        if (onOpenExpressionPanel != null) {
+                            onOpenExpressionPanel(ExpressionTab.EMOJI)
+                        } else {
+                            isMoreSymbols = false
+                            activeLayer = T9KeyboardLayer.SYMBOL
+                        }
                     },
                     onBackspace = onBackspace,
                     onSwipeUpBackspaceUndo = onSwipeUpBackspaceUndo,
                     onEnterOrNewline = onEnterOrNewline,
-                    onSwitchToVoice = onSwitchToVoice
+                    onSwitchToVoice = onSwitchToVoice,
+                    onTapKey1IdlePunctuation = onTapKey1IdlePunctuation,
+                    spaceLongPressAction = spaceLongPressAction,
+                    isInPlaceVoiceActive = isInPlaceVoiceActive,
+                    onHoldStartInPlaceVoice = onHoldStartInPlaceVoice,
+                    onHoldReleaseInPlaceVoice = onHoldReleaseInPlaceVoice
                 )
             }
 
@@ -316,12 +348,21 @@ private fun T9MainPad(
     onClearComposing: () -> Unit,
     onOpenNumberLayer: () -> Unit,
     onOpenSymbolLayer: () -> Unit,
+    onOpenEmojiPanel: () -> Unit,
     onBackspace: () -> Unit,
     onSwipeUpBackspaceUndo: () -> Unit,
     onEnterOrNewline: () -> Unit,
-    onSwitchToVoice: () -> Unit
+    onSwitchToVoice: () -> Unit,
+    onTapKey1IdlePunctuation: () -> Unit,
+    spaceLongPressAction: SpaceLongPressAction,
+    isInPlaceVoiceActive: Boolean,
+    onHoldStartInPlaceVoice: () -> Unit,
+    onHoldReleaseInPlaceVoice: () -> Unit
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
+    val railItemHeight = (38f * metrics.widthScale).dp
+    val railFontSize = (16.5f * metrics.widthScale).sp
 
     Row(modifier = Modifier.fillMaxSize()) {
         // Left Column: Row 1-3 Scrollable Rail (Syllables when composing, Punctuation when idle) + Row 4 Symbol key
@@ -352,7 +393,7 @@ private fun T9MainPad(
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(34.dp)
+                                    .height(railItemHeight)
                                     .background(
                                         if (isPrimary) palette.primaryMicSolid.copy(alpha = 0.12f) else Color.Transparent
                                     )
@@ -361,7 +402,7 @@ private fun T9MainPad(
                             ) {
                                 Text(
                                     text = syl,
-                                    fontSize = 14.sp,
+                                    fontSize = railFontSize,
                                     fontWeight = if (isPrimary) FontWeight.Bold else FontWeight.Medium,
                                     color = if (isPrimary) palette.primaryMicSolid else palette.keyTextPrimary,
                                     maxLines = 1,
@@ -389,7 +430,7 @@ private fun T9MainPad(
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(34.dp)
+                                    .height(railItemHeight)
                                     .clickable {
                                         if (paired != null) {
                                             val parts = paired.split('|')
@@ -402,7 +443,7 @@ private fun T9MainPad(
                             ) {
                                 Text(
                                     text = label,
-                                    fontSize = 14.sp,
+                                    fontSize = railFontSize,
                                     fontWeight = FontWeight.Medium,
                                     color = palette.keyTextPrimary,
                                     maxLines = 1,
@@ -420,11 +461,13 @@ private fun T9MainPad(
                 }
             }
 
-            T9ActionKey(
+            T9SymbolEmojiKey(
                 label = "符号",
+                topBadge = "",
                 containerColor = palette.keyCapSecondaryBg,
                 contentColor = palette.keyTextPrimary,
-                onClick = onOpenSymbolLayer,
+                onTap = onOpenSymbolLayer,
+                onOpenEmoji = onOpenEmojiPanel,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
@@ -455,7 +498,7 @@ private fun T9MainPad(
                                     if (isComposing) {
                                         onCommitChar("'")
                                     } else {
-                                        onCommitSecondarySymbol("，")
+                                        onTapKey1IdlePunctuation()
                                     }
                                 } else {
                                     onCommitChar(spec.digit)
@@ -482,6 +525,7 @@ private fun T9MainPad(
                     label = "123",
                     containerColor = palette.keyCapSecondaryBg,
                     contentColor = palette.keyTextPrimary,
+                    consumeUpAck = isComposing,
                     onClick = onOpenNumberLayer,
                     modifier = Modifier
                         .weight(0.92f)
@@ -490,8 +534,12 @@ private fun T9MainPad(
                 T9SpaceKey(
                     label = if (isComposing) "选词" else "九键",
                     isComposing = isComposing,
+                    spaceLongPressAction = spaceLongPressAction,
+                    isInPlaceVoiceActive = isInPlaceVoiceActive,
                     onTapSpace = onInsertSpace,
                     onMoveCursorByStep = onMoveCursorByStep,
+                    onHoldStartInPlaceVoice = onHoldStartInPlaceVoice,
+                    onHoldReleaseInPlaceVoice = onHoldReleaseInPlaceVoice,
                     modifier = Modifier
                         .weight(1.42f)
                         .fillMaxHeight()
@@ -508,7 +556,7 @@ private fun T9MainPad(
             }
         }
 
-        // Right Column: Row 1 Backspace + Row 2 Reset/Voice + Row 3-4 Double-Height Enter/Send
+        // Right Column: Row 1 Backspace + Row 2 Reset (composing) / Emoji (idle, Scheme B) + Row 3-4 Double-Height Enter/Send
         Column(
             modifier = Modifier
                 .weight(0.95f)
@@ -533,8 +581,12 @@ private fun T9MainPad(
                         .fillMaxWidth()
                 )
             } else {
-                T9VoiceSwitchKey(
-                    onClick = onSwitchToVoice,
+                T9ActionKey(
+                    label = tr("☺ 表情", "☺ Emoji", "☺ 表情"),
+                    containerColor = palette.keyCapSecondaryBg,
+                    contentColor = palette.keyTextPrimary,
+                    fontSizeSp = 13.5f,
+                    onClick = onOpenEmojiPanel,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
@@ -624,6 +676,7 @@ private fun T9NumberPad(
                 label = "返回",
                 containerColor = palette.keyCapSecondaryBg,
                 contentColor = palette.keyTextPrimary,
+                consumeUpAck = false,
                 onClick = onReturnToMain,
                 modifier = Modifier
                     .weight(1f)
@@ -779,6 +832,7 @@ private fun T9SymbolPad(
                 label = "返回",
                 containerColor = palette.keyCapSecondaryBg,
                 contentColor = palette.keyTextPrimary,
+                consumeUpAck = false,
                 onClick = onReturnToMain,
                 modifier = Modifier
                     .weight(1.1f)
@@ -788,6 +842,7 @@ private fun T9SymbolPad(
                 label = if (isMoreSymbols) "中文符" else "英文符",
                 containerColor = palette.keyCapSecondaryBg,
                 contentColor = palette.keyTextPrimary,
+                consumeUpAck = false,
                 onClick = onToggleMoreSymbols,
                 modifier = Modifier
                     .weight(1.15f)
@@ -835,7 +890,10 @@ private fun T9DigitCharKey(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
     val density = LocalDensity.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
+    val hostView = LocalView.current
     val swipeUpThresholdPx = with(density) { 18.dp.toPx() }
     val latestOnTap by rememberUpdatedState(onTap)
     val latestOnSecondary by rememberUpdatedState(onSecondaryDigit)
@@ -866,6 +924,7 @@ private fun T9DigitCharKey(
                         val down = awaitFirstDown(requireUnconsumed = false)
                         down.consume()
                         pressed = true
+                        keyFeedback.onTouchFeedback(HapticTier.ALPHA_KEY, hostView, KeySoundType.STANDARD, true)
                         swipeUpArmed = false
                         val cx = (keyOriginInWindow.x - latestRootOrigin.x) + keySizePx.width / 2f
                         val topY = keyOriginInWindow.y - latestRootOrigin.y
@@ -875,6 +934,7 @@ private fun T9DigitCharKey(
                             delay(ImeLogic.SECONDARY_KEY_LONG_PRESS_MS)
                             if (isActive) {
                                 longPressFired = true
+                                keyFeedback.onTouchFeedback(HapticTier.GESTURE_CONFIRM, hostView, KeySoundType.NONE, false)
                                 latestHidePreview(previewToken)
                                 previewToken = latestShowPreview(spec.digit, cx, topY)
                                 latestOnSecondary()
@@ -898,6 +958,7 @@ private fun T9DigitCharKey(
                                 swipeUpArmed = nowSwipe
                                 if (nowSwipe) {
                                     longPressJob.cancel()
+                                    keyFeedback.onTouchFeedback(HapticTier.GESTURE_CONFIRM, hostView, KeySoundType.NONE, false)
                                     latestHidePreview(previewToken)
                                     previewToken = latestShowPreview(spec.digit, cx, topY)
                                 }
@@ -946,20 +1007,20 @@ private fun T9DigitCharKey(
             // Top-center subtle digit badge (hinting swipe-up / long-press digit)
             Text(
                 text = spec.digit,
-                fontSize = 10.sp,
+                fontSize = (11.2f * metrics.keyFontScale).sp,
                 fontWeight = if (swipeUpArmed) FontWeight.Bold else FontWeight.Medium,
-                color = if (swipeUpArmed) palette.primaryMicSolid else palette.keyTextMuted.copy(alpha = 0.78f),
+                color = if (swipeUpArmed) palette.primaryMicSolid else palette.keyTextMuted.copy(alpha = 0.80f),
                 maxLines = 1,
                 style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false)),
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 3.dp)
+                    .padding(top = 2.5.dp)
             )
 
             // Center main letters / delimiter label
             Text(
                 text = primaryText,
-                fontSize = if (spec.isDelimiterKey) 14.sp else 16.sp,
+                fontSize = ((if (spec.isDelimiterKey) 15.8f else 18.5f) * metrics.keyFontScale).sp,
                 fontWeight = FontWeight.SemiBold,
                 color = if (spec.isDelimiterKey && isComposing) palette.primaryMicSolid else palette.keyTextPrimary,
                 maxLines = 1,
@@ -967,7 +1028,7 @@ private fun T9DigitCharKey(
                 style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false)),
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .padding(top = 7.dp)
+                    .padding(top = 6.5.dp)
             )
         }
     }
@@ -977,56 +1038,139 @@ private fun T9DigitCharKey(
 private fun T9SpaceKey(
     label: String,
     isComposing: Boolean,
+    spaceLongPressAction: SpaceLongPressAction = SpaceLongPressAction.VOICE_HOLD,
+    isInPlaceVoiceActive: Boolean = false,
     onTapSpace: () -> Unit,
     onMoveCursorByStep: (Int) -> Unit,
+    onHoldStartInPlaceVoice: (() -> Unit)? = null,
+    onHoldReleaseInPlaceVoice: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
+    val view = LocalView.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
     val density = LocalDensity.current
-    val stepPx = with(density) { 11.dp.toPx() }
+    val slideActivatePx = with(density) { ImeLogic.SPACE_CURSOR_SLIDE_ACTIVATE_DP.dp.toPx() }
+    val stepPx = with(density) { ImeLogic.SPACE_CURSOR_SLIDE_STEP_DP.dp.toPx() }
     val latestTap by rememberUpdatedState(onTapSpace)
     val latestMove by rememberUpdatedState(onMoveCursorByStep)
     val latestComposing by rememberUpdatedState(isComposing)
+    val latestSpaceAction by rememberUpdatedState(spaceLongPressAction)
+    val latestOnHoldStartVoice by rememberUpdatedState(onHoldStartInPlaceVoice)
+    val latestOnHoldReleaseVoice by rememberUpdatedState(onHoldReleaseInPlaceVoice)
     var pressed by remember { mutableStateOf(false) }
+    var isCursorSliding by remember { mutableStateOf(false) }
+    var isVoiceHolding by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
             .pointerInput(Unit) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    down.consume()
-                    pressed = true
-                    var lastX = down.position.x
-                    var accumDx = 0f
-                    var didSlide = false
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        if (!change.pressed) {
-                            change.consume()
-                            break
+                coroutineScope {
+                    val outerScope = this
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        down.consume()
+                        pressed = true
+                        keyFeedback.onTouchFeedback(HapticTier.FUNCTION_KEY, view, KeySoundType.SPACEBAR, true)
+                        isCursorSliding = false
+                        isVoiceHolding = false
+                        val startX = down.position.x
+                        var lastX = startX
+                        var accumDx = 0f
+                        var didSlide = false
+                        var holdTriggered = false
+                        var voiceHoldStarted = false
+                        var voiceHoldReleased = false
+
+                        val holdJob: Job? = if (
+                            !latestComposing &&
+                            latestSpaceAction == SpaceLongPressAction.VOICE_HOLD &&
+                            latestOnHoldStartVoice != null
+                        ) {
+                            outerScope.launch {
+                                delay(ImeLogic.SPACE_VOICE_HOLD_MS)
+                                if (!didSlide && !holdTriggered && !latestComposing) {
+                                    holdTriggered = true
+                                    voiceHoldStarted = true
+                                    isVoiceHolding = true
+                                    keyFeedback.onTouchFeedback(HapticTier.MIC_STRONG, view, KeySoundType.NONE, false)
+                                    latestOnHoldStartVoice?.invoke()
+                                }
+                            }
+                        } else {
+                            null
                         }
-                        if (!latestComposing) {
-                            val deltaX = change.position.x - lastX
-                            lastX = change.position.x
-                            accumDx += deltaX
-                            val (steps, rem) = ImeLogic.computeSpaceCursorSlideSteps(accumDx, stepPx)
-                            if (steps != 0) {
-                                didSlide = true
-                                accumDx = rem
-                                latestMove(steps)
+
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    change.consume()
+                                    break
+                                }
+                                if (!latestComposing && !holdTriggered) {
+                                    val totalDx = change.position.x - startX
+                                    val deltaX = change.position.x - lastX
+                                    lastX = change.position.x
+                                    if (!didSlide && abs(totalDx) >= slideActivatePx) {
+                                        didSlide = true
+                                        isCursorSliding = true
+                                        holdJob?.cancel()
+                                        accumDx = totalDx
+                                    } else if (didSlide) {
+                                        accumDx += deltaX
+                                    }
+                                    if (didSlide) {
+                                        val (steps, rem) = ImeLogic.computeSpaceCursorSlideSteps(accumDx, stepPx)
+                                        if (steps != 0) {
+                                            accumDx = rem
+                                            latestMove(steps)
+                                        }
+                                    }
+                                }
+                                change.consume()
+                            }
+                        } finally {
+                            pressed = false
+                            isCursorSliding = false
+                            isVoiceHolding = false
+                            holdJob?.cancel()
+                            if (voiceHoldStarted && !voiceHoldReleased) {
+                                voiceHoldReleased = true
+                                latestOnHoldReleaseVoice?.invoke()
                             }
                         }
-                        change.consume()
-                    }
-                    pressed = false
-                    if (!didSlide) {
-                        latestTap()
+                        if (!didSlide && !holdTriggered) {
+                            latestTap()
+                        }
                     }
                 }
             }
             .padding(T9_CELL_PAD)
     ) {
+        val activeSpaceVoice = isVoiceHolding && isInPlaceVoiceActive
+        val faceBg = when {
+            activeSpaceVoice -> TypeFreeEmerald.copy(alpha = if (palette.isDark) 0.22f else 0.14f)
+            pressed -> palette.capsuleSelectedBg
+            else -> palette.keyCapBg
+        }
+        val borderColor = if (activeSpaceVoice) {
+            TypeFreeEmerald.copy(alpha = 0.68f)
+        } else {
+            palette.keyBorder.copy(alpha = 0.7f)
+        }
+        val displayLabel = when {
+            activeSpaceVoice -> tr("🎙 松手上屏", "🎙 Release", "🎙 放開上屏")
+            isCursorSliding -> tr("‹ 滑动 ›", "‹ Slide ›", "‹ 滑動 ›")
+            else -> label
+        }
+        val textColor = when {
+            activeSpaceVoice -> if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857)
+            isComposing || isCursorSliding -> palette.primaryMicSolid
+            else -> palette.keyTextMuted
+        }
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -1034,16 +1178,17 @@ private fun T9SpaceKey(
                 .background(palette.keyShadow)
                 .padding(bottom = T9_KEY_RIM)
                 .clip(RoundedCornerShape(T9_KEY_CORNER))
-                .background(if (pressed) palette.capsuleSelectedBg else palette.keyCapBg)
-                .border(0.6.dp, palette.keyBorder.copy(alpha = 0.7f), RoundedCornerShape(T9_KEY_CORNER)),
+                .background(faceBg)
+                .border(0.6.dp, borderColor, RoundedCornerShape(T9_KEY_CORNER)),
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = label,
-                fontSize = 13.sp,
-                fontWeight = if (isComposing) FontWeight.SemiBold else FontWeight.Medium,
-                color = if (isComposing) palette.primaryMicSolid else palette.keyTextMuted,
+                text = displayLabel,
+                fontSize = ((if (activeSpaceVoice) 12.0f else 14.2f) * metrics.keyFontScale).sp,
+                fontWeight = if (activeSpaceVoice || isComposing) FontWeight.SemiBold else FontWeight.Medium,
+                color = textColor,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
             )
         }
@@ -1058,6 +1203,8 @@ private fun T9BackspaceKey(
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
     val density = LocalDensity.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
+    val hostView = LocalView.current
     val swipeUpPx = with(density) { 18.dp.toPx() }
     val latestBackspace by rememberUpdatedState(onBackspace)
     val latestUndo by rememberUpdatedState(onSwipeUpUndo)
@@ -1071,12 +1218,14 @@ private fun T9BackspaceKey(
                         val down = awaitFirstDown(requireUnconsumed = false)
                         down.consume()
                         pressed = true
+                        keyFeedback.onTouchFeedback(HapticTier.FUNCTION_KEY, hostView, KeySoundType.DELETE, true)
                         var didSwipeUp = false
                         var didRepeat = false
                         val repeatJob = launch {
                             delay(380L)
                             while (isActive) {
                                 didRepeat = true
+                                keyFeedback.onTouchFeedback(HapticTier.CURSOR_TICK, hostView, KeySoundType.DELETE, true)
                                 latestBackspace()
                                 delay(54L)
                             }
@@ -1090,9 +1239,10 @@ private fun T9BackspaceKey(
                             }
                             val dx = change.position.x - down.position.x
                             val dy = change.position.y - down.position.y
-                            if (!didRepeat && dy <= -swipeUpPx && abs(dy) > abs(dx)) {
+                            if (!didRepeat && !didSwipeUp && dy <= -swipeUpPx && abs(dy) > abs(dx)) {
                                 didSwipeUp = true
                                 repeatJob.cancel()
+                                keyFeedback.onTouchFeedback(HapticTier.GESTURE_CONFIRM, hostView, KeySoundType.NONE, false)
                             }
                             change.consume()
                         }
@@ -1130,29 +1280,109 @@ private fun T9BackspaceKey(
 }
 
 @Composable
-private fun T9VoiceSwitchKey(
-    onClick: () -> Unit,
+private fun T9SymbolEmojiKey(
+    label: String,
+    topBadge: String,
+    containerColor: Color,
+    contentColor: Color,
+    onTap: () -> Unit,
+    onOpenEmoji: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
+    val density = LocalDensity.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
+    val hostView = LocalView.current
+    val swipeUpPx = with(density) { 18.dp.toPx() }
+    val latestOnTap by rememberUpdatedState(onTap)
+    val latestOnOpenEmoji by rememberUpdatedState(onOpenEmoji)
+    var pressed by remember { mutableStateOf(false) }
+
     Box(
         modifier = modifier
+            .pointerInput(Unit) {
+                coroutineScope {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        down.consume()
+                        pressed = true
+                        keyFeedback.onTouchFeedback(HapticTier.FUNCTION_KEY, hostView, KeySoundType.STANDARD, true)
+                        var gestureFired = false
+                        val longJob = launch {
+                            delay(ImeLogic.SECONDARY_KEY_LONG_PRESS_MS)
+                            if (isActive && !gestureFired) {
+                                gestureFired = true
+                                keyFeedback.onTouchFeedback(HapticTier.GESTURE_CONFIRM, hostView, KeySoundType.NONE, false)
+                                latestOnOpenEmoji()
+                            }
+                        }
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                val dx = change.position.x - down.position.x
+                                val dy = change.position.y - down.position.y
+                                if (!gestureFired && dy <= -swipeUpPx && abs(dy) > abs(dx)) {
+                                    gestureFired = true
+                                    longJob.cancel()
+                                    change.consume()
+                                    keyFeedback.onTouchFeedback(HapticTier.GESTURE_CONFIRM, hostView, KeySoundType.NONE, false)
+                                    latestOnOpenEmoji()
+                                }
+                                if (!change.pressed) {
+                                    change.consume()
+                                    break
+                                }
+                            }
+                        } finally {
+                            pressed = false
+                            longJob.cancel()
+                        }
+                        if (!gestureFired) {
+                            latestOnTap()
+                        }
+                    }
+                }
+            }
             .padding(T9_CELL_PAD)
-            .clip(RoundedCornerShape(T9_KEY_CORNER))
-            .background(palette.keyShadow)
-            .padding(bottom = T9_KEY_RIM)
-            .clip(RoundedCornerShape(T9_KEY_CORNER))
-            .background(palette.keyCapSecondaryBg)
-            .border(0.6.dp, palette.keyBorder.copy(alpha = 0.7f), RoundedCornerShape(T9_KEY_CORNER))
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
     ) {
-        Icon(
-            imageVector = TypeFreeIcons.Mic,
-            contentDescription = "语音输入",
-            tint = palette.keyTextPrimary,
-            modifier = Modifier.size(19.dp)
-        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(T9_KEY_CORNER))
+                .background(palette.keyShadow)
+                .padding(bottom = T9_KEY_RIM)
+                .clip(RoundedCornerShape(T9_KEY_CORNER))
+                .background(if (pressed) palette.capsuleSelectedBg else containerColor)
+                .border(0.6.dp, palette.keyBorder.copy(alpha = 0.7f), RoundedCornerShape(T9_KEY_CORNER))
+        ) {
+            if (topBadge.isNotEmpty()) {
+                Text(
+                    text = topBadge,
+                    fontSize = (9.0f * metrics.widthScale).sp,
+                    lineHeight = (10.5f * metrics.widthScale).sp,
+                    fontWeight = FontWeight.Medium,
+                    color = palette.keyTextMuted.copy(alpha = 0.80f),
+                    maxLines = 1,
+                    style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false)),
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 2.5.dp)
+                )
+            }
+            Text(
+                text = label,
+                fontSize = (14.2f * metrics.keyFontScale).sp,
+                fontWeight = FontWeight.Medium,
+                color = contentColor,
+                maxLines = 1,
+                style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false)),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .offset(y = if (topBadge.isNotEmpty()) 3.5.dp else 0.dp)
+            )
+        }
     }
 }
 
@@ -1161,12 +1391,25 @@ private fun T9ActionKey(
     label: String,
     containerColor: Color,
     contentColor: Color,
-    fontSizeSp: Int = 14,
+    fontSizeSp: Number = 14.2f,
     fontWeight: FontWeight = FontWeight.Medium,
+    consumeUpAck: Boolean = true,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalTypeFreeKeyboardPalette.current
+    val metrics = LocalKeyboardMetrics.current
+    val keyFeedback = LocalKeyFeedbackTrigger.current
+    val hostView = LocalView.current
+    val latestConsumeUpAck by rememberUpdatedState(consumeUpAck)
+    val interaction = remember { MutableInteractionSource() }
+    LaunchedEffect(interaction) {
+        interaction.interactions.collect { ev ->
+            if (ev is PressInteraction.Press) {
+                keyFeedback.onTouchFeedback(HapticTier.FUNCTION_KEY, hostView, KeySoundType.STANDARD, latestConsumeUpAck)
+            }
+        }
+    }
     Box(
         modifier = modifier
             .padding(T9_CELL_PAD)
@@ -1176,12 +1419,12 @@ private fun T9ActionKey(
             .clip(RoundedCornerShape(T9_KEY_CORNER))
             .background(containerColor)
             .border(0.6.dp, palette.keyBorder.copy(alpha = 0.7f), RoundedCornerShape(T9_KEY_CORNER))
-            .clickable(onClick = onClick),
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = label,
-            fontSize = fontSizeSp.sp,
+            fontSize = (fontSizeSp.toFloat() * metrics.keyFontScale).sp,
             fontWeight = fontWeight,
             color = contentColor,
             maxLines = 1,
@@ -1199,6 +1442,7 @@ fun BuiltInT9KeyboardHost(
     showKeyPopupPreview: Boolean,
     onAction: (ImeUiAction) -> Unit,
     backspaceSwipeUpClearEnabled: Boolean = false,
+    spaceLongPressAction: SpaceLongPressAction = SpaceLongPressAction.VOICE_HOLD,
     modifier: Modifier = Modifier
 ) {
     BuiltInT9Keyboard(
@@ -1221,6 +1465,12 @@ fun BuiltInT9KeyboardHost(
         },
         onEnterOrNewline = { onAction(ImeUiAction.EnterOrNewline) },
         onSwitchToVoice = { onAction(ImeUiAction.SelectTab(KeyboardTabMode.VOICE)) },
+        onTapKey1IdlePunctuation = { onAction(ImeUiAction.TapT9Key1Punctuation) },
+        spaceLongPressAction = spaceLongPressAction,
+        isInPlaceVoiceActive = uiState.tabMode == KeyboardTabMode.QWERTY && uiState.voicePhase is VoicePhase.Recording,
+        onHoldStartInPlaceVoice = { onAction(ImeUiAction.HoldStartInPlaceVoice) },
+        onHoldReleaseInPlaceVoice = { onAction(ImeUiAction.HoldReleaseInPlaceVoice) },
+        onOpenExpressionPanel = { onAction(ImeUiAction.OpenExpressionPanel(it)) },
         inputSessionToken = uiState.inputSessionToken,
         showKeyPopupPreview = showKeyPopupPreview,
         modifier = modifier
